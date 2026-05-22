@@ -50,6 +50,7 @@ jobs:
             --format=esm \
             --outfile=../../release/agentx.mjs \
             --external:better-sqlite3 \
+            --external:react-devtools-core \
             --banner:js='#!/usr/bin/env node'
 
       # Copy native addon for the target platform
@@ -61,16 +62,7 @@ jobs:
       # Create loader wrapper that sets up native bindings
       - name: Create launcher
         run: |
-          cat > release/agentx << 'EOF'
-          #!/usr/bin/env node
-          import { createRequire } from 'node:module';
-          import { fileURLToPath } from 'node:url';
-          import { dirname, join } from 'node:path';
-          const __dirname = dirname(fileURLToPath(import.meta.url));
-          const require = createRequire(import.meta.url);
-          process.env.BETTER_SQLITE3_BINDING = join(__dirname, 'native');
-          await import('./agentx.mjs');
-          EOF
+          printf '#!/usr/bin/env node\nimport { createRequire } from "node:module";\nimport { fileURLToPath } from "node:url";\nimport { dirname, join } from "node:path";\nconst __dirname = dirname(fileURLToPath(import.meta.url));\nconst require = createRequire(import.meta.url);\nprocess.env.BETTER_SQLITE3_BINDING = join(__dirname, "native");\nawait import("./agentx.mjs");\n' > release/agentx
           chmod +x release/agentx
 
       # Package as tarball
