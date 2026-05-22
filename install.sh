@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # Agent-X Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agentx-releases/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agent-x/main/install.sh | bash
 
-REPO="SlashpanOrg/agentx-releases"
+REPO="SlashpanOrg/agent-x"
 INSTALL_DIR="${AGENTX_INSTALL_DIR:-$HOME/.agentx}"
 BIN_DIR="${AGENTX_BIN_DIR:-$HOME/.local/bin}"
 VERSION="${AGENTX_VERSION:-latest}"

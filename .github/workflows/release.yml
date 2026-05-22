@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 env:
-  PUBLIC_REPO: SlashpanOrg/agentx-releases
+  PUBLIC_REPO: SlashpanOrg/agent-x
 
 jobs:
   build:

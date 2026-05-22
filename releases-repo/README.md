@@ -5,7 +5,7 @@ Your AI-powered terminal agent. Multi-provider, 80+ tools, session persistence, 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agentx-releases/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agent-x/main/install.sh | bash
 ```
 
 **Requirements:** Node.js >= 20 (the only prerequisite).
@@ -21,7 +21,7 @@ A guided setup wizard walks you through provider selection, API key configuratio
 ## Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agentx-releases/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agent-x/main/uninstall.sh | bash
 ```
 
 ## Features
@@ -65,7 +65,7 @@ All configuration is managed inside the Agent-X terminal.
 Install a specific version:
 
 ```bash
-AGENTX_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agentx-releases/main/install.sh | bash
+AGENTX_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agent-x/main/install.sh | bash
 ```
 
 ## License

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Agent-X Uninstaller
-# Usage: curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agentx-releases/main/uninstall.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agent-x/main/uninstall.sh | bash
 
 INSTALL_DIR="${AGENTX_INSTALL_DIR:-$HOME/.agentx}"
 BIN_DIR="${AGENTX_BIN_DIR:-$HOME/.local/bin}"

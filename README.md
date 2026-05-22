@@ -5,7 +5,7 @@ Your AI-powered terminal agent. Multi-provider, 80+ tools, session persistence, 
 ## Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agentx-releases/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agent-x/main/install.sh | bash
 ```
 
 **Prerequisites** (the installer checks these automatically):
@@ -25,7 +25,7 @@ A guided setup wizard walks you through provider selection, API key configuratio
 ## Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agentx-releases/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SlashpanOrg/agent-x/main/uninstall.sh | bash
 ```
 
 ## Features
