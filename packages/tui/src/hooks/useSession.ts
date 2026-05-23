@@ -20,6 +20,7 @@ interface UseSessionReturn {
   currentModel: string;
   selectModel: (model: ModelInfo) => void;
   dismissModelPicker: () => void;
+  commandNames: string[];
 }
 
 export function useSession(config: AgentXConfig): UseSessionReturn {
@@ -132,6 +133,11 @@ export function useSession(config: AgentXConfig): UseSessionReturn {
             const current = configManager.load();
             current.provider.activeModel = result.output;
             configManager.save(current);
+          } else if (result.action === 'reset_provider') {
+            // Reset provider config and trigger setup
+            const configManager = new ConfigManager();
+            configManager.reset();
+            process.exit(0);
           } else if (result.action === 'clear') {
             setMessages([]);
             agentRef.current?.clearHistory();
@@ -200,6 +206,8 @@ export function useSession(config: AgentXConfig): UseSessionReturn {
     }
   }, [dismissError]);
 
+  const commandNames = commandRegistryRef.current.list().map((c) => c.name);
+
   return {
     messages,
     streamingContent,
@@ -217,5 +225,6 @@ export function useSession(config: AgentXConfig): UseSessionReturn {
     currentModel,
     selectModel,
     dismissModelPicker,
+    commandNames,
   };
 }

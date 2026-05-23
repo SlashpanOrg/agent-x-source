@@ -32,6 +32,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config }) => {
     currentModel,
     selectModel,
     dismissModelPicker,
+    commandNames,
   } = useSession(config);
 
   // Model picker overlay
@@ -70,16 +71,17 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config }) => {
 
   return (
     <Box flexDirection="column" flexGrow={1}>
-      <Banner
-        provider={config.provider.activeProvider}
-        model={currentModel}
-        organization={config.organization}
-      />
-
-      <Box flexGrow={1} marginTop={1}>
+      <Box flexGrow={1}>
         {/* Main content area */}
         <Box flexDirection="column" flexGrow={1}>
-          {messages.length === 0 && !isLoading && (
+          {/* Banner at top */}
+          <Banner
+            provider={config.provider.activeProvider}
+            model={currentModel}
+            organization={config.organization}
+          />
+
+          {messages.length === 0 && !isLoading && !error && (
             <Box paddingX={2} paddingY={1}>
               <Text color={COLORS.textDim}>
                 Ready. Type a message or use / for commands.
@@ -110,12 +112,13 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config }) => {
             </Box>
           )}
 
-          {/* Input */}
+          {/* Input at bottom */}
           <Box marginTop={1} paddingX={1}>
             <InputField
               onSubmit={sendMessage}
               disabled={isLoading || (!!error && errorActions.length > 0)}
               placeholder="Type a message... (/ for commands)"
+              completions={commandNames}
             />
           </Box>
         </Box>
@@ -128,6 +131,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config }) => {
           tokensUsed={tokensUsed}
           tokensTotal={tokensTotal}
           elapsed={elapsed}
+          isProcessing={isLoading}
         />
       </Box>
     </Box>

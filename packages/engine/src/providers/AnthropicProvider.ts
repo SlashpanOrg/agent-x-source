@@ -40,29 +40,42 @@ export class AnthropicProvider implements ProviderInterface {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    // Anthropic doesn't have a list models endpoint, return known models
+    try {
+      const response = await fetch(`${this.baseUrl}/v1/models`, {
+        headers: {
+          'x-api-key': this.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) return this.fallbackModels();
+
+      const data = (await response.json()) as {
+        data?: Array<{ id: string; display_name?: string }>;
+      };
+      const models = (data.data ?? [])
+        .filter((m) => m.id.includes('claude'))
+        .map((m): ModelInfo => ({
+          id: m.id,
+          name: m.display_name ?? m.id,
+          providerId: 'anthropic',
+          contextWindow: 200000,
+          capabilities: ['text', 'vision', 'function_calling', 'streaming'],
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      return models.length > 0 ? models : this.fallbackModels();
+    } catch {
+      return this.fallbackModels();
+    }
+  }
+
+  private fallbackModels(): ModelInfo[] {
     return [
-      {
-        id: 'claude-sonnet-4-20250514',
-        name: 'Claude Sonnet 4',
-        providerId: 'anthropic',
-        contextWindow: 200000,
-        capabilities: ['text', 'vision', 'function_calling', 'streaming', 'reasoning'],
-      },
-      {
-        id: 'claude-opus-4-20250514',
-        name: 'Claude Opus 4',
-        providerId: 'anthropic',
-        contextWindow: 200000,
-        capabilities: ['text', 'vision', 'function_calling', 'streaming', 'reasoning'],
-      },
-      {
-        id: 'claude-3-5-haiku-20241022',
-        name: 'Claude 3.5 Haiku',
-        providerId: 'anthropic',
-        contextWindow: 200000,
-        capabilities: ['text', 'function_calling', 'streaming'],
-      },
+      { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', providerId: 'anthropic', contextWindow: 200000, capabilities: ['text', 'vision', 'function_calling', 'streaming', 'reasoning'] },
+      { id: 'claude-opus-4-20250514', name: 'Claude Opus 4', providerId: 'anthropic', contextWindow: 200000, capabilities: ['text', 'vision', 'function_calling', 'streaming', 'reasoning'] },
+      { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', providerId: 'anthropic', contextWindow: 200000, capabilities: ['text', 'function_calling', 'streaming'] },
     ];
   }
 

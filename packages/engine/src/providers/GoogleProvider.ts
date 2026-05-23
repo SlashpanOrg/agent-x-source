@@ -1,13 +1,6 @@
 import type { CompletionRequest, CompletionChunk, ModelInfo, ProviderId } from '@agentx/shared';
 import type { ProviderInterface } from './ProviderInterface.js';
 
-const GOOGLE_MODELS: ModelInfo[] = [
-  { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash', providerId: 'google', contextWindow: 1000000, capabilities: ['text', 'function_calling', 'streaming'] },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', providerId: 'google', contextWindow: 1000000, capabilities: ['text', 'function_calling', 'streaming', 'reasoning'] },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', providerId: 'google', contextWindow: 1000000, capabilities: ['text', 'function_calling', 'streaming', 'reasoning'] },
-  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash-Lite', providerId: 'google', contextWindow: 1000000, capabilities: ['text', 'function_calling', 'streaming'] },
-];
-
 export class GoogleProvider implements ProviderInterface {
   readonly id: ProviderId = 'google';
   readonly name = 'Google';
@@ -32,7 +25,30 @@ export class GoogleProvider implements ProviderInterface {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    return GOOGLE_MODELS;
+    try {
+      const response = await fetch(`${this.baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) return [];
+
+      const data = (await response.json()) as { data?: Array<{ id: string }> };
+      const models = (data.data ?? [])
+        .filter((m) => m.id.includes('gemini'))
+        .map((m): ModelInfo => ({
+          id: m.id,
+          name: m.id,
+          providerId: 'google',
+          contextWindow: 1000000,
+          capabilities: ['text', 'function_calling', 'streaming'],
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      return models.length > 0 ? models : [];
+    } catch {
+      return [];
+    }
   }
 
   async *complete(request: CompletionRequest): AsyncIterable<CompletionChunk> {

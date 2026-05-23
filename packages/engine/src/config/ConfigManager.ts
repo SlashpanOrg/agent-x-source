@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { AgentXConfig } from '@agentx/shared';
 import { agentXConfigSchema } from './ConfigSchema.js';
@@ -53,5 +53,12 @@ export class ConfigManager {
 
   getPath(): string {
     return this.configPath;
+  }
+
+  reset(): void {
+    if (existsSync(this.configPath)) {
+      unlinkSync(this.configPath);
+    }
+    this.config = null;
   }
 }

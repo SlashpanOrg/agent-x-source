@@ -33,6 +33,9 @@ function main(): void {
     sessionId = args[sessionIdx + 1];
   }
 
+  // Clear terminal before launching
+  process.stdout.write('\x1Bc');
+
   // Render the TUI
   render(React.createElement(App, { sessionId }));
 }

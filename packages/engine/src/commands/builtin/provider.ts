@@ -2,14 +2,17 @@ import type { CommandInterface, CommandContext, CommandResult } from '../Command
 
 export const providerCommand: CommandInterface = {
   name: 'provider',
-  description: 'Switch AI provider',
+  description: 'Switch or reset AI provider',
   aliases: ['p'],
-  usage: '/provider [provider-id]',
+  usage: '/provider [provider-id | reset]',
   async execute(args: string[], context: CommandContext): Promise<CommandResult> {
     if (args.length === 0) {
-      context.emit(`Current provider: ${context.providerId}\nUsage: /provider <provider-id>`);
+      context.emit(`Current provider: ${context.providerId}\nUsage: /provider <provider-id | reset>`);
       return { success: true, action: 'none' };
     }
-    return { success: true, output: `Switching to provider: ${args[0]}`, action: 'switch_provider' };
+    if (args[0] === 'reset') {
+      return { success: true, action: 'reset_provider' };
+    }
+    return { success: true, output: args[0], action: 'switch_provider' };
   },
 };

@@ -17,6 +17,7 @@ interface SessionPanelProps {
   tokensUsed: number;
   tokensTotal: number;
   elapsed: number;
+  isProcessing?: boolean;
   backgroundTasks?: BackgroundTask[];
 }
 
@@ -27,6 +28,7 @@ export const SessionPanel: FC<SessionPanelProps> = ({
   tokensUsed,
   tokensTotal,
   elapsed,
+  isProcessing = false,
   backgroundTasks = [],
 }) => {
   return (
@@ -39,10 +41,10 @@ export const SessionPanel: FC<SessionPanelProps> = ({
     >
       <Text color={COLORS.primary} bold>Session</Text>
       <Box marginTop={1} flexDirection="column">
-        <Row label="ID" value={sessionId.slice(0, 8)} />
+        <Row label="ID" value={sessionId.slice(5, 13)} />
         <Row label="Provider" value={provider} />
         <Row label="Model" value={model} />
-        <Row label="Time" value={formatElapsed(elapsed)} />
+        {isProcessing && <Row label="Time" value={formatElapsed(elapsed)} />}
       </Box>
 
       <Box marginTop={1} flexDirection="column">

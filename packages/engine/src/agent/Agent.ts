@@ -39,6 +39,7 @@ export class Agent {
   private errorShield: ErrorShield;
   private toolExecutor?: ToolExecutor;
   private toolRegistry?: ToolRegistry;
+  private cachedModels: Map<string, number> = new Map(); // modelId -> contextWindow
 
   constructor(options: AgentOptions) {
     this.config = options.config;
@@ -235,11 +236,48 @@ export class Agent {
 
   switchModel(modelId: string): void {
     this.config.provider.activeModel = modelId;
+    // Update token tracker with model's context window
+    const ctx = this.cachedModels.get(modelId);
+    if (ctx) {
+      this.tokenTracker.setTotal(ctx);
+    }
     this.emit({ type: 'command_action', action: 'model_switched', modelId });
+    // Verify model in background
+    this.verifyModel(modelId);
+  }
+
+  private async verifyModel(modelId: string): Promise<void> {
+    try {
+      const request = {
+        model: modelId,
+        messages: [{ role: 'user' as const, content: 'hi' }],
+        maxTokens: 1,
+        temperature: 0,
+      };
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      for await (const _chunk of this.provider.complete(request)) {
+        break; // Just need first chunk to confirm it works
+      }
+    } catch {
+      this.emit({
+        type: 'error',
+        code: 'MODEL_UNAVAILABLE',
+        message: `Model "${modelId}" is not available. Try a different model.`,
+        recoverable: true,
+        actions: [
+          { type: 'switch_model', label: 'Pick a different model' },
+          { type: 'dismiss', label: 'Dismiss' },
+        ],
+      });
+    }
   }
 
   async listModels(): Promise<void> {
     const models = await this.provider.listModels();
+    // Cache context windows for token tracking
+    for (const m of models) {
+      this.cachedModels.set(m.id, m.contextWindow);
+    }
     this.emit({
       type: 'command_action',
       action: 'list_models',
