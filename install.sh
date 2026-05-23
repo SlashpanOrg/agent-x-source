@@ -41,7 +41,6 @@ detect_platform() {
     *)             die "Unsupported architecture: $arch" ;;
   esac
 
-  # Only linux-x64 and darwin-arm64 binaries are published
   # Intel Mac users get ARM binary (runs via Rosetta 2)
   if [ "$OS" = "darwin" ] && [ "$ARCH" = "x64" ]; then
     warn "Intel Mac detected — using ARM binary (runs via Rosetta 2)"

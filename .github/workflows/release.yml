@@ -20,8 +20,12 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux-x64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
           - os: macos-14
             platform: darwin-arm64
+          - os: windows-latest
+            platform: win-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +44,8 @@ jobs:
       - name: Bundle with ncc
         run: npx -y @vercel/ncc build packages/cli/dist/index.js -o dist --minify
 
-      - name: Package
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
         run: |
           mkdir -p release
           cp -r dist/* release/
@@ -49,10 +54,21 @@ jobs:
           cd release
           tar -czf ../agentx-${{ matrix.platform }}.tar.gz .
 
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release
+          Copy-Item dist/* release/ -Recurse
+          '@echo off`r`nnode "%~dp0index.js" %*' | Out-File -Encoding ascii release/agentx.cmd
+          Compress-Archive -Path release/* -DestinationPath agentx-${{ matrix.platform }}.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: agentx-${{ matrix.platform }}
-          path: agentx-${{ matrix.platform }}.tar.gz
+          path: |
+            agentx-${{ matrix.platform }}.tar.gz
+            agentx-${{ matrix.platform }}.zip
 
   publish:
     needs: build
@@ -103,7 +119,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum agentx-*.tar.gz > checksums.sha256
+          sha256sum agentx-*.tar.gz agentx-*.zip 2>/dev/null > checksums.sha256 || true
 
       - name: Publish to public releases repo
         uses: softprops/action-gh-release@v2
@@ -115,12 +131,19 @@ jobs:
           body: |
             ## Install
 
+            **macOS / Linux:**
             ```bash
             curl -fsSL https://raw.githubusercontent.com/${{ env.PUBLIC_REPO }}/main/install.sh | bash
+            ```
+
+            **Windows (PowerShell):**
+            ```powershell
+            irm https://raw.githubusercontent.com/${{ env.PUBLIC_REPO }}/main/install.ps1 | iex
             ```
 
             ## Checksums
             See `checksums.sha256` in assets.
           files: |
             artifacts/agentx-*.tar.gz
+            artifacts/agentx-*.zip
             artifacts/checksums.sha256
