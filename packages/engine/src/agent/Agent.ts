@@ -5,6 +5,7 @@ import type {
   CompletionMessage,
   ProviderId,
   AgentXConfig,
+  RemediationAction,
 } from '@agentx/shared';
 import { generateMessageId } from '@agentx/shared';
 import type { ProviderInterface } from '../providers/ProviderInterface.js';
@@ -203,13 +204,14 @@ export class Agent {
       this.emit({ type: 'loading_end' });
       // Log the full error for debugging
       this.errorShield.logError(error);
-      // Show a user-friendly message (never expose raw backend errors)
-      const friendlyMessage = this.toFriendlyError(error);
+      // Show a user-friendly message with remediation options
+      const { message: friendlyMessage, actions } = this.toFriendlyError(error);
       this.emit({
         type: 'error',
         code: 'AGENT_ERROR',
         message: friendlyMessage,
         recoverable: true,
+        actions,
       });
       throw error;
     } finally {
@@ -281,34 +283,79 @@ export class Agent {
     return defaults[this.config.provider.activeProvider] ?? 128_000;
   }
 
-  private toFriendlyError(error: unknown): string {
+  private toFriendlyError(error: unknown): { message: string; actions: RemediationAction[] } {
     const msg = error instanceof Error ? error.message : String(error);
 
     // Network / connectivity
     if (msg.includes('fetch failed') || msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT')) {
-      return 'Unable to reach the AI provider. Check your internet connection.';
+      return {
+        message: 'Unable to reach the AI provider. Check your internet connection.',
+        actions: [
+          { type: 'retry', label: 'Retry' },
+          { type: 'dismiss', label: 'Dismiss' },
+        ],
+      };
     }
     // Auth issues
     if (msg.includes('401') || msg.includes('Unauthorized') || msg.includes('Invalid API')) {
-      return 'Authentication failed. Run /model to reconfigure or check your API key.';
+      return {
+        message: 'Authentication failed. Your API key may be invalid or expired.',
+        actions: [
+          { type: 'reconfigure_key', label: 'Update API key' },
+          { type: 'switch_model', label: 'Switch provider' },
+          { type: 'dismiss', label: 'Dismiss' },
+        ],
+      };
     }
     // Rate limiting
     if (msg.includes('429') || msg.includes('rate limit') || msg.includes('Too Many Requests')) {
-      return 'Rate limited by the provider. Wait a moment and try again.';
+      return {
+        message: 'Rate limited by the provider. Wait a moment and try again.',
+        actions: [
+          { type: 'retry', label: 'Retry' },
+          { type: 'switch_model', label: 'Switch model' },
+          { type: 'dismiss', label: 'Dismiss' },
+        ],
+      };
     }
     // Model not found / deprecated
     if (msg.includes('404') || msg.includes('not found') || msg.includes('no longer available')) {
-      return `Model "${this.config.provider.activeModel}" is unavailable. Use /model to switch.`;
+      return {
+        message: `Model "${this.config.provider.activeModel}" is unavailable or deprecated.`,
+        actions: [
+          { type: 'switch_model', label: 'Pick a different model' },
+          { type: 'dismiss', label: 'Dismiss' },
+        ],
+      };
     }
     // Quota / billing
     if (msg.includes('402') || msg.includes('quota') || msg.includes('billing')) {
-      return 'Provider quota exceeded or billing issue. Check your account.';
+      return {
+        message: 'Provider quota exceeded or billing issue.',
+        actions: [
+          { type: 'switch_model', label: 'Switch to free model' },
+          { type: 'dismiss', label: 'Dismiss' },
+        ],
+      };
     }
     // Server errors
     if (msg.includes('500') || msg.includes('502') || msg.includes('503')) {
-      return 'The AI provider is experiencing issues. Try again shortly.';
+      return {
+        message: 'The AI provider is experiencing issues.',
+        actions: [
+          { type: 'retry', label: 'Retry' },
+          { type: 'switch_model', label: 'Switch model' },
+          { type: 'dismiss', label: 'Dismiss' },
+        ],
+      };
     }
     // Generic fallback — never show the raw error
-    return 'Something went wrong. Check logs with: cat ~/.local/share/agentx/logs/errors.jsonl';
+    return {
+      message: 'Something went wrong. Please try again.',
+      actions: [
+        { type: 'retry', label: 'Retry' },
+        { type: 'dismiss', label: 'Dismiss' },
+      ],
+    };
   }
 }

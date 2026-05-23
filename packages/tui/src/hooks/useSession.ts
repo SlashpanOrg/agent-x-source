@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { Message, EngineEvent, AgentXConfig, ModelInfo } from '@agentx/shared';
+import type { Message, EngineEvent, AgentXConfig, ModelInfo, RemediationAction } from '@agentx/shared';
 import { Agent, CommandParser, createDefaultRegistry, ConfigManager } from '@agentx/engine';
 import { generateSessionId } from '@agentx/shared';
 
@@ -11,7 +11,10 @@ interface UseSessionReturn {
   tokensTotal: number;
   elapsed: number;
   error: string | null;
+  errorActions: RemediationAction[];
   sendMessage: (content: string) => void;
+  handleErrorAction: (action: RemediationAction) => void;
+  dismissError: () => void;
   sessionId: string;
   modelPickerModels: ModelInfo[] | null;
   currentModel: string;
@@ -27,6 +30,7 @@ export function useSession(config: AgentXConfig): UseSessionReturn {
   const [tokensTotal, setTokensTotal] = useState(128_000);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [errorActions, setErrorActions] = useState<RemediationAction[]>([]);
   const [sessionId] = useState(() => generateSessionId());
   const [modelPickerModels, setModelPickerModels] = useState<ModelInfo[] | null>(null);
   const [currentModel, setCurrentModel] = useState(config.provider.activeModel);
@@ -37,6 +41,7 @@ export function useSession(config: AgentXConfig): UseSessionReturn {
   const elapsedIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const commandParserRef = useRef(new CommandParser());
   const commandRegistryRef = useRef(createDefaultRegistry());
+  const lastUserMessageRef = useRef<string>('');
 
   useEffect(() => {
     const agent = new Agent({
@@ -75,6 +80,7 @@ export function useSession(config: AgentXConfig): UseSessionReturn {
           break;
         case 'error':
           setError(event.message);
+          setErrorActions(event.actions ?? []);
           break;
       }
     });
@@ -139,6 +145,8 @@ export function useSession(config: AgentXConfig): UseSessionReturn {
 
     if (agentRef.current.processing) return;
     setError(null);
+    setErrorActions([]);
+    lastUserMessageRef.current = content;
     void agentRef.current.sendMessage(content).catch(() => {
       // Error already handled via event bus — suppress unhandled rejection
     });
@@ -160,6 +168,38 @@ export function useSession(config: AgentXConfig): UseSessionReturn {
     setModelPickerModels(null);
   }, []);
 
+  const dismissError = useCallback(() => {
+    setError(null);
+    setErrorActions([]);
+  }, []);
+
+  const handleErrorAction = useCallback((action: RemediationAction) => {
+    switch (action.type) {
+      case 'retry':
+        dismissError();
+        if (lastUserMessageRef.current && agentRef.current && !agentRef.current.processing) {
+          void agentRef.current.sendMessage(lastUserMessageRef.current).catch(() => {});
+        }
+        break;
+      case 'switch_model':
+        dismissError();
+        void agentRef.current?.listModels();
+        break;
+      case 'reconfigure_key':
+        dismissError();
+        // Trigger the setup wizard by signaling config is invalid
+        setError('Run: agentx --setup to reconfigure your API key.');
+        setErrorActions([{ type: 'dismiss', label: 'OK' }]);
+        break;
+      case 'dismiss':
+        dismissError();
+        break;
+      case 'open_url':
+        dismissError();
+        break;
+    }
+  }, [dismissError]);
+
   return {
     messages,
     streamingContent,
@@ -168,7 +208,10 @@ export function useSession(config: AgentXConfig): UseSessionReturn {
     tokensTotal,
     elapsed,
     error,
+    errorActions,
     sendMessage,
+    handleErrorAction,
+    dismissError,
     sessionId,
     modelPickerModels,
     currentModel,

@@ -2,6 +2,13 @@ import type { Message } from './message.js';
 import type { ModelInfo } from './provider.js';
 import type { ToolResult } from './tool.js';
 
+export type RemediationAction =
+  | { type: 'switch_model'; label: string }
+  | { type: 'reconfigure_key'; label: string }
+  | { type: 'retry'; label: string }
+  | { type: 'dismiss'; label: string }
+  | { type: 'open_url'; label: string; url: string };
+
 export type EngineEvent =
   | { type: 'message_sent'; message: Message }
   | { type: 'message_received'; message: Message; elapsed: number }
@@ -13,7 +20,7 @@ export type EngineEvent =
   | { type: 'processing_complete'; result: FormattedResponse }
   | { type: 'permission_required'; tool: string; path: string; riskLevel: string }
   | { type: 'token_update'; used: number; available: number }
-  | { type: 'error'; code: string; message: string; recoverable: boolean }
+  | { type: 'error'; code: string; message: string; recoverable: boolean; actions?: RemediationAction[] }
   | { type: 'tool_executing'; tool: string; description: string; startTime: number }
   | { type: 'tool_complete'; tool: string; result: ToolResult; elapsed: number }
   | { type: 'agent_spawned'; agentId: string; task: string; startTime: number }

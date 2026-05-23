@@ -7,6 +7,7 @@ import { InputField } from '../components/InputField.js';
 import { SessionPanel } from '../components/SessionPanel.js';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { ScrollableList } from '../components/ScrollableList.js';
+import { ErrorBanner } from '../components/ErrorBanner.js';
 import { useSession } from '../hooks/useSession.js';
 import type { AgentXConfig, ModelInfo } from '@agentx/shared';
 
@@ -23,7 +24,9 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config }) => {
     tokensTotal,
     elapsed,
     error,
+    errorActions,
     sendMessage,
+    handleErrorAction,
     sessionId,
     modelPickerModels,
     currentModel,
@@ -92,9 +95,18 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config }) => {
             </Box>
           )}
 
-          {error && (
+          {error && errorActions.length > 0 && (
+            <ErrorBanner
+              message={error}
+              actions={errorActions}
+              onAction={handleErrorAction}
+              isActive={!isLoading}
+            />
+          )}
+
+          {error && errorActions.length === 0 && (
             <Box paddingX={2}>
-              <Text color={COLORS.error}>⚠ {error}</Text>
+              <Text color={COLORS.warning}>⚠ {error}</Text>
             </Box>
           )}
 
@@ -102,7 +114,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config }) => {
           <Box marginTop={1} paddingX={1}>
             <InputField
               onSubmit={sendMessage}
-              disabled={isLoading}
+              disabled={isLoading || (!!error && errorActions.length > 0)}
               placeholder="Type a message... (/ for commands)"
             />
           </Box>
