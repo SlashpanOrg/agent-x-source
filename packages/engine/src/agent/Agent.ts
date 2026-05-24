@@ -41,6 +41,7 @@ export class Agent {
   private config: AgentXConfig;
   private sessionId: string;
   private isProcessing = false;
+  private abortController: AbortController | null = null;
   private subAgents: SubAgentManager;
   private taskManager: TaskManager;
   private scheduler: Scheduler;
@@ -135,6 +136,17 @@ export class Agent {
     return this.isProcessing;
   }
 
+  /**
+   * Cancel an in-progress completion. Aborts the active stream and tool executions.
+   */
+  cancel(): void {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+    this.subAgents.cancelAll();
+  }
+
   get agents(): SubAgentManager {
     return this.subAgents;
   }
@@ -164,6 +176,7 @@ export class Agent {
     }
 
     this.isProcessing = true;
+    this.abortController = new AbortController();
     const startTime = Date.now();
 
     // Add user message
@@ -190,6 +203,22 @@ export class Agent {
       return assistantMessage;
     } catch (error) {
       this.emit({ type: 'loading_end' });
+
+      // If cancelled by user, emit a soft cancellation event (not an error)
+      if (error instanceof Error && error.name === 'AbortError') {
+        const cancelledMessage: Message = {
+          id: generateMessageId(),
+          sessionId: this.sessionId,
+          role: 'assistant',
+          content: '⏹ Cancelled.',
+          toolCalls: null,
+          createdAt: new Date().toISOString(),
+          tokenCount: 0,
+        };
+        this.emit({ type: 'message_received', message: cancelledMessage, elapsed: Date.now() - startTime });
+        return cancelledMessage;
+      }
+
       this.errorShield.logError(error);
       const { message: friendlyMessage, actions } = this.toFriendlyError(error);
       this.emit({
@@ -202,6 +231,7 @@ export class Agent {
       throw error;
     } finally {
       this.isProcessing = false;
+      this.abortController = null;
     }
   }
 
@@ -223,6 +253,7 @@ export class Agent {
         messages: this.messages,
         stream: true,
         tools: toolSchemas && toolSchemas.length > 0 ? toolSchemas : undefined,
+        signal: this.abortController?.signal,
       };
 
       this.emit({ type: 'loading_start', stage: round === 0 ? 'thinking' : 'tool_execution' });

@@ -20,6 +20,7 @@ interface UseSessionReturn {
   error: string | null;
   errorActions: RemediationAction[];
   sendMessage: (content: string) => void;
+  cancelProcessing: () => void;
   handleErrorAction: (action: RemediationAction) => void;
   dismissError: () => void;
   sessionId: string;
@@ -348,6 +349,12 @@ export function useSession(config: AgentXConfig, _profile?: Profile, restoreSess
     });
   }, [sessionId]);
 
+  const cancelProcessing = useCallback(() => {
+    if (agentRef.current?.processing) {
+      agentRef.current.cancel();
+    }
+  }, []);
+
   const selectModel = useCallback((model: ModelInfo) => {
     if (!agentRef.current) return;
     setModelPickerModels(null);
@@ -499,6 +506,7 @@ export function useSession(config: AgentXConfig, _profile?: Profile, restoreSess
     error,
     errorActions,
     sendMessage,
+    cancelProcessing,
     handleErrorAction,
     dismissError,
     sessionId,
