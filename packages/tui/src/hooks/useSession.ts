@@ -369,8 +369,15 @@ export function useSession(config: AgentXConfig, _profile?: Profile, restoreSess
     }
     current.provider.providers[providerId]!.configured = true;
     configManager.save(current);
-    // Restart with new provider
-    process.exit(0);
+    // Switch provider in-place (no restart needed)
+    if (agentRef.current) {
+      const key = apiKey ?? current.provider.providers[providerId]?.apiKey;
+      const url = baseUrl ?? current.provider.providers[providerId]?.baseUrl;
+      agentRef.current.switchProvider(providerId, key, url);
+    }
+    configRef.current = current;
+    setCurrentModel(current.provider.activeModel);
+    setError(`✓ Switched to ${providerId}. Use /model to pick a model.`);
   }, []);
 
   const dismissProviderPicker = useCallback(() => {

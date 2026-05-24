@@ -30,27 +30,48 @@ export class OpenAIProvider implements ProviderInterface {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    const response = await fetch(`${this.baseUrl}/models`, {
-      headers: { Authorization: `Bearer ${this.apiKey}` },
-    });
+    try {
+      const response = await fetch(`${this.baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        signal: AbortSignal.timeout(10000),
+      });
 
-    if (!response.ok) {
-      throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
+      if (response.ok) {
+        const data = (await response.json()) as { data: Array<{ id: string }> };
+        const chatModels = data.data
+          .filter((m) => m.id.includes('gpt') || m.id.includes('o1') || m.id.includes('o3'))
+          .map((m): ModelInfo => ({
+            id: m.id,
+            name: m.id,
+            providerId: 'openai',
+            contextWindow: this.getContextWindow(m.id),
+            capabilities: this.getCapabilities(m.id),
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        if (chatModels.length > 0) return chatModels;
+      }
+    } catch {
+      // Fall through to fallback
     }
 
-    const data = (await response.json()) as { data: Array<{ id: string }> };
-    const chatModels = data.data
-      .filter((m) => m.id.includes('gpt') || m.id.includes('o1') || m.id.includes('o3'))
-      .map((m): ModelInfo => ({
-        id: m.id,
-        name: m.id,
-        providerId: 'openai',
-        contextWindow: this.getContextWindow(m.id),
-        capabilities: this.getCapabilities(m.id),
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    // Return known OpenAI models as fallback
+    return this.getFallbackModels();
+  }
 
-    return chatModels;
+  private getFallbackModels(): ModelInfo[] {
+    const knownModels = [
+      { id: 'gpt-4o', ctx: 128000 },
+      { id: 'gpt-4o-mini', ctx: 128000 },
+      { id: 'gpt-4-turbo', ctx: 128000 },
+      { id: 'o3-mini', ctx: 200000 },
+    ];
+    return knownModels.map((m): ModelInfo => ({
+      id: m.id,
+      name: m.id,
+      providerId: 'openai',
+      contextWindow: m.ctx,
+      capabilities: this.getCapabilities(m.id),
+    }));
   }
 
   async *complete(request: CompletionRequest): AsyncIterable<CompletionChunk> {

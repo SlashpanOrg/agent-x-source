@@ -406,8 +406,8 @@ export class Agent {
       this.tokenTracker.setTotal(ctx);
     }
     this.emit({ type: 'command_action', action: 'model_switched', modelId });
-    // Verify model in background
-    this.verifyModel(modelId);
+    // Verify model in background (fire-and-forget with error suppression)
+    void this.verifyModel(modelId).catch(() => {});
   }
 
   private async verifyModel(modelId: string): Promise<void> {
@@ -437,17 +437,37 @@ export class Agent {
   }
 
   async listModels(): Promise<void> {
-    const models = await this.provider.listModels();
-    // Cache context windows for token tracking
-    for (const m of models) {
-      this.cachedModels.set(m.id, m.contextWindow);
+    try {
+      const models = await this.provider.listModels();
+      if (models.length === 0) {
+        this.emit({
+          type: 'error',
+          code: 'NO_MODELS',
+          message: 'No models available. Check your API key and provider settings.',
+          recoverable: true,
+          actions: [{ type: 'dismiss', label: 'Dismiss' }],
+        });
+        return;
+      }
+      // Cache context windows for token tracking
+      for (const m of models) {
+        this.cachedModels.set(m.id, m.contextWindow);
+      }
+      this.emit({
+        type: 'command_action',
+        action: 'list_models',
+        models,
+        currentModel: this.config.provider.activeModel,
+      });
+    } catch (err) {
+      this.emit({
+        type: 'error',
+        code: 'MODEL_LIST_FAILED',
+        message: `Failed to list models: ${err instanceof Error ? err.message : String(err)}`,
+        recoverable: true,
+        actions: [{ type: 'dismiss', label: 'Dismiss' }],
+      });
     }
-    this.emit({
-      type: 'command_action',
-      action: 'list_models',
-      models,
-      currentModel: this.config.provider.activeModel,
-    });
   }
 
   /**

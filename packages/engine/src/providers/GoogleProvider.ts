@@ -31,24 +31,44 @@ export class GoogleProvider implements ProviderInterface {
         signal: AbortSignal.timeout(10000),
       });
 
-      if (!response.ok) return [];
-
-      const data = (await response.json()) as { data?: Array<{ id: string }> };
-      const models = (data.data ?? [])
-        .filter((m) => m.id.includes('gemini'))
-        .map((m): ModelInfo => ({
-          id: m.id,
-          name: m.id,
-          providerId: 'google',
-          contextWindow: 1000000,
-          capabilities: ['text', 'function_calling', 'streaming'],
-        }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-
-      return models.length > 0 ? models : [];
+      if (response.ok) {
+        const data = (await response.json()) as { data?: Array<{ id: string }> };
+        const models = (data.data ?? [])
+          .filter((m) => m.id.includes('gemini'))
+          .map((m): ModelInfo => ({
+            id: m.id,
+            name: m.id,
+            providerId: 'google',
+            contextWindow: 1000000,
+            capabilities: ['text', 'function_calling', 'streaming'],
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        if (models.length > 0) return models;
+      }
     } catch {
-      return [];
+      // Fall through to fallback
     }
+
+    // Return known Gemini models as fallback
+    return this.getFallbackModels();
+  }
+
+  private getFallbackModels(): ModelInfo[] {
+    const knownModels = [
+      { id: 'gemini-2.5-flash', ctx: 1048576 },
+      { id: 'gemini-2.5-pro', ctx: 1048576 },
+      { id: 'gemini-2.0-flash', ctx: 1048576 },
+      { id: 'gemini-2.0-flash-lite', ctx: 1048576 },
+      { id: 'gemini-1.5-flash', ctx: 1048576 },
+      { id: 'gemini-1.5-pro', ctx: 2097152 },
+    ];
+    return knownModels.map((m): ModelInfo => ({
+      id: m.id,
+      name: m.id,
+      providerId: 'google',
+      contextWindow: m.ctx,
+      capabilities: ['text', 'function_calling', 'streaming'],
+    }));
   }
 
   async *complete(request: CompletionRequest): AsyncIterable<CompletionChunk> {
