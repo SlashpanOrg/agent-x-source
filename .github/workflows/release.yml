@@ -45,6 +45,7 @@ jobs:
         run: npx -y @vercel/ncc build packages/cli/dist/index.js -o dist --minify
 
       - name: Prepare native module rebuild package
+        shell: bash
         run: |
           # Include better-sqlite3 as a dependency for postinstall rebuild
           cat > dist/package.json << 'EOF'
