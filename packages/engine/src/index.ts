@@ -40,3 +40,7 @@ export * from './config/paths.js';
 export { SecretSauceManager, ProfileManager, SoulManager, MemoryManager, DiaryManager, IdentityManager } from './secret-sauce/index.js';
 export { TelegramBridge } from './telegram/index.js';
 export type { TelegramConfig, TelegramBridgeStatus } from './telegram/index.js';
+export { Scheduler } from './scheduler/index.js';
+export type { ScheduledJob } from './scheduler/index.js';
+export { TaskManager } from './agent/TaskManager.js';
+export type { TaskContext } from './agent/TaskManager.js';

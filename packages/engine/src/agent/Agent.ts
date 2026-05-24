@@ -14,6 +14,10 @@ import { ProviderFactory } from '../providers/index.js';
 import { AgentEventBus } from '../EventBus.js';
 import { TokenTracker } from '../session/TokenTracker.js';
 import { SubAgentManager } from './SubAgentManager.js';
+import { TaskManager } from './TaskManager.js';
+import { Scheduler } from '../scheduler/Scheduler.js';
+import { setSchedulerInstance } from '../commands/builtin/schedule.js';
+import { setTaskManagerInstance } from '../commands/builtin/tasks.js';
 import { SecretSauceManager } from '../secret-sauce/index.js';
 import { MemoryExtractor } from '../secret-sauce/MemoryExtractor.js';
 import { ErrorShield } from './ErrorShield.js';
@@ -38,6 +42,8 @@ export class Agent {
   private sessionId: string;
   private isProcessing = false;
   private subAgents: SubAgentManager;
+  private taskManager: TaskManager;
+  private scheduler: Scheduler;
   private secretSauce: SecretSauceManager;
   private memoryExtractor: MemoryExtractor | null = null;
   private errorShield: ErrorShield;
@@ -52,6 +58,10 @@ export class Agent {
     this.eventBus = new AgentEventBus();
     this.tokenTracker = new TokenTracker(this.getContextWindow());
     this.subAgents = new SubAgentManager(this.eventBus);
+    this.taskManager = new TaskManager(this.eventBus);
+    setTaskManagerInstance(this.taskManager);
+    this.scheduler = new Scheduler(this.eventBus);
+    setSchedulerInstance(this.scheduler);
     this.secretSauce = new SecretSauceManager();
     this.errorShield = new ErrorShield();
 
@@ -97,6 +107,15 @@ export class Agent {
       });
     }
 
+    // Configure sub-agents with provider so they can make real LLM calls
+    this.subAgents.configure(this.provider, this.config, systemPrompt ?? '');
+
+    // When a scheduled job fires, process it as a user message
+    this.scheduler.setTriggerHandler((job) => {
+      void this.sendMessage(job.instruction);
+    });
+    this.scheduler.start();
+
     // Trigger periodic summarization in the background if stale
     if (this.secretSauce.summarizer.needsSummarization()) {
       void this.runSummarization();
@@ -119,6 +138,14 @@ export class Agent {
     return this.subAgents;
   }
 
+  get tasks(): TaskManager {
+    return this.taskManager;
+  }
+
+  get cron(): Scheduler {
+    return this.scheduler;
+  }
+
   get sauce(): SecretSauceManager {
     return this.secretSauce;
   }
@@ -127,33 +154,7 @@ export class Agent {
    * Spawn a sub-agent to handle a delegated task.
    */
   spawnSubAgent(instruction: string, tools: string[], timeout?: number) {
-    const task = this.subAgents.spawn(instruction, tools, timeout);
-    this.subAgents.start(task.id);
-
-    // Execute asynchronously
-    this.executeSubAgent(task.id, instruction, tools).catch((err) => {
-      this.subAgents.fail(task.id, err instanceof Error ? err.message : 'Unknown error');
-    });
-
-    return task;
-  }
-
-  private async executeSubAgent(agentId: string, instruction: string, tools: string[]): Promise<void> {
-    // Create a lightweight sub-agent with limited tools
-    const subAgent = new Agent({
-      config: this.config,
-      sessionId: `${this.sessionId}:sub:${agentId}`,
-      systemPrompt: `You are a sub-agent. Complete this task concisely:\n${instruction}\nAvailable tools: ${tools.join(', ')}`,
-      toolExecutor: this.toolExecutor,
-      toolRegistry: this.toolRegistry,
-    });
-
-    try {
-      const result = await subAgent.sendMessage(instruction);
-      this.subAgents.complete(agentId, result.content);
-    } catch (err) {
-      this.subAgents.fail(agentId, err instanceof Error ? err.message : 'Sub-agent failed');
-    }
+    return this.subAgents.spawn(instruction, tools, timeout);
   }
 
   async sendMessage(content: string): Promise<Message> {
