@@ -38,6 +38,7 @@ export interface CompletionRequest {
   stream?: boolean;
   temperature?: number;
   maxTokens?: number;
+  signal?: AbortSignal;
 }
 
 export interface CompletionMessage {

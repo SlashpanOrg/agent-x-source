@@ -77,6 +77,7 @@ export class OpenAIProvider implements ProviderInterface {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
+      signal: request.signal,
     });
 
     if (!response.ok) {

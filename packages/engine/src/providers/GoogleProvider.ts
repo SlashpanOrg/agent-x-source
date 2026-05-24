@@ -67,7 +67,7 @@ export class GoogleProvider implements ProviderInterface {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120000),
+      signal: request.signal ?? AbortSignal.timeout(120000),
     });
 
     if (!response.ok) {

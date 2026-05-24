@@ -59,6 +59,7 @@ export class OllamaProvider implements ProviderInterface {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: request.signal,
     });
 
     if (!response.ok) {

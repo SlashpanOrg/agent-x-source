@@ -1,5 +1,5 @@
-import { type FC, useState } from 'react';
-import { Box, Text } from 'ink';
+import { type FC, useState, useRef, useEffect } from 'react';
+import { Box, Text, useInput } from 'ink';
 import { COLORS } from '../theme/colors.js';
 import { Banner } from '../components/Banner.js';
 import { MessageArea } from '../components/MessageArea.js';
@@ -38,6 +38,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, profile, restore
     error,
     errorActions,
     sendMessage,
+    cancelProcessing,
     handleErrorAction,
     sessionId,
     modelPickerModels,
@@ -57,6 +58,38 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, profile, restore
     activeTools,
     subAgents,
   } = useSession(config, profile, restoreSessionId);
+
+  // Double-ESC to cancel processing
+  const [escState, setEscState] = useState<'idle' | 'first_press'>('idle');
+  const escTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useInput((_input, key) => {
+    if (!key.escape || !isLoading) return;
+
+    if (escState === 'idle') {
+      setEscState('first_press');
+      // Reset after 2 seconds if no second press
+      escTimerRef.current = setTimeout(() => {
+        setEscState('idle');
+      }, 2000);
+    } else if (escState === 'first_press') {
+      // Second ESC — confirm cancel
+      if (escTimerRef.current) clearTimeout(escTimerRef.current);
+      setEscState('idle');
+      cancelProcessing();
+    }
+  });
+
+  // Reset ESC state when processing ends
+  useEffect(() => {
+    if (!isLoading) {
+      setEscState('idle');
+      if (escTimerRef.current) {
+        clearTimeout(escTimerRef.current);
+        escTimerRef.current = null;
+      }
+    }
+  }, [isLoading]);
 
   // Model picker overlay
   if (modelPickerModels) {
@@ -134,6 +167,18 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, profile, restore
             <Box paddingX={2}>
               <LoadingIndicator label="Thinking..." type="dots" />
               <GimmickDisplay isVisible={true} />
+            </Box>
+          )}
+
+          {/* Cancel hint during processing */}
+          {isLoading && escState === 'idle' && (
+            <Box paddingX={2}>
+              <Text color={COLORS.textDim} dimColor>Press Esc to cancel</Text>
+            </Box>
+          )}
+          {escState === 'first_press' && (
+            <Box paddingX={2}>
+              <Text color={COLORS.warning}>Press Esc again to confirm cancel</Text>
             </Box>
           )}
 
