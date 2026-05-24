@@ -68,6 +68,11 @@ Permission
 - Agent keep only permission to do any task within the scope folder where the agent was launched
 - Agent should ask user permission in every session. session saves the data. permissions are "allow once", "allow always", "deny"
 
+Automations
+- Agent should be able to split the task and assign to multiple sub-agents, which can run in parallel, and in background if needed.
+- Agent should have ability to create cron jobs, schedulers, etc for period and background tasks
+- In secret sauce md files, Agent should not save anything related to the project or task it is working on. those files are solely for the use of saving the behaviour shifts and learnings of the agent itself to make it more better.
+
 NOTE:
 - ALWAYS USE SPEC-KIT tool for planning this Project. for reference use github link of spec-kit (https://github.com/github/spec-kit)
 - ALWAYS KEEP THIS INTIAL_IDEA.txt FILE to cross check if everything in this is done

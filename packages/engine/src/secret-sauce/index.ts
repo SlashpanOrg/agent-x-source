@@ -3,6 +3,7 @@ import { ProfileManager } from './ProfileManager.js';
 import { MemoryManager } from './MemoryManager.js';
 import { DiaryManager } from './DiaryManager.js';
 import { IdentityManager } from './IdentityManager.js';
+import { SecretSauceSummarizer } from './SecretSauceSummarizer.js';
 
 export interface SecretSauceContext {
   soul: string;
@@ -21,6 +22,7 @@ export class SecretSauceManager {
   readonly memories: MemoryManager;
   readonly diary: DiaryManager;
   readonly identity: IdentityManager;
+  readonly summarizer: SecretSauceSummarizer;
 
   constructor() {
     this.soul = new SoulManager();
@@ -28,6 +30,7 @@ export class SecretSauceManager {
     this.memories = new MemoryManager();
     this.diary = new DiaryManager();
     this.identity = new IdentityManager();
+    this.summarizer = new SecretSauceSummarizer();
   }
 
   /**
@@ -46,8 +49,9 @@ export class SecretSauceManager {
 
     const memoriesCtx = this.memories.buildContext(memBudget);
     const diaryCtx = this.diary.buildContext();
+    const summarizerCtx = this.summarizer.buildContext();
 
-    const full = [soulCtx, identityCtx, profileCtx, memoriesCtx, diaryCtx]
+    const full = [soulCtx, identityCtx, profileCtx, summarizerCtx, memoriesCtx, diaryCtx]
       .filter((s) => s.length > 0)
       .join('\n\n');
 
@@ -94,4 +98,5 @@ export { SoulManager } from './SoulManager.js';
 export { MemoryManager } from './MemoryManager.js';
 export { DiaryManager } from './DiaryManager.js';
 export { IdentityManager } from './IdentityManager.js';
+export { SecretSauceSummarizer } from './SecretSauceSummarizer.js';
 export { MemoryExtractor } from './MemoryExtractor.js';

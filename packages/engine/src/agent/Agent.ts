@@ -96,6 +96,11 @@ export class Agent {
         content: systemPrompt,
       });
     }
+
+    // Trigger periodic summarization in the background if stale
+    if (this.secretSauce.summarizer.needsSummarization()) {
+      void this.runSummarization();
+    }
   }
 
   get events(): AgentEventBus {
@@ -492,6 +497,57 @@ export class Agent {
     } catch {
       // Silent failure — diary is non-critical
     }
+  }
+
+  /**
+   * Run background summarization of memories and diary.
+   * Non-blocking — failures are silently ignored.
+   */
+  private async runSummarization(): Promise<void> {
+    try {
+      const summarizer = this.secretSauce.summarizer;
+
+      // Summarize memories
+      const recentMemories = this.secretSauce.memories.getRecentMemories(50);
+      if (recentMemories.length > 5) {
+        const memPrompt = summarizer.buildMemorySummarizationPrompt(recentMemories);
+        if (memPrompt) {
+          const content = await this.simpleComplete(memPrompt);
+          if (content) summarizer.storeMemorySummary(content);
+        }
+      }
+
+      // Summarize diary
+      const recentDiary = this.secretSauce.diary.getRecent(14);
+      if (recentDiary.length > 3) {
+        const diaryPrompt = summarizer.buildDiarySummarizationPrompt(recentDiary);
+        if (diaryPrompt) {
+          const content = await this.simpleComplete(diaryPrompt);
+          if (content) summarizer.storeDiarySummary(content);
+        }
+      }
+    } catch {
+      // Non-critical — silent failure
+    }
+  }
+
+  /**
+   * Simple non-streaming completion for internal tasks (summarization, memory extraction).
+   */
+  private async simpleComplete(prompt: string): Promise<string> {
+    let result = '';
+    const stream = this.provider.complete({
+      messages: [{ role: 'user', content: prompt }],
+      model: this.config.provider.activeModel,
+      maxTokens: 600,
+      stream: true,
+    });
+    for await (const chunk of stream) {
+      if (chunk.type === 'text_delta' && chunk.content) {
+        result += chunk.content;
+      }
+    }
+    return result;
   }
 
   private emit(event: EngineEvent): void {

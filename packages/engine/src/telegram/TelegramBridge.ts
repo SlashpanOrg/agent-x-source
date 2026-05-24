@@ -53,8 +53,45 @@ export class TelegramBridge {
     }
     this.botUsername = me.result.username;
     this.connected = true;
-    this.polling = true;
-    this.poll();
+
+    // Use webhook mode if configured, otherwise long-polling
+    if (this.config.webhookUrl) {
+      await this.setupWebhook(this.config.webhookUrl);
+    } else {
+      // Delete any existing webhook first to enable polling
+      await this.apiCall('deleteWebhook');
+      this.polling = true;
+      this.poll();
+    }
+  }
+
+  /**
+   * Set up webhook mode — registers the URL with Telegram.
+   * The caller must handle incoming POST requests and pass them to handleWebhookUpdate().
+   */
+  private async setupWebhook(url: string): Promise<void> {
+    const result = await this.apiCall('setWebhook', {
+      url,
+      allowed_updates: ['message'],
+      drop_pending_updates: true,
+    });
+    if (!result.ok) {
+      throw new Error(`Failed to set webhook: ${result.description ?? 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Handle an incoming webhook update (POST body from Telegram).
+   * Call this from your HTTP server handler when receiving webhook requests.
+   */
+  async handleWebhookUpdate(update: Record<string, unknown>): Promise<void> {
+    if (!this.connected) return;
+    const updateId = update['update_id'] as number;
+    if (updateId) this.lastUpdateId = updateId;
+    const message = update['message'] as { chat: { id: number }; from?: { id: number }; text?: string } | undefined;
+    if (message?.text) {
+      await this.handleMessage(message as { chat: { id: number }; from?: { id: number }; text: string });
+    }
   }
 
   /**

@@ -60,6 +60,12 @@ export function ScrollableList<T>({
       if (item !== undefined) {
         onSelect(item);
       }
+    } else if (input === ' ') {
+      // Spacebar also selects
+      const item = items[selectedIndex];
+      if (item !== undefined) {
+        onSelect(item);
+      }
     } else if (key.escape && onCancel) {
       onCancel();
     }

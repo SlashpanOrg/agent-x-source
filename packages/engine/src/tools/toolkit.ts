@@ -5,6 +5,7 @@ import * as fs from './builtin/filesystem.js';
 import * as shell from './builtin/shell.js';
 import * as git from './builtin/git.js';
 import * as code from './builtin/code.js';
+import * as documents from './builtin/documents.js';
 
 // Core tool definitions with schemas the model uses to invoke them
 const CORE_TOOLS: ToolDefinition[] = [
@@ -140,6 +141,61 @@ const CORE_TOOLS: ToolDefinition[] = [
     composable: true,
     source: 'builtin',
   },
+  {
+    id: 'csv_create',
+    name: 'Create CSV',
+    description: 'Create a CSV file from headers and rows',
+    modelDescription: 'Create a CSV file with structured data. Provide headers array and rows (array of arrays), or raw content string.',
+    category: 'documents',
+    riskLevel: 'medium',
+    schema: { type: 'object', properties: { file: { type: 'string', description: 'Output file path' }, headers: { type: 'array', description: 'Column headers' }, rows: { type: 'array', description: 'Array of row arrays' }, content: { type: 'string', description: 'Raw CSV content (alternative to headers+rows)' } }, required: ['file'] },
+    composable: true,
+    source: 'builtin',
+  },
+  {
+    id: 'pdf_create',
+    name: 'Create PDF',
+    description: 'Create a PDF document from text content',
+    modelDescription: 'Create a PDF file with text content. Supports title, author metadata. Multi-page for long content.',
+    category: 'documents',
+    riskLevel: 'medium',
+    schema: { type: 'object', properties: { file: { type: 'string', description: 'Output file path' }, title: { type: 'string', description: 'Document title' }, content: { type: 'string', description: 'Text content for the PDF' }, author: { type: 'string', description: 'Author name' } }, required: ['file', 'content'] },
+    composable: true,
+    source: 'builtin',
+  },
+  {
+    id: 'docx_create',
+    name: 'Create Word Document',
+    description: 'Create a DOCX (Word) document',
+    modelDescription: 'Create a .docx Word document with text content. Each newline becomes a paragraph.',
+    category: 'documents',
+    riskLevel: 'medium',
+    schema: { type: 'object', properties: { file: { type: 'string', description: 'Output .docx file path' }, title: { type: 'string', description: 'Document title' }, content: { type: 'string', description: 'Document text content' }, author: { type: 'string', description: 'Author name' } }, required: ['file', 'content'] },
+    composable: true,
+    source: 'builtin',
+  },
+  {
+    id: 'pptx_create',
+    name: 'Create Presentation',
+    description: 'Create a PPTX (PowerPoint) presentation',
+    modelDescription: 'Create a .pptx presentation. Provide slides array with title and content for each slide.',
+    category: 'documents',
+    riskLevel: 'medium',
+    schema: { type: 'object', properties: { file: { type: 'string', description: 'Output .pptx file path' }, title: { type: 'string', description: 'Presentation title' }, slides: { type: 'array', description: 'Array of {title, content} objects for each slide' } }, required: ['file', 'slides'] },
+    composable: true,
+    source: 'builtin',
+  },
+  {
+    id: 'xlsx_create',
+    name: 'Create Spreadsheet',
+    description: 'Create an XLSX (Excel) spreadsheet',
+    modelDescription: 'Create a .xlsx spreadsheet. Provide headers and rows arrays. Numbers are stored as numeric cells.',
+    category: 'documents',
+    riskLevel: 'medium',
+    schema: { type: 'object', properties: { file: { type: 'string', description: 'Output .xlsx file path' }, sheet_name: { type: 'string', description: 'Sheet name (default: Sheet1)' }, headers: { type: 'array', description: 'Column headers' }, rows: { type: 'array', description: 'Array of row arrays (strings or numbers)' } }, required: ['file', 'headers', 'rows'] },
+    composable: true,
+    source: 'builtin',
+  },
 ];
 
 /**
@@ -173,6 +229,11 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('code_insert', code.codeInsert);
   executor.registerHandler('code_definitions', code.codeDefinitions);
   executor.registerHandler('code_symbols', code.codeSymbols);
+  executor.registerHandler('csv_create', documents.csvCreate);
+  executor.registerHandler('pdf_create', documents.pdfCreate);
+  executor.registerHandler('docx_create', documents.docxCreate);
+  executor.registerHandler('pptx_create', documents.pptxCreate);
+  executor.registerHandler('xlsx_create', documents.xlsxCreate);
 
   return { registry, executor };
 }
