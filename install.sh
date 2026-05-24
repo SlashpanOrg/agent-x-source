@@ -254,9 +254,9 @@ run_step() {
 
 main() {
   echo ""
-  echo -e "  ${CYAN}╭──────────────────────────────────────────╮${NC}"
-  echo -e "  ${CYAN}│${NC}  ${BOLD}✦  A G E N T - X${NC}  ${DIM}— Your AI Wingman${NC}   ${CYAN}│${NC}"
-  echo -e "  ${CYAN}╰──────────────────────────────────────────╯${NC}"
+  echo -e "  ${CYAN}╭────────────────────────────────────────────╮${NC}"
+  echo -e "  ${CYAN}│${NC}    ${BOLD}✦  A G E N T - X${NC}  ${DIM}— Your AI Wingman${NC}     ${CYAN}│${NC}"
+  echo -e "  ${CYAN}╰────────────────────────────────────────────╯${NC}"
   echo ""
 
   detect_platform
@@ -278,9 +278,9 @@ main() {
   ensure_path
 
   echo ""
-  echo -e "  ${GREEN}╭──────────────────────────────────────────╮${NC}"
+  echo -e "  ${GREEN}╭────────────────────────────────────────────╮${NC}"
   echo -e "  ${GREEN}│${NC}  ${BOLD}Mission ready. Welcome aboard, commander.${NC} ${GREEN}│${NC}"
-  echo -e "  ${GREEN}╰──────────────────────────────────────────╯${NC}"
+  echo -e "  ${GREEN}╰────────────────────────────────────────────╯${NC}"
   echo ""
   echo -e "  ${CYAN}Launch:${NC}      agentx"
   echo -e "  ${CYAN}Mission log:${NC} agentx --help"
