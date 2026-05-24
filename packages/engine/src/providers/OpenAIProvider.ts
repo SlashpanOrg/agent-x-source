@@ -57,6 +57,7 @@ export class OpenAIProvider implements ProviderInterface {
       model: request.model,
       messages: request.messages,
       stream: true,
+      stream_options: { include_usage: true },
     };
 
     if (request.tools && request.tools.length > 0) {
@@ -90,6 +91,7 @@ export class OpenAIProvider implements ProviderInterface {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let usage: { inputTokens: number; outputTokens: number } | undefined;
 
     try {
       while (true) {
@@ -105,7 +107,7 @@ export class OpenAIProvider implements ProviderInterface {
           if (!trimmed || !trimmed.startsWith('data: ')) continue;
           const data = trimmed.slice(6);
           if (data === '[DONE]') {
-            yield { type: 'done' };
+            yield { type: 'done', usage };
             return;
           }
 
@@ -121,7 +123,16 @@ export class OpenAIProvider implements ProviderInterface {
                   }>;
                 };
               }>;
+              usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
             };
+
+            if (parsed.usage) {
+              usage = {
+                inputTokens: parsed.usage.prompt_tokens ?? 0,
+                outputTokens: parsed.usage.completion_tokens ?? 0,
+              };
+            }
+
             const choice = parsed.choices[0];
             if (!choice) continue;
 
@@ -152,7 +163,7 @@ export class OpenAIProvider implements ProviderInterface {
       reader.releaseLock();
     }
 
-    yield { type: 'done' };
+    yield { type: 'done', usage };
   }
 
   private getContextWindow(modelId: string): number {

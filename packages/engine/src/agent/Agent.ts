@@ -231,6 +231,7 @@ export class Agent {
       let fullContent = '';
       const toolCalls: CompletionToolCall[] = [];
       let currentToolCall: Partial<CompletionToolCall> | null = null;
+      let lastUsage: { inputTokens: number; outputTokens: number } | undefined;
 
       for await (const chunk of this.provider.complete(request)) {
         if (chunk.type === 'text_delta' && chunk.content) {
@@ -270,6 +271,8 @@ export class Agent {
               };
             }
           }
+        } else if (chunk.type === 'done' && chunk.usage) {
+          lastUsage = chunk.usage;
         }
       }
 
@@ -325,6 +328,11 @@ export class Agent {
           });
         }
 
+        // Track token usage for tool-call rounds too
+        if (lastUsage) {
+          this.tokenTracker.addUsage(lastUsage.inputTokens + lastUsage.outputTokens);
+        }
+
         // Continue the loop — model will see tool results and generate next response
         continue;
       }
@@ -332,8 +340,10 @@ export class Agent {
       // No tool calls — this is the final assistant response
       this.messages.push({ role: 'assistant', content: fullContent });
 
-      const estimatedTokens = Math.ceil(fullContent.length / 4);
-      this.tokenTracker.addUsage(estimatedTokens);
+      const tokenCount = lastUsage
+        ? lastUsage.inputTokens + lastUsage.outputTokens
+        : Math.ceil(fullContent.length / 4);
+      this.tokenTracker.addUsage(tokenCount);
 
       const assistantMessage: Message = {
         id: generateMessageId(),
@@ -342,7 +352,7 @@ export class Agent {
         content: fullContent,
         toolCalls: null,
         createdAt: new Date().toISOString(),
-        tokenCount: estimatedTokens,
+        tokenCount,
       };
 
       const elapsed = Date.now() - startTime;

@@ -55,6 +55,7 @@ export class GoogleProvider implements ProviderInterface {
         content: m.content,
       })),
       stream: true,
+      stream_options: { include_usage: true },
       max_tokens: request.maxTokens,
       temperature: request.temperature,
     };
@@ -79,6 +80,7 @@ export class GoogleProvider implements ProviderInterface {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let usage: { inputTokens: number; outputTokens: number } | undefined;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -91,10 +93,22 @@ export class GoogleProvider implements ProviderInterface {
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6);
-        if (data === '[DONE]') return;
+        if (data === '[DONE]') {
+          yield { type: 'done', usage };
+          return;
+        }
 
         try {
-          const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+          const parsed = JSON.parse(data) as {
+            choices?: Array<{ delta?: { content?: string } }>;
+            usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+          };
+          if (parsed.usage) {
+            usage = {
+              inputTokens: parsed.usage.prompt_tokens ?? 0,
+              outputTokens: parsed.usage.completion_tokens ?? 0,
+            };
+          }
           const content = parsed.choices?.[0]?.delta?.content;
           if (content) {
             yield { type: 'text_delta', content };
@@ -104,5 +118,7 @@ export class GoogleProvider implements ProviderInterface {
         }
       }
     }
+
+    yield { type: 'done', usage };
   }
 }

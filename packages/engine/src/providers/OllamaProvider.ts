@@ -89,9 +89,17 @@ export class OllamaProvider implements ProviderInterface {
             const parsed = JSON.parse(line) as {
               message?: { content?: string };
               done?: boolean;
+              prompt_eval_count?: number;
+              eval_count?: number;
             };
             if (parsed.done) {
-              yield { type: 'done' };
+              yield {
+                type: 'done',
+                usage: {
+                  inputTokens: parsed.prompt_eval_count ?? 0,
+                  outputTokens: parsed.eval_count ?? 0,
+                },
+              };
               return;
             }
             if (parsed.message?.content) {

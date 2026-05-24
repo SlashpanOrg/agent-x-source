@@ -114,6 +114,8 @@ export class AnthropicProvider implements ProviderInterface {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let inputTokens = 0;
+    let outputTokens = 0;
 
     try {
       while (true) {
@@ -132,11 +134,18 @@ export class AnthropicProvider implements ProviderInterface {
           try {
             const event = JSON.parse(data) as {
               type: string;
+              message?: { usage?: { input_tokens?: number; output_tokens?: number } };
               delta?: { type?: string; text?: string; partial_json?: string };
+              usage?: { input_tokens?: number; output_tokens?: number };
               content_block?: { type?: string; id?: string; name?: string };
             };
 
-            if (event.type === 'content_block_delta') {
+            if (event.type === 'message_start' && event.message?.usage) {
+              inputTokens = event.message.usage.input_tokens ?? 0;
+              outputTokens = event.message.usage.output_tokens ?? 0;
+            } else if (event.type === 'message_delta' && event.usage) {
+              outputTokens = event.usage.output_tokens ?? outputTokens;
+            } else if (event.type === 'content_block_delta') {
               if (event.delta?.type === 'text_delta' && event.delta.text) {
                 yield { type: 'text_delta', content: event.delta.text };
               } else if (event.delta?.type === 'thinking_delta' && event.delta.text) {
@@ -159,7 +168,7 @@ export class AnthropicProvider implements ProviderInterface {
                 },
               };
             } else if (event.type === 'message_stop') {
-              yield { type: 'done' };
+              yield { type: 'done', usage: { inputTokens, outputTokens } };
               return;
             }
           } catch {
@@ -171,6 +180,6 @@ export class AnthropicProvider implements ProviderInterface {
       reader.releaseLock();
     }
 
-    yield { type: 'done' };
+    yield { type: 'done', usage: { inputTokens, outputTokens } };
   }
 }

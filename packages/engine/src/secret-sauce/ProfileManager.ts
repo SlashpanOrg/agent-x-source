@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Profile } from '@agentx/shared';
+import type { Profile, ProfileEmotion } from '@agentx/shared';
 import { getSecretSauceDir } from '../config/paths.js';
 
 /**
@@ -33,11 +33,12 @@ export class ProfileManager {
       try {
         const data = readFileSync(profilePath, 'utf-8');
         const parsed = JSON.parse(data) as { profiles: Array<Record<string, unknown>>; activeId: string };
-        // Migrate old profiles: strip removed fields, keep name + systemPrompt
+        // Migrate old profiles: strip removed fields, keep name + systemPrompt + emotion
         this.profiles = parsed.profiles.map((p) => ({
           id: p['id'] as string,
           name: p['name'] as string,
           systemPrompt: (p['systemPrompt'] as string) ?? '',
+          emotion: (p['emotion'] as ProfileEmotion | undefined),
           isDefault: (p['isDefault'] as boolean) ?? false,
           createdAt: (p['createdAt'] as string) ?? new Date().toISOString(),
           updatedAt: (p['updatedAt'] as string) ?? new Date().toISOString(),
@@ -92,11 +93,12 @@ export class ProfileManager {
     return profile;
   }
 
-  create(input: { id: string; name: string; systemPrompt: string; isDefault?: boolean }): Profile {
+  create(input: { id: string; name: string; systemPrompt: string; emotion?: ProfileEmotion; isDefault?: boolean }): Profile {
     const profile: Profile = {
       id: input.id,
       name: input.name,
       systemPrompt: input.systemPrompt,
+      emotion: input.emotion,
       isDefault: input.isDefault ?? false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
