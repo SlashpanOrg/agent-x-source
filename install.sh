@@ -143,6 +143,28 @@ download_and_install() {
   mkdir -p "$INSTALL_DIR"
   tar -xzf "${TMPDIR_INSTALL}/agentx.tar.gz" -C "$INSTALL_DIR"
   ok "Extracted to $INSTALL_DIR"
+
+  # Rebuild native modules (better-sqlite3) for the local Node.js version
+  info "Building native modules for Node.js $(node -v)..."
+  cd "$INSTALL_DIR"
+  if [ -f package.json ] && grep -q 'better-sqlite3' package.json 2>/dev/null; then
+    npm install --omit=dev --ignore-scripts 2>/dev/null || true
+    npx --yes node-gyp rebuild --directory=node_modules/better-sqlite3 2>/dev/null || \
+      npm rebuild better-sqlite3 2>/dev/null || true
+    # Copy rebuilt .node to expected location
+    if [ -f node_modules/better-sqlite3/build/Release/better_sqlite3.node ]; then
+      mkdir -p build/Release
+      cp node_modules/better-sqlite3/build/Release/better_sqlite3.node build/Release/
+      ok "Native modules built for Node.js $(node -v)"
+    elif [ -f node_modules/better-sqlite3/prebuilds/$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)/node.napi.node ]; then
+      mkdir -p build/Release
+      cp node_modules/better-sqlite3/prebuilds/$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)/node.napi.node build/Release/better_sqlite3.node
+      ok "Native modules (prebuild) ready"
+    else
+      warn "Native module rebuild may have failed — SQLite features may not work"
+    fi
+  fi
+  cd - >/dev/null
 }
 
 create_symlink() {

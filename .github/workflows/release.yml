@@ -44,6 +44,23 @@ jobs:
       - name: Bundle with ncc
         run: npx -y @vercel/ncc build packages/cli/dist/index.js -o dist --minify
 
+      - name: Prepare native module rebuild package
+        run: |
+          # Include better-sqlite3 as a dependency for postinstall rebuild
+          cat > dist/package.json << 'EOF'
+          {
+            "type": "module",
+            "dependencies": {
+              "better-sqlite3": "^11.0.0"
+            },
+            "scripts": {
+              "postinstall": "echo 'Native modules ready'"
+            }
+          }
+          EOF
+          # Remove the prebuilt .node file — it will be rebuilt on install
+          rm -rf dist/build
+
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
