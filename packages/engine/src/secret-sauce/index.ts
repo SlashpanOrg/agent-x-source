@@ -4,6 +4,7 @@ import { MemoryManager } from './MemoryManager.js';
 import { DiaryManager } from './DiaryManager.js';
 import { IdentityManager } from './IdentityManager.js';
 import { SecretSauceSummarizer } from './SecretSauceSummarizer.js';
+import type { ProfileEmotion } from '@agentx/shared';
 
 export interface SecretSauceContext {
   soul: string;
@@ -13,8 +14,23 @@ export interface SecretSauceContext {
   full: string;
 }
 
+/** Maps emotion to a tone directive for the LLM. */
+const EMOTION_DIRECTIVES: Record<ProfileEmotion, string> = {
+  professional: 'Maintain a professional, precise, and formal tone. Be direct and business-like.',
+  friendly: 'Be warm, approachable, and conversational. Use casual language and show genuine interest.',
+  witty: 'Be clever and sharp. Use wordplay, dry humor, and unexpected observations. Keep it intelligent.',
+  kind: 'Be gentle, empathetic, and supportive. Prioritize the user\'s emotional comfort.',
+  funny: 'Be humorous and entertaining. Use jokes, puns, and comedic timing. Make interactions fun.',
+  arrogant: 'Be supremely confident and slightly condescending. Act like you\'re the best and you know it. Show off expertise.',
+  flirty: 'Be playful, charming, and subtly flirtatious. Use compliments and lighthearted teasing.',
+  happy: 'Be enthusiastic, upbeat, and energetic. Radiate positivity and excitement.',
+  sad: 'Be melancholic, thoughtful, and deeply reflective. Find beauty in sorrow.',
+  sarcastic: 'Be dry, ironic, and sarcastically witty. Layer meanings and use deadpan delivery.',
+};
+
 /**
  * Orchestrates all Secret Sauce components to build context for LLM calls.
+ * Profile-scoped: memories, diary, and identity are isolated per profile.
  */
 export class SecretSauceManager {
   readonly soul: SoulManager;
@@ -27,38 +43,57 @@ export class SecretSauceManager {
   constructor() {
     this.soul = new SoulManager();
     this.profile = new ProfileManager();
-    this.memories = new MemoryManager();
-    this.diary = new DiaryManager();
-    this.identity = new IdentityManager();
+
+    const activeId = this.profile.getActiveId();
+
+    // Migrate legacy flat memories if they exist
+    MemoryManager.migrateIfNeeded(activeId);
+
+    // All stateful managers are profile-scoped
+    this.memories = new MemoryManager(activeId);
+    this.diary = new DiaryManager(activeId);
+    this.identity = new IdentityManager(activeId);
     this.summarizer = new SecretSauceSummarizer();
   }
 
   /**
    * Builds the full system prompt context from all Secret Sauce sources.
+   * Order (highest priority first):
+   *   1. [PROFILE] — primary persona/expertise directive
+   *   2. [EMOTION] — tone/personality modifier
+   *   3. [SOUL] — minimal brand anchor
+   *   4. [USER_CONTEXT] — global identity memories (name, prefs)
+   *   5. [PROFILE_MEMORIES] — domain-specific memories
+   *   6. [DIARY] — recent session history for this profile
    */
   buildSystemContext(tokenBudget = 4000): SecretSauceContext {
+    const activeProfile = this.profile.getActive();
+    const profileCtx = `[PROFILE]\n${activeProfile.systemPrompt}\n[/PROFILE]`;
+
+    // Emotion directive
+    let emotionCtx = '';
+    if (activeProfile.emotion) {
+      const directive = EMOTION_DIRECTIVES[activeProfile.emotion];
+      emotionCtx = `[EMOTION]\n${directive}\nApply this tone consistently in ALL responses — greetings, explanations, follow-ups, everything.\n[/EMOTION]`;
+    }
+
     const soulCtx = this.soul.buildContext();
-    const profilePrompt = this.profile.getSystemPrompt();
-    const profileCtx = `[PROFILE]\n${profilePrompt}\n[/PROFILE]`;
-    const identityCtx = this.identity.buildContext();
 
     // Allocate remaining budget to memories and diary
-    const usedTokens = Math.ceil((soulCtx.length + profileCtx.length + identityCtx.length) / 4);
+    const usedTokens = Math.ceil((profileCtx.length + emotionCtx.length + soulCtx.length) / 4);
     const remainingBudget = Math.max(500, tokenBudget - usedTokens);
-    const memBudget = Math.floor(remainingBudget * 0.6);
 
-    const memoriesCtx = this.memories.buildContext(memBudget);
+    const { global: globalMemCtx, profile: profileMemCtx } = this.memories.buildContext(Math.floor(remainingBudget * 0.6));
     const diaryCtx = this.diary.buildContext();
-    const summarizerCtx = this.summarizer.buildContext();
 
-    const full = [soulCtx, identityCtx, profileCtx, summarizerCtx, memoriesCtx, diaryCtx]
+    const full = [profileCtx, emotionCtx, soulCtx, globalMemCtx, profileMemCtx, diaryCtx]
       .filter((s) => s.length > 0)
       .join('\n\n');
 
     return {
       soul: soulCtx,
       profile: profileCtx,
-      memories: memoriesCtx,
+      memories: `${globalMemCtx}\n${profileMemCtx}`.trim(),
       diary: diaryCtx,
       full,
     };
@@ -66,13 +101,14 @@ export class SecretSauceManager {
 
   /**
    * Record a new memory from the current interaction.
+   * Routing: identity/preference → global, everything else → profile-scoped.
    */
   recordMemory(content: string, category: string): void {
     this.memories.addMemory(content, category);
   }
 
   /**
-   * End-of-day diary entry creation.
+   * End-of-day diary entry creation (profile-scoped).
    */
   recordDiary(summary: string, sessionsCount: number, highlights: string[], insights: string[]): void {
     this.diary.addEntry(summary, sessionsCount, highlights, insights);

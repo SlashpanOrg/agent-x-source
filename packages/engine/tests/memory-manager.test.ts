@@ -51,14 +51,24 @@ describe('MemoryManager', () => {
 
   it('builds context string', () => {
     const mm = new MemoryManager();
-    mm.addMemory('Important fact', 'general');
+    mm.addMemory('Important fact', 'project');
     const ctx = mm.buildContext();
-    expect(ctx).toContain('[MEMORIES]');
-    expect(ctx).toContain('Important fact');
+    expect(ctx.profile).toContain('[PROFILE_MEMORIES]');
+    expect(ctx.profile).toContain('Important fact');
+  });
+
+  it('routes global categories to global context', () => {
+    const mm = new MemoryManager();
+    mm.addMemory('User prefers dark mode', 'preference');
+    const ctx = mm.buildContext();
+    expect(ctx.global).toContain('[USER_CONTEXT]');
+    expect(ctx.global).toContain('dark mode');
   });
 
   it('returns empty context when no memories', () => {
     const mm = new MemoryManager();
-    expect(mm.buildContext()).toBe('');
+    const ctx = mm.buildContext();
+    expect(ctx.global).toBe('');
+    expect(ctx.profile).toBe('');
   });
 });

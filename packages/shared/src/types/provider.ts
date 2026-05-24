@@ -60,6 +60,12 @@ export interface CompletionChunk {
   type: 'text_delta' | 'tool_call_delta' | 'reasoning_delta' | 'done';
   content?: string;
   toolCall?: Partial<CompletionToolCall>;
+  usage?: TokenUsage;
+}
+
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
 }
 
 export interface ToolSchema {
