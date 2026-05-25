@@ -7,7 +7,7 @@ const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL DEFAULT 'New Session',
-    profile_id  TEXT,
+    crew_id  TEXT,
     provider_id TEXT NOT NULL,
     model_id    TEXT NOT NULL,
     scope_path  TEXT NOT NULL,
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
     FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
 
-CREATE TABLE IF NOT EXISTS profiles (
+CREATE TABLE IF NOT EXISTS crews (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     description TEXT NOT NULL,
@@ -119,7 +119,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_permissions_session ON permissions(session_id);
 CREATE INDEX IF NOT EXISTS idx_token_logs_session ON token_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_session ON agent_tasks(session_id);
-CREATE INDEX IF NOT EXISTS idx_profiles_default ON profiles(is_default);
+CREATE INDEX IF NOT EXISTS idx_crews_default ON crews(is_default);
 CREATE INDEX IF NOT EXISTS idx_tool_executions_session ON tool_executions(session_id);
 `;
 
@@ -149,7 +149,7 @@ export class SessionStore {
     status: string;
     provider: string;
     model: string;
-    profileId?: string | null;
+    crewId?: string | null;
     tokensUsed?: number;
     tokenAvailable?: number;
     scopePath?: string;
@@ -157,7 +157,7 @@ export class SessionStore {
     updatedAt: string;
   }): void {
     const stmt = this.db.prepare(`
-      INSERT INTO sessions (id, title, status, provider_id, model_id, profile_id, token_used, token_available, scope_path, created_at, updated_at)
+      INSERT INTO sessions (id, title, status, provider_id, model_id, crew_id, token_used, token_available, scope_path, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
@@ -166,7 +166,7 @@ export class SessionStore {
       session.status,
       session.provider,
       session.model,
-      session.profileId ?? null,
+      session.crewId ?? null,
       session.tokensUsed ?? 0,
       session.tokenAvailable ?? 128000,
       session.scopePath ?? process.cwd(),
@@ -185,7 +185,7 @@ export class SessionStore {
       status: row['status'],
       provider: row['provider_id'],
       model: row['model_id'],
-      profileId: row['profile_id'],
+      crewId: row['crew_id'],
       tokensUsed: row['token_used'],
       scopePath: row['scope_path'],
       createdAt: row['created_at'],
@@ -202,7 +202,7 @@ export class SessionStore {
       status: 'status',
       provider: 'provider_id',
       model: 'model_id',
-      profileId: 'profile_id',
+      crewId: 'crew_id',
       tokensUsed: 'token_used',
       scopePath: 'scope_path',
       updatedAt: 'updated_at',
@@ -231,7 +231,7 @@ export class SessionStore {
       status: row['status'],
       provider: row['provider_id'],
       model: row['model_id'],
-      profileId: row['profile_id'],
+      crewId: row['crew_id'],
       tokensUsed: row['token_used'],
       scopePath: row['scope_path'],
       createdAt: row['created_at'],

@@ -1,13 +1,13 @@
 import { type FC, useState, useCallback } from 'react';
 import { Box } from 'ink';
 import { MissionControl } from './screens/MissionControl.js';
-import { ProfileSelect } from './screens/ProfileSelect.js';
+import { CrewSelect } from './screens/CrewSelect.js';
 import { WelcomeScreen } from './screens/WelcomeScreen.js';
 import { ConfigManager, SessionStore } from '@agentx/engine';
-import { ProfileManager } from '@agentx/engine';
-import type { AgentXConfig, Profile } from '@agentx/shared';
+import { CrewManager } from '@agentx/engine';
+import type { AgentXConfig,Crew } from '@agentx/shared';
 
-type AppState = 'loading' | 'setup' | 'profile' | 'main';
+type AppState = 'loading' | 'setup' | 'crew' | 'main';
 
 interface AppProps {
   sessionId?: string;
@@ -18,11 +18,11 @@ export const App: FC<AppProps> = ({ sessionId: restoreSessionId, recovered }) =>
   const configManager = new ConfigManager();
   const isSetupDone = configManager.isSetupComplete();
 
-  // If restoring a session, skip profile select (profile is in session metadata)
+  // If restoring a session, skip crew select (crew is in session metadata)
   const [state, setState] = useState<AppState>(() => {
     if (!isSetupDone) return 'setup';
-    if (restoreSessionId) return 'main'; // Skip profile select on restore
-    return 'profile';
+    if (restoreSessionId) return 'main'; // Skip crew select on restore
+    return 'crew';
   });
 
   const [config, setConfig] = useState<AgentXConfig | null>(() => {
@@ -36,61 +36,61 @@ export const App: FC<AppProps> = ({ sessionId: restoreSessionId, recovered }) =>
     return null;
   });
 
-  const [activeProfile, setActiveProfile] = useState<Profile | null>(() => {
+  const [activeCrew, setActiveCrew] = useState<Crew | null>(() => {
     if (restoreSessionId) {
-      // On session restore, load profile from session metadata
+      // On session restore, load crew from session metadata
       try {
         const store = new SessionStore();
         const session = store.getSession(restoreSessionId);
         if (session) {
-          const pm = new ProfileManager();
-          const profileId = session['profile_id'] as string | null;
-          if (profileId) {
-            return pm.get(profileId) ?? pm.getActive();
+          const pm = new CrewManager();
+          const crewId = session['crew_id'] as string | null;
+          if (crewId) {
+            return pm.get(crewId) ?? pm.getActive();
           }
         }
       } catch { /* fallback */ }
-      const pm = new ProfileManager();
+      const pm = new CrewManager();
       return pm.getActive();
     }
     return null;
   });
 
-  const handleMissionComplete = useCallback((newConfig: AgentXConfig, profile: Profile) => {
+  const handleMissionComplete = useCallback((newConfig: AgentXConfig, crew: Crew) => {
     setConfig(newConfig);
-    setActiveProfile(profile);
-    setState('main'); // Skip profile select — wizard already created one
+    setActiveCrew(crew);
+    setState('main'); // Skip crew select — wizard already created one
   }, []);
 
   const handleSetupCancel = useCallback(() => {
     process.exit(0);
   }, []);
 
-  const handleProfileSelect = useCallback((profile: Profile) => {
-    setActiveProfile(profile);
+  const handleCrewSelect = useCallback((crew: Crew) => {
+    setActiveCrew(crew);
     setState('main');
   }, []);
 
-  const handleProfileSwitch = useCallback(() => {
-    setState('profile');
+  const handleCrewSwitch = useCallback(() => {
+    setState('crew');
   }, []);
 
   if (state === 'setup') {
     return <MissionControl onComplete={handleMissionComplete} onCancel={handleSetupCancel} />;
   }
 
-  if (state === 'profile' && config) {
+  if (state === 'crew' && config) {
     return (
-      <ProfileSelect
-        onSelect={handleProfileSelect}
+      <CrewSelect
+        onSelect={handleCrewSelect}
         currentProvider={config.provider.activeProvider}
         currentModel={config.provider.activeModel}
       />
     );
   }
 
-  if (state === 'main' && config && activeProfile) {
-    return <WelcomeScreen config={config} profile={activeProfile} restoreSessionId={restoreSessionId} recovered={recovered} onProfileSwitch={handleProfileSwitch} />;
+  if (state === 'main' && config && activeCrew) {
+    return <WelcomeScreen config={config} crew={activeCrew} restoreSessionId={restoreSessionId} recovered={recovered} onCrewSwitch={handleCrewSwitch} />;
   }
 
   // Fallback — should not happen

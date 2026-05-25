@@ -16,17 +16,17 @@ import { TodoProgress } from '../components/TodoProgress.js';
 import { AgentProgress } from '../components/AgentProgress.js';
 import { ReasoningGlimpse } from '../components/ReasoningGlimpse.js';
 import { useSession } from '../hooks/useSession.js';
-import type { AgentXConfig, ModelInfo, Profile } from '@agentx/shared';
+import type { AgentXConfig, ModelInfo,Crew } from '@agentx/shared';
 
 interface WelcomeScreenProps {
   config: AgentXConfig;
-  profile: Profile;
+  crew: Crew;
   restoreSessionId?: string;
   recovered?: boolean;
-  onProfileSwitch?: () => void;
+  onCrewSwitch?: () => void;
 }
 
-export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, profile, restoreSessionId, recovered, onProfileSwitch }) => {
+export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSessionId, recovered, onCrewSwitch }) => {
   const [slashFilter, setSlashFilter] = useState<string | null>(null);
 
   const {
@@ -57,7 +57,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, profile, restore
     isReasoning,
     activeTools,
     subAgents,
-  } = useSession(config, profile, restoreSessionId, onProfileSwitch);
+  } = useSession(config, crew, restoreSessionId, onCrewSwitch);
 
   // Double-ESC to cancel processing
   const [escState, setEscState] = useState<'idle' | 'first_press'>('idle');
@@ -99,7 +99,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, profile, restore
           provider={config.provider.activeProvider}
           model={currentModel}
           organization={config.organization}
-          profileName={profile.name}
+          crewName={crew.name}
         />
         <Box marginTop={1}>
           <ScrollableList
@@ -134,7 +134,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, profile, restore
           provider={config.provider.activeProvider}
           model={currentModel}
           organization={config.organization}
-          profileName={profile.name}
+          crewName={crew.name}
         />
         <Box marginTop={1}>
           <ProviderPicker
@@ -156,7 +156,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, profile, restore
           provider={config.provider.activeProvider}
           model={currentModel}
           organization={config.organization}
-          profileName={profile.name}
+          crewName={crew.name}
         />
 
         <MessageArea messages={messages} streamingContent={streamingContent} />
@@ -266,7 +266,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, profile, restore
           sessionId={sessionId}
           provider={config.provider.activeProvider}
           model={currentModel}
-          profileName={profile.name}
+          crewName={crew.name}
           scopePath={process.cwd()}
           tokensUsed={tokensUsed}
           tokensTotal={tokensTotal}

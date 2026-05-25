@@ -17,11 +17,11 @@ import {
   type ProviderId,
   type ModelInfo,
   type AgentXConfig,
-  type Profile,
-  type ProfileEmotion,
+  type Crew,
+  type CrewEmotion,
   getLogger,
 } from '@agentx/shared';
-import { ConfigManager, ProviderFactory, ProfileManager, TelegramStore } from '@agentx/engine';
+import { ConfigManager, ProviderFactory, CrewManager, TelegramStore } from '@agentx/engine';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -43,13 +43,13 @@ type MissionStep =
   | 'launch_sequence';
 
 interface MissionControlProps {
-  onComplete: (config: AgentXConfig, profile: Profile) => void;
+  onComplete: (config: AgentXConfig, crew: Crew) => void;
   onCancel: () => void;
 }
 
 // ─── Tone Options ────────────────────────────────────────────────────
 
-const TONE_OPTIONS: Array<{ id: ProfileEmotion; label: string; desc: string }> = [
+const TONE_OPTIONS: Array<{ id: CrewEmotion; label: string; desc: string }> = [
   { id: 'professional', label: '💼 Professional', desc: 'Precise, formal, business-like' },
   { id: 'friendly', label: '😊 Friendly', desc: 'Warm, approachable, casual' },
   { id: 'witty', label: '🧠 Witty', desc: 'Clever, sharp, dry humor' },
@@ -87,8 +87,8 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
 
   // Stage 2 state
   const [callsign, setCallsign] = useState('');
-  const [profileName, setProfileName] = useState('');
-  const [profilePrompt, setProfilePrompt] = useState('');
+  const [crewName, setCrewName] = useState('');
+  const [crewPrompt, setCrewPrompt] = useState('');
 
   // Stage 3 state
   const [telegramToken, setTelegramToken] = useState('');
@@ -189,21 +189,21 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
     setStep('stage2_briefing');
   }, [callsign]);
 
-  const handleProfileNameSubmit = useCallback(() => {
-    if (!profileName.trim()) return;
+  const handleCrewNameSubmit = useCallback(() => {
+    if (!crewName.trim()) return;
     setStep('stage2_prompt');
-  }, [profileName]);
+  }, [crewName]);
 
-  const handleProfilePromptSubmit = useCallback(() => {
-    if (!profilePrompt.trim()) return;
+  const handleCrewPromptSubmit = useCallback(() => {
+    if (!crewPrompt.trim()) return;
     setStep('stage2_tone');
-  }, [profilePrompt]);
+  }, [crewPrompt]);
 
-  const handleToneSelect = useCallback((tone: { id: ProfileEmotion }) => {
-    // Create profile and save callsign to config
-    const pm = new ProfileManager();
-    const id = profileName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    pm.create({ id, name: profileName.trim(), systemPrompt: profilePrompt.trim(), emotion: tone.id, isDefault: false });
+  const handleToneSelect = useCallback((tone: { id: CrewEmotion }) => {
+    // Create crew and save callsign to config
+    const pm = new CrewManager();
+    const id = crewName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    pm.create({ id, name: crewName.trim(), systemPrompt: crewPrompt.trim(), emotion: tone.id, isDefault: false });
     pm.switch(id);
 
     // Update config with callsign
@@ -215,7 +215,7 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
     } catch { /* config will be re-saved at completion anyway */ }
 
     setStep('transition_2');
-  }, [profileName, profilePrompt, callsign]);
+  }, [crewName, crewPrompt, callsign]);
 
   const handleTelegramSubmit = useCallback(() => {
     const token = telegramToken.trim();
@@ -270,12 +270,12 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
   const handleLaunchComplete = useCallback(() => {
     // Mark setup as complete and load final state
     const cm = new ConfigManager();
-    const pm = new ProfileManager();
+    const pm = new CrewManager();
     const config = cm.load();
     config.setupComplete = true;
     cm.save(config);
-    const profile = pm.getActive();
-    onComplete(config, profile);
+    const crew = pm.getActive();
+    onComplete(config, crew);
   }, [onComplete]);
 
   // ─── Global key handler for Escape (back navigation) ─────────────────
@@ -347,8 +347,8 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
   }
   if (step === 'transition_2') {
     return (
-      <StageCard stageNumber={2} stageLabel="MISSION PROFILE" currentStage={2}>
-        <BootTransition label={`CREW MEMBER "${profileName.toUpperCase()}" — REGISTERED`} onComplete={() => setStep('stage3_telegram')} />
+      <StageCard stageNumber={2} stageLabel="MISSION CREW" currentStage={2}>
+        <BootTransition label={`CREW MEMBER "${crewName.toUpperCase()}" — REGISTERED`} onComplete={() => setStep('stage3_telegram')} />
       </StageCard>
     );
   }
@@ -367,7 +367,7 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
   if (step === 'launch_sequence') {
     return (
       <StageCard showProgress={false} currentStage={4}>
-        <LaunchSequence profileName={profileName} telegramConfigured={telegramConfigured} onComplete={handleLaunchComplete} />
+        <LaunchSequence crewName={crewName} telegramConfigured={telegramConfigured} onComplete={handleLaunchComplete} />
       </StageCard>
     );
   }
@@ -493,11 +493,11 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
     );
   }
 
-  // ─── Stage 2: Mission Profile ──────────────────────────────────────────
+  // ─── Stage 2: Mission Crew ──────────────────────────────────────────
 
   if (step === 'stage2_callsign') {
     return (
-      <StageCard stageNumber={2} stageLabel="MISSION PROFILE" currentStage={2}>
+      <StageCard stageNumber={2} stageLabel="MISSION CREW" currentStage={2}>
         <Box marginBottom={1}>
           <Text color={COLORS.text}>What should I call you, Commander?</Text>
         </Box>
@@ -528,17 +528,17 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
 
   if (step === 'stage2_name') {
     return (
-      <StageCard stageNumber={2} stageLabel="MISSION PROFILE" currentStage={2}>
+      <StageCard stageNumber={2} stageLabel="MISSION CREW" currentStage={2}>
         <Box marginBottom={1}>
           <Text color={COLORS.text}>Name your first crew member:</Text>
         </Box>
         <Box>
           <Text color={COLORS.primary}>❯ </Text>
           <TextInput
-            value={profileName}
-            onChange={setProfileName}
+            value={crewName}
+            onChange={setCrewName}
             placeholder="e.g. Nova, Atlas, Jarvis"
-            onSubmit={handleProfileNameSubmit}
+            onSubmit={handleCrewNameSubmit}
           />
         </Box>
         <Box marginTop={1}>
@@ -555,19 +555,19 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
 
   if (step === 'stage2_prompt') {
     return (
-      <StageCard stageNumber={2} stageLabel="MISSION PROFILE" currentStage={2}>
+      <StageCard stageNumber={2} stageLabel="MISSION CREW" currentStage={2}>
         <Box marginBottom={1}>
           <Text color={COLORS.text}>What is </Text>
-          <Text color={COLORS.primary} bold>{profileName}</Text>
+          <Text color={COLORS.primary} bold>{crewName}</Text>
           <Text color={COLORS.text}>'s specialization?</Text>
         </Box>
         <Box>
           <Text color={COLORS.primary}>❯ </Text>
           <TextInput
-            value={profilePrompt}
-            onChange={setProfilePrompt}
+            value={crewPrompt}
+            onChange={setCrewPrompt}
             placeholder="e.g. A senior full-stack engineer who..."
-            onSubmit={handleProfilePromptSubmit}
+            onSubmit={handleCrewPromptSubmit}
           />
         </Box>
         <Box marginTop={1}>
@@ -584,10 +584,10 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
 
   if (step === 'stage2_tone') {
     return (
-      <StageCard stageNumber={2} stageLabel="MISSION PROFILE" currentStage={2}>
+      <StageCard stageNumber={2} stageLabel="MISSION CREW" currentStage={2}>
         <Box marginBottom={1}>
           <Text color={COLORS.text}>Choose </Text>
-          <Text color={COLORS.primary} bold>{profileName}</Text>
+          <Text color={COLORS.primary} bold>{crewName}</Text>
           <Text color={COLORS.text}>'s communication style:</Text>
         </Box>
         <ScrollableList
@@ -657,12 +657,12 @@ interface Stage2BriefingProps {
   onContinue: () => void;
 }
 
-const BRIEFING_TEXT = `Profiles are your AI crew members.
+const BRIEFING_TEXT = `Crew members are your AI personas.
 
-Each profile is a sub-agent with its own
+Each crew is a sub-agent with its own
 personality, expertise, and communication style.
 
-You can create multiple profiles later:`;
+You can create multiple crews later:`;
 
 const Stage2Briefing: FC<Stage2BriefingProps> = ({ onContinue }) => {
   const revealed = useTypewriter(BRIEFING_TEXT, 25);
@@ -688,7 +688,7 @@ const Stage2Briefing: FC<Stage2BriefingProps> = ({ onContinue }) => {
   });
 
   return (
-    <StageCard stageNumber={2} stageLabel="MISSION PROFILE" currentStage={2}>
+    <StageCard stageNumber={2} stageLabel="MISSION CREW" currentStage={2}>
       <Box flexDirection="column">
         <Text color={COLORS.text}>{revealed}</Text>
         {ready && (

@@ -177,7 +177,7 @@ export class Agent {
       `[COMMUNICATION_STYLE]`,
       `- KEEP RESPONSES SHORT. 1-3 sentences for conversational replies. No paragraphs, no walls of text.`,
       `- Only elaborate when the user explicitly asks: "explain more", "go deeper", "elaborate", "define", "tell me more".`,
-      `- Use simple, everyday language. NO technical jargon unless the user's profile is technical.`,
+      `- Use simple, everyday language. NO technical jargon unless the user's crew is technical.`,
       `- Never ask for cron expressions, URLs, file paths, commands, or API details — figure it out yourself.`,
       `- If the request is clear enough to act on, ACT. Don't ask unnecessary questions.`,
       `- When you must ask, keep it natural: "What should I remind you about?" not "Provide the instruction payload."`,
@@ -543,8 +543,8 @@ export class Agent {
   }
 
   /**
-   * Rebuild the full system prompt from current profile, tools, and secret sauce.
-   * Call this after profile switch to apply the new persona.
+   * Rebuild the full system prompt from current crew, tools, and secret sauce.
+   * Call this after crew switch to apply the new persona.
    */
   rebuildSystemPrompt(): void {
     const sauceContext = this.secretSauce.buildSystemContext();
@@ -615,7 +615,7 @@ export class Agent {
       `[COMMUNICATION_STYLE]`,
       `- KEEP RESPONSES SHORT. 1-3 sentences for conversational replies. No paragraphs, no walls of text.`,
       `- Only elaborate when the user explicitly asks: "explain more", "go deeper", "elaborate", "define", "tell me more".`,
-      `- Use simple, everyday language. NO technical jargon unless the user's profile is technical.`,
+      `- Use simple, everyday language. NO technical jargon unless the user's crew is technical.`,
       `- Never ask for cron expressions, URLs, file paths, commands, or API details — figure it out yourself.`,
       `- If the request is clear enough to act on, ACT. Don't ask unnecessary questions.`,
       `- When you must ask, keep it natural: "What should I remind you about?" not "Provide the instruction payload."`,

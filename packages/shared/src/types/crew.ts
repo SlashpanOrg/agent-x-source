@@ -1,4 +1,4 @@
-export type ProfileEmotion =
+export type CrewEmotion =
   | 'professional'
   | 'friendly'
   | 'witty'
@@ -10,20 +10,20 @@ export type ProfileEmotion =
   | 'sad'
   | 'sarcastic';
 
-export interface Profile {
+export interface Crew {
   id: string;
   name: string;
   systemPrompt: string;
-  emotion?: ProfileEmotion;
+  emotion?: CrewEmotion;
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface ProfileCreateInput {
+export interface CrewCreateInput {
   id: string;
   name: string;
   systemPrompt: string;
-  emotion?: ProfileEmotion;
+  emotion?: CrewEmotion;
   isDefault?: boolean;
 }

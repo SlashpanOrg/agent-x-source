@@ -176,7 +176,7 @@ async function main(): Promise<void> {
     if (isDaemonRunning()) {
       const status = getDaemonStatus();
       console.log(`✦ Agent-X daemon started (PID: ${status.pid})`);
-      console.log(`  Profile: ${status.profile ?? 'default'}`);
+      console.log(`  Crew: ${status.crew ?? 'default'}`);
       if (status.telegram) console.log(`  Telegram: @${status.botUsername ?? 'connected'}`);
     } else {
       console.error('✗ Daemon failed to start. Run `agentx` for diagnostics.');
@@ -207,7 +207,7 @@ async function main(): Promise<void> {
     const status = getDaemonStatus();
     console.log('✦ Agent-X daemon: running');
     console.log(`  PID: ${status.pid}`);
-    console.log(`  Profile: ${status.profile ?? 'unknown'}`);
+    console.log(`  Crew: ${status.crew ?? 'unknown'}`);
     if (status.telegram) console.log(`  Telegram: @${status.botUsername ?? 'connected'}`);
     if (status.startedAt) console.log(`  Started: ${status.startedAt}`);
     process.exit(0);

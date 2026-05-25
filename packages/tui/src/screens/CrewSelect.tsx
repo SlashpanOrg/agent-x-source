@@ -4,12 +4,12 @@ import TextInput from 'ink-text-input';
 import { COLORS } from '../theme/colors.js';
 import { ScrollableList } from '../components/ScrollableList.js';
 import { Banner } from '../components/Banner.js';
-import type { Profile, ProfileEmotion } from '@agentx/shared';
-import { ProfileManager } from '@agentx/engine';
+import type { Crew, CrewEmotion } from '@agentx/shared';
+import { CrewManager } from '@agentx/engine';
 
 type ScreenState = 'select' | 'create_name' | 'create_prompt' | 'create_tone' | 'create_confirm' | 'edit_pick' | 'edit_name' | 'edit_prompt' | 'edit_tone' | 'edit_confirm';
 
-const TONE_OPTIONS: Array<{ id: ProfileEmotion; label: string; description: string }> = [
+const TONE_OPTIONS: Array<{ id: CrewEmotion; label: string; description: string }> = [
   { id: 'professional', label: '💼 Professional', description: 'Precise, formal, business-like' },
   { id: 'friendly', label: '😊 Friendly', description: 'Warm, approachable, casual' },
   { id: 'witty', label: '🧠 Witty', description: 'Clever, sharp, dry humor' },
@@ -22,35 +22,35 @@ const TONE_OPTIONS: Array<{ id: ProfileEmotion; label: string; description: stri
   { id: 'sad', label: '🌧 Melancholic', description: 'Thoughtful, reflective, poetic' },
 ];
 
-interface ProfileSelectProps {
-  onSelect: (profile: Profile) => void;
+interface CrewSelectProps {
+  onSelect: (crew: Crew) => void;
   currentProvider?: string;
   currentModel?: string;
 }
 
-export const ProfileSelect: React.FC<ProfileSelectProps> = ({
+export const CrewSelect: React.FC<CrewSelectProps> = ({
   onSelect,
   currentProvider,
   currentModel,
 }) => {
-  const [pm] = useState(() => new ProfileManager());
-  const [profiles] = useState<Profile[]>(() => pm.list().filter((p) => !p.isDefault));
+  const [pm] = useState(() => new CrewManager());
+  const [crews] = useState<Crew[]>(() => pm.list().filter((p) => !p.isDefault));
   const [screen, setScreen] = useState<ScreenState>(() => {
-    // If no user-created profiles, go straight to create flow
-    const userProfiles = pm.list().filter((p) => !p.isDefault);
-    return userProfiles.length === 0 ? 'create_name' : 'select';
+    // If no user-created crews, go straight to create flow
+    const userCrews = pm.list().filter((p) => !p.isDefault);
+    return userCrews.length === 0 ? 'create_name' : 'select';
   });
 
-  // Create profile form state
+  // Create crew form state
   const [newName, setNewName] = useState('');
   const [newPrompt, setNewPrompt] = useState('');
-  const [newTone, setNewTone] = useState<ProfileEmotion>('friendly');
+  const [newTone, setNewTone] = useState<CrewEmotion>('friendly');
 
-  // Edit profile state
-  const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
+  // Edit crew state
+  const [editingCrew, setEditingCrew] = useState<Crew | null>(null);
   const [editName, setEditName] = useState('');
   const [editPrompt, setEditPrompt] = useState('');
-  const [editTone, setEditTone] = useState<ProfileEmotion>('friendly');
+  const [editTone, setEditTone] = useState<CrewEmotion>('friendly');
 
   useInput((_input, key) => {
     if (screen === 'create_name' && key.escape) {
@@ -72,35 +72,35 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
     }
   });
 
-  const handleSelect = (profile: Profile) => {
-    pm.switch(profile.id);
-    onSelect(profile);
+  const handleSelect = (crew: Crew) => {
+    pm.switch(crew.id);
+    onSelect(crew);
   };
 
   const handleCreateSubmit = () => {
     const id = newName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    const profile = pm.create({
+    const crew = pm.create({
       id,
       name: newName.trim(),
       systemPrompt: newPrompt.trim(),
       emotion: newTone,
       isDefault: false,
     });
-    pm.switch(profile.id);
-    onSelect(profile);
+    pm.switch(crew.id);
+    onSelect(crew);
   };
 
-  const handleEditStart = (profile: Profile) => {
-    setEditingProfile(profile);
-    setEditName(profile.name);
-    setEditPrompt(profile.systemPrompt);
-    setEditTone(profile.emotion ?? 'friendly');
+  const handleEditStart = (crew: Crew) => {
+    setEditingCrew(crew);
+    setEditName(crew.name);
+    setEditPrompt(crew.systemPrompt);
+    setEditTone(crew.emotion ?? 'friendly');
     setScreen('edit_name');
   };
 
   const handleEditSubmit = () => {
-    if (!editingProfile) return;
-    const updated = pm.update(editingProfile.id, {
+    if (!editingCrew) return;
+    const updated = pm.update(editingCrew.id, {
       name: editName.trim(),
       systemPrompt: editPrompt.trim(),
       emotion: editTone,
@@ -111,14 +111,14 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
     }
   };
 
-  // Create profile flow — Step 1: Name
+  // Create crew flow — Step 1: Name
   if (screen === 'create_name') {
     return (
       <Box flexDirection="column" padding={1}>
         <Banner provider={currentProvider} model={currentModel} />
         <Box flexDirection="column" marginTop={1} paddingX={1}>
-          <Text color={COLORS.primary} bold>Create New Profile</Text>
-          <Text color={COLORS.textDim}>Step 1/3 — Give your profile a name</Text>
+          <Text color={COLORS.primary} bold>Create New Crew Member</Text>
+          <Text color={COLORS.textDim}>Step 1/3 — Give your crew a name</Text>
           <Box marginTop={1}>
             <Text color={COLORS.text}>Name: </Text>
             <TextInput
@@ -134,13 +134,13 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
     );
   }
 
-  // Create profile flow — Step 2: System Prompt
+  // Create crew flow — Step 2: System Prompt
   if (screen === 'create_prompt') {
     return (
       <Box flexDirection="column" padding={1}>
         <Banner provider={currentProvider} model={currentModel} />
         <Box flexDirection="column" marginTop={1} paddingX={1}>
-          <Text color={COLORS.primary} bold>Create New Profile</Text>
+          <Text color={COLORS.primary} bold>Create New Crew Member</Text>
           <Text color={COLORS.textDim}>Step 2/3 — Describe who this agent is (what it knows, what it helps with)</Text>
           <Box marginTop={1}>
             <Text color={COLORS.text}>Prompt: </Text>
@@ -157,13 +157,13 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
     );
   }
 
-  // Create profile flow — Step 3: Tone / Emotion
+  // Create crew flow — Step 3: Tone / Emotion
   if (screen === 'create_tone') {
     return (
       <Box flexDirection="column" padding={1}>
         <Banner provider={currentProvider} model={currentModel} />
         <Box flexDirection="column" marginTop={1} paddingX={1}>
-          <Text color={COLORS.primary} bold>Create New Profile</Text>
+          <Text color={COLORS.primary} bold>Create New Crew Member</Text>
           <Text color={COLORS.textDim}>Step 3/3 — Pick a personality tone for your agent</Text>
         </Box>
         <Box marginTop={1}>
@@ -188,14 +188,14 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
     );
   }
 
-  // Create profile flow — Confirm
+  // Create crew flow — Confirm
   if (screen === 'create_confirm') {
     const toneLabel = TONE_OPTIONS.find((t) => t.id === newTone)?.label ?? newTone;
     return (
       <Box flexDirection="column" padding={1}>
         <Banner provider={currentProvider} model={currentModel} />
         <Box flexDirection="column" marginTop={1} paddingX={1}>
-          <Text color={COLORS.primary} bold>Confirm New Profile</Text>
+          <Text color={COLORS.primary} bold>Confirm New Crew Member</Text>
           <Box marginTop={1} flexDirection="column">
             <Text color={COLORS.text}>Name: <Text color={COLORS.info}>{newName}</Text></Text>
             <Text color={COLORS.text}>Prompt: <Text color={COLORS.textDim}>{newPrompt.slice(0, 80)}{newPrompt.length > 80 ? '...' : ''}</Text></Text>
@@ -210,22 +210,22 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
     );
   }
 
-  // Edit profile flow — Pick which profile to edit
+  // Edit crew flow — Pick which crew to edit
   if (screen === 'edit_pick') {
     return (
       <Box flexDirection="column" padding={1}>
         <Banner provider={currentProvider} model={currentModel} />
         <Box flexDirection="column" marginTop={1} paddingX={1}>
-          <Text color={COLORS.primary} bold>Edit Profile</Text>
-          <Text color={COLORS.textDim}>Select a profile to edit</Text>
+          <Text color={COLORS.primary} bold>Edit Crew Member</Text>
+          <Text color={COLORS.textDim}>Select a crew to edit</Text>
         </Box>
         <Box marginTop={1}>
           <ScrollableList
-            items={profiles}
-            label="Profiles"
+            items={crews}
+            label="Crew"
             onSelect={(item) => handleEditStart(item)}
             onCancel={() => setScreen('select')}
-            renderItem={(item: Profile, isSelected: boolean) => (
+            renderItem={(item: Crew, isSelected: boolean) => (
               <Box>
                 <Text color={isSelected ? COLORS.primary : COLORS.text} bold={isSelected}>
                   {item.name}
@@ -239,14 +239,14 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
     );
   }
 
-  // Edit profile flow — Step 1: Name
+  // Edit crew flow — Step 1: Name
   if (screen === 'edit_name') {
     return (
       <Box flexDirection="column" padding={1}>
         <Banner provider={currentProvider} model={currentModel} />
         <Box flexDirection="column" marginTop={1} paddingX={1}>
-          <Text color={COLORS.primary} bold>Edit Profile</Text>
-          <Text color={COLORS.textDim}>Step 1/3 — Update the profile name</Text>
+          <Text color={COLORS.primary} bold>Edit Crew Member</Text>
+          <Text color={COLORS.textDim}>Step 1/3 — Update the crew name</Text>
           <Box marginTop={1}>
             <Text color={COLORS.text}>Name: </Text>
             <TextInput
@@ -262,13 +262,13 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
     );
   }
 
-  // Edit profile flow — Step 2: Prompt
+  // Edit crew flow — Step 2: Prompt
   if (screen === 'edit_prompt') {
     return (
       <Box flexDirection="column" padding={1}>
         <Banner provider={currentProvider} model={currentModel} />
         <Box flexDirection="column" marginTop={1} paddingX={1}>
-          <Text color={COLORS.primary} bold>Edit Profile</Text>
+          <Text color={COLORS.primary} bold>Edit Crew Member</Text>
           <Text color={COLORS.textDim}>Step 2/3 — Update the agent description</Text>
           <Box marginTop={1}>
             <Text color={COLORS.text}>Prompt: </Text>
@@ -285,13 +285,13 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
     );
   }
 
-  // Edit profile flow — Step 3: Tone
+  // Edit crew flow — Step 3: Tone
   if (screen === 'edit_tone') {
     return (
       <Box flexDirection="column" padding={1}>
         <Banner provider={currentProvider} model={currentModel} />
         <Box flexDirection="column" marginTop={1} paddingX={1}>
-          <Text color={COLORS.primary} bold>Edit Profile</Text>
+          <Text color={COLORS.primary} bold>Edit Crew Member</Text>
           <Text color={COLORS.textDim}>Step 3/3 — Pick a personality tone</Text>
         </Box>
         <Box marginTop={1}>
@@ -316,7 +316,7 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
     );
   }
 
-  // Edit profile flow — Confirm
+  // Edit crew flow — Confirm
   if (screen === 'edit_confirm') {
     const toneLabel = TONE_OPTIONS.find((t) => t.id === editTone)?.label ?? editTone;
     return (
@@ -338,24 +338,24 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
     );
   }
 
-  // Main profile selection screen
+  // Main crew selection screen
   const items = [
-    ...profiles,
-    { id: '__edit__', name: '~ Edit a profile', systemPrompt: '', isDefault: false, createdAt: '', updatedAt: '' } as Profile,
-    { id: '__create__', name: '+ Create new profile', systemPrompt: '', isDefault: false, createdAt: '', updatedAt: '' } as Profile,
+    ...crews,
+    { id: '__edit__', name: '~ Edit a crew member', systemPrompt: '', isDefault: false, createdAt: '', updatedAt: '' } as Crew,
+    { id: '__create__', name: '+ Create new crew member', systemPrompt: '', isDefault: false, createdAt: '', updatedAt: '' } as Crew,
   ];
 
   return (
     <Box flexDirection="column" padding={1}>
       <Banner provider={currentProvider} model={currentModel} />
       <Box flexDirection="column" marginTop={1} paddingX={1}>
-        <Text color={COLORS.primary} bold>Select Profile</Text>
-        <Text color={COLORS.textDim}>Choose a profile to define how Agent-X behaves this session</Text>
+        <Text color={COLORS.primary} bold>Select Crew Member</Text>
+        <Text color={COLORS.textDim}>Choose a crew to define how Agent-X behaves this session</Text>
       </Box>
       <Box marginTop={1}>
         <ScrollableList
           items={items}
-          label="Profiles"
+          label="Crew"
           onSelect={(item) => {
             if (item.id === '__create__') {
               setScreen('create_name');
@@ -368,12 +368,12 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
               handleSelect(item);
             }
           }}
-          renderItem={(item: Profile, isSelected: boolean) => {
+          renderItem={(item: Crew, isSelected: boolean) => {
             if (item.id === '__create__') {
               return (
                 <Box>
                   <Text color={isSelected ? COLORS.success : COLORS.textDim} bold={isSelected}>
-                    + Create new profile
+                    + Create new crew member
                   </Text>
                 </Box>
               );
@@ -382,7 +382,7 @@ export const ProfileSelect: React.FC<ProfileSelectProps> = ({
               return (
                 <Box>
                   <Text color={isSelected ? COLORS.accent : COLORS.textDim} bold={isSelected}>
-                    ~ Edit a profile
+                    ~ Edit a crew member
                   </Text>
                 </Box>
               );

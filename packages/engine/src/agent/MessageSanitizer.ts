@@ -12,19 +12,19 @@ export class MessageSanitizer {
   sanitize(
     userMessage: string,
     context: CompletionMessage[],
-    activeProfile?: string,
+    activeCrew?: string,
   ): SanitizedMessage {
     const intent = this.detectIntent(userMessage);
     const messages = [...context];
 
-    // Add context injection based on profile
-    if (activeProfile) {
+    // Add context injection based on crew
+    if (activeCrew) {
       const lastSystem = messages.findIndex((m) => m.role === 'system');
       if (lastSystem >= 0) {
         const existing = messages[lastSystem]!;
         messages[lastSystem] = {
           role: existing.role,
-          content: existing.content + `\n\nActive profile: ${activeProfile}`,
+          content: existing.content + `\n\nActive crew: ${activeCrew}`,
         };
       }
     }
