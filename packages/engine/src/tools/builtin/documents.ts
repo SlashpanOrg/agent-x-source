@@ -545,10 +545,7 @@ export async function pdfRead(args: Record<string, unknown>, context: ToolExecut
     if (!text.trim()) {
       return { success: true, output: '(PDF contains no extractable text — it may be image-based/scanned)' };
     }
-    // Limit output to avoid overwhelming context
-    const maxChars = 100_000;
-    const truncated = text.length > maxChars ? text.slice(0, maxChars) + '\n\n... [truncated, file too large]' : text;
-    return { success: true, output: truncated };
+    return { success: true, output: truncateOutput(text) };
   } catch (err) {
     return { success: false, output: `Failed to read PDF: ${err instanceof Error ? err.message : String(err)}`, error: 'PDF_READ_ERROR' };
   }
@@ -709,4 +706,256 @@ function indexOfBytes(buf: Buffer, search: Buffer, from: number): number {
     if (found) return i;
   }
   return -1;
+}
+
+// ─── Office Document Readers (DOCX, XLSX, PPTX) ────────────────────────────
+
+/**
+ * Extract text from a DOCX (Word) file.
+ */
+export async function docxRead(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const file = args['path'] as string ?? args['file'] as string;
+  if (!file) return { success: false, output: 'path is required', error: 'MISSING_INPUT' };
+
+  const filePath = resolve(context.scopePath, file);
+  if (!existsSync(filePath)) {
+    return { success: false, output: `File not found: ${file}`, error: 'FILE_NOT_FOUND' };
+  }
+
+  try {
+    const buffer = readFileSync(filePath);
+    const entries = readZipEntries(buffer);
+    const docEntry = entries.find((e) => e.name === 'word/document.xml');
+    if (!docEntry) {
+      return { success: false, output: 'Not a valid DOCX file (missing word/document.xml)', error: 'INVALID_FORMAT' };
+    }
+    const xml = docEntry.data.toString('utf-8');
+    // Extract text from <w:t> tags
+    const text = xml.replace(/<[^>]+>/g, (tag) => {
+      if (tag === '</w:p>') return '\n';
+      if (tag === '</w:r>') return '';
+      return '';
+    });
+    // More precise: get content between <w:t> tags
+    const textContent = extractXmlText(xml, 'w:t');
+    const output = textContent || text.replace(/<[^>]+>/g, '');
+    return { success: true, output: truncateOutput(output) };
+  } catch (err) {
+    return { success: false, output: `Failed to read DOCX: ${err instanceof Error ? err.message : String(err)}`, error: 'READ_ERROR' };
+  }
+}
+
+/**
+ * Extract text/data from an XLSX (Excel) file.
+ */
+export async function xlsxRead(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const file = args['path'] as string ?? args['file'] as string;
+  if (!file) return { success: false, output: 'path is required', error: 'MISSING_INPUT' };
+
+  const filePath = resolve(context.scopePath, file);
+  if (!existsSync(filePath)) {
+    return { success: false, output: `File not found: ${file}`, error: 'FILE_NOT_FOUND' };
+  }
+
+  try {
+    const buffer = readFileSync(filePath);
+    const entries = readZipEntries(buffer);
+
+    // Get shared strings
+    const ssEntry = entries.find((e) => e.name === 'xl/sharedStrings.xml');
+    const sharedStrings: string[] = [];
+    if (ssEntry) {
+      const ssXml = ssEntry.data.toString('utf-8');
+      const siRegex = /<si[^>]*>([\s\S]*?)<\/si>/g;
+      let siMatch: RegExpExecArray | null;
+      siMatch = siRegex.exec(ssXml);
+      while (siMatch !== null) {
+        // Extract all <t> content within <si>
+        const tContent = extractXmlText(siMatch[1]!, 't');
+        sharedStrings.push(tContent);
+        siMatch = siRegex.exec(ssXml);
+      }
+    }
+
+    // Find all sheet files
+    const sheetEntries = entries
+      .filter((e) => e.name.match(/^xl\/worksheets\/sheet\d+\.xml$/))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    if (sheetEntries.length === 0) {
+      return { success: false, output: 'Not a valid XLSX file (no worksheets found)', error: 'INVALID_FORMAT' };
+    }
+
+    const output: string[] = [];
+    for (const sheet of sheetEntries) {
+      const sheetXml = sheet.data.toString('utf-8');
+      const rows: string[] = [];
+      const rowRegex = /<row[^>]*>([\s\S]*?)<\/row>/g;
+      let rowMatch: RegExpExecArray | null;
+      rowMatch = rowRegex.exec(sheetXml);
+      while (rowMatch !== null) {
+        const cells: string[] = [];
+        const cellRegex = /<c([^>]*)>([\s\S]*?)<\/c>/g;
+        let cellMatch: RegExpExecArray | null;
+        cellMatch = cellRegex.exec(rowMatch[1]!);
+        while (cellMatch !== null) {
+          const attrs = cellMatch[1]!;
+          const inner = cellMatch[2]!;
+          const valueMatch = inner.match(/<v>([\s\S]*?)<\/v>/);
+          if (valueMatch) {
+            const val = valueMatch[1]!;
+            if (attrs.includes('t="s"')) {
+              // Shared string reference
+              cells.push(sharedStrings[parseInt(val, 10)] ?? val);
+            } else {
+              cells.push(val);
+            }
+          } else {
+            cells.push('');
+          }
+          cellMatch = cellRegex.exec(rowMatch[1]!);
+        }
+        rows.push(cells.join('\t'));
+        rowMatch = rowRegex.exec(sheetXml);
+      }
+      if (rows.length > 0) {
+        const sheetName = sheet.name.replace('xl/worksheets/', '').replace('.xml', '');
+        output.push(`--- ${sheetName} ---\n${rows.join('\n')}`);
+      }
+    }
+
+    const result = output.join('\n\n');
+    if (!result.trim()) {
+      return { success: true, output: '(Spreadsheet is empty)' };
+    }
+    return { success: true, output: truncateOutput(result) };
+  } catch (err) {
+    return { success: false, output: `Failed to read XLSX: ${err instanceof Error ? err.message : String(err)}`, error: 'READ_ERROR' };
+  }
+}
+
+/**
+ * Extract text from a PPTX (PowerPoint) file.
+ */
+export async function pptxRead(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const file = args['path'] as string ?? args['file'] as string;
+  if (!file) return { success: false, output: 'path is required', error: 'MISSING_INPUT' };
+
+  const filePath = resolve(context.scopePath, file);
+  if (!existsSync(filePath)) {
+    return { success: false, output: `File not found: ${file}`, error: 'FILE_NOT_FOUND' };
+  }
+
+  try {
+    const buffer = readFileSync(filePath);
+    const entries = readZipEntries(buffer);
+
+    // Find all slide files
+    const slideEntries = entries
+      .filter((e) => e.name.match(/^ppt\/slides\/slide\d+\.xml$/))
+      .sort((a, b) => {
+        const numA = parseInt(a.name.match(/slide(\d+)/)?.[1] ?? '0', 10);
+        const numB = parseInt(b.name.match(/slide(\d+)/)?.[1] ?? '0', 10);
+        return numA - numB;
+      });
+
+    if (slideEntries.length === 0) {
+      return { success: false, output: 'Not a valid PPTX file (no slides found)', error: 'INVALID_FORMAT' };
+    }
+
+    const output: string[] = [];
+    for (let i = 0; i < slideEntries.length; i++) {
+      const slideXml = slideEntries[i]!.data.toString('utf-8');
+      // Extract text from <a:t> tags (DrawingML text)
+      const slideText = extractXmlText(slideXml, 'a:t');
+      if (slideText.trim()) {
+        output.push(`--- Slide ${i + 1} ---\n${slideText}`);
+      }
+    }
+
+    const result = output.join('\n\n');
+    if (!result.trim()) {
+      return { success: true, output: '(Presentation contains no extractable text)' };
+    }
+    return { success: true, output: truncateOutput(result) };
+  } catch (err) {
+    return { success: false, output: `Failed to read PPTX: ${err instanceof Error ? err.message : String(err)}`, error: 'READ_ERROR' };
+  }
+}
+
+// ─── ZIP Reader (handles STORED + DEFLATE, no deps) ─────────────────────────
+
+interface ZipEntry {
+  name: string;
+  data: Buffer;
+}
+
+function readZipEntries(buf: Buffer): ZipEntry[] {
+  const entries: ZipEntry[] = [];
+  let pos = 0;
+
+  while (pos < buf.length - 4) {
+    // Look for local file header signature: PK\x03\x04
+    if (buf[pos] !== 0x50 || buf[pos + 1] !== 0x4b || buf[pos + 2] !== 0x03 || buf[pos + 3] !== 0x04) {
+      break; // No more local headers
+    }
+
+    const compressionMethod = buf.readUInt16LE(pos + 8);
+    const compressedSize = buf.readUInt32LE(pos + 18);
+    const nameLen = buf.readUInt16LE(pos + 26);
+    const extraLen = buf.readUInt16LE(pos + 28);
+
+    const name = buf.subarray(pos + 30, pos + 30 + nameLen).toString('utf-8');
+    const dataStart = pos + 30 + nameLen + extraLen;
+
+    let data: Buffer;
+    if (compressionMethod === 0) {
+      // STORED
+      data = buf.subarray(dataStart, dataStart + compressedSize) as Buffer;
+    } else if (compressionMethod === 8) {
+      // DEFLATE
+      try {
+        const compressed = buf.subarray(dataStart, dataStart + compressedSize);
+        data = inflateSync(compressed, { finishFlush: 2 }) as Buffer; // Z_SYNC_FLUSH for raw deflate
+      } catch {
+        try {
+          // Try raw inflate (no header)
+          const compressed = buf.subarray(dataStart, dataStart + compressedSize);
+          data = inflateSync(compressed) as Buffer;
+        } catch {
+          data = Buffer.alloc(0);
+        }
+      }
+    } else {
+      data = Buffer.alloc(0); // Unsupported compression
+    }
+
+    if (name && !name.endsWith('/')) {
+      entries.push({ name, data });
+    }
+
+    pos = dataStart + compressedSize;
+  }
+
+  return entries;
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function extractXmlText(xml: string, tagName: string): string {
+  const parts: string[] = [];
+  // Match both <tag>content</tag> and <tag attr="...">content</tag>
+  const regex = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`, 'g');
+  let match: RegExpExecArray | null;
+  match = regex.exec(xml);
+  while (match !== null) {
+    parts.push(match[1]!);
+    match = regex.exec(xml);
+  }
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function truncateOutput(text: string, maxChars = 100_000): string {
+  if (text.length <= maxChars) return text;
+  return text.slice(0, maxChars) + '\n\n... [truncated, file too large]';
 }
