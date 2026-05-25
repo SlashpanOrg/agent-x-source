@@ -15,6 +15,7 @@ interface SessionPanelProps {
   provider: string;
   model: string;
   profileName?: string;
+  scopePath?: string;
   tokensUsed: number;
   tokensTotal: number;
   isProcessing?: boolean;
@@ -23,10 +24,12 @@ interface SessionPanelProps {
 
 export const SessionPanel: FC<SessionPanelProps> = ({
   sessionId,
+  scopePath,
   tokensUsed,
   tokensTotal,
   backgroundTasks = [],
 }) => {
+  const shortPath = scopePath ? (scopePath.length > 40 ? '…' + scopePath.slice(-39) : scopePath) : '';
   return (
     <Box
       flexDirection="column"
@@ -34,7 +37,8 @@ export const SessionPanel: FC<SessionPanelProps> = ({
       borderColor={COLORS.border}
       paddingX={1}
     >
-      <Row label="Session" value={sessionId.slice(5, 13)} />
+      <Row label="Session" value={sessionId.slice(0, 8)} />
+      {shortPath && <Row label="Path" value={shortPath} />}
       <TokenBar used={tokensUsed} total={tokensTotal} />
 
       {backgroundTasks.length > 0 && (

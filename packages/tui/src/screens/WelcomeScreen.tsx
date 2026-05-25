@@ -267,6 +267,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, profile, restore
           provider={config.provider.activeProvider}
           model={currentModel}
           profileName={profile.name}
+          scopePath={process.cwd()}
           tokensUsed={tokensUsed}
           tokensTotal={tokensTotal}
           isProcessing={isLoading}

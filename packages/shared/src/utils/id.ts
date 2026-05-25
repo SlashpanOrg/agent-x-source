@@ -1,4 +1,5 @@
 import { nanoid } from 'nanoid';
+import { randomUUID } from 'node:crypto';
 
 export function generateId(prefix?: string): string {
   const id = nanoid(21);
@@ -6,7 +7,7 @@ export function generateId(prefix?: string): string {
 }
 
 export function generateSessionId(): string {
-  return generateId('sess');
+  return randomUUID();
 }
 
 export function generateMessageId(): string {
