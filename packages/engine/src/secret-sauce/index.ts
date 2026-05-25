@@ -78,15 +78,16 @@ export class SecretSauceManager {
     }
 
     const soulCtx = this.soul.buildContext();
+    const identityCtx = this.identity.buildContext();
 
     // Allocate remaining budget to memories and diary
-    const usedTokens = Math.ceil((profileCtx.length + emotionCtx.length + soulCtx.length) / 4);
+    const usedTokens = Math.ceil((profileCtx.length + emotionCtx.length + soulCtx.length + identityCtx.length) / 4);
     const remainingBudget = Math.max(500, tokenBudget - usedTokens);
 
     const { global: globalMemCtx, profile: profileMemCtx } = this.memories.buildContext(Math.floor(remainingBudget * 0.6));
     const diaryCtx = this.diary.buildContext();
 
-    const full = [profileCtx, emotionCtx, soulCtx, globalMemCtx, profileMemCtx, diaryCtx]
+    const full = [profileCtx, emotionCtx, soulCtx, identityCtx, globalMemCtx, profileMemCtx, diaryCtx]
       .filter((s) => s.length > 0)
       .join('\n\n');
 

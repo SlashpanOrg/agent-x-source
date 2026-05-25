@@ -14,6 +14,9 @@ Extract ONLY explicit personal facts, preferences, instructions, or corrections 
 - "Call me Bob" → category: identity, content: "User wants to be called Bob"
 - "I work at Google" → category: identity, content: "User works at Google"
 - "Remember that my project uses React" → category: project, content: "User's project uses React"
+- "From now on you are called Wikki" → category: identity, content: "Agent should be called Wikki"
+- "Your name is Luna" → category: identity, content: "Agent should be called Luna"
+- "I want you to be more formal" → category: instruction, content: "User wants formal communication style"
 
 Do NOT extract:
 - General knowledge questions/answers
@@ -58,6 +61,8 @@ export class MemoryExtractor {
       'i want you to', 'keep in mind', 'note that',
       'my project', 'my team', 'my company', 'my stack',
       'i go by', 'refer to me', 'address me',
+      'your name', 'you are called', 'be called', 'call you',
+      'you will be', 'you shall be', 'rename you',
     ];
 
     return triggers.some((t) => lower.includes(t));

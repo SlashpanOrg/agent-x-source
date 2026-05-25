@@ -425,6 +425,13 @@ export class Agent {
     void this.memoryExtractor.extract(userMessage, assistantResponse).then((memories) => {
       for (const mem of memories) {
         this.secretSauce.recordMemory(mem.content, mem.category);
+        // Update identity name when user gives a name instruction
+        if (mem.category === 'identity') {
+          const nameMatch = mem.content.match(/(?:called|name is|go by|known as|address(?:ed)? as|be called)\s+["']?(\w+)/i);
+          if (nameMatch) {
+            this.secretSauce.identity.setName(nameMatch[1]!);
+          }
+        }
       }
     }).catch(() => {
       // Silent failure — memory extraction is best-effort
