@@ -2,7 +2,7 @@ import React from 'react';
 import { render } from 'ink';
 import { VERSION, APP_NAME, TAGLINE, getLogger } from '@agentx/shared';
 import { App } from '@agentx/tui';
-import { ConfigManager } from '@agentx/engine';
+import { ConfigManager, TelegramStore } from '@agentx/engine';
 import { existsSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -127,6 +127,33 @@ async function main(): Promise<void> {
         process.exit(0);
       }
     }
+
+    // Pre-check: Agent-X must be configured
+    const configMgr = new ConfigManager();
+    if (!configMgr.isConfigured()) {
+      console.error('✗ Agent-X is not configured yet.\n');
+      console.error('  Run `agentx` to launch the interactive setup first.');
+      process.exit(1);
+    }
+
+    // Pre-check: Telegram bot token must be configured for daemon mode
+    const telegramStore = new TelegramStore();
+    const telegramConfig = telegramStore.load();
+    if (!telegramConfig?.botToken) {
+      console.error('✗ Telegram bot is not configured. The daemon requires Telegram as its interface.\n');
+      console.error('  Follow these steps to configure:\n');
+      console.error('  1. Open Telegram and search for @BotFather');
+      console.error('  2. Send /newbot and follow the prompts to create a bot');
+      console.error('  3. Copy the bot token (looks like: 123456789:ABCdefGhIjKlMnOpQrStUvWxYz)');
+      console.error('  4. Start Agent-X TUI:  agentx');
+      console.error('  5. Run the command:    /telegram start <your-bot-token>');
+      console.error('  6. Open your bot in Telegram and send /start');
+      console.error('  7. Then run:           agentx start\n');
+      console.error('  Alternatively, create ~/.config/agentx/telegram.json with:');
+      console.error('  { "botToken": "<your-bot-token>" }');
+      process.exit(1);
+    }
+
     // Spawn daemon as detached background process
     const daemonScript = join(dirname(new URL(import.meta.url).pathname), 'daemon.js');
     const child = spawn(process.execPath, [daemonScript, '--daemon'], {
@@ -143,7 +170,7 @@ async function main(): Promise<void> {
       console.log(`  Profile: ${status.profile ?? 'default'}`);
       if (status.telegram) console.log(`  Telegram: @${status.botUsername ?? 'connected'}`);
     } else {
-      console.error('✗ Failed to start daemon. Check logs or run `agentx` to configure.');
+      console.error('✗ Failed to start daemon. Check logs at: ~/.local/share/agentx/logs/');
     }
     process.exit(0);
   }
