@@ -27,9 +27,14 @@ export const telegramCommand: CommandInterface = {
             'Telegram Bridge Commands:',
             '  /telegram start <token>  - Start the Telegram bot',
             '  /telegram stop           - Stop the bridge',
-            '  /telegram status         - Show bridge status',
+            '  /telegram status         - Show bridge status & setup guide',
             '',
-            'Get a bot token from @BotFather on Telegram.',
+            '━━━ How to get a bot token ━━━',
+            '1. Open Telegram and search for @BotFather',
+            '2. Send /newbot to create a new bot',
+            '3. Follow the prompts to set a name and username',
+            '4. BotFather will give you an API token (e.g. 123456:ABC-DEF1234...)',
+            '5. Run: /telegram start <your_token>',
           ].join('\n'),
         };
     }

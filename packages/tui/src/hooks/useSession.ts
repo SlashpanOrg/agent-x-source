@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Message, EngineEvent, AgentXConfig, ModelInfo, RemediationAction, ProviderId, Profile, TodoItem } from '@agentx/shared';
 import { getLogger } from '@agentx/shared';
-import { Agent, CommandParser, createDefaultRegistry, ConfigManager, SessionStore, ProviderFactory } from '@agentx/engine';
+import { Agent, CommandParser, createDefaultRegistry, ConfigManager, SessionStore, ProviderFactory, TelegramBridge, TelegramStore } from '@agentx/engine';
 import { generateSessionId } from '@agentx/shared';
 
 interface PermissionRequest {
@@ -66,7 +66,8 @@ export function useSession(config: AgentXConfig, _profile?: Profile, restoreSess
   const commandParserRef = useRef(new CommandParser());
   const commandRegistryRef = useRef(createDefaultRegistry());
   const lastUserMessageRef = useRef<string>('');
-
+  const telegramBridgeRef = useRef<TelegramBridge | null>(null);
+  const telegramStoreRef = useRef<TelegramStore>(new TelegramStore());
   useEffect(() => {
     const agent = new Agent({
       config,
@@ -216,6 +217,10 @@ export function useSession(config: AgentXConfig, _profile?: Profile, restoreSess
       if (agentRef.current) {
         agentRef.current.endSession();
       }
+      // Stop telegram bridge if running
+      if (telegramBridgeRef.current) {
+        telegramBridgeRef.current.stop();
+      }
     };
   }, [config, sessionId]);
 
@@ -275,20 +280,32 @@ export function useSession(config: AgentXConfig, _profile?: Profile, restoreSess
           } else if (result.action === 'exit') {
             process.exit(0);
           } else if (result.action === 'telegram_start') {
-            // Start telegram bridge
+            // Start telegram bridge and persist token
             void (async () => {
               try {
-                const { TelegramBridge } = await import('@agentx/engine');
                 const token = parsedArgs[1]; // token from /telegram start <token>
-                if (token && agentRef.current) {
+                if (!token) {
+                  setError('Missing bot token. Usage: /telegram start <bot_token>');
+                  setErrorActions([{ type: 'dismiss', label: 'Dismiss' }]);
+                  return;
+                }
+                if (agentRef.current) {
+                  // Stop existing bridge if running
+                  if (telegramBridgeRef.current) {
+                    telegramBridgeRef.current.stop();
+                  }
                   const bridge = new TelegramBridge({ botToken: token });
                   bridge.attach(agentRef.current);
                   await bridge.start();
+                  telegramBridgeRef.current = bridge;
+                  // Persist token for future sessions
+                  telegramStoreRef.current.save({ botToken: token });
+                  const status = bridge.getStatus();
                   setMessages((prev) => [...prev, {
                     id: `sys-tg-${Date.now()}`,
                     sessionId,
                     role: 'assistant' as const,
-                    content: '✅ Telegram bridge started! Your bot is now online.',
+                    content: `✅ Telegram bridge started! Bot @${status.botUsername ?? 'unknown'} is now online and polling for messages.`,
                     toolCalls: null,
                     createdAt: new Date().toISOString(),
                     tokenCount: 0,
@@ -296,9 +313,14 @@ export function useSession(config: AgentXConfig, _profile?: Profile, restoreSess
                 }
               } catch (err) {
                 setError(`Telegram bridge error: ${err instanceof Error ? err.message : String(err)}`);
+                setErrorActions([{ type: 'dismiss', label: 'Dismiss' }]);
               }
             })();
           } else if (result.action === 'telegram_stop') {
+            if (telegramBridgeRef.current) {
+              telegramBridgeRef.current.stop();
+              telegramBridgeRef.current = null;
+            }
             setMessages((prev) => [...prev, {
               id: `sys-tg-${Date.now()}`,
               sessionId,
@@ -309,11 +331,42 @@ export function useSession(config: AgentXConfig, _profile?: Profile, restoreSess
               tokenCount: 0,
             }]);
           } else if (result.action === 'telegram_status') {
-            // Show setup prompt with remediation actions
-            setError('Telegram bridge is not configured. Get a bot token from @BotFather on Telegram, then use /telegram start <token>.');
-            setErrorActions([
-              { type: 'dismiss', label: 'Dismiss' },
-            ]);
+            if (telegramBridgeRef.current) {
+              const status = telegramBridgeRef.current.getStatus();
+              setMessages((prev) => [...prev, {
+                id: `sys-tg-${Date.now()}`,
+                sessionId,
+                role: 'assistant' as const,
+                content: `📡 Telegram Bridge Status:\n  Bot: @${status.botUsername ?? 'unknown'}\n  Connected: ${status.connected ? 'Yes' : 'No'}\n  Messages processed: ${status.messageCount}`,
+                toolCalls: null,
+                createdAt: new Date().toISOString(),
+                tokenCount: 0,
+              }]);
+            } else {
+              const stored = telegramStoreRef.current.load();
+              const helpText = [
+                '📡 Telegram bridge is not running.',
+                '',
+                stored?.botToken ? 'A bot token is saved. Use /telegram start to reconnect.' : 'No bot token configured.',
+                '',
+                '━━━ Setup Guide ━━━',
+                '1. Open Telegram and message @BotFather',
+                '2. Send /newbot and follow the prompts',
+                '3. Copy the bot token (looks like: 123456:ABC-DEF...)',
+                '4. Run: /telegram start <your_token>',
+                '',
+                'The bot will run in the background and forward messages to Agent-X.',
+              ].join('\n');
+              setMessages((prev) => [...prev, {
+                id: `sys-tg-${Date.now()}`,
+                sessionId,
+                role: 'assistant' as const,
+                content: helpText,
+                toolCalls: null,
+                createdAt: new Date().toISOString(),
+                tokenCount: 0,
+              }]);
+            }
           }
         });
         return;
