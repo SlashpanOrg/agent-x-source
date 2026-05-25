@@ -37,7 +37,7 @@ export const SessionPanel: FC<SessionPanelProps> = ({
       borderColor={COLORS.border}
       paddingX={1}
     >
-      <Row label="Session" value={sessionId.slice(0, 8)} />
+      <Row label="Session" value={sessionId} />
       {shortPath && <Row label="Path" value={shortPath} />}
       <TokenBar used={tokensUsed} total={tokensTotal} />
 
