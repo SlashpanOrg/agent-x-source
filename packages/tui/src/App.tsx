@@ -16,17 +16,17 @@ interface AppProps {
 
 export const App: FC<AppProps> = ({ sessionId: restoreSessionId, recovered }) => {
   const configManager = new ConfigManager();
-  const isConfigured = configManager.isConfigured();
+  const isSetupDone = configManager.isSetupComplete();
 
   // If restoring a session, skip profile select (profile is in session metadata)
   const [state, setState] = useState<AppState>(() => {
-    if (!isConfigured) return 'setup';
+    if (!isSetupDone) return 'setup';
     if (restoreSessionId) return 'main'; // Skip profile select on restore
     return 'profile';
   });
 
   const [config, setConfig] = useState<AgentXConfig | null>(() => {
-    if (isConfigured) {
+    if (isSetupDone) {
       try {
         return configManager.load();
       } catch {

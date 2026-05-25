@@ -243,10 +243,12 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
   }, []);
 
   const handleLaunchComplete = useCallback(() => {
-    // Load final state and emit
+    // Mark setup as complete and load final state
     const cm = new ConfigManager();
     const pm = new ProfileManager();
     const config = cm.load();
+    config.setupComplete = true;
+    cm.save(config);
     const profile = pm.getActive();
     onComplete(config, profile);
   }, [onComplete]);
