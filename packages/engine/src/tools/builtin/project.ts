@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 
@@ -116,5 +116,5 @@ export async function projectDetect(_args: Record<string, unknown>, context: Too
     `Monorepo: ${monorepo ? 'Yes' : 'No'}`,
   ];
 
-  return { success: true, output: lines.join('\n'), metadata: info };
+  return { success: true, output: lines.join('\n'), metadata: info as unknown as Record<string, unknown> };
 }
