@@ -36,6 +36,7 @@ export const agentXConfigSchema = z.object({
   telemetry: z.boolean().default(false),
   timezone: z.string().optional(),
   user: userConfigSchema,
+  setupComplete: z.boolean().optional(),
 });
 
 export type ValidatedConfig = z.infer<typeof agentXConfigSchema>;

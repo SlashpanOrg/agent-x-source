@@ -11,6 +11,7 @@ export interface AgentXConfig {
   telemetry: boolean;
   timezone?: string; // IANA timezone (e.g. 'Asia/Kolkata'). Auto-detected if not set.
   user?: UserConfig;
+  setupComplete?: boolean; // true after Mission Control wizard finishes
 }
 
 export interface ProviderSettings {

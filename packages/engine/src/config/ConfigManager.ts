@@ -19,6 +19,24 @@ export class ConfigManager {
     return existsSync(this.configPath);
   }
 
+  /**
+   * Returns true if the setup wizard has been completed.
+   * Legacy configs (pre-wizard) are treated as complete if they have a valid provider.
+   */
+  isSetupComplete(): boolean {
+    if (!this.isConfigured()) return false;
+    try {
+      const config = this.load();
+      // Explicit flag from wizard
+      if (config.setupComplete === true) return true;
+      // Legacy: existing users with a working provider are already set up
+      if (config.provider?.activeProvider && config.provider?.activeModel) return true;
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   load(): AgentXConfig {
     if (this.config) return this.config;
 
