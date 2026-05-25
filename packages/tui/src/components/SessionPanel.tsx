@@ -14,7 +14,7 @@ interface SessionPanelProps {
   sessionId: string;
   provider: string;
   model: string;
-  profileName?: string;
+  crewName?: string;
   scopePath?: string;
   tokensUsed: number;
   tokensTotal: number;

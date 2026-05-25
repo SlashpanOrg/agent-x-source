@@ -10,30 +10,30 @@ interface MemoryEntry {
   relevance: number;
 }
 
-/** Categories that are global (shared across all profiles) */
+/** Categories that are global (shared across all crews) */
 const GLOBAL_CATEGORIES = new Set(['identity', 'preference']);
 
 export class MemoryManager {
   private globalMemories: MemoryEntry[] = [];
-  private profileMemories: MemoryEntry[] = [];
+  private crewMemories: MemoryEntry[] = [];
   private secretSauceDir: string;
-  private profileId: string;
+  private crewId: string;
   private maxMemories = 100;
   private windowDays = 30;
 
-  constructor(profileId = 'default') {
+  constructor(crewId = 'default') {
     this.secretSauceDir = getSecretSauceDir();
-    this.profileId = profileId;
+    this.crewId = crewId;
     this.loadGlobal();
-    this.loadProfile();
+    this.loadCrew();
   }
 
   private getGlobalPath(): string {
     return join(this.secretSauceDir, 'global', 'memories.json');
   }
 
-  private getProfilePath(): string {
-    return join(this.secretSauceDir, 'profiles', this.profileId, 'memories.json');
+  private getCrewPath(): string {
+    return join(this.secretSauceDir, 'crews', this.crewId, 'memories.json');
   }
 
   private loadGlobal(): void {
@@ -47,13 +47,13 @@ export class MemoryManager {
     }
   }
 
-  private loadProfile(): void {
-    const memPath = this.getProfilePath();
+  private loadCrew(): void {
+    const memPath = this.getCrewPath();
     if (existsSync(memPath)) {
       try {
-        this.profileMemories = JSON.parse(readFileSync(memPath, 'utf-8')) as MemoryEntry[];
+        this.crewMemories = JSON.parse(readFileSync(memPath, 'utf-8')) as MemoryEntry[];
       } catch {
-        this.profileMemories = [];
+        this.crewMemories = [];
       }
     }
   }
@@ -64,10 +64,10 @@ export class MemoryManager {
     writeFileSync(this.getGlobalPath(), JSON.stringify(this.globalMemories, null, 2));
   }
 
-  private saveProfile(): void {
-    const dir = join(this.secretSauceDir, 'profiles', this.profileId);
+  private saveCrew(): void {
+    const dir = join(this.secretSauceDir, 'crews', this.crewId);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(this.getProfilePath(), JSON.stringify(this.profileMemories, null, 2));
+    writeFileSync(this.getCrewPath(), JSON.stringify(this.crewMemories, null, 2));
   }
 
   addMemory(content: string, category: string): void {
@@ -84,9 +84,9 @@ export class MemoryManager {
       this.pruneList(this.globalMemories);
       this.saveGlobal();
     } else {
-      this.profileMemories.push(entry);
-      this.pruneList(this.profileMemories);
-      this.saveProfile();
+      this.crewMemories.push(entry);
+      this.pruneList(this.crewMemories);
+      this.saveCrew();
     }
   }
 
@@ -105,7 +105,7 @@ export class MemoryManager {
   }
 
   getRecentMemories(limit = 20): MemoryEntry[] {
-    return [...this.globalMemories, ...this.profileMemories]
+    return [...this.globalMemories, ...this.crewMemories]
       .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
       .slice(0, limit);
   }
@@ -116,15 +116,15 @@ export class MemoryManager {
       .slice(0, limit);
   }
 
-  getProfileMemories(limit = 10): MemoryEntry[] {
-    return this.profileMemories
+  getCrewMemories(limit = 10): MemoryEntry[] {
+    return this.crewMemories
       .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
       .slice(0, limit);
   }
 
   searchMemories(query: string): MemoryEntry[] {
     const lower = query.toLowerCase();
-    return [...this.globalMemories, ...this.profileMemories].filter(
+    return [...this.globalMemories, ...this.crewMemories].filter(
       (m) => m.content.toLowerCase().includes(lower) || m.category.toLowerCase().includes(lower),
     );
   }
@@ -132,12 +132,12 @@ export class MemoryManager {
   /**
    * Build context for system prompt.
    * Global memories = user identity/preferences (shared).
-   * Profile memories = domain-specific knowledge for this profile.
+   * Crew memories = domain-specific knowledge for this crew.
    */
-  buildContext(tokenBudget = 2000): { global: string; profile: string } {
+  buildContext(tokenBudget = 2000): { global: string; crew: string } {
     const globalCtx = this.buildSection(this.getGlobalMemories(10), 'USER_CONTEXT', Math.floor(tokenBudget * 0.4));
-    const profileCtx = this.buildSection(this.getProfileMemories(10), 'PROFILE_MEMORIES', Math.floor(tokenBudget * 0.6));
-    return { global: globalCtx, profile: profileCtx };
+    const crewCtx = this.buildSection(this.getCrewMemories(10), 'CREW_MEMORIES', Math.floor(tokenBudget * 0.6));
+    return { global: globalCtx, crew: crewCtx };
   }
 
   private buildSection(entries: MemoryEntry[], tag: string, budget: number): string {
@@ -159,13 +159,13 @@ export class MemoryManager {
   }
 
   getCount(): number {
-    return this.globalMemories.length + this.profileMemories.length;
+    return this.globalMemories.length + this.crewMemories.length;
   }
 
   /**
    * Migrate legacy flat memories.json into the new structure.
    */
-  static migrateIfNeeded(profileId: string): void {
+  static migrateIfNeeded(crewId: string): void {
     const sauceDir = getSecretSauceDir();
     const legacyPath = join(sauceDir, 'memories.json');
     if (!existsSync(legacyPath)) return;
@@ -173,15 +173,15 @@ export class MemoryManager {
     try {
       const entries = JSON.parse(readFileSync(legacyPath, 'utf-8')) as MemoryEntry[];
       const globalDir = join(sauceDir, 'global');
-      const profileDir = join(sauceDir, 'profiles', profileId);
+      const crewDir = join(sauceDir, 'crews', crewId);
       mkdirSync(globalDir, { recursive: true });
-      mkdirSync(profileDir, { recursive: true });
+      mkdirSync(crewDir, { recursive: true });
 
       const globalEntries = entries.filter((m) => GLOBAL_CATEGORIES.has(m.category));
-      const profileEntries = entries.filter((m) => !GLOBAL_CATEGORIES.has(m.category));
+      const crewEntries = entries.filter((m) => !GLOBAL_CATEGORIES.has(m.category));
 
       writeFileSync(join(globalDir, 'memories.json'), JSON.stringify(globalEntries, null, 2));
-      writeFileSync(join(profileDir, 'memories.json'), JSON.stringify(profileEntries, null, 2));
+      writeFileSync(join(crewDir, 'memories.json'), JSON.stringify(crewEntries, null, 2));
 
       // Remove legacy file after successful migration
       unlinkSync(legacyPath);

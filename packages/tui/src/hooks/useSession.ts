@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { Message, EngineEvent, AgentXConfig, ModelInfo, RemediationAction, ProviderId, Profile, TodoItem } from '@agentx/shared';
+import type { Message, EngineEvent, AgentXConfig, ModelInfo, RemediationAction, ProviderId,Crew, TodoItem } from '@agentx/shared';
 import { getLogger } from '@agentx/shared';
 import { Agent, CommandParser, createDefaultRegistry, ConfigManager, SessionStore, ProviderFactory, TelegramBridge, TelegramStore } from '@agentx/engine';
 import { generateSessionId } from '@agentx/shared';
@@ -41,7 +41,7 @@ interface UseSessionReturn {
   subAgents: Array<{ agentId: string; name: string; status: string; startTime: number }>;
 }
 
-export function useSession(config: AgentXConfig, _profile?: Profile, restoreSessionId?: string, onProfileSwitch?: () => void): UseSessionReturn {
+export function useSession(config: AgentXConfig, _crew?: Crew, restoreSessionId?: string, onCrewSwitch?: () => void): UseSessionReturn {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingContent, setStreamingContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -271,10 +271,10 @@ export function useSession(config: AgentXConfig, _profile?: Profile, restoreSess
             const configManager = new ConfigManager();
             configManager.reset();
             process.exit(0);
-          } else if (result.action === 'switch_profile') {
-            // Show profile picker UI
-            if (onProfileSwitch) {
-              onProfileSwitch();
+          } else if (result.action === 'switch_crew') {
+            // Show crew picker UI
+            if (onCrewSwitch) {
+              onCrewSwitch();
             }
           } else if (result.action === 'clear') {
             setMessages([]);

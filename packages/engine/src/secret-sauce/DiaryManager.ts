@@ -13,17 +13,17 @@ interface DiaryEntry {
 export class DiaryManager {
   private entries: DiaryEntry[] = [];
   private secretSauceDir: string;
-  private profileId: string;
+  private crewId: string;
   private maxEntries = 90; // ~3 months
 
-  constructor(profileId = 'default') {
+  constructor(crewId = 'default') {
     this.secretSauceDir = getSecretSauceDir();
-    this.profileId = profileId;
+    this.crewId = crewId;
     this.load();
   }
 
   private getDiaryPath(): string {
-    return join(this.secretSauceDir, 'profiles', this.profileId, 'diary.json');
+    return join(this.secretSauceDir, 'crews', this.crewId, 'diary.json');
   }
 
   private load(): void {
@@ -38,7 +38,7 @@ export class DiaryManager {
   }
 
   private save(): void {
-    const dir = join(this.secretSauceDir, 'profiles', this.profileId);
+    const dir = join(this.secretSauceDir, 'crews', this.crewId);
     mkdirSync(dir, { recursive: true });
     writeFileSync(this.getDiaryPath(), JSON.stringify(this.entries, null, 2));
   }

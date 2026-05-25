@@ -17,7 +17,7 @@ export class SessionManager {
     this.store = new SessionStore(options.dbPath);
   }
 
-  createSession(providerId: string, modelId: string, profileId?: string, scopePath?: string): Session {
+  createSession(providerId: string, modelId: string, crewId?: string, scopePath?: string): Session {
     const contextWindow = 128_000;
     const session: Session = {
       id: generateSessionId(),
@@ -25,7 +25,7 @@ export class SessionManager {
       status: 'active' as SessionStatus,
       providerId,
       modelId,
-      profileId: profileId ?? null,
+      crewId: crewId ?? null,
       scopePath: scopePath ?? process.cwd(),
       tokenUsed: 0,
       tokenAvailable: contextWindow,
@@ -39,7 +39,7 @@ export class SessionManager {
       status: session.status,
       provider: session.providerId,
       model: session.modelId,
-      profileId: session.profileId,
+      crewId: session.crewId,
       tokensUsed: session.tokenUsed,
       tokenAvailable: contextWindow,
       createdAt: session.createdAt,

@@ -31,19 +31,19 @@ const DEFAULT_IDENTITY: IdentityState = {
 };
 
 /**
- * Manages the agent's evolving identity/persona — per-profile.
- * Each profile maintains its own personality, traits, and communication style.
+ * Manages the agent's evolving identity/persona — per-crew.
+ * Each crew maintains its own personality, traits, and communication style.
  */
 export class IdentityManager {
   private identity: IdentityState;
   private secretSauceDir: string;
-  private profileId: string;
+  private crewId: string;
   private filePath: string;
 
-  constructor(profileId = 'default') {
+  constructor(crewId = 'default') {
     this.secretSauceDir = getSecretSauceDir();
-    this.profileId = profileId;
-    this.filePath = join(this.secretSauceDir, 'profiles', profileId, 'identity.json');
+    this.crewId = crewId;
+    this.filePath = join(this.secretSauceDir, 'crews', crewId, 'identity.json');
     this.identity = this.load();
   }
 
@@ -59,7 +59,7 @@ export class IdentityManager {
   }
 
   private save(): void {
-    const dir = join(this.secretSauceDir, 'profiles', this.profileId);
+    const dir = join(this.secretSauceDir, 'crews', this.crewId);
     mkdirSync(dir, { recursive: true });
     this.identity.updatedAt = new Date().toISOString();
     writeFileSync(this.filePath, JSON.stringify(this.identity, null, 2));

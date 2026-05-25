@@ -53,8 +53,8 @@ describe('MemoryManager', () => {
     const mm = new MemoryManager();
     mm.addMemory('Important fact', 'project');
     const ctx = mm.buildContext();
-    expect(ctx.profile).toContain('[PROFILE_MEMORIES]');
-    expect(ctx.profile).toContain('Important fact');
+    expect(ctx.crew).toContain('[CREW_MEMORIES]');
+    expect(ctx.crew).toContain('Important fact');
   });
 
   it('routes global categories to global context', () => {
@@ -69,6 +69,6 @@ describe('MemoryManager', () => {
     const mm = new MemoryManager();
     const ctx = mm.buildContext();
     expect(ctx.global).toBe('');
-    expect(ctx.profile).toBe('');
+    expect(ctx.crew).toBe('');
   });
 });

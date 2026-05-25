@@ -8,7 +8,7 @@ interface ProgressRailProps {
 
 const STAGES = [
   { key: 'core', label: 'CORE' },
-  { key: 'profile', label: 'PROFILE' },
+  { key: 'crew', label: 'CREW' },
   { key: 'comms', label: 'COMMS' },
   { key: 'launch', label: 'LAUNCH' },
 ];

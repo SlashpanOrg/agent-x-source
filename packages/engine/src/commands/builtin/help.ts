@@ -16,7 +16,7 @@ export const helpCommand: CommandInterface = {
       '  /version       Show version info',
       '  /model         Switch AI model',
       '  /provider      Switch AI provider',
-      '  /profile       List/switch profiles',
+      '  /crew       List/switch crews',
       '  /session       Session management',
       '  /tools         List available tools',
       '  /permissions   View/revoke permissions',

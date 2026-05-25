@@ -3,18 +3,18 @@ import { Box, Text } from 'ink';
 import { COLORS } from '../../theme/colors.js';
 
 interface LaunchSequenceProps {
-  profileName: string;
+  crewName: string;
   telegramConfigured: boolean;
   onComplete: () => void;
 }
 
 const SYSTEMS = [
   { label: 'Neural Core', status: 'ONLINE' },
-  { label: 'Mission Profile', status: 'LOADED' },
+  { label: 'Crew Member', status: 'LOADED' },
 ];
 
 export const LaunchSequence: FC<LaunchSequenceProps> = ({
-  profileName,
+  crewName,
   telegramConfigured,
   onComplete,
 }) => {
@@ -81,10 +81,10 @@ export const LaunchSequence: FC<LaunchSequenceProps> = ({
             <Text color={COLORS.accent} bold>{'« LAUNCHING AGENT-X »'}</Text>
           </Box>
 
-          {profileName && (
+          {crewName && (
             <Box marginBottom={1}>
               <Text color={COLORS.textDim}>Crew member: </Text>
-              <Text color={COLORS.primary} bold>{profileName}</Text>
+              <Text color={COLORS.primary} bold>{crewName}</Text>
             </Box>
           )}
 

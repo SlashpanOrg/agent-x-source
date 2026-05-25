@@ -8,10 +8,10 @@ interface BannerProps {
   provider?: string;
   model?: string;
   organization?: OrganizationConfig | null;
-  profileName?: string;
+  crewName?: string;
 }
 
-export const Banner: FC<BannerProps> = ({ provider, model, organization, profileName }) => {
+export const Banner: FC<BannerProps> = ({ provider, model, organization, crewName }) => {
   return (
     <Box
       flexDirection="column"
@@ -48,14 +48,14 @@ export const Banner: FC<BannerProps> = ({ provider, model, organization, profile
         </Box>
       )}
 
-      {/* Profile name as the identifier line */}
-      {profileName && (
+      {/* Crew name as the identifier line */}
+      {crewName && (
         <>
           <Box marginTop={0}>
             <Text color={COLORS.border}>{'─'.repeat(40)}</Text>
           </Box>
           <Box>
-            <Text color={COLORS.accent}>⊹ {profileName}</Text>
+            <Text color={COLORS.accent}>⊹ {crewName}</Text>
           </Box>
         </>
       )}

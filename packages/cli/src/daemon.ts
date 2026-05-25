@@ -1,4 +1,4 @@
-import { Agent, ConfigManager, TelegramBridge, TelegramStore, ProfileManager, SessionStore, ProviderFactory } from '@agentx/engine';
+import { Agent, ConfigManager, TelegramBridge, TelegramStore, CrewManager, SessionStore, ProviderFactory } from '@agentx/engine';
 import { getLogger, generateSessionId, VERSION } from '@agentx/shared';
 import type { AgentXConfig, EngineEvent } from '@agentx/shared';
 import { writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
@@ -34,7 +34,7 @@ export function isDaemonRunning(): boolean {
   }
 }
 
-export function getDaemonStatus(): { running: boolean; pid?: number; profile?: string; telegram?: boolean; botUsername?: string; startedAt?: string; version?: string } {
+export function getDaemonStatus(): { running: boolean; pid?: number; crew?: string; telegram?: boolean; botUsername?: string; startedAt?: string; version?: string } {
   const statusPath = getStatusPath();
   if (!isDaemonRunning()) {
     return { running: false };
@@ -95,9 +95,9 @@ export async function startDaemon(): Promise<void> {
     process.exit(1);
   }
 
-  // Get active profile
-  const pm = new ProfileManager();
-  const activeProfile = pm.getActive();
+  // Get active crew member
+  const pm = new CrewManager();
+  const activeCrew = pm.getActive();
 
   // Write PID file
   const pidPath = getPidPath();
@@ -105,7 +105,7 @@ export async function startDaemon(): Promise<void> {
   writeFileSync(pidPath, String(process.pid));
 
   logger.info('DAEMON', `Starting Agent-X daemon (PID: ${process.pid})`);
-  logger.info('DAEMON', `Profile: ${activeProfile.name}`);
+  logger.info('DAEMON', `Crew: ${activeCrew.name}`);
 
   // Session persistence — same as TUI
   const sessionStore = new SessionStore();
@@ -330,8 +330,8 @@ export async function startDaemon(): Promise<void> {
 
     writeStatus({
       pid: process.pid,
-      profile: activeProfile.name,
-      profileId: activeProfile.id,
+      crew: activeCrew.name,
+      crewId: activeCrew.id,
       telegram: true,
       botUsername: status.botUsername,
       startedAt: new Date().toISOString(),
@@ -340,7 +340,7 @@ export async function startDaemon(): Promise<void> {
     });
 
     console.log(`✦ Agent-X daemon started (PID: ${process.pid})`);
-    console.log(`  Profile: ${activeProfile.name}`);
+    console.log(`  Crew: ${activeCrew.name}`);
     console.log(`  Telegram: @${status.botUsername}`);
   } catch (err) {
     console.error(`Failed to start Telegram bridge: ${err instanceof Error ? err.message : String(err)}`);
@@ -408,8 +408,8 @@ export async function startDaemon(): Promise<void> {
     const status = bridge.getStatus();
     writeStatus({
       pid: process.pid,
-      profile: pm.getActive().name,
-      profileId: pm.getActive().id,
+      crew: pm.getActive().name,
+      crewId: pm.getActive().id,
       telegram: status.connected,
       botUsername: status.botUsername,
       messageCount: status.messageCount,
@@ -431,7 +431,7 @@ function readStatusStartTime(): string {
 
 interface CommandContext {
   agent: Agent;
-  pm: ProfileManager;
+  pm: CrewManager;
   config: AgentXConfig;
   configManager: ConfigManager;
   sessionStore: SessionStore;
@@ -454,32 +454,32 @@ async function handleTelegramCommand(
     case 'start':
       return null; // Telegram's built-in /start — let agent handle
 
-    // ─── Profile management ───
-    case 'profiles':
-    case 'profile': {
+    // ─── Crew management ───
+    case 'crews':
+    case 'crew': {
       const sub = args[0];
       if (!sub || sub === 'list') {
-        const profiles = pm.list().filter((p) => !p.isDefault);
+        const crews = pm.list().filter((p) => !p.isDefault);
         const activeId = pm.getActiveId();
-        const lines = profiles.map((p) => `${p.id === activeId ? '● ' : '○ '}${p.name}`);
-        return `📋 Profiles:\n${lines.join('\n')}\n\nUse /profile switch <name> to change`;
+        const lines = crews.map((p) => `${p.id === activeId ? '● ' : '○ '}${p.name}`);
+        return `📋 Crew:\n${lines.join('\n')}\n\nUse /crew switch <name> to change`;
       }
       if (sub === 'switch') {
         const name = args.slice(1).join(' ');
-        if (!name) return '❌ Usage: /profile switch <name>';
-        const profiles = pm.list();
-        const target = profiles.find((p) => p.name.toLowerCase() === name.toLowerCase() || p.id === name);
-        if (!target) return `❌ Profile "${name}" not found. Use /profile list`;
+        if (!name) return '❌ Usage: /crew switch <name>';
+        const crews = pm.list();
+        const target = crews.find((p) => p.name.toLowerCase() === name.toLowerCase() || p.id === name);
+        if (!target) return `❌ Crew "${name}" not found. Use /crew list`;
         pm.switch(target.id);
-        // Rebuild system prompt with the new profile's persona
+        // Rebuild system prompt with the new crew member's persona
         agent.rebuildSystemPrompt();
         agent.clearHistory();
-        return `✅ Switched to profile: ${target.name}\nConversation reset with new persona.`;
+        return `✅ Switched to crew: ${target.name}\nConversation reset with new persona.`;
       }
       if (sub === 'current') {
-        return `📌 Current profile: ${pm.getActive().name}`;
+        return `📌 Current crew: ${pm.getActive().name}`;
       }
-      return '📋 Profile commands:\n/profile list\n/profile switch <name>\n/profile current';
+      return '📋 Crew commands:\n/crew list\n/crew switch <name>\n/crew current';
     }
 
     // ─── Model management ───
@@ -630,7 +630,7 @@ async function handleTelegramCommand(
       const status = bridge.getStatus();
       return [
         '📊 Agent-X Daemon Status',
-        `├ Profile: ${pm.getActive().name}`,
+        `├ Crew: ${pm.getActive().name}`,
         `├ Provider: ${config.provider.activeProvider}`,
         `├ Model: ${config.provider.activeModel}`,
         `├ Session: ${sessionId}`,
@@ -646,10 +646,10 @@ async function handleTelegramCommand(
       return [
         '🤖 Agent-X Commands:',
         '',
-        '📋 Profile:',
-        '  /profile list — List profiles',
-        '  /profile switch <name> — Switch profile',
-        '  /profile current — Show current',
+        '📋 Crew:',
+        '  /crew list — List crews',
+        '  /crew switch <name> — Switch crew member',
+        '  /crew current — Show current',
         '',
         '🧠 Model:',
         '  /model current — Show current model',

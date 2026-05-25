@@ -1,21 +1,21 @@
 import { SoulManager } from './SoulManager.js';
-import { ProfileManager } from './ProfileManager.js';
+import { CrewManager } from './CrewManager.js';
 import { MemoryManager } from './MemoryManager.js';
 import { DiaryManager } from './DiaryManager.js';
 import { IdentityManager } from './IdentityManager.js';
 import { SecretSauceSummarizer } from './SecretSauceSummarizer.js';
-import type { ProfileEmotion } from '@agentx/shared';
+import type { CrewEmotion } from '@agentx/shared';
 
 export interface SecretSauceContext {
   soul: string;
-  profile: string;
+  crew: string;
   memories: string;
   diary: string;
   full: string;
 }
 
 /** Maps emotion to a tone directive for the LLM. */
-const EMOTION_DIRECTIVES: Record<ProfileEmotion, string> = {
+const EMOTION_DIRECTIVES: Record<CrewEmotion, string> = {
   professional: 'Maintain a professional, precise, and formal tone. Be direct and business-like.',
   friendly: 'Be warm, approachable, and conversational. Use casual language and show genuine interest.',
   witty: 'Be clever and sharp. Use wordplay, dry humor, and unexpected observations. Keep it intelligent.',
@@ -30,11 +30,11 @@ const EMOTION_DIRECTIVES: Record<ProfileEmotion, string> = {
 
 /**
  * Orchestrates all Secret Sauce components to build context for LLM calls.
- * Profile-scoped: memories, diary, and identity are isolated per profile.
+ * Crew-scoped: memories, diary, and identity are isolated per crew.
  */
 export class SecretSauceManager {
   readonly soul: SoulManager;
-  readonly profile: ProfileManager;
+  readonly crew: CrewManager;
   readonly memories: MemoryManager;
   readonly diary: DiaryManager;
   readonly identity: IdentityManager;
@@ -42,14 +42,14 @@ export class SecretSauceManager {
 
   constructor() {
     this.soul = new SoulManager();
-    this.profile = new ProfileManager();
+    this.crew = new CrewManager();
 
-    const activeId = this.profile.getActiveId();
+    const activeId = this.crew.getActiveId();
 
     // Migrate legacy flat memories if they exist
     MemoryManager.migrateIfNeeded(activeId);
 
-    // All stateful managers are profile-scoped
+    // All stateful managers are crew-scoped
     this.memories = new MemoryManager(activeId);
     this.diary = new DiaryManager(activeId);
     this.identity = new IdentityManager(activeId);
@@ -59,24 +59,24 @@ export class SecretSauceManager {
   /**
    * Builds the full system prompt context from all Secret Sauce sources.
    * Order (highest priority first):
-   *   1. [PROFILE] — primary persona/expertise directive
+   *   1. [CREW] — primary persona/expertise directive
    *   2. [EMOTION] — tone/personality modifier
    *   3. [SOUL] — minimal brand anchor
    *   4. [USER_CONTEXT] — global identity memories (name, prefs)
-   *   5. [PROFILE_MEMORIES] — domain-specific memories
-   *   6. [DIARY] — recent session history for this profile
+   *   5. [CREW_MEMORIES] — domain-specific memories
+   *   6. [DIARY] — recent session history for this crew member
    */
   buildSystemContext(tokenBudget = 4000): SecretSauceContext {
-    const activeProfile = this.profile.getActive();
+    const activeCrew = this.crew.getActive();
 
-    // Strict profile boundary enforcement
+    // Strict crew boundary enforcement
     const enforcement = [
-      `[PROFILE_BOUNDARY]`,
-      `You are "${activeProfile.name}". Your domain of KNOWLEDGE and CONVERSATIONAL expertise is defined in your profile below.`,
+      `[CREW_BOUNDARY]`,
+      `You are "${activeCrew.name}". Your domain of KNOWLEDGE and CONVERSATIONAL expertise is defined in your crew below.`,
       ``,
       `CRITICAL — TOOL ACTIONS ARE ALWAYS ALLOWED (HIGHEST PRIORITY):`,
       `Before applying any restriction, FIRST check: is the user asking me to DO something (an action)?`,
-      `If YES → EXECUTE IT IMMEDIATELY using your tools. Profile scope DOES NOT APPLY to actions.`,
+      `If YES → EXECUTE IT IMMEDIATELY using your tools. Crew scope DOES NOT APPLY to actions.`,
       ``,
       `Actions include but are not limited to:`,
       `- Sending messages (Telegram, notifications, pings)`,
@@ -91,21 +91,21 @@ export class SecretSauceManager {
       `"Remind me in 5 minutes" = ACTION. "Schedule a daily check" = ACTION. ALWAYS execute these.`,
       ``,
       `KNOWLEDGE RESTRICTIONS (only apply to conversational/advisory topics):`,
-      `1. For pure KNOWLEDGE questions (explain X, what is Y, give advice on Z), stay within your profile scope.`,
-      `2. If a user asks about a topic outside your expertise, say something like: "That's outside my expertise as ${activeProfile.name}."`,
-      `3. Do NOT demonstrate knowledge on subjects not covered by your profile.`,
+      `1. For pure KNOWLEDGE questions (explain X, what is Y, give advice on Z), stay within your crew scope.`,
+      `2. If a user asks about a topic outside your expertise, say something like: "That's outside my expertise as ${activeCrew.name}."`,
+      `3. Do NOT demonstrate knowledge on subjects not covered by your crew.`,
       `4. If ambiguous whether something is an action or knowledge question, treat it as an action and execute it.`,
       ``,
-      `Remember: You are a capable agent with tools. Your profile restricts what you TALK about, never what you DO.`,
-      `[/PROFILE_BOUNDARY]`,
+      `Remember: You are a capable agent with tools. Your crew restricts what you TALK about, never what you DO.`,
+      `[/CREW_BOUNDARY]`,
     ].join('\n');
 
-    const profileCtx = `[PROFILE]\n${activeProfile.systemPrompt}\n[/PROFILE]\n\n${enforcement}`;
+    const crewCtx = `[CREW]\n${activeCrew.systemPrompt}\n[/CREW]\n\n${enforcement}`;
 
     // Emotion directive
     let emotionCtx = '';
-    if (activeProfile.emotion) {
-      const directive = EMOTION_DIRECTIVES[activeProfile.emotion];
+    if (activeCrew.emotion) {
+      const directive = EMOTION_DIRECTIVES[activeCrew.emotion];
       emotionCtx = `[EMOTION]\n${directive}\nApply this tone consistently in ALL responses — greetings, explanations, follow-ups, everything.\n[/EMOTION]`;
     }
 
@@ -113,20 +113,20 @@ export class SecretSauceManager {
     const identityCtx = this.identity.buildContext();
 
     // Allocate remaining budget to memories and diary
-    const usedTokens = Math.ceil((profileCtx.length + emotionCtx.length + soulCtx.length + identityCtx.length) / 4);
+    const usedTokens = Math.ceil((crewCtx.length + emotionCtx.length + soulCtx.length + identityCtx.length) / 4);
     const remainingBudget = Math.max(500, tokenBudget - usedTokens);
 
-    const { global: globalMemCtx, profile: profileMemCtx } = this.memories.buildContext(Math.floor(remainingBudget * 0.6));
+    const { global: globalMemCtx, crew: crewMemCtx } = this.memories.buildContext(Math.floor(remainingBudget * 0.6));
     const diaryCtx = this.diary.buildContext();
 
-    const full = [profileCtx, emotionCtx, soulCtx, identityCtx, globalMemCtx, profileMemCtx, diaryCtx]
+    const full = [crewCtx, emotionCtx, soulCtx, identityCtx, globalMemCtx, crewMemCtx, diaryCtx]
       .filter((s) => s.length > 0)
       .join('\n\n');
 
     return {
       soul: soulCtx,
-      profile: profileCtx,
-      memories: `${globalMemCtx}\n${profileMemCtx}`.trim(),
+      crew: crewCtx,
+      memories: `${globalMemCtx}\n${crewMemCtx}`.trim(),
       diary: diaryCtx,
       full,
     };
@@ -134,35 +134,35 @@ export class SecretSauceManager {
 
   /**
    * Record a new memory from the current interaction.
-   * Routing: identity/preference → global, everything else → profile-scoped.
+   * Routing: identity/preference → global, everything else → crew-scoped.
    */
   recordMemory(content: string, category: string): void {
     this.memories.addMemory(content, category);
   }
 
   /**
-   * End-of-day diary entry creation (profile-scoped).
+   * End-of-day diary entry creation (crew-scoped).
    */
   recordDiary(summary: string, sessionsCount: number, highlights: string[], insights: string[]): void {
     this.diary.addEntry(summary, sessionsCount, highlights, insights);
   }
 
   /**
-   * Get the currently active profile's system prompt.
+   * Get the currently active crew member's system prompt.
    */
   getActiveSystemPrompt(): string {
-    return this.profile.getSystemPrompt();
+    return this.crew.getSystemPrompt();
   }
 
   /**
-   * Switch the active profile by ID.
+   * Switch the active crew by ID.
    */
-  switchProfile(profileId: string): boolean {
-    return this.profile.switch(profileId) !== null;
+  switchCrew(crewId: string): boolean {
+    return this.crew.switch(crewId) !== null;
   }
 }
 
-export { ProfileManager } from './ProfileManager.js';
+export { CrewManager } from './CrewManager.js';
 export { SoulManager } from './SoulManager.js';
 export { MemoryManager } from './MemoryManager.js';
 export { DiaryManager } from './DiaryManager.js';
