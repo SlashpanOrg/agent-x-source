@@ -42,17 +42,30 @@ export class LMStudioProvider implements ProviderInterface {
   }
 
   async *complete(request: CompletionRequest): AsyncIterable<CompletionChunk> {
-    const body = {
+    const body: Record<string, unknown> = {
       model: request.model,
-      messages: request.messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
+      messages: request.messages.map((m) => {
+        if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+          return { role: m.role, content: m.content || null, tool_calls: m.toolCalls };
+        }
+        if (m.role === 'tool') {
+          return { role: m.role, content: m.content, tool_call_id: m.toolCallId };
+        }
+        return { role: m.role, content: m.content };
+      }),
       stream: true,
       stream_options: { include_usage: true },
-      max_tokens: request.maxTokens,
-      temperature: request.temperature,
     };
+
+    if (request.tools && request.tools.length > 0) {
+      body['tools'] = request.tools;
+    }
+    if (request.maxTokens !== undefined) {
+      body['max_tokens'] = request.maxTokens;
+    }
+    if (request.temperature !== undefined) {
+      body['temperature'] = request.temperature;
+    }
 
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -91,7 +104,16 @@ export class LMStudioProvider implements ProviderInterface {
 
         try {
           const parsed = JSON.parse(data) as {
-            choices?: Array<{ delta?: { content?: string } }>;
+            choices?: Array<{
+              delta?: {
+                content?: string;
+                tool_calls?: Array<{
+                  id?: string;
+                  type?: string;
+                  function?: { name?: string; arguments?: string };
+                }>;
+              };
+            }>;
             usage?: { prompt_tokens?: number; completion_tokens?: number };
           };
           if (parsed.usage) {
@@ -100,9 +122,23 @@ export class LMStudioProvider implements ProviderInterface {
               outputTokens: parsed.usage.completion_tokens ?? 0,
             };
           }
-          const content = parsed.choices?.[0]?.delta?.content;
-          if (content) {
-            yield { type: 'text_delta', content };
+          const delta = parsed.choices?.[0]?.delta;
+          if (delta?.content) {
+            yield { type: 'text_delta', content: delta.content };
+          }
+          if (delta?.tool_calls && delta.tool_calls.length > 0) {
+            const tc = delta.tool_calls[0];
+            yield {
+              type: 'tool_call_delta',
+              toolCall: tc ? {
+                id: tc.id ?? undefined,
+                type: tc.type === 'function' ? 'function' : undefined,
+                function: tc.function ? {
+                  name: tc.function.name ?? '',
+                  arguments: tc.function.arguments ?? '',
+                } : undefined,
+              } : undefined,
+            };
           }
         } catch {
           // Skip malformed chunks

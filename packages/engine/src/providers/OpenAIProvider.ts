@@ -55,7 +55,15 @@ export class OpenAIProvider implements ProviderInterface {
   async *complete(request: CompletionRequest): AsyncIterable<CompletionChunk> {
     const body: Record<string, unknown> = {
       model: request.model,
-      messages: request.messages,
+      messages: request.messages.map((m) => {
+        if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+          return { role: m.role, content: m.content || null, tool_calls: m.toolCalls };
+        }
+        if (m.role === 'tool') {
+          return { role: m.role, content: m.content, tool_call_id: m.toolCallId };
+        }
+        return { role: m.role, content: m.content };
+      }),
       stream: true,
       stream_options: { include_usage: true },
     };

@@ -46,14 +46,32 @@ export class OllamaProvider implements ProviderInterface {
   }
 
   async *complete(request: CompletionRequest): AsyncIterable<CompletionChunk> {
-    const body = {
+    const body: Record<string, unknown> = {
       model: request.model,
-      messages: request.messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
+      messages: request.messages.map((m) => {
+        if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+          return {
+            role: m.role,
+            content: m.content || '',
+            tool_calls: m.toolCalls.map((tc) => ({
+              function: { name: tc.function.name, arguments: JSON.parse(tc.function.arguments || '{}') },
+            })),
+          };
+        }
+        if (m.role === 'tool') {
+          return { role: m.role, content: m.content };
+        }
+        return { role: m.role, content: m.content };
+      }),
       stream: true,
     };
+
+    if (request.tools && request.tools.length > 0) {
+      body['tools'] = request.tools.map((t) => ({
+        type: 'function',
+        function: { name: t.function.name, description: t.function.description, parameters: t.function.parameters },
+      }));
+    }
 
     const response = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',
@@ -88,7 +106,12 @@ export class OllamaProvider implements ProviderInterface {
           if (!line.trim()) continue;
           try {
             const parsed = JSON.parse(line) as {
-              message?: { content?: string };
+              message?: {
+                content?: string;
+                tool_calls?: Array<{
+                  function?: { name?: string; arguments?: Record<string, unknown> };
+                }>;
+              };
               done?: boolean;
               prompt_eval_count?: number;
               eval_count?: number;
@@ -105,6 +128,23 @@ export class OllamaProvider implements ProviderInterface {
             }
             if (parsed.message?.content) {
               yield { type: 'text_delta', content: parsed.message.content };
+            }
+            if (parsed.message?.tool_calls && parsed.message.tool_calls.length > 0) {
+              for (const tc of parsed.message.tool_calls) {
+                if (tc.function) {
+                  yield {
+                    type: 'tool_call_delta',
+                    toolCall: {
+                      id: `ollama-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                      type: 'function',
+                      function: {
+                        name: tc.function.name ?? '',
+                        arguments: JSON.stringify(tc.function.arguments ?? {}),
+                      },
+                    },
+                  };
+                }
+              }
             }
           } catch {
             // Skip

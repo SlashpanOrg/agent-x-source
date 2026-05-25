@@ -74,10 +74,27 @@ export class AnthropicProvider implements ProviderInterface {
     const body: Record<string, unknown> = {
       model: request.model,
       max_tokens: request.maxTokens ?? 4096,
-      messages: nonSystemMessages.map((m) => ({
-        role: m.role === 'tool' ? 'user' : m.role,
-        content: m.content,
-      })),
+      messages: nonSystemMessages.map((m) => {
+        if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+          const content: Array<Record<string, unknown>> = [];
+          if (m.content) {
+            content.push({ type: 'text', text: m.content });
+          }
+          for (const tc of m.toolCalls) {
+            let input: unknown = {};
+            try { input = JSON.parse(tc.function.arguments); } catch { /* skip */ }
+            content.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input });
+          }
+          return { role: 'assistant', content };
+        }
+        if (m.role === 'tool') {
+          return {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: m.toolCallId, content: m.content }],
+          };
+        }
+        return { role: m.role, content: m.content };
+      }),
       stream: true,
     };
 
