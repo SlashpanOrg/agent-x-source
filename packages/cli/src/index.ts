@@ -58,6 +58,84 @@ function handleCrashRecovery(): boolean {
   return true;
 }
 
+async function handleUninstall(): Promise<void> {
+  const readline = await import('node:readline');
+  const { rmSync } = await import('node:fs');
+
+  const home = homedir();
+  const configDir = process.env['XDG_CONFIG_HOME']
+    ? join(process.env['XDG_CONFIG_HOME'], 'agentx')
+    : join(home, '.config', 'agentx');
+  const dataDir = process.env['XDG_DATA_HOME']
+    ? join(process.env['XDG_DATA_HOME'], 'agentx')
+    : join(home, '.local', 'share', 'agentx');
+  const cacheDir = process.env['XDG_CACHE_HOME']
+    ? join(process.env['XDG_CACHE_HOME'], 'agentx')
+    : join(home, '.cache', 'agentx');
+  const binDir = join(home, '.agentx');
+  const binLink = join(home, '.local', 'bin', 'agentx');
+
+  // Stop daemon if running
+  if (isDaemonRunning()) {
+    stopDaemon();
+    console.log('  ✓ Daemon stopped');
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q: string): Promise<string> => new Promise((resolve) => rl.question(q, resolve));
+
+  console.log('');
+  console.log('✦ Agent-X Uninstall');
+  console.log('');
+  console.log('  This will remove the Agent-X binary from your system.');
+  console.log('');
+  console.log('  Your data includes:');
+  console.log(`    • Config:      ${configDir}`);
+  console.log(`    • Data/DB:     ${dataDir}`);
+  console.log(`    • Cache/Logs:  ${cacheDir}`);
+  console.log('');
+
+  const answer = await ask('  Do you want to also delete all agent data? [y/N] ');
+  const deleteData = answer.trim().toLowerCase() === 'y';
+
+  rl.close();
+  console.log('');
+
+  // Remove binary
+  try {
+    if (existsSync(binDir)) rmSync(binDir, { recursive: true, force: true });
+    if (existsSync(binLink)) unlinkSync(binLink);
+    console.log('  ✓ Binary removed');
+  } catch {
+    console.log('  ⚠ Could not remove binary (try with sudo)');
+  }
+
+  if (deleteData) {
+    try {
+      if (existsSync(configDir)) rmSync(configDir, { recursive: true, force: true });
+      console.log('  ✓ Config removed');
+    } catch { console.log('  ⚠ Could not remove config directory'); }
+
+    try {
+      if (existsSync(dataDir)) rmSync(dataDir, { recursive: true, force: true });
+      console.log('  ✓ Data removed');
+    } catch { console.log('  ⚠ Could not remove data directory'); }
+
+    try {
+      if (existsSync(cacheDir)) rmSync(cacheDir, { recursive: true, force: true });
+      console.log('  ✓ Cache removed');
+    } catch { console.log('  ⚠ Could not remove cache directory'); }
+
+    console.log('');
+    console.log('  ✦ Agent-X fully uninstalled. All data cleared.');
+  } else {
+    console.log('  ✦ Agent-X uninstalled. Your data has been preserved.');
+    console.log(`    To remove it later: rm -rf ${configDir} ${dataDir} ${cacheDir}`);
+  }
+
+  console.log('');
+}
+
 async function main(): Promise<void> {
   const logger = getLogger();
 
@@ -109,7 +187,19 @@ async function main(): Promise<void> {
     console.log('Options:');
     console.log('  --token <token>  Telegram bot token (from @BotFather)');
     console.log('  -v, --version    Show version');
+    console.log('  agentx uninstall                     Uninstall Agent-X');
+    console.log('');
+    console.log('Options:');
+    console.log('  --token <token>  Telegram bot token (from @BotFather)');
+    console.log('  -v, --version    Show version');
     console.log('  -h, --help       Show help');
+    process.exit(0);
+  }
+
+  // ───── Uninstall command ─────
+
+  if (args[0] === 'uninstall') {
+    await handleUninstall();
     process.exit(0);
   }
 
