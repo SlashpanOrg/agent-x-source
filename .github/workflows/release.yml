@@ -40,8 +40,7 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
           # Check if this tag already exists on the public repo
-          EXISTING=$(gh api repos/${{ env.PUBLIC_REPO }}/releases/tags/${TAG} --jq '.tag_name' 2>/dev/null || echo "")
-          if [ -n "$EXISTING" ]; then
+          if gh api repos/${{ env.PUBLIC_REPO }}/releases/tags/${TAG} --silent > /dev/null 2>&1; then
             echo "::notice::Version ${VERSION} already released. Skipping."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
           else
