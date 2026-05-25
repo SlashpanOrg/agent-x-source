@@ -75,6 +75,30 @@ export async function gitShow(args: Record<string, unknown>, context: ToolExecut
   return gitCommand(`show ${ref} --stat`, context);
 }
 
+export async function gitPush(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const remote = (args['remote'] as string) ?? 'origin';
+  const branch = args['branch'] as string | undefined;
+  let cmd = `push ${remote}`;
+  if (branch) cmd += ` ${branch}`;
+  return gitCommand(cmd, context);
+}
+
+export async function gitPull(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const remote = (args['remote'] as string) ?? 'origin';
+  const branch = args['branch'] as string | undefined;
+  let cmd = `pull ${remote}`;
+  if (branch) cmd += ` ${branch}`;
+  return gitCommand(cmd, context);
+}
+
+export async function gitMerge(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const branch = args['branch'] as string;
+  const noFf = args['no_ff'] as boolean;
+  let cmd = `merge ${branch}`;
+  if (noFf) cmd += ' --no-ff';
+  return gitCommand(cmd, context);
+}
+
 function gitCommand(cmd: string, context: ToolExecutionContext): ToolResult {
   const cwd = resolve(context.scopePath);
   try {

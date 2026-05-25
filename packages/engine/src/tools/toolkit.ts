@@ -17,6 +17,8 @@ import * as packages from './builtin/packages.js';
 import * as system from './builtin/system.js';
 import * as testing from './builtin/testing.js';
 import * as web from './builtin/web.js';
+import * as image from './builtin/image.js';
+import * as project from './builtin/project.js';
 
 // All tool definitions with schemas the model uses to invoke them
 const CORE_TOOLS: ToolDefinition[] = [
@@ -28,6 +30,7 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'folder_list', name: 'List Directory', description: 'List contents of a directory', modelDescription: 'List files and folders in a directory.', category: 'filesystem', riskLevel: 'low', schema: { type: 'object', properties: { path: { type: 'string', description: 'Directory path (default: .)' } }, required: [] }, composable: true, source: 'builtin' },
   { id: 'folder_delete', name: 'Delete Folder', description: 'Delete a directory recursively', modelDescription: 'Delete a directory and all its contents.', category: 'filesystem', riskLevel: 'critical', schema: { type: 'object', properties: { path: { type: 'string', description: 'Directory path' } }, required: ['path'] }, composable: true, source: 'builtin' },
   { id: 'folder_move', name: 'Move/Rename', description: 'Move or rename a file or directory', modelDescription: 'Move or rename a file or directory.', category: 'filesystem', riskLevel: 'medium', schema: { type: 'object', properties: { from: { type: 'string', description: 'Source path' }, to: { type: 'string', description: 'Destination path' } }, required: ['from', 'to'] }, composable: true, source: 'builtin' },
+  { id: 'file_find', name: 'Find Files', description: 'Find files by name pattern', modelDescription: 'Search for files by glob name pattern (e.g. "*.ts", "config*"). Excludes node_modules and .git.', category: 'filesystem', riskLevel: 'low', schema: { type: 'object', properties: { pattern: { type: 'string', description: 'File name glob (e.g. "*.ts", "README*")' }, path: { type: 'string', description: 'Directory to search (default: .)' } }, required: ['pattern'] }, composable: true, source: 'builtin' },
 
   // ═══ SHELL & PROCESS ═══
   { id: 'shell_exec', name: 'Execute Command', description: 'Run a shell command', modelDescription: 'Execute a shell command. Returns stdout/stderr. Use for builds, installs, tests.', category: 'shell_process', riskLevel: 'high', schema: { type: 'object', properties: { command: { type: 'string', description: 'Shell command' }, cwd: { type: 'string', description: 'Working directory (optional)' }, timeout: { type: 'number', description: 'Timeout ms (default: 30000)' } }, required: ['command'] }, composable: true, source: 'builtin' },
@@ -46,6 +49,9 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'git_stash', name: 'Git Stash', description: 'Stash changes', modelDescription: 'Stash or restore changes. Actions: push, pop, list, drop.', category: 'git_vcs', riskLevel: 'medium', schema: { type: 'object', properties: { action: { type: 'string', description: 'Action: push, pop, list, drop (default: push)' } }, required: [] }, composable: true, source: 'builtin' },
   { id: 'git_blame', name: 'Git Blame', description: 'Show line authorship', modelDescription: 'Show who last modified each line. Optional line range.', category: 'git_vcs', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'File path' }, startLine: { type: 'number', description: 'Start line' }, endLine: { type: 'number', description: 'End line' } }, required: ['file'] }, composable: true, source: 'builtin' },
   { id: 'git_show', name: 'Git Show', description: 'Show commit details', modelDescription: 'Show commit message, author, and changed files.', category: 'git_vcs', riskLevel: 'low', schema: { type: 'object', properties: { ref: { type: 'string', description: 'Commit ref (default: HEAD)' } }, required: [] }, composable: true, source: 'builtin' },
+  { id: 'git_push', name: 'Git Push', description: 'Push commits to remote', modelDescription: 'Push local commits to a remote repository.', category: 'git_vcs', riskLevel: 'high', schema: { type: 'object', properties: { remote: { type: 'string', description: 'Remote name (default: origin)' }, branch: { type: 'string', description: 'Branch to push (default: current)' } }, required: [] }, composable: true, source: 'builtin' },
+  { id: 'git_pull', name: 'Git Pull', description: 'Pull changes from remote', modelDescription: 'Pull and merge changes from remote.', category: 'git_vcs', riskLevel: 'medium', schema: { type: 'object', properties: { remote: { type: 'string', description: 'Remote name (default: origin)' }, branch: { type: 'string', description: 'Branch to pull (default: current)' } }, required: [] }, composable: true, source: 'builtin' },
+  { id: 'git_merge', name: 'Git Merge', description: 'Merge a branch', modelDescription: 'Merge another branch into the current branch.', category: 'git_vcs', riskLevel: 'high', schema: { type: 'object', properties: { branch: { type: 'string', description: 'Branch to merge' }, no_ff: { type: 'boolean', description: 'No fast-forward (create merge commit)' } }, required: ['branch'] }, composable: true, source: 'builtin' },
 
   // ═══ CODE INTELLIGENCE ═══
   { id: 'code_search', name: 'Search Code', description: 'Search for text/regex in code', modelDescription: 'Search code files for a pattern. Returns matching lines with paths and line numbers.', category: 'code_intelligence', riskLevel: 'low', schema: { type: 'object', properties: { pattern: { type: 'string', description: 'Search pattern' }, path: { type: 'string', description: 'Directory (default: .)' }, glob: { type: 'string', description: 'File glob (e.g. "*.ts")' } }, required: ['pattern'] }, composable: true, source: 'builtin' },
@@ -53,6 +59,7 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'code_insert', name: 'Insert in File', description: 'Insert text at a line', modelDescription: 'Insert content at a line number. Line 0 = beginning.', category: 'code_intelligence', riskLevel: 'medium', schema: { type: 'object', properties: { file: { type: 'string', description: 'File path' }, line: { type: 'number', description: 'Line number (0-based)' }, content: { type: 'string', description: 'Content to insert' } }, required: ['file', 'line', 'content'] }, composable: true, source: 'builtin' },
   { id: 'code_definitions', name: 'Find Definitions', description: 'List definitions in a file', modelDescription: 'Scan a source file for top-level definitions. Supports TS, JS, Python, Rust, Go.', category: 'code_intelligence', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'File path' } }, required: ['file'] }, composable: true, source: 'builtin' },
   { id: 'code_symbols', name: 'List Symbols', description: 'List all symbols in a file', modelDescription: 'List code symbols with kind and line number.', category: 'code_intelligence', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'File path' } }, required: ['file'] }, composable: true, source: 'builtin' },
+  { id: 'file_patch', name: 'Multi-Edit File', description: 'Apply multiple edits to a file atomically', modelDescription: 'Apply multiple search-and-replace edits to a single file. Each edit must have a unique search string. More efficient than multiple code_replace calls.', category: 'code_intelligence', riskLevel: 'medium', schema: { type: 'object', properties: { file: { type: 'string', description: 'File path' }, edits: { type: 'array', description: 'Array of {search, replace} objects' } }, required: ['file', 'edits'] }, composable: true, source: 'builtin' },
 
   // ═══ DOCUMENTS ═══
   { id: 'csv_create', name: 'Create CSV', description: 'Create a CSV file', modelDescription: 'Create a CSV file. Provide headers + rows, or raw content.', category: 'documents', riskLevel: 'medium', schema: { type: 'object', properties: { file: { type: 'string', description: 'Output path' }, headers: { type: 'array', description: 'Column headers' }, rows: { type: 'array', description: 'Row arrays' }, content: { type: 'string', description: 'Raw CSV (alternative)' } }, required: ['file'] }, composable: true, source: 'builtin' },
@@ -139,6 +146,14 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'http_request', name: 'HTTP Request', description: 'Generic HTTP request', modelDescription: 'HTTP request with any method. Returns status, headers, body.', category: 'web_network', riskLevel: 'medium', schema: { type: 'object', properties: { url: { type: 'string', description: 'URL' }, method: { type: 'string', description: 'HTTP method' }, headers: { type: 'object', description: 'Headers' }, body: { type: 'string', description: 'Body' } }, required: ['url', 'method'] }, composable: true, source: 'builtin' },
   { id: 'web_scrape', name: 'Scrape Page', description: 'Extract text from web page', modelDescription: 'Fetch page and extract text (HTML stripped).', category: 'web_network', riskLevel: 'medium', schema: { type: 'object', properties: { url: { type: 'string', description: 'URL' }, selector: { type: 'string', description: 'CSS selector (optional)' } }, required: ['url'] }, composable: true, source: 'builtin' },
   { id: 'web_search', name: 'Web Search', description: 'Search the web', modelDescription: 'Search the web via DuckDuckGo. Returns snippets and URLs.', category: 'web_network', riskLevel: 'low', schema: { type: 'object', properties: { query: { type: 'string', description: 'Search query' } }, required: ['query'] }, composable: true, source: 'builtin' },
+
+  // ═══ IMAGE ═══
+  { id: 'image_view', name: 'Image Info', description: 'Get image metadata', modelDescription: 'Show image dimensions, format, and file size.', category: 'media_image', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Image file path' } }, required: ['file'] }, composable: true, source: 'builtin' },
+  { id: 'image_resize', name: 'Resize Image', description: 'Resize an image', modelDescription: 'Resize an image to specified width (and optionally height). Uses sips (macOS) or ImageMagick.', category: 'media_image', riskLevel: 'medium', schema: { type: 'object', properties: { file: { type: 'string', description: 'Image file path' }, width: { type: 'number', description: 'Target width in pixels' }, height: { type: 'number', description: 'Target height (optional, maintains aspect ratio)' }, output: { type: 'string', description: 'Output file path (default: overwrite)' } }, required: ['file', 'width'] }, composable: true, source: 'builtin' },
+  { id: 'image_convert', name: 'Convert Image', description: 'Convert image format', modelDescription: 'Convert an image to a different format (png, jpg, webp, gif, bmp).', category: 'media_image', riskLevel: 'medium', schema: { type: 'object', properties: { file: { type: 'string', description: 'Source image path' }, format: { type: 'string', description: 'Target format: png, jpg, webp, gif, bmp' }, output: { type: 'string', description: 'Output path (optional)' } }, required: ['file', 'format'] }, composable: true, source: 'builtin' },
+
+  // ═══ PROJECT ═══
+  { id: 'project_detect', name: 'Detect Project', description: 'Auto-detect project type and tools', modelDescription: 'Detect language, framework, package manager, build tool, and test framework from project files.', category: 'project_management', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
 ];
 
 /**
@@ -161,6 +176,7 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('folder_delete', fs.folderDelete);
   executor.registerHandler('folder_list', fs.folderList);
   executor.registerHandler('folder_move', fs.folderMove);
+  executor.registerHandler('file_find', fs.fileFind);
 
   // ═══ Shell & Process ═══
   executor.registerHandler('shell_exec', shell.shellExec);
@@ -179,6 +195,9 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('git_stash', git.gitStash);
   executor.registerHandler('git_blame', git.gitBlame);
   executor.registerHandler('git_show', git.gitShow);
+  executor.registerHandler('git_push', git.gitPush);
+  executor.registerHandler('git_pull', git.gitPull);
+  executor.registerHandler('git_merge', git.gitMerge);
 
   // ═══ Code Intelligence ═══
   executor.registerHandler('code_search', code.codeSearch);
@@ -186,6 +205,7 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('code_insert', code.codeInsert);
   executor.registerHandler('code_definitions', code.codeDefinitions);
   executor.registerHandler('code_symbols', code.codeSymbols);
+  executor.registerHandler('file_patch', code.filePatch);
 
   // ═══ Documents ═══
   executor.registerHandler('csv_create', documents.csvCreate);
@@ -272,6 +292,14 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('http_request', web.httpRequest);
   executor.registerHandler('web_scrape', web.webScrape);
   executor.registerHandler('web_search', web.webSearch);
+
+  // ═══ Image ═══
+  executor.registerHandler('image_view', image.imageView);
+  executor.registerHandler('image_resize', image.imageResize);
+  executor.registerHandler('image_convert', image.imageConvert);
+
+  // ═══ Project ═══
+  executor.registerHandler('project_detect', project.projectDetect);
 
   return { registry, executor };
 }

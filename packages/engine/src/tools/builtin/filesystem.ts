@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readdirSync, statSync, renameSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
+import { execSync } from 'node:child_process';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 
 export async function fileRead(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
@@ -93,5 +94,24 @@ export async function folderMove(args: Record<string, unknown>, context: ToolExe
     return { success: true, output: `Moved ${source} → ${destination}` };
   } catch (error) {
     return { success: false, output: `Failed to move: ${(error as Error).message}`, error: 'MOVE_ERROR' };
+  }
+}
+
+export async function fileFind(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const pattern = args['pattern'] as string;
+  const searchPath = (args['path'] as string) ?? '.';
+  const cwd = resolve(context.scopePath, searchPath);
+
+  try {
+    // Use find with -name for glob patterns, exclude node_modules/.git
+    const cmd = `find . -name "${pattern.replace(/"/g, '\\"')}" -not -path "*/node_modules/*" -not -path "*/.git/*" | head -100`;
+    const output = execSync(cmd, { cwd, encoding: 'utf-8', timeout: 10000 });
+    const files = output.trim().split('\n').filter(Boolean);
+    if (files.length === 0) {
+      return { success: true, output: 'No files matched' };
+    }
+    return { success: true, output: files.join('\n'), metadata: { count: files.length } };
+  } catch {
+    return { success: true, output: 'No files matched' };
   }
 }

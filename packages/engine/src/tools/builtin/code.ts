@@ -145,3 +145,38 @@ export async function codeSymbols(args: Record<string, unknown>, context: ToolEx
   const output = symbols.map((s) => `${s.kind} ${s.name} (L${s.line})`).join('\n');
   return { success: true, output: output || 'No symbols found', metadata: { count: symbols.length } };
 }
+
+export async function filePatch(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const filePath = resolve(context.scopePath, args['file'] as string);
+  const edits = args['edits'] as Array<{ search: string; replace: string }>;
+
+  if (!existsSync(filePath)) {
+    return { success: false, output: 'File not found', error: 'NOT_FOUND' };
+  }
+  if (!Array.isArray(edits) || edits.length === 0) {
+    return { success: false, output: 'edits must be a non-empty array of {search, replace}', error: 'INVALID_INPUT' };
+  }
+
+  let content = readFileSync(filePath, 'utf-8');
+  const results: string[] = [];
+
+  for (let i = 0; i < edits.length; i++) {
+    const edit = edits[i]!;
+    const { search, replace } = edit;
+    if (!content.includes(search)) {
+      results.push(`Edit ${i + 1}: FAILED - search string not found`);
+      continue;
+    }
+    const occurrences = content.split(search).length - 1;
+    if (occurrences > 1) {
+      results.push(`Edit ${i + 1}: FAILED - search string matches ${occurrences} times (must be unique)`);
+      continue;
+    }
+    content = content.replace(search, replace);
+    results.push(`Edit ${i + 1}: OK`);
+  }
+
+  const { writeFileSync: writeFs } = await import('node:fs');
+  writeFs(filePath, content, 'utf-8');
+  return { success: true, output: results.join('\n'), metadata: { applied: results.filter(r => r.includes('OK')).length, total: edits.length } };
+}
