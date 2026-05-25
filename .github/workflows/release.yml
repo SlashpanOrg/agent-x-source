@@ -8,7 +8,7 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
-    branches: [release]
+    branches: [launch]
 
 permissions:
   contents: write
@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: release
+          ref: launch
 
       - name: Check if version is new
         id: check
@@ -69,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: release
+          ref: launch
 
       - uses: pnpm/action-setup@v4
 
