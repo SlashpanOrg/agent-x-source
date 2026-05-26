@@ -1,4 +1,4 @@
-import type { CompletionRequest, CompletionChunk, ModelInfo, ProviderId } from '@agentx/shared';
+import type { CompletionRequest, CompletionChunk, ModelInfo, ModelCapability, ProviderId } from '@agentx/shared';
 import type { ProviderInterface } from './ProviderInterface.js';
 
 export class LMStudioProvider implements ProviderInterface {
@@ -24,6 +24,36 @@ export class LMStudioProvider implements ProviderInterface {
   }
 
   async listModels(): Promise<ModelInfo[]> {
+    // Try LM Studio's native API first (has loaded_context_length)
+    try {
+      const baseOrigin = this.baseUrl.replace(/\/v1$/, '');
+      const response = await fetch(`${baseOrigin}/api/v0/models`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      if (response.ok) {
+        const data = (await response.json()) as {
+          data?: Array<{
+            id: string;
+            type?: string;
+            state?: string;
+            loaded_context_length?: number;
+            max_context_length?: number;
+          }>;
+        };
+        const models: ModelInfo[] = (data.data ?? [])
+          .filter((m) => m.type !== 'embeddings')
+          .map((m) => ({
+            id: m.id,
+            name: m.id,
+            providerId: 'lmstudio' as const,
+            contextWindow: m.loaded_context_length ?? m.max_context_length ?? 8192,
+            capabilities: ['text', 'streaming'] as ModelCapability[],
+          }));
+        if (models.length > 0) return models;
+      }
+    } catch { /* fall through to OpenAI-compat endpoint */ }
+
+    // Fallback: OpenAI-compatible /v1/models
     try {
       const response = await fetch(`${this.baseUrl}/models`, {
         signal: AbortSignal.timeout(10000),
@@ -36,7 +66,7 @@ export class LMStudioProvider implements ProviderInterface {
         name: m.id,
         providerId: 'lmstudio' as const,
         contextWindow: 8192,
-        capabilities: ['text', 'streaming'] as const,
+        capabilities: ['text', 'streaming'] as ModelCapability[],
       }));
     } catch {
       return [];

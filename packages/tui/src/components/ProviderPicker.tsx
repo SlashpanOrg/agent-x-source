@@ -11,7 +11,7 @@ type Step = 'pick' | 'api_key' | 'base_url' | 'validating' | 'models';
 
 interface ProviderPickerProps {
   currentProvider: string;
-  onComplete: (providerId: ProviderId, modelId: string, apiKey?: string, baseUrl?: string) => void;
+  onComplete: (providerId: ProviderId, modelId: string, contextWindow: number, apiKey?: string, baseUrl?: string) => void;
   onDismiss: () => void;
 }
 
@@ -130,6 +130,7 @@ export const ProviderPicker: React.FC<ProviderPickerProps> = ({
           onComplete(
             selectedProvider!.id,
             model.id,
+            model.contextWindow,
             apiKey.trim() || undefined,
             baseUrl.trim() || selectedProvider?.defaultBaseUrl,
           );
