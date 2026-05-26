@@ -25,6 +25,36 @@ export class GoogleProvider implements ProviderInterface {
   }
 
   async listModels(): Promise<ModelInfo[]> {
+    // Use Google's native API which returns inputTokenLimit per model
+    const nativeBase = 'https://generativelanguage.googleapis.com/v1beta';
+    try {
+      const response = await fetch(`${nativeBase}/models?key=${this.apiKey}`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      if (response.ok) {
+        const data = (await response.json()) as {
+          models?: Array<{
+            name: string;
+            displayName?: string;
+            inputTokenLimit?: number;
+            supportedGenerationMethods?: string[];
+          }>;
+        };
+        const models = (data.models ?? [])
+          .filter((m) => m.name.includes('gemini') && m.supportedGenerationMethods?.includes('generateContent'))
+          .map((m): ModelInfo => ({
+            id: m.name,
+            name: m.displayName ?? m.name.replace('models/', ''),
+            providerId: 'google',
+            contextWindow: m.inputTokenLimit ?? 1000000,
+            capabilities: ['text', 'function_calling', 'streaming'],
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        if (models.length > 0) return models;
+      }
+    } catch { /* fall through to OpenAI-compat endpoint */ }
+
+    // Fallback: OpenAI-compatible endpoint (no token limits)
     const response = await fetch(`${this.baseUrl}/models`, {
       headers: { Authorization: `Bearer ${this.apiKey}` },
       signal: AbortSignal.timeout(10000),
