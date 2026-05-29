@@ -1,13 +1,11 @@
 name: Release
 
-# Only runs after CI passes on the release branch.
+# Runs when code is merged to the launch branch.
 # STRICT RULE: Will only create a release if the version in source code
 # is NEWER than the latest tag on the public repo. No version bump = no release.
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  push:
     branches: [launch]
 
 permissions:
@@ -19,7 +17,6 @@ env:
 jobs:
   # Gate: check if version was bumped before doing any work
   check-version:
-    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.check.outputs.should_release }}
@@ -27,19 +24,15 @@ jobs:
       tag: ${{ steps.check.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: launch
 
       - name: Check if version is new
         id: check
         run: |
-          # Read version from the single source of truth
           VERSION=$(grep -oP "VERSION = '\K[^']+" packages/shared/src/constants/version.ts)
           TAG="v${VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-          # Check if this tag already exists on the public repo
           if gh api repos/${{ env.PUBLIC_REPO }}/releases/tags/${TAG} --silent > /dev/null 2>&1; then
             echo "::notice::Version ${VERSION} already released. Skipping."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
@@ -67,8 +60,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: launch
 
       - uses: pnpm/action-setup@v4
 
