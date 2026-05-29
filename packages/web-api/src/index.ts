@@ -147,15 +147,57 @@ app.get('/api/providers', (_req, res) => {
   const eng = getEngine();
   try {
     const config = eng.configManager.load();
-    const configured: Array<{ id: string; configured: boolean; apiKey?: string; baseUrl?: string }> = [];
+    const configured: Array<{ id: string; configured: boolean; apiKey?: string; baseUrl?: string; profiles?: string[]; activeProfile?: string }> = [];
     for (const [id, creds] of Object.entries(config.provider.providers)) {
       if (creds.configured) {
-        configured.push({ id, configured: true, apiKey: creds.apiKey, baseUrl: creds.baseUrl });
+        const entry: { id: string; configured: boolean; apiKey?: string; baseUrl?: string; profiles?: string[]; activeProfile?: string } = {
+          id, configured: true, apiKey: creds.apiKey, baseUrl: creds.baseUrl,
+        };
+        if (creds.profiles) entry.profiles = Object.keys(creds.profiles);
+        if (creds.activeProfile) entry.activeProfile = creds.activeProfile;
+        configured.push(entry);
       }
     }
     res.json({ active: config.provider.activeProvider, providers: configured });
   } catch {
     res.json({ active: 'openai', providers: [] });
+  }
+});
+
+app.post('/api/provider/profile', (req, res) => {
+  try {
+    const { provider, profileId, label, apiKey, baseUrl, setActive } = req.body as {
+      provider: string; profileId: string; label?: string; apiKey?: string; baseUrl?: string; setActive?: boolean;
+    };
+    const eng = getEngine();
+    eng.configManager.addProviderProfile(provider, profileId, {
+      label: label || profileId,
+      apiKey,
+      baseUrl,
+      createdAt: new Date().toISOString(),
+    }, setActive !== false);
+    if (setActive !== false) {
+      destroyAgent();
+      const cfg = eng.configManager.load();
+      cfg.provider.activeProvider = provider as ProviderId;
+      eng.configManager.save(cfg);
+    }
+    res.json({ ok: true, provider, profileId });
+  } catch (e: unknown) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'profile-add-failed' });
+  }
+});
+
+app.post('/api/provider/profile/switch', (req, res) => {
+  try {
+    const { provider, profileId } = req.body as { provider: string; profileId: string };
+    const eng = getEngine();
+    eng.configManager.setActiveProviderProfile(provider, profileId);
+    destroyAgent();
+    createAgent();
+    res.json({ ok: true, provider, profileId });
+  } catch (e: unknown) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'switch-failed' });
   }
 });
 
