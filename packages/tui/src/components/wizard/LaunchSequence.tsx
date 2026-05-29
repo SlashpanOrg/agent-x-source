@@ -42,7 +42,6 @@ export const LaunchSequence: FC<LaunchSequenceProps> = ({
     timers.push(setTimeout(onComplete, countdownStart + 2400));
 
     return () => timers.forEach(clearTimeout);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const dotPad = (label: string, width: number) => {

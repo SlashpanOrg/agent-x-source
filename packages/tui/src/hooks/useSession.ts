@@ -30,7 +30,7 @@ interface UseSessionReturn {
   commandNames: string[];
   commandList: Array<{ name: string; description: string }>;
   showProviderPicker: boolean;
-  selectProvider: (providerId: ProviderId, modelId: string, apiKey?: string, baseUrl?: string) => void;
+  selectProvider: (providerId: ProviderId, modelId: string, contextWindow: number, apiKey?: string, baseUrl?: string) => void;
   dismissProviderPicker: () => void;
   permissionRequest: PermissionRequest | null;
   respondToPermission: (choice: 'allow_once' | 'allow_always' | 'deny') => void;
@@ -136,6 +136,7 @@ export function useSession(config: AgentXConfig, _crew?: Crew, restoreSessionId?
             setCurrentModel(event.currentModel);
           } else if (event.action === 'model_switched') {
             setCurrentModel(event.modelId);
+            setTokensTotal(event.contextWindow);
           }
           break;
         case 'error':
@@ -403,7 +404,7 @@ export function useSession(config: AgentXConfig, _crew?: Crew, restoreSessionId?
       try {
         const success = await agent.trialModel(model.id);
         if (success) {
-          agent.switchModel(model.id);
+          agent.switchModel(model.id, model.contextWindow);
           setCurrentModel(model.id);
           // Persist to config only after successful trial
           const configManager = new ConfigManager();
@@ -425,7 +426,7 @@ export function useSession(config: AgentXConfig, _crew?: Crew, restoreSessionId?
     setModelPickerModels(null);
   }, []);
 
-  const selectProvider = useCallback((providerId: ProviderId, modelId: string, apiKey?: string, baseUrl?: string) => {
+  const selectProvider = useCallback((providerId: ProviderId, modelId: string, contextWindow: number, apiKey?: string, baseUrl?: string) => {
     setShowProviderPicker(false);
     setError(null);
     setErrorActions([]);
@@ -454,10 +455,11 @@ export function useSession(config: AgentXConfig, _crew?: Crew, restoreSessionId?
         const resolvedKey = apiKey ?? current.provider.providers[providerId]?.apiKey;
         const resolvedUrl = baseUrl ?? current.provider.providers[providerId]?.baseUrl;
         agentRef.current.switchProvider(providerId, resolvedKey, resolvedUrl);
-        agentRef.current.switchModel(modelId);
+        agentRef.current.switchModel(modelId, contextWindow);
       }
       configRef.current = current;
       setCurrentModel(modelId);
+      setTokensTotal(contextWindow);
     } catch (err) {
       getLogger().error('PROVIDER_SWITCH', err);
       setError(`✗ Failed to switch to ${providerId}.`);

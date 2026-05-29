@@ -649,14 +649,15 @@ export class Agent {
     this.config.provider.activeProvider = providerId;
   }
 
-  switchModel(modelId: string): void {
+  switchModel(modelId: string, contextWindow?: number): void {
     this.config.provider.activeModel = modelId;
     // Update token tracker with model's context window
-    const ctx = this.cachedModels.get(modelId);
+    const ctx = contextWindow ?? this.cachedModels.get(modelId);
     if (ctx) {
+      this.cachedModels.set(modelId, ctx);
       this.tokenTracker.setTotal(ctx);
     }
-    this.emit({ type: 'command_action', action: 'model_switched', modelId });
+    this.emit({ type: 'command_action', action: 'model_switched', modelId, contextWindow: ctx ?? this.tokenTracker.tokensTotal });
   }
 
   /**

@@ -9,7 +9,7 @@ describe('getConfigDir', () => {
   it('uses XDG_CONFIG_HOME when set', () => {
     const prev = process.env['XDG_CONFIG_HOME'];
     process.env['XDG_CONFIG_HOME'] = '/tmp/test-config';
-    expect(getConfigDir()).toBe('/tmp/test-config/agentx');
+    expect(getConfigDir()).toBe(join('/tmp/test-config', 'agentx'));
     if (prev) process.env['XDG_CONFIG_HOME'] = prev;
     else delete process.env['XDG_CONFIG_HOME'];
   });
@@ -26,7 +26,7 @@ describe('getDataDir', () => {
   it('uses XDG_DATA_HOME when set', () => {
     const prev = process.env['XDG_DATA_HOME'];
     process.env['XDG_DATA_HOME'] = '/tmp/test-data';
-    expect(getDataDir()).toBe('/tmp/test-data/agentx');
+    expect(getDataDir()).toBe(join('/tmp/test-data', 'agentx'));
     if (prev) process.env['XDG_DATA_HOME'] = prev;
     else delete process.env['XDG_DATA_HOME'];
   });
@@ -43,7 +43,7 @@ describe('getCacheDir', () => {
   it('uses XDG_CACHE_HOME when set', () => {
     const prev = process.env['XDG_CACHE_HOME'];
     process.env['XDG_CACHE_HOME'] = '/tmp/test-cache';
-    expect(getCacheDir()).toBe('/tmp/test-cache/agentx');
+    expect(getCacheDir()).toBe(join('/tmp/test-cache', 'agentx'));
     if (prev) process.env['XDG_CACHE_HOME'] = prev;
     else delete process.env['XDG_CACHE_HOME'];
   });

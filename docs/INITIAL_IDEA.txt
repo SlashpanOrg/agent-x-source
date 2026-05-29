@@ -79,6 +79,25 @@ NOTE:
 - IF any thing in this is done better, then fine. But if something in this file ignored or not implemented needs to be done better
 - USE IMAGE REFERENCE FOR UNDERSTANING THE HERMES AGENT PRODUCT
 
+NEW TOOLS
+- web search
+- parallel multiple agents spawning ability
+
+Features From Hermes (See if we can adapt)
+- Lives Where You Do: Telegram, Discord, Slack, WhatsApp, Signal, Email, CLI — and a growing list of platforms. Start on one, pick up on another.
+- Grows the Longer It Runs: Persistent memory and auto-generated skills — it learns your projects and never forgets how it solved a problem.
+- Scheduled Automations: Natural language cron scheduling for reports, backups, and briefings — running unattended through the gateway.
+- Delegates & Parallelizes: Isolated subagents with their own conversations, terminals, and Python RPC scripts for zero-context-cost pipelines.
+- Real Sandboxing: Five backends — local, Docker, SSH, Singularity, Modal — with container hardening and namespace isolation.
+- Full Web & Browser Control: Web search, browser automation, vision, image generation, text-to-speech, and multi-model reasoning.
+
+These are how hermes works. we need to see if we keep the standards
+- Tools: 40+ built-in — web search, terminal, file system, browser automation, vision, image generation, text-to-speech, code execution, subagent delegation, memory, task planning, cron scheduling, multi-model reasoning, and more.
+- Platforms: Telegram, Discord, Slack, WhatsApp, Signal, Email, CLI — and a growing list of platforms, all from a single gateway. Connect to Nous Portal, OpenRouter, or any OpenAI-compatible API.
+- Environments: Run locally, in Docker, over SSH, on Modal, Daytona, or Singularity. Container hardening with read-only root, dropped capabilities, and namespace isolation.
+- Skills: 40+ bundled skills covering MLOps, GitHub workflows, research, and more. The agent creates new skills on the fly and shares them via the open agentskills.io format.
+- Research: Batch trajectory generation with parallel workers and checkpointing. Atropos integration for RL training. Export to ShareGPT for fine-tuning with trajectory compression.
+
 IMPORTANT NOTE
 - THESE ARE THINGS WHICH FIRST CAME TO MY MIND. BUT YOU SHOULD IMPROVE THIS AGENT INTO (NOT JUST ANOTHER CHAT AGENT, OR SOME AGENT WHICH WORK FOR THE USER, BUT EVEN BETTER). PLAN ACCORDINGLY.
 - BASICALLY AGENT-X CAN BE ANYONES PERSONAL ASSISTANT WITH HELL LOT OF POWER

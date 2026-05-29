@@ -627,7 +627,7 @@ function extractTextFromContentStream(content: string): string {
   let match: RegExpExecArray | null;
 
   // Replace TJ arrays with extracted text
-  let processedContent = content;
+  const processedContent = content;
 
   // First pass: extract TJ array text
   match = tjArrayRegex.exec(content);
