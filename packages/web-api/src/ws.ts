@@ -3,7 +3,7 @@ import type { Server } from 'http';
 import { getEngine } from './engine.js';
 
 let wss: WebSocketServer | null = null;
-let subscribed = false;
+let subscribedAgent: unknown | null = null;
 
 export function setupWebSocket(server: Server): void {
   wss = new WebSocketServer({ server, path: '/ws' });
@@ -53,8 +53,8 @@ function broadcast(data: Record<string, unknown>): void {
 }
 
 export function subscribeToAgent(agent: { events: { on: (handler: (event: Record<string, unknown>) => void) => () => void } }): void {
-  if (subscribed) return;
-  subscribed = true;
+  if (subscribedAgent === agent) return;
+  subscribedAgent = agent;
 
   agent.events.on((event: Record<string, unknown>) => {
     const evType = (event as { type?: string }).type ?? 'unknown';
@@ -83,9 +83,9 @@ export function subscribeToAgent(agent: { events: { on: (handler: (event: Record
 }
 
 export function ensureSubscribed(): void {
-  if (subscribed) return;
   const eng = getEngine();
   const agent = eng.agent;
   if (!agent) return;
+  if (subscribedAgent === agent) return;
   subscribeToAgent(agent as unknown as { events: { on: (handler: (event: Record<string, unknown>) => void) => () => void } });
 }
