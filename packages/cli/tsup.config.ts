@@ -6,9 +6,9 @@ export default defineConfig({
   platform: 'node',
   target: 'node20',
   splitting: false,
-  shims: true,
+  shims: false,
   banner: {
-    js: '#!/usr/bin/env node',
+    js: '#!/usr/bin/env node\nconst{createRequire:__cr}=await import("module");const require=__cr(import.meta.url);const __dirname=require("path").dirname(require("url").fileURLToPath(import.meta.url));const __filename=require("url").fileURLToPath(import.meta.url);',
   },
   clean: true,
   noExternal: [/^(?!better-sqlite3).*/],
