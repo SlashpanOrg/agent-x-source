@@ -2,6 +2,7 @@
   "name": "agent-x",
   "version": "0.1.33",
   "private": true,
+  "type": "module",
   "description": "Agent-X — Your AI Wingman",
   "scripts": {
     "prebuild": "vitest run --run packages/engine/tests/platform-parity.test.ts",
@@ -11,7 +12,7 @@
     "prestart": "vitest run --run packages/engine/tests/platform-parity.test.ts",
     "check:platform": "vitest run --run packages/engine/tests/platform-parity.test.ts",
     "test:watch": "vitest",
-    "lint": "eslint packages/*/src --ext .ts,.tsx",
+    "lint": "eslint packages/cli/src packages/engine/src packages/shared/src packages/tui/src packages/web-api/src",
     "typecheck": "pnpm -r run typecheck",
     "dev:web-api": "pnpm --filter @agentx/web-api run dev",
     "build:web-api": "pnpm --filter @agentx/web-api run build",
@@ -27,11 +28,10 @@
   "packageManager": "pnpm@9.15.0",
   "devDependencies": {
     "@types/node": "^25.9.1",
-    "@typescript-eslint/eslint-plugin": "^8.0.0",
-    "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
     "prettier": "^3.3.0",
     "typescript": "^5.5.0",
+    "typescript-eslint": "^8.60.0",
     "vitest": "^2.0.0"
   }
 }

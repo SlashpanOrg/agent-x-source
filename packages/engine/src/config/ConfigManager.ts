@@ -69,9 +69,6 @@ export class ConfigManager {
             };
             c.profiles = { [profileId]: profile };
             c.activeProfile = profileId;
-            // ensure compat fields remain in place
-            c.apiKey = c.apiKey;
-            c.baseUrl = c.baseUrl;
             migrated = true;
           }
         }

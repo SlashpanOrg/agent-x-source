@@ -1,13 +1,13 @@
 import js from '@eslint/js';
-import tsPlugin from '@typescript-eslint/eslint-plugin';
-import tsParser from '@typescript-eslint/parser';
+import tseslint from 'typescript-eslint';
 
-export default [
+export default tseslint.config(
   { ignores: ['node_modules/', 'dist/', 'coverage/'] },
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
   {
     files: ['packages/*/src/**/*.ts', 'packages/*/src/**/*.tsx'],
     languageOptions: {
-      parser: tsParser,
       parserOptions: {
         project: ['./tsconfig.base.json'],
         tsconfigRootDir: import.meta.dirname,
@@ -17,15 +17,9 @@ export default [
         jest: true,
       },
     },
-    plugins: {
-      '@typescript-eslint': tsPlugin,
-    },
-    extends: [
-      js.configs.recommended,
-      ...tsPlugin.configs.recommended,
-    ],
     rules: {
       '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-non-null-assertion': 'off',
       '@typescript-eslint/explicit-module-boundary-types': 'off',
       '@typescript-eslint/no-floating-promises': 'warn',
@@ -35,6 +29,7 @@ export default [
       'no-unreachable': 'error',
       'no-unsafe-finally': 'error',
       'no-unsafe-negation': 'error',
+      'no-empty': ['error', { allowEmptyCatch: true }],
     },
   },
-];
+);

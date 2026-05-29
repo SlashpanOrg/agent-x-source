@@ -291,7 +291,7 @@ app.post('/api/chat/cancel', (_req, res) => {
     const agent = getOrCreateAgent();
     agent.cancel();
     res.json({ ok: true });
-  } catch (e: unknown) {
+  } catch {
     res.status(500).json({ error: 'cancel-failed' });
   }
 });

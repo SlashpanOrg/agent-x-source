@@ -203,7 +203,7 @@ export const ProviderPicker: React.FC<ProviderPickerProps> = ({
           const pv = cm.getProviderProfiles(selectedProvider.id);
           setProfiles(Object.keys(pv.profiles ?? {}).map((id) => ({ id, profile: pv.profiles![id]! })));
           setSelectedProfileIndex(0);
-        } catch {}
+        } catch { /* ignore */ }
         setStep('profiles');
         return;
       } else {
