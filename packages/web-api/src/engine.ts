@@ -123,3 +123,10 @@ export function destroyAgent(): void {
     eng.agent = null;
   }
 }
+
+export function clearEngine(): void {
+  if (state?.agent) {
+    state.agent.endSession();
+  }
+  state = null;
+}

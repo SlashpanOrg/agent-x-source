@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { getEngine, createAgent, getOrCreateAgent, destroyAgent } from './engine.js';
+import { getEngine, createAgent, getOrCreateAgent, destroyAgent, clearEngine } from './engine.js';
 import { setupWebSocket, ensureSubscribed } from './ws.js';
 import { ProviderFactory, TelegramStore, ConfigManager } from '@agentx/engine';
 import type { ProviderId, AgentXConfig } from '@agentx/shared';
@@ -17,11 +17,14 @@ const UI_DIST = join(ROOT, 'web-ui', 'dist');
 const app = express();
 app.use(express.json());
 
-// CORS
+// CORS + cache prevention
 app.use((_req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   if (_req.method === 'OPTIONS') { res.sendStatus(204); return; }
   next();
 });
@@ -520,15 +523,14 @@ app.post('/api/reset', (_req, res) => {
       ? join(process.env['XDG_CACHE_HOME'], 'agentx')
       : join(HOME, '.cache', 'agentx');
 
-    // Delete everything
+    // Delete everything on disk
     const dirs = [configDir, dataDir, cacheDir];
     for (const dir of dirs) {
       try { rmSync(dir, { recursive: true, force: true }); } catch { /* ok */ }
     }
 
-    // Reset engine state
-    const eng = getEngine();
-    (eng as unknown as { configured: boolean }).configured = false;
+    clearEngine();
+
     res.json({ ok: true });
   } catch (e: unknown) {
     res.status(500).json({ error: e instanceof Error ? e.message : 'reset-failed' });
