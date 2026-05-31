@@ -10,7 +10,7 @@ interface MessageAreaProps {
 }
 
 export const MessageArea: FC<MessageAreaProps> = ({ messages, streamingContent, pendingDiff }) => {
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const bottomRef = useRef<any>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ behavior: 'smooth' });

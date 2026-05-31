@@ -1,6 +1,6 @@
 import type { CommandInterface, CommandContext, CommandResult } from '../CommandInterface.js';
 import { ToolRegistry } from '../../tools/ToolRegistry.js';
-import type { ToolDefinition, ToolCategory } from '@agentx/shared';
+import type { ToolDefinition } from '@agentx/shared';
 
 // Injected by the Agent on startup
 let toolRegistry: ToolRegistry | null = null;

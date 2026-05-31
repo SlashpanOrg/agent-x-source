@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash, createHmac, randomBytes, createCipheriv, createDecipheriv, scryptSync } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { McpServer, type ToolDefinition } from '../base-server.js';
 
 class CryptoServe extends McpServer {

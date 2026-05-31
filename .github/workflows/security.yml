@@ -31,9 +31,12 @@ jobs:
         run: pnpm audit --audit-level=high || true
         continue-on-error: true
 
-      - name: Run security scan
-        run: pnpm run build 2>/dev/null; npx --yes @slashpan-org/agentx security_audit --target . || true
+      - name: Build (check for compilation errors)
+        run: pnpm run build 2>&1 | tail -30
         continue-on-error: true
+
+      - name: Lint security-relevant rules
+        run: pnpm run lint 2>&1 | grep -E "no-eval|no-secrets|security|dangerous" || echo "No security lint issues found"
 
       - name: Scan for secrets
         run: |

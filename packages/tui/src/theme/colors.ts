@@ -12,6 +12,7 @@ export const COLORS = {
   surface: SPACE_THEME.surface,
   text: SPACE_THEME.text,
   textDim: SPACE_THEME.textDim,
+  textMuted: SPACE_THEME.textMuted,
   border: SPACE_THEME.border,
   success: SPACE_THEME.success,
   warning: SPACE_THEME.warning,

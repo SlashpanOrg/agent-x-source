@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { access, constants, mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
-import { join, resolve, relative } from 'node:path';
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { McpServer, type ToolDefinition } from '../base-server.js';
 
@@ -158,7 +158,11 @@ class FileSystemServer extends McpServer {
         const { Glob } = await import('glob');
         const pattern = String(args['pattern']);
         const root = args['root'] ? resolve(String(args['root'])) : process.cwd();
-        const files = await Glob(pattern, { cwd: root, nodir: true });
+        const glob = new Glob(pattern, { cwd: root, nodir: true });
+        const files: string[] = [];
+        for await (const file of glob) {
+          files.push(file);
+        }
         return { files: files.map((f) => join(root, f)) };
       }
       case 'search_files': {

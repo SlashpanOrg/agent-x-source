@@ -32,7 +32,7 @@ export const searchCommand: CommandInterface = {
   usage: '/search <query> [--topk <n>] [--hybrid] [--tree]',
   async execute(args: string[], context: CommandContext): Promise<CommandResult> {
     const topkIdx = args.indexOf('--topk');
-    const topK = topkIdx !== -1 ? parseInt(args[topkIdx + 1], 10) || 5 : 5;
+    const topK = topkIdx !== -1 ? parseInt(args[topkIdx + 1] ?? '', 10) || 5 : 5;
     const hybrid = args.includes('--hybrid');
     const showTree = args.includes('--tree');
     const query = args.filter((a) => !a.startsWith('--')).join(' ');
@@ -59,7 +59,7 @@ export const searchCommand: CommandInterface = {
     }
 
     try {
-      const results = await rag.search(query, topK, hybrid);
+      const results = await rag.search(query, topK);
       if (results.length === 0) {
         context.emit(`No results found for "${query}".`);
         return { success: true, action: 'none' };

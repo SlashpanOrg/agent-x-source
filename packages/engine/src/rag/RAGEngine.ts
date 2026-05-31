@@ -100,12 +100,12 @@ export class RAGEngine {
   /**
    * Search for relevant documents by query text.
    */
-  async search(query: string, topK?: number, hybrid?: boolean): Promise<Document[]> {
+  async search(query: string, topK?: number): Promise<Document[]> {
     if (!this.config.enabled) return [];
 
     const vector = await this.embedder.embed(query);
     const k = topK ?? this.config.topK;
-    const results = await this.store.search(vector, k, hybrid ? query : undefined);
+    const results = await this.store.search(vector, k);
 
     // Filter by minimum score
     const minScore = this.config.minScore;
@@ -113,9 +113,9 @@ export class RAGEngine {
   }
 
   listIndexedPaths(): string[] {
-    // Check if the store has listIndexedPaths method
-    if (typeof (this.store as Record<string, unknown>).listIndexedPaths === 'function') {
-      return (this.store as { listIndexedPaths: () => string[] }).listIndexedPaths();
+    const storeAny = this.store as unknown as { listIndexedPaths?: () => string[] };
+    if (typeof storeAny.listIndexedPaths === 'function') {
+      return storeAny.listIndexedPaths();
     }
     return [];
   }

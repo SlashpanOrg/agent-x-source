@@ -72,7 +72,7 @@ export const recipeCommand: CommandInterface = {
 
     if (sub === 'create') {
       const name = args[1] || 'untitled';
-      const steps = args.slice(2).map((s, i) => ({ description: s, command: s }));
+      const steps = args.slice(2).map((s) => ({ description: s, command: s }));
       const recipe = recipeEngineInstance.importRecipe(
         { id: '', name, description: `Recipe: ${name}`, version: '1.0', steps },
         `${name}.json`,

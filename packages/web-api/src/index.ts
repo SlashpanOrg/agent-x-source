@@ -662,7 +662,7 @@ app.post('/api/sessions/:id/compact', async (req, res) => {
 });
 
 // ───── Telegram ─────
-app.post('/api/telegram/start', (req, res) => {
+app.post('/api/telegram/start', async (req, res) => {
   try {
     const { token } = req.body as { token: string };
     const eng = getEngine();
@@ -670,7 +670,7 @@ app.post('/api/telegram/start', (req, res) => {
     if (existing) {
       eng.pluginRegistry.updateConfig('telegram', { botToken: token });
     } else {
-      const { getBuiltinPlugin } = require('@agentx/engine');
+      const { getBuiltinPlugin } = await import('@agentx/engine');
       const entry = getBuiltinPlugin('telegram');
       if (entry) {
         eng.pluginRegistry.install(entry);
@@ -984,7 +984,7 @@ app.delete('/api/scheduler/jobs/:id', (req, res) => {
 });
 
 // ───── Agent Orchestrator ─────
-app.post('/api/orchestrator/plan', (req, res) => {
+app.post('/api/orchestrator/plan', async (req, res) => {
   const eng = getEngine();
   if (!eng.agent) {
     res.status(400).json({ error: 'No active agent' });
@@ -997,7 +997,7 @@ app.post('/api/orchestrator/plan', (req, res) => {
   }
 
   try {
-    const { AgentOrchestrator } = require('@agentx/engine');
+    const { AgentOrchestrator } = await import('@agentx/engine');
     const orchestrator = new AgentOrchestrator(eng.agent.agents, eng.agent.events);
     const plan = orchestrator.createPlan(goal);
 
@@ -1023,7 +1023,7 @@ app.post('/api/orchestrator/plan/:id/execute', async (req, res) => {
     return;
   }
   try {
-    const { AgentOrchestrator } = require('@agentx/engine');
+    const { AgentOrchestrator } = await import('@agentx/engine');
     const orchestrator = new AgentOrchestrator(eng.agent.agents, eng.agent.events);
     // Re-build the plan from agent orchestrator state
     const plan = orchestrator.createPlan('dynamic');
@@ -1066,10 +1066,10 @@ app.get('/api/plugins/installed', (_req, res) => {
   res.json({ plugins });
 });
 
-app.post('/api/plugins/:id/install', (req, res) => {
+app.post('/api/plugins/:id/install', async (req, res) => {
   const eng = getEngine();
   const { id } = req.params;
-  const { getBuiltinPlugin } = require('@agentx/engine');
+  const { getBuiltinPlugin } = await import('@agentx/engine');
   const entry = getBuiltinPlugin(id!);
   if (!entry) {
     res.status(404).json({ error: `Plugin "${id}" not found in catalog` });

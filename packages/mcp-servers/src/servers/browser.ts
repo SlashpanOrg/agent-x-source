@@ -85,6 +85,7 @@ class BrowserServer extends McpServer {
         const fullPage = args['fullPage'] === 'true';
 
         try {
+          // @ts-expect-error — puppeteer is optional, guarded by try/catch
           const { launch } = await import('puppeteer');
           const browser = await launch({ headless: true });
           try {

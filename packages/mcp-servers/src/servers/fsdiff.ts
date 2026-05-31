@@ -55,8 +55,8 @@ class FsDiffServer extends McpServer {
         const file1 = resolve(String(args['file1']));
         const file2 = resolve(String(args['file2']));
         const context = String(args['context'] ?? '3');
-        const content1 = await readFile(file1, 'utf-8');
-        const content2 = await readFile(file2, 'utf-8');
+        await readFile(file1, 'utf-8');
+        await readFile(file2, 'utf-8');
         try {
           const diff = execSync(
             `diff -u -U${context} "${file1}" "${file2}"`,

@@ -230,11 +230,11 @@ async function main(): Promise<void> {
     removeCrashMarker();
     process.exit(130);
   });
-  process.on('SIGTERM', () => {
+  process.on('SIGTERM', async () => {
     logger.info('SIGNAL', 'Received SIGTERM — saving state and exiting');
     // Save crash recovery state for resume on next launch
     try {
-      const { initSessionTrace } = require('./session-trace.js');
+      const { initSessionTrace } = await import('./session-trace.js');
       initSessionTrace({ path: '/tmp/agentx-last-session.json', maxEvents: 50 });
     } catch {
       // non-fatal

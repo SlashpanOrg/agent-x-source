@@ -122,19 +122,18 @@ export class MCPBridge {
     const pool = this.servers.get(name);
     const tools = pool?.tools ?? [];
 
-    const bridge = this;
     const instance: PluginInstance = {
       manifest,
       enabled: true,
       config: {},
       tools,
-      async start() { /* Already started */ },
-      async stop() {
-        await bridge.stopServer(name);
+      start: async () => { /* Already started */ },
+      stop: async () => {
+        await this.stopServer(name);
       },
       execute: async (toolId: string, args: Record<string, unknown>) => {
         try {
-          const result = await bridge.callTool(name, toolId, args);
+          const result = await this.callTool(name, toolId, args);
           const output = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
           return { success: true, output };
         } catch (error) {
@@ -332,7 +331,7 @@ export class MCPBridge {
     return conn;
   }
 
-  private async listenSSE(url: string, conn: McpConnection, config: MCPBridgeConfig): Promise<void> {
+  private async listenSSE(url: string, conn: McpConnection, _config: MCPBridgeConfig): Promise<void> {
     try {
       const res = await fetch(url, { signal: conn.controller?.signal });
       if (!res.body) return;

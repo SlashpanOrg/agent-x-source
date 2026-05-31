@@ -1,4 +1,4 @@
-import type { RAGEngine } from '../../rag/RAGEngine.js';
+import type { RAGEngine } from './RAGEngine.js';
 
 export class CodebaseContextProvider {
   private ragEngine: RAGEngine | null = null;

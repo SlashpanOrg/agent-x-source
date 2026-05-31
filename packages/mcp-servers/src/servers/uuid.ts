@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { randomUUID, randomBytes, randomInt } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { McpServer, type ToolDefinition } from '../base-server.js';
 
 class UuidServer extends McpServer {

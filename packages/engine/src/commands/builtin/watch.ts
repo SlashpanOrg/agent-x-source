@@ -1,6 +1,5 @@
 import type { CommandInterface, CommandContext, CommandResult } from '../CommandInterface.js';
 import { FileWatcher } from '../../session/FileWatcher.js';
-import { getLogger } from '@agentx/shared';
 
 let fileWatcherInstance: FileWatcher | null = null;
 

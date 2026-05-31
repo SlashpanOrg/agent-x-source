@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { writeFileSync, unlinkSync, existsSync } from 'node:fs';
+import { unlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { CommandInterface, CommandContext, CommandResult } from '../CommandInterface.js';

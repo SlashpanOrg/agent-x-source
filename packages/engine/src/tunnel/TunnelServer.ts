@@ -1,7 +1,9 @@
 import { getLogger } from '@agentx/shared';
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { WebSocketServer, WebSocket } from 'ws';
+
 
 const logger = getLogger();
 
@@ -47,11 +49,8 @@ export class TunnelServer {
 
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const { WebSocketServer } = require('ws');
       let opts: Record<string, unknown> = {};
-
       if (this.config.tlsCert && this.config.tlsKey) {
-        const https = require('node:https');
         opts = {
           cert: readFileSync(this.config.tlsCert),
           key: readFileSync(this.config.tlsKey),
@@ -83,7 +82,7 @@ export class TunnelServer {
         };
 
         this.sessions.set(sessionId, session);
-        logger.info('TUNNEL_CLIENT_CONNECTED', { sessionId, clientId });
+        logger.info('TUNNEL_CLIENT_CONNECTED', 'Client connected', { sessionId, clientId });
 
         ws.on('message', (data: Buffer) => {
           // Relay to all peers in same session group
@@ -92,7 +91,7 @@ export class TunnelServer {
 
         ws.on('close', () => {
           this.sessions.delete(sessionId);
-          logger.info('TUNNEL_CLIENT_DISCONNECTED', { sessionId });
+          logger.info('TUNNEL_CLIENT_DISCONNECTED', 'Client disconnected', { sessionId });
         });
 
         // Send session ID to client
@@ -102,7 +101,7 @@ export class TunnelServer {
       });
 
       this.server.listen(this.config.port, this.config.host, () => {
-        logger.info('TUNNEL_SERVER_STARTED', { host: this.config.host, port: this.config.port });
+        logger.info('TUNNEL_SERVER_STARTED', 'Server started', { host: this.config.host, port: this.config.port });
         resolve();
       });
 
@@ -122,7 +121,6 @@ export class TunnelServer {
   }
 
   private broadcast(sessionId: string, data: Buffer): void {
-    const { WebSocket } = require('ws');
     this.server?.emit('data', { sessionId, data });
   }
 
@@ -182,7 +180,7 @@ export class TunnelClient {
         this.ws = new WebSocket(url);
 
         this.ws.on('open', () => {
-          logger.info('TUNNEL_CLIENT_CONNECTED', { url: this.config.url });
+          logger.info('TUNNEL_CLIENT_CONNECTED', 'Client connected', { url: this.config.url });
           resolve();
         });
 

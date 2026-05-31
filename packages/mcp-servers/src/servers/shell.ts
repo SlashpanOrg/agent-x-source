@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { exec, execSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { accessSync, constants } from 'node:fs';
 import { McpServer, type ToolDefinition } from '../base-server.js';
 
 const execAsync = promisify(exec);

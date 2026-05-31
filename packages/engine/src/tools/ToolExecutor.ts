@@ -1,11 +1,10 @@
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
-import type { EventBus, EngineEvent } from '@agentx/shared';
 import { PermissionManager } from './permissions/PermissionManager.js';
 import { ScopeGuard } from './permissions/ScopeGuard.js';
 import { ToolRegistry } from './ToolRegistry.js';
 import type { SafetyAuditor } from '../safety/SafetyAuditor.js';
 import type { PolicyEngine } from '../enterprise/PolicyEngine.js';
-import type { PolicyEffect } from '../enterprise/PolicyEngine.js';
+
 
 export type PermissionRequestHandler = (
   toolId: string,
@@ -31,11 +30,9 @@ export class ToolExecutor {
   private handlers: Map<string, (args: Record<string, unknown>, context: ToolExecutionContext) => Promise<ToolResult>> = new Map();
   private permissionRequestHandler?: PermissionRequestHandler;
   private toolCache: Map<string, ReturnType<ToolRegistry['get']>> = new Map();
-  private eventBus: EventBus | null = null;
   private beforeToolHook: ((toolId: string, args: Record<string, unknown>, path?: string) => void) | null = null;
   private safetyAuditor: SafetyAuditor | null = null;
   private policyEngine: PolicyEngine | null = null;
-  private diffTools = new Set(['file_write', 'code_replace', 'code_insert']);
   private executionHistory: ToolExecutionEntry[] = [];
 
   constructor(registry: ToolRegistry, scopePath: string) {

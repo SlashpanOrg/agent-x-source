@@ -123,7 +123,6 @@ export const App: FC<AppProps> = ({ sessionId: restoreSessionId, recovered, plan
 
   // Auto-start MCP servers
   const [mcpBridge] = useState(() => new MCPBridge());
-  const [mcpServerCount, setMcpServerCount] = useState(0);
   useEffect(() => {
     const logger = getLogger();
     void (async () => {
@@ -135,12 +134,11 @@ export const App: FC<AppProps> = ({ sessionId: restoreSessionId, recovered, plan
             await mcpBridge.start(m);
             loaded++;
           } catch (e) {
-            logger.warn(`Failed to start MCP ${m.name}: ${e}`);
+            logger.warn('MCP_START_FAILED', `Failed to start MCP ${m.name}: ${e}`);
           }
         }
         if (loaded > 0) {
           logger.info('MCP_SERVERS_STARTED', `Auto-started ${loaded} MCP server(s)`);
-          setMcpServerCount(loaded);
         }
       } catch (e) {
         logger.warn('MCP_DISCOVER', `MCP discovery failed: ${e}`);

@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';

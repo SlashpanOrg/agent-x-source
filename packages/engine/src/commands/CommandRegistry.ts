@@ -20,6 +20,18 @@ export class CommandRegistry {
     return this.commands.has(name);
   }
 
+  unregister(name: string): void {
+    const cmd = this.commands.get(name);
+    if (cmd) {
+      this.commands.delete(cmd.name);
+      if (cmd.aliases) {
+        for (const alias of cmd.aliases) {
+          this.commands.delete(alias);
+        }
+      }
+    }
+  }
+
   list(): CommandInterface[] {
     // Deduplicate (aliases point to same command), exclude hidden
     const seen = new Set<string>();

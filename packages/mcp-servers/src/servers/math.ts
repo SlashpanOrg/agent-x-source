@@ -57,7 +57,7 @@ class MathServer extends McpServer {
         const value = parseFloat(String(args['value']));
         const from = String(args['from']).toLowerCase();
         const to = String(args['to']).toLowerCase();
-        const conversions: Record<string, Record<string, number>> = {
+        const conversions: Record<string, Record<string, number | ((v: number) => number)>> = {
           km: { mi: 0.621371, m: 1000, ft: 3280.84 },
           mi: { km: 1.60934, m: 1609.34, ft: 5280 },
           m: { km: 0.001, mi: 0.000621371, ft: 3.28084 },
@@ -76,7 +76,7 @@ class MathServer extends McpServer {
         const conv = unit[to];
         if (conv === undefined) throw new Error(`Cannot convert from ${from} to ${to}`);
 
-        const result = typeof conv === 'function' ? conv(value) : value * conv;
+        const result = typeof conv === 'function' ? (conv as (v: number) => number)(value) : value * conv;
         return { value, from, to, result };
       }
       case 'random': {

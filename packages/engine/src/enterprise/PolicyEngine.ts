@@ -318,19 +318,21 @@ export class PolicyEngine {
       if (!existsSync(this.settingsPath)) return;
       const raw = readFileSync(this.settingsPath, 'utf-8');
       this.settings = JSON.parse(raw);
+      const s = this.settings;
+      if (!s) return;
 
       // Apply environment variable overrides
       if (process.env['AGENTX_DEFAULT_MODEL']) {
-        this.settings.defaultModel = process.env['AGENTX_DEFAULT_MODEL'];
+        s.defaultModel = process.env['AGENTX_DEFAULT_MODEL'];
       }
       if (process.env['AGENTX_MAX_BUDGET']) {
-        this.settings.maxBudgetPerSession = parseFloat(process.env['AGENTX_MAX_BUDGET']);
+        s.maxBudgetPerSession = parseFloat(process.env['AGENTX_MAX_BUDGET']);
       }
       if (process.env['AGENTX_TELEMETRY_ENDPOINT']) {
-        this.settings.telemetryEndpoint = process.env['AGENTX_TELEMETRY_ENDPOINT'];
+        s.telemetryEndpoint = process.env['AGENTX_TELEMETRY_ENDPOINT'];
       }
       if (process.env['AGENTX_SAFETY_LEVEL']) {
-        this.settings.safetyLevel = process.env['AGENTX_SAFETY_LEVEL'] as ManagedSettings['safetyLevel'];
+        s.safetyLevel = process.env['AGENTX_SAFETY_LEVEL'] as ManagedSettings['safetyLevel'];
       }
     } catch (e) {
       logger.error('SETTINGS_LOAD_FAILED', e);

@@ -1,5 +1,4 @@
 import type { ToolResult } from '@agentx/shared';
-import type { ToolExecutionEntry } from '../tools/ToolExecutor.js';
 import { getLogger } from '@agentx/shared';
 
 const logger = getLogger();
@@ -339,7 +338,7 @@ export class SafetyAuditor {
 
       // Generic dangerous patterns for any shell-related tool
       if (category === 'shell' || toolId === 'run_command' || toolId === 'bash' || toolId === 'sh') {
-        for (const pattern of DANGEROUS_COMMAND_PATTERNS['shell']) {
+        for (const pattern of DANGEROUS_COMMAND_PATTERNS['shell'] ?? []) {
           if (pattern.test(text)) {
             return {
               id: `dc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -357,7 +356,7 @@ export class SafetyAuditor {
 
       // Check filesystem tool args for dangerous paths
       if (['filesystem', 'read_file', 'write_file', 'delete_file', 'create_dir'].some((t) => toolId.includes(t))) {
-        for (const pattern of DANGEROUS_COMMAND_PATTERNS['filesystem']) {
+        for (const pattern of DANGEROUS_COMMAND_PATTERNS['filesystem'] ?? []) {
           if (pattern.test(text)) {
             return {
               id: `dc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,

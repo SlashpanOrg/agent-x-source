@@ -1,7 +1,7 @@
 import type { CommandInterface, CommandContext, CommandResult } from '../CommandInterface.js';
 import type { RAGEngine } from '../../rag/RAGEngine.js';
 import type { EngineEvent } from '@agentx/shared';
-import { readFileSync } from 'node:fs';
+import { readFileSync, watch } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
 
@@ -118,12 +118,11 @@ export const ragIndexCommand: CommandInterface = {
 
 function startAutoReindex(root: string, context: CommandContext): void {
   try {
-    const fs = require('fs');
     if (fileWatcherForIndex) {
       fileWatcherForIndex.close();
     }
     context.emit('  Watching for file changes to auto-reindex...');
-    fileWatcherForIndex = fs.watch(root, { recursive: true }, (eventType: string, filename: string | null) => {
+    fileWatcherForIndex = watch(root, { recursive: true }, (_eventType: string, filename: string | null) => {
       if (!filename) return;
       const ext = filename.split('.').pop();
       const indexableExts = ['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'json', 'md', 'yml', 'yaml', 'toml', 'env'];
