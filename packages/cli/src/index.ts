@@ -24,31 +24,76 @@ async function ensureWebApiRunning(): Promise<void> {
 
   let webApiDir: string | undefined;
   const bundlePath = new URL(import.meta.url).pathname;
+  const bundleDir = dirname(bundlePath);
 
-  // Try candidate paths to find the web-api package
-  const candidates = [
-    // Monorepo sibling (dev from packages/cli/dist/)
-    join(dirname(dirname(bundlePath)), '..', 'web-api'),
-    // Monorepo from source root
-    join(process.cwd(), 'packages', 'web-api'),
-    // AGENTX_SOURCE env var
-    process.env['AGENTX_SOURCE'] ? join(process.env['AGENTX_SOURCE'], 'packages', 'web-api') : null,
-    // Installed alongside CLI bundle (~/.agentx/web-api/)
-    join(dirname(bundlePath), 'web-api'),
-  ].filter(Boolean) as string[];
+  // Build a list of candidate locations.
+  const candidates = new Set<string>();
+  const add = (p?: string | null) => { if (p) candidates.add(p); };
+
+  // 1. Installed bundle sibling: ~/.agentx/web-api (release packages include web-api here)
+  add(join(bundleDir, 'web-api'));
+
+  // 2. Bundle parent tree: walk up from bundle to find a monorepo / project root
+  let bcur = bundleDir;
+  for (let i = 0; i < 6; i++) {
+    add(join(bcur, 'packages', 'web-api'));
+    add(join(bcur, 'source', 'packages', 'web-api'));
+    add(join(bcur, 'web-api'));
+    const next = dirname(bcur);
+    if (!next || next === bcur) break;
+    bcur = next;
+  }
+
+  // 3. CWD-based candidates (dev workflow)
+  add(join(process.cwd(), 'packages', 'web-api'));
+  add(join(process.cwd(), 'source', 'packages', 'web-api'));
+
+  // 4. Environment override
+  if (process.env['AGENTX_SOURCE']) add(join(process.env['AGENTX_SOURCE'], 'packages', 'web-api'));
+  if (process.env['AGENTX_HOME']) add(join(process.env['AGENTX_HOME'], 'web-api'));
+
+  // 5. Walk up from CWD
+  let cur = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    add(join(cur, 'packages', 'web-api'));
+    add(join(cur, 'source', 'packages', 'web-api'));
+    add(join(cur, 'web-api'));
+    const next = dirname(cur);
+    if (!next || next === cur) break;
+    cur = next;
+  }
 
   for (const dir of candidates) {
-    if (existsSync(join(dir, 'package.json'))) { webApiDir = dir; break; }
+    try {
+      if (existsSync(join(dir, 'package.json')) || existsSync(join(dir, 'dist', 'index.js')) || existsSync(join(dir, 'server.js'))) {
+        webApiDir = dir;
+        break;
+      }
+    } catch { /* skip */ }
   }
-  if (!webApiDir) return; // web-api not available in this installation
+
+  if (!webApiDir) {
+    // Diagnostic: print searched paths to stderr so users can debug
+    console.error('⚠ Web API not found. Searched:');
+    for (const dir of candidates) console.error(`   ${dir}`);
+    console.error('   Set AGENTX_SOURCE to the repo root if running from source.');
+    return;
+  }
 
   const builtScript = join(webApiDir, 'dist', 'index.js');
+  const serverScript = join(webApiDir, 'server.js');
   const sourceScript = join(webApiDir, 'src', 'index.ts');
 
   let child;
   try {
     if (existsSync(builtScript)) {
       child = spawn(process.execPath, [builtScript], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, AGENTX_AUTO_STARTED: '1' },
+      });
+    } else if (existsSync(serverScript)) {
+      child = spawn(process.execPath, [serverScript], {
         detached: true,
         stdio: 'ignore',
         env: { ...process.env, AGENTX_AUTO_STARTED: '1' },
@@ -61,13 +106,18 @@ async function ensureWebApiRunning(): Promise<void> {
         env: { ...process.env, AGENTX_AUTO_STARTED: '1' },
       });
     }
-    child.on('error', () => { /* spawn failure — non-fatal */ });
+    child.on('error', (err) => {
+      console.error(`⚠ Failed to spawn web-api: ${err.message}`);
+    });
     child.unref();
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 10; i++) {
       if (await isWebApiRunning()) return;
       await new Promise((r) => setTimeout(r, 500));
     }
-  } catch { /* non-fatal */ }
+    console.error('⚠ Web API process spawned but health check did not respond.');
+  } catch (err) {
+    console.error(`⚠ ensureWebApiRunning error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /** Crash marker — written on start, removed on clean exit */

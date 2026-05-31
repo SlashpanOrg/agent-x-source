@@ -83,6 +83,11 @@ jobs:
           mkdir -p release-pkg
           cp packages/cli/dist/index.js release-pkg/
           cp packages/cli/dist/daemon.js release-pkg/
+          # Include web-api so the CLI/daemon can auto-start it
+          mkdir -p release-pkg/web-api/dist
+          cp -r packages/web-api/dist/* release-pkg/web-api/dist/ 2>/dev/null || true
+          cp packages/web-api/server.js release-pkg/web-api/ 2>/dev/null || true
+          cp packages/web-api/package.json release-pkg/web-api/ 2>/dev/null || true
           cat > release-pkg/package.json << 'EOF'
           {
             "type": "module",
@@ -106,6 +111,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path release-pkg
           Copy-Item packages/cli/dist/index.js release-pkg/
           Copy-Item packages/cli/dist/daemon.js release-pkg/
+          # Include web-api so the CLI/daemon can auto-start it
+          New-Item -ItemType Directory -Force -Path release-pkg/web-api/dist
+          Copy-Item -Path packages/web-api/dist/* -Destination release-pkg/web-api/dist/ -Recurse -ErrorAction SilentlyContinue
+          Copy-Item packages/web-api/server.js release-pkg/web-api/ -ErrorAction SilentlyContinue
+          Copy-Item packages/web-api/package.json release-pkg/web-api/ -ErrorAction SilentlyContinue
           @'
           {
             "type": "module",
