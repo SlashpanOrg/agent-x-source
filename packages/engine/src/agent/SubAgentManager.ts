@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { EngineEvent, CompletionMessage, AgentXConfig } from '@agentx/shared';
 import type { AgentEventBus } from '../EventBus.js';
 import type { ProviderInterface } from '../providers/ProviderInterface.js';
@@ -13,6 +16,7 @@ export interface SubAgentTask {
   startTime?: number;
   endTime?: number;
   abortController?: AbortController;
+  workDir?: string;
 }
 
 export class SubAgentManager {
@@ -21,6 +25,8 @@ export class SubAgentManager {
   private provider: ProviderInterface | null = null;
   private config: AgentXConfig | null = null;
   private systemPrompt: string = '';
+  private sandboxEnabled = false;
+  private tempDirs: Set<string> = new Set();
 
   constructor(eventBus: AgentEventBus) {
     this.eventBus = eventBus;
@@ -35,10 +41,28 @@ export class SubAgentManager {
     this.systemPrompt = systemPrompt;
   }
 
+  enableSandbox(enabled: boolean): void {
+    this.sandboxEnabled = enabled;
+  }
+
+  private createWorkDir(): string | undefined {
+    if (!this.sandboxEnabled) return undefined;
+    const dir = join(tmpdir(), `agentx-sub-${generateId()}`);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    this.tempDirs.add(dir);
+    return dir;
+  }
+
+  private cleanupWorkDir(dir: string): void {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    this.tempDirs.delete(dir);
+  }
+
   /**
    * Spawn a sub-agent that will actually execute an LLM completion in the background.
    */
   spawn(instruction: string, tools: string[] = [], timeout = 60_000): SubAgentTask {
+    const workDir = this.createWorkDir();
     const task: SubAgentTask = {
       id: generateId(),
       instruction,
@@ -46,6 +70,7 @@ export class SubAgentManager {
       timeout,
       status: 'pending',
       abortController: new AbortController(),
+      workDir,
     };
 
     this.agents.set(task.id, task);
@@ -81,8 +106,12 @@ export class SubAgentManager {
 
     try {
       const messages: CompletionMessage[] = [];
-      if (this.systemPrompt) {
-        messages.push({ role: 'system', content: this.systemPrompt });
+      let systemContent = this.systemPrompt;
+      if (task.workDir) {
+        systemContent += `\n\nYou are running in an isolated workspace at: ${task.workDir}\nAll file operations are scoped to this directory.`;
+      }
+      if (systemContent) {
+        messages.push({ role: 'system', content: systemContent });
       }
       messages.push({ role: 'user', content: task.instruction });
 
@@ -132,6 +161,7 @@ export class SubAgentManager {
       task.result = result;
       task.endTime = Date.now();
       const elapsed = task.endTime - (task.startTime ?? task.endTime);
+      if (task.workDir) this.cleanupWorkDir(task.workDir);
       this.eventBus.emit({
         type: 'agent_complete',
         agentId,
@@ -147,6 +177,7 @@ export class SubAgentManager {
       task.status = 'failed';
       task.result = error;
       task.endTime = Date.now();
+      if (task.workDir) this.cleanupWorkDir(task.workDir);
       this.eventBus.emit({
         type: 'agent_complete',
         agentId,
@@ -198,5 +229,64 @@ export class SubAgentManager {
       };
       check();
     });
+  }
+
+  /**
+   * Get completed tasks (with results).
+   */
+  getCompleted(): SubAgentTask[] {
+    return [...this.agents.values()].filter((t) => t.status === 'completed');
+  }
+
+  /**
+   * Merge multiple sub-agent results into a single consolidated string.
+   * Uses LLM for intelligent merging when provider is available, otherwise
+   * falls back to simple concatenation with headers.
+   */
+  async mergeResults(taskIds?: string[]): Promise<string> {
+    const tasks = taskIds
+      ? taskIds.map((id) => this.agents.get(id)).filter((t): t is SubAgentTask => t !== undefined)
+      : this.getCompleted();
+
+    if (tasks.length === 0) return 'No completed sub-agent results to merge.';
+    if (tasks.length === 1) return tasks[0]!.result ?? '(empty result)';
+
+    // Try LLM-based merging
+    if (this.provider && this.config) {
+      const parts = tasks.map((t, i) => `--- Task ${i + 1}: ${t.instruction} ---\n${t.result ?? '(empty)'}`);
+      const mergePrompt = `Consolidate the following parallel research/analysis results into a single coherent summary. Remove redundancy, combine related information, and present it in a well-organized format. Do not include the "--- Task N ---" separators in your output.
+
+${parts.join('\n\n')}
+
+Consolidated summary:`;
+
+      try {
+        const messages: CompletionMessage[] = [
+          { role: 'user', content: mergePrompt },
+        ];
+        const stream = this.provider.complete({
+          messages,
+          model: this.config.provider.activeModel,
+          maxTokens: 4096,
+          stream: true,
+        });
+        let merged = '';
+        for await (const chunk of stream) {
+          if (chunk.type === 'text_delta' && chunk.content) {
+            merged += chunk.content;
+          }
+        }
+        return merged.trim() || tasks.map((t, i) =>
+          `--- Result ${i + 1}: ${t.instruction} ---\n${t.result ?? '(empty)'}`
+        ).join('\n\n');
+      } catch {
+        // Fall through to concatenation
+      }
+    }
+
+    // Simple concatenation fallback
+    return tasks.map((t, i) =>
+      `--- Result ${i + 1}: ${t.instruction} ---\n${t.result ?? '(empty)'}`
+    ).join('\n\n');
   }
 }

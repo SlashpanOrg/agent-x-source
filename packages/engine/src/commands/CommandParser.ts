@@ -5,19 +5,37 @@ export interface ParsedInput {
   raw: string;
   command?: string;
   args?: string[];
+  chain?: ParsedInput[];
 }
 
 export class CommandParser {
   parse(input: string): ParsedInput {
     const trimmed = input.trim();
 
-    if (trimmed.startsWith('/')) {
-      const parts = trimmed.slice(1).split(/\s+/);
+    // Check for command chaining with &&
+    if (trimmed.includes('&&')) {
+      const parts = trimmed.split(/\s*&&\s*/);
+      const parsed = parts.map((part) => this.parseSingle(part));
+      return {
+        type: 'command',
+        raw: trimmed,
+        command: parsed[0]?.command,
+        args: parsed[0]?.args,
+        chain: parsed,
+      };
+    }
+
+    return this.parseSingle(trimmed);
+  }
+
+  private parseSingle(input: string): ParsedInput {
+    if (input.startsWith('/')) {
+      const parts = input.slice(1).split(/\s+/);
       const command = parts[0] ?? '';
       const args = parts.slice(1);
       return {
         type: 'command',
-        raw: trimmed,
+        raw: input,
         command,
         args,
       };
@@ -25,12 +43,12 @@ export class CommandParser {
 
     return {
       type: 'conversation',
-      raw: trimmed,
+      raw: input,
     };
   }
 
   isCommand(input: string): boolean {
-    return input.trim().startsWith('/');
+    return input.trim().startsWith('/') || input.trim().includes('&&');
   }
 
   extractPrefix(input: string): string {

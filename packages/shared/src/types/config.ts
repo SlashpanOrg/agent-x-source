@@ -1,4 +1,5 @@
 import type { ProviderId } from './provider.js';
+import type { RAGConfig } from './rag.js';
 
 export interface UserConfig {
   callsign: string;
@@ -12,6 +13,7 @@ export interface AgentXConfig {
   timezone?: string; // IANA timezone (e.g. 'Asia/Kolkata'). Auto-detected if not set.
   user?: UserConfig;
   setupComplete?: boolean; // true after Mission Control wizard finishes
+  rag?: RAGConfig;
 }
 
 export interface ProviderSettings {
@@ -45,6 +47,7 @@ export interface UISettings {
   showTokenBar: boolean;
   showTimers: boolean;
   animationSpeed: 'normal' | 'fast' | 'reduced';
+  disabledTools?: string[];
 }
 
 export interface OrganizationConfig {

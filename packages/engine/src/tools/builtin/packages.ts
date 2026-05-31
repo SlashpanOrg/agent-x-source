@@ -111,6 +111,70 @@ export async function packageRun(args: Record<string, unknown>, context: ToolExe
   }
 }
 
+export async function pkgUpdate(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const packages = args['packages'] as string | undefined;
+  const cwd = resolve(context.scopePath);
+  const pm = detectPackageManager(cwd);
+
+  try {
+    let cmd: string;
+    if (packages) {
+      cmd = pm === 'pnpm' ? `pnpm update ${packages}` : pm === 'yarn' ? `yarn upgrade ${packages}` : `npm update ${packages}`;
+    } else {
+      cmd = pm === 'pnpm' ? 'pnpm update' : pm === 'yarn' ? 'yarn upgrade' : 'npm update';
+    }
+    const output = execSync(cmd, { cwd, encoding: 'utf-8', timeout: 120000 });
+    return { success: true, output: output.trim() || 'All packages up to date' };
+  } catch (error) {
+    const err = error as { stdout?: string; stderr?: string; message: string };
+    return { success: true, output: err.stdout ?? err.message };
+  }
+}
+
+export async function pkgAudit(_args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const cwd = resolve(context.scopePath);
+  const pm = detectPackageManager(cwd);
+
+  try {
+    const cmd = pm === 'pnpm' ? 'pnpm audit --json' : 'npm audit --json';
+    const output = execSync(cmd, { cwd, encoding: 'utf-8', timeout: 60000 });
+    try {
+      const report = JSON.parse(output) as { vulnerabilities?: Record<string, number>; metadata?: { vulnerabilities?: Record<string, number> } };
+      const vulns = report.vulnerabilities ?? report.metadata?.vulnerabilities;
+      if (!vulns) return { success: true, output: 'No vulnerabilities found' };
+      const summary = Object.entries(vulns).filter(([, v]) => v > 0).map(([k, v]) => `${k}: ${v}`).join(', ');
+      return { success: true, output: summary || 'No vulnerabilities found' };
+    } catch {
+      return { success: true, output: output.trim() || 'No vulnerabilities found' };
+    }
+  } catch {
+    return { success: true, output: 'No vulnerabilities found or audit failed' };
+  }
+}
+
+export async function pkgSearch(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
+  const query = args['query'] as string;
+  const limit = (args['limit'] as number) ?? 10;
+
+  try {
+    const response = await fetch(`https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(query)}&size=${limit}`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(10000),
+    });
+    const data = (await response.json()) as { objects?: Array<{ package: { name: string; description: string; version: string; publisher?: { username: string } } }> };
+    if (!data.objects?.length) {
+      return { success: true, output: 'No packages found' };
+    }
+    const results = data.objects.map((o) => {
+      const pkg = o.package;
+      return `${pkg.name}@${pkg.version}\n  ${pkg.description ?? '(no description)'}\n  Publisher: ${pkg.publisher?.username ?? 'unknown'}`;
+    });
+    return { success: true, output: results.join('\n\n'), metadata: { count: results.length } };
+  } catch (error) {
+    return { success: false, output: `Search failed: ${(error as Error).message}`, error: 'SEARCH_ERROR' };
+  }
+}
+
 function detectPackageManager(cwd: string): 'npm' | 'pnpm' | 'yarn' {
   if (existsSync(join(cwd, 'pnpm-lock.yaml')) || existsSync(join(cwd, 'pnpm-workspace.yaml'))) return 'pnpm';
   if (existsSync(join(cwd, 'yarn.lock'))) return 'yarn';

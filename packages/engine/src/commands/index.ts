@@ -1,6 +1,8 @@
 export type { CommandInterface, CommandContext, CommandResult } from './CommandInterface.js';
 export { CommandParser } from './CommandParser.js';
 export { CommandRegistry } from './CommandRegistry.js';
+export { UserCommandRegistry } from './UserCommandRegistry.js';
+export type { UserCommandConfig } from './UserCommandRegistry.js';
 
 // Built-in commands
 export { helpCommand } from './builtin/help.js';
@@ -11,12 +13,28 @@ export { modelCommand } from './builtin/model.js';
 export { providerCommand } from './builtin/provider.js';
 export { crewCommand } from './builtin/crew.js';
 export { bgCommand, tasksCommand } from './builtin/tasks.js';
-export { toolsCommand } from './builtin/tools.js';
+export { toolsCommand, setToolRegistryInstance } from './builtin/tools.js';
 export { permissionsCommand } from './builtin/permissions.js';
 export { sessionsCommand } from './builtin/sessions.js';
 export { rememberCommand } from './builtin/remember.js';
 export { telegramCommand } from './builtin/telegram.js';
 export { scheduleCommand } from './builtin/schedule.js';
+export { planCommand } from './builtin/plan.js';
+export { forkCommand } from './builtin/fork.js';
+export { exportCommand } from './builtin/export.js';
+export { checkpointCommand, rewindCommand } from './builtin/checkpoint.js';
+export { costCommand } from './builtin/cost.js';
+export { watchCommand } from './builtin/watch.js';
+export { routeCommand } from './builtin/route.js';
+export { commandsCommand } from './builtin/commands.js';
+export { themeCommand } from './builtin/theme_cmd.js';
+export { diffCommand } from './builtin/diff_cmd.js';
+export { searchCommand } from './builtin/search_cmd.js';
+export { ragIndexCommand } from './builtin/rag_index.js';
+export { agentsCommand } from './builtin/agents.js';
+export { recipeCommand } from './builtin/recipe.js';
+export { copyCommand } from './builtin/copy.js';
+export { voiceCommand } from './builtin/voice.js';
 
 import { CommandRegistry } from './CommandRegistry.js';
 import { helpCommand } from './builtin/help.js';
@@ -33,6 +51,22 @@ import { sessionsCommand } from './builtin/sessions.js';
 import { rememberCommand } from './builtin/remember.js';
 import { telegramCommand } from './builtin/telegram.js';
 import { scheduleCommand } from './builtin/schedule.js';
+import { planCommand } from './builtin/plan.js';
+import { forkCommand } from './builtin/fork.js';
+import { exportCommand } from './builtin/export.js';
+import { checkpointCommand, rewindCommand } from './builtin/checkpoint.js';
+import { costCommand } from './builtin/cost.js';
+import { watchCommand } from './builtin/watch.js';
+import { routeCommand } from './builtin/route.js';
+import { commandsCommand } from './builtin/commands.js';
+import { themeCommand } from './builtin/theme_cmd.js';
+import { diffCommand } from './builtin/diff_cmd.js';
+import { searchCommand } from './builtin/search_cmd.js';
+import { ragIndexCommand } from './builtin/rag_index.js';
+import { agentsCommand } from './builtin/agents.js';
+import { recipeCommand } from './builtin/recipe.js';
+import { copyCommand } from './builtin/copy.js';
+import { voiceCommand } from './builtin/voice.js';
 
 export function createDefaultRegistry(): CommandRegistry {
   const registry = new CommandRegistry();
@@ -51,5 +85,22 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(rememberCommand);
   registry.register(telegramCommand);
   registry.register(scheduleCommand);
+  registry.register(planCommand);
+  registry.register(forkCommand);
+  registry.register(exportCommand);
+  registry.register(checkpointCommand);
+  registry.register(rewindCommand);
+  registry.register(costCommand);
+  registry.register(watchCommand);
+  registry.register(routeCommand);
+  registry.register(commandsCommand);
+  registry.register(themeCommand);
+  registry.register(diffCommand);
+  registry.register(searchCommand);
+  registry.register(ragIndexCommand);
+  registry.register(agentsCommand);
+  registry.register(recipeCommand);
+  registry.register(copyCommand);
+  registry.register(voiceCommand);
   return registry;
 }

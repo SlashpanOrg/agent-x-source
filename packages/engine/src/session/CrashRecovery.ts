@@ -57,13 +57,17 @@ export class CrashRecovery {
 
     // Graceful shutdown
     process.on('SIGINT', () => {
+      // Save crash state before exit for potential resume
+      saveOnCrash('Interrupted by user (SIGINT)');
       this.clearRecovery();
-      process.exit(0);
+      process.exit(130);
     });
 
     process.on('SIGTERM', () => {
+      // Save crash state for resume on restart
+      saveOnCrash('Terminated (SIGTERM)');
       this.clearRecovery();
-      process.exit(0);
+      process.exit(143);
     });
   }
 

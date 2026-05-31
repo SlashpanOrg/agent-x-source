@@ -95,3 +95,20 @@ export async function testCreate(args: Record<string, unknown>, context: ToolExe
 
   return { success: true, output: `Created test file: ${testFile}`, metadata: { testFile, exports: names } };
 }
+
+export async function benchmarkRun(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const file = args['file'] as string | undefined;
+  const cwd = resolve(context.scopePath);
+
+  let cmd = 'npx vitest bench --reporter=verbose';
+  if (file) cmd += ` ${file}`;
+
+  try {
+    const output = execSync(cmd, { cwd, encoding: 'utf-8', timeout: 120000, maxBuffer: 10 * 1024 * 1024 });
+    return { success: true, output: output.trim() };
+  } catch (error) {
+    const err = error as { stdout?: string; stderr?: string; message: string };
+    const output = [err.stdout, err.stderr].filter(Boolean).join('\n').trim() || err.message;
+    return { success: false, output, error: 'BENCH_ERROR' };
+  }
+}

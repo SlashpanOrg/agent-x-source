@@ -154,8 +154,8 @@ clean_existing() {
     local existing_path
     existing_path=$(command -v agentx)
     if [[ "$existing_path" == *"node_modules"* ]] || [[ "$existing_path" == *"npm"* ]]; then
-      npm uninstall -g @agentx/cli >/dev/null 2>&1 || true
-      pnpm remove -g @agentx/cli >/dev/null 2>&1 || true
+      npm uninstall -g @slashpan-org/agentx >/dev/null 2>&1 || true
+      pnpm remove -g @slashpan-org/agentx >/dev/null 2>&1 || true
     fi
   fi
 }

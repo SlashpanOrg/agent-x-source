@@ -4,6 +4,11 @@ export { SessionStore } from './session/SessionStore.js';
 export { SessionManager } from './session/SessionManager.js';
 export { TokenTracker } from './session/TokenTracker.js';
 export { CrashRecovery } from './session/CrashRecovery.js';
+export { GitManager } from './session/GitManager.js';
+export { FileWatcher } from './session/FileWatcher.js';
+export { BackgroundQueue } from './session/BackgroundQueue.js';
+export { ModelRouter } from './session/ModelRouter.js';
+export { RecipeEngine } from './session/RecipeEngine.js';
 export { Agent } from './agent/Agent.js';
 export type { AgentOptions } from './agent/Agent.js';
 export { ResponseFormatter } from './agent/ResponseFormatter.js';
@@ -47,3 +52,55 @@ export { Scheduler } from './scheduler/index.js';
 export type { ScheduledJob } from './scheduler/index.js';
 export { TaskManager } from './agent/TaskManager.js';
 export type { TaskContext } from './agent/TaskManager.js';
+export { AgentOrchestrator } from './agent/AgentOrchestrator.js';
+export type { OrchestrationPlan, OrchestrationStep } from './agent/AgentOrchestrator.js';
+export { DefaultTelemetryBus } from './telemetry/index.js';
+export type { TelemetryBus, TelemetryEvent, TelemetryConfig } from '@agentx/shared';
+
+// Phase 0: Storage adapter
+export { DefaultStorageAdapter, PostgresStorageAdapter } from './storage/index.js';
+export type { PostgresConfig } from './storage/PostgresStorageAdapter.js';
+export type { StorageAdapter, StorableSession, StorableMessage, StorableTokenLog, StorablePermission } from '@agentx/shared';
+
+// Phase 2: Plugin system
+export { DefaultPluginLoader, MCPBridge, ACPBridge, PluginRegistry, getBuiltinCatalog, getBuiltinPlugin, getMarketplaceExtensions, getMarketplaceExtension } from './plugin/index.js';
+export type { AcpServerConfig } from './plugin/index.js';
+export type { PluginManifest, PluginInstance, PluginLoader, MCPBridgeConfig, PluginHubEntry, PluginCategory, InstalledPlugin } from '@agentx/shared';
+
+// Phase 3: RAG / Vector search
+export { MemoryVectorStore, LLMEmbeddingProvider, RAGEngine } from './rag/index.js';
+export type { IndexDocumentInput } from './rag/index.js';
+export type { VectorStore, EmbeddingProvider, Document, RAGConfig } from '@agentx/shared';
+
+// Phase 7: ACP protocol
+export { ACPServer, ACPClient } from './acp/index.js';
+export type { ACPHandlers, ACPToolDefinition } from './acp/index.js';
+
+// Phase 2: Sandboxed execution
+export { DockerSandbox, NamespaceSandbox } from './sandbox/index.js';
+export type { Sandbox, SandboxResult, SandboxOptions } from '@agentx/shared';
+
+// Phase 8: Safety auditor
+export { SafetyAuditor } from './safety/index.js';
+export type { SafetyAlert, SafetyCheck, SafetyReport, SafetyAuditorConfig } from './safety/index.js';
+
+// Phase 8: Enterprise
+export { PolicyEngine, GoogleSSOProvider, GitHubSSOProvider } from './enterprise/index.js';
+export type {
+  PolicyRule,
+  PolicyDocument,
+  PolicyEffect,
+  AuditEntry,
+  ManagedSettings,
+  SSOConfig,
+  SSOUser,
+  SSOProvider,
+} from './enterprise/index.js';
+
+// Phase 8: Cloud handoff
+export { CloudHandoff, CloudAuth, runCloudWorker } from './cloud/index.js';
+export type { CloudSession, CloudWorkerConfig, CloudAuthToken } from './cloud/index.js';
+
+// Phase 8: Remote tunneling
+export { TunnelServer, TunnelClient } from './tunnel/index.js';
+export type { TunnelConfig, TunnelSession } from './tunnel/index.js';

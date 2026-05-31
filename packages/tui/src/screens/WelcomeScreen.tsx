@@ -9,14 +9,19 @@ import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { ScrollableList } from '../components/ScrollableList.js';
 import { ErrorBanner } from '../components/ErrorBanner.js';
 import { CommandSuggestions } from '../components/CommandSuggestions.js';
+import { PluginHub } from './PluginHub.js';
+import { useKeybindings } from '../hooks/useKeybindings.js';
 import { ProviderPicker } from '../components/ProviderPicker.js';
 import { PermissionPrompt } from '../components/PermissionPrompt.js';
+import { ProcessTimer } from '../components/ProcessTimer.js';
 import { GimmickDisplay } from '../components/GimmickDisplay.js';
 import { TodoProgress } from '../components/TodoProgress.js';
 import { AgentProgress } from '../components/AgentProgress.js';
 import { ReasoningGlimpse } from '../components/ReasoningGlimpse.js';
+import { PlanOverlay } from '../components/PlanOverlay.js';
 import { useSession } from '../hooks/useSession.js';
-import type { AgentXConfig, ModelInfo,Crew } from '@agentx/shared';
+import type { AgentXConfig, ModelInfo, Crew } from '@agentx/shared';
+import type { PluginRegistry, PostgresStorageAdapter, TelegramBridge, ToolRegistry, MCPBridge, ACPBridge } from '@agentx/engine';
 
 interface WelcomeScreenProps {
   config: AgentXConfig;
@@ -24,9 +29,21 @@ interface WelcomeScreenProps {
   restoreSessionId?: string;
   recovered?: boolean;
   onCrewSwitch?: () => void;
+  pluginRegistry: PluginRegistry;
+  onPluginChanged: () => void;
+  storageAdapter: PostgresStorageAdapter | null;
+  telegramBridge: TelegramBridge | null;
+  initialPlanMode?: boolean;
+  fallbackModel?: string;
+  mcpBridge?: MCPBridge;
+  acpBridge?: ACPBridge;
+  maxBudget?: number;
+  gitAutoCommit?: boolean;
+  gitAware?: boolean;
 }
 
-export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSessionId, recovered, onCrewSwitch }) => {
+export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSessionId, recovered, onCrewSwitch, pluginRegistry, onPluginChanged, storageAdapter, telegramBridge, initialPlanMode, fallbackModel, mcpBridge, acpBridge, maxBudget, gitAutoCommit, gitAware }) => {
+  const [showPluginHub, setShowPluginHub] = useState(false);
   const [slashFilter, setSlashFilter] = useState<string | null>(null);
 
   // derive active profile label (if any) for banner display
@@ -70,7 +87,25 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSes
     isReasoning,
     activeTools,
     subAgents,
-  } = useSession(config, crew, restoreSessionId, onCrewSwitch);
+    currentPlan,
+    planMode,
+    approvePlan,
+    rejectPlan,
+    togglePlanStep,
+    cancelPlan,
+    togglePlanMode,
+    toolCount,
+    messageCount,
+    sessionCreatedAt,
+    totalCost,
+    watcherCount,
+    schedulerCount,
+    isIndexing,
+    indexingProgress,
+    ragIndexStats,
+    currentTaskType,
+    pendingDiff,
+  } = useSession(config, crew, restoreSessionId, onCrewSwitch, storageAdapter, telegramBridge, initialPlanMode, fallbackModel, maxBudget, gitAutoCommit, gitAware);
 
   // Double-ESC to cancel processing
   const [escState, setEscState] = useState<'idle' | 'first_press'>('idle');
@@ -93,6 +128,9 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSes
     }
   });
 
+  // Plugin Hub keybinding
+  useKeybindings({ onCtrlP: () => setShowPluginHub(true) });
+
   // Reset ESC state when processing ends
   useEffect(() => {
     if (!isLoading) {
@@ -103,6 +141,21 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSes
       }
     }
   }, [isLoading]);
+
+  // Plugin Hub overlay (Ctrl+P)
+  if (showPluginHub) {
+    return (
+      <PluginHub
+        currentProvider={config.provider.activeProvider}
+        currentModel={currentModel}
+        onClose={() => setShowPluginHub(false)}
+        registry={pluginRegistry}
+        onPluginChanged={onPluginChanged}
+        mcpBridge={mcpBridge}
+        acpBridge={acpBridge}
+      />
+    );
+  }
 
   // Model picker overlay
   if (modelPickerModels) {
@@ -171,9 +224,19 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSes
           model={currentModel}
           organization={config.organization}
           crewName={crew.name}
+          scopePath={process.cwd()}
+          sessionName={sessionId ? sessionId.slice(0, 8) : crew.name}
+          toolCount={toolCount}
+          planMode={planMode}
+          totalCost={totalCost}
+          maxBudget={maxBudget ?? undefined}
+          ragIndexStats={ragIndexStats}
+          isIndexing={isIndexing}
+          indexingProgress={indexingProgress}
+          currentTaskType={currentTaskType}
         />
 
-        <MessageArea messages={messages} streamingContent={streamingContent} />
+        <MessageArea messages={messages} streamingContent={streamingContent} pendingDiff={pendingDiff ?? undefined} />
 
           {isLoading && !streamingContent && (
             <Box paddingX={2}>
@@ -203,10 +266,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSes
           {activeTools.length > 0 && (
             <Box flexDirection="column" paddingX={2}>
               {activeTools.map((t) => (
-                <Box key={t.tool}>
-                  <Text color={COLORS.primary}>⚡ </Text>
-                  <Text color={COLORS.textDim}>{t.description || t.tool}</Text>
-                </Box>
+                <ProcessTimer key={t.tool} label={t.description || t.tool} active={true} startTime={t.startTime} />
               ))}
             </Box>
           )}
@@ -219,6 +279,8 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSes
               agentName={a.name}
               status={a.status as 'running' | 'complete' | 'failed' | 'cancelled'}
               startedAt={a.startTime}
+              summary={a.summary}
+              endTime={a.endTime}
             />
           ))}
 
@@ -257,6 +319,17 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSes
             />
           )}
 
+          {/* Plan overlay */}
+          {currentPlan && (
+            <PlanOverlay
+              plan={currentPlan}
+              onApproveAll={approvePlan}
+              onRejectAll={rejectPlan}
+              onToggleStep={togglePlanStep}
+              onCancel={cancelPlan}
+            />
+          )}
+
           {/* Input at bottom */}
           <Box marginTop={1} paddingX={1}>
             <InputField
@@ -285,6 +358,11 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSes
           tokensUsed={tokensUsed}
           tokensTotal={tokensTotal}
           isProcessing={isLoading}
+          messageCount={messageCount}
+          sessionCreatedAt={sessionCreatedAt}
+          totalCost={totalCost}
+          watcherCount={watcherCount}
+          schedulerCount={schedulerCount}
         />
     </Box>
   );

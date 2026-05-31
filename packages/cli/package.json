@@ -1,5 +1,5 @@
 {
-  "name": "@agentx/cli",
+  "name": "@slashpan-org/agentx",
   "version": "0.1.0",
   "type": "module",
   "bin": {

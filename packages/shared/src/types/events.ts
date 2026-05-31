@@ -2,6 +2,21 @@ import type { Message } from './message.js';
 import type { ModelInfo } from './provider.js';
 import type { ToolResult } from './tool.js';
 
+export interface PlanStep {
+  id: string;
+  description: string;
+  status: 'pending' | 'approved' | 'rejected' | 'executing' | 'done' | 'failed';
+  tool?: string;
+  targetPath?: string;
+}
+
+export interface Plan {
+  id: string;
+  title: string;
+  steps: PlanStep[];
+  createdAt: string;
+}
+
 export type RemediationAction =
   | { type: 'switch_model'; label: string }
   | { type: 'reconfigure_key'; label: string }
@@ -40,7 +55,26 @@ export type EngineEvent =
   | { type: 'compaction_complete'; saved: number }
   | { type: 'todo_update'; items: TodoItem[] }
   | { type: 'command_action'; action: 'list_models'; models: ModelInfo[]; currentModel: string }
-  | { type: 'command_action'; action: 'model_switched'; modelId: string; contextWindow: number };
+  | { type: 'command_action'; action: 'model_switched'; modelId: string; contextWindow: number }
+  | { type: 'plan_generated'; plan: Plan; userRequest: string }
+  | { type: 'plan_step_approved'; stepId: string; planId: string }
+  | { type: 'plan_step_rejected'; stepId: string; planId: string }
+  | { type: 'plan_step_pending'; stepId: string; planId: string; description: string }
+  | { type: 'plan_step_skipped'; stepId: string; planId: string }
+  | { type: 'plan_step_executing'; stepId: string; planId: string; description?: string }
+  | { type: 'plan_step_complete'; stepId: string; planId: string; result: ToolResult }
+  | { type: 'plan_step_failed'; stepId: string; planId: string; error: string }
+  | { type: 'plan_approved'; planId: string }
+  | { type: 'plan_rejected'; planId: string }
+  | { type: 'plan_cancelled'; planId: string; reason: string }
+  | { type: 'plan_mode_entered' }
+  | { type: 'plan_mode_exited' }
+  | { type: 'indexing_start'; totalFiles: number }
+  | { type: 'indexing_progress'; indexed: number; total: number; currentFile?: string }
+  | { type: 'indexing_complete'; indexed: number; total: number; chunks: number }
+  | { type: 'watch_event'; event: string; filePath: string; command: string; timestamp: number }
+  | { type: 'diff_preview'; tool: string; filePath: string; diff: string; oldContent?: string; newContent?: string }
+  | { type: 'command_action'; action: 'show_watch_status'; entries: Array<{ pattern: string; command: string }> };
 
 export interface FormattedResponse {
   content: string;

@@ -7,6 +7,7 @@ export async function shellExec(args: Record<string, unknown>, context: ToolExec
   const command = args['command'] as string;
   const cwd = args['cwd'] ? resolve(context.scopePath, args['cwd'] as string) : context.scopePath;
   const timeout = (args['timeout'] as number) ?? 30000;
+  const maxLength = (args['maxLength'] as number) ?? 30000;
 
   const shell = getShellCommand(command);
   try {
@@ -18,13 +19,16 @@ export async function shellExec(args: Record<string, unknown>, context: ToolExec
       maxBuffer: 10 * 1024 * 1024,
       env: { ...process.env, TERM: 'dumb' },
     });
-    return { success: true, output: output.trim() };
+    const trimmed = output.trim();
+    const truncated = trimmed.length > maxLength ? trimmed.slice(0, maxLength) + `\n… [output truncated at ${maxLength} chars]` : trimmed;
+    return { success: true, output: truncated };
   } catch (error) {
     const err = error as { stdout?: string; stderr?: string; message: string; status?: number };
     const output = [err.stdout, err.stderr].filter(Boolean).join('\n').trim() || err.message;
+    const truncated = output.length > maxLength ? output.slice(0, maxLength) + `\n… [output truncated at ${maxLength} chars]` : output;
     return {
       success: false,
-      output,
+      output: truncated,
       error: 'EXEC_ERROR',
       metadata: { exitCode: err.status },
     };
@@ -82,4 +86,55 @@ export async function processList(_args: Record<string, unknown>, context: ToolE
   } catch (error) {
     return { success: false, output: `Failed to list processes: ${(error as Error).message}`, error: 'PS_ERROR' };
   }
+}
+
+export async function shellExecStreaming(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const command = args['command'] as string;
+  const cwd = args['cwd'] ? resolve(context.scopePath, args['cwd'] as string) : context.scopePath;
+  const maxLength = (args['maxLength'] as number) ?? 30000;
+  const shell = getShellCommand(command);
+
+  return new Promise((resolvePromise) => {
+    const child = spawn(shell.cmd, shell.args, {
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, TERM: 'dumb' },
+      shell: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    const maxBuffer = 100 * 1024;
+
+    child.stdout.on('data', (data: Buffer) => {
+      const chunk = data.toString();
+      stdout += chunk;
+      if (stdout.length > maxBuffer) {
+        stdout = stdout.slice(-maxBuffer);
+      }
+    });
+
+    child.stderr.on('data', (data: Buffer) => {
+      const chunk = data.toString();
+      stderr += chunk;
+      if (stderr.length > maxBuffer) {
+        stderr = stderr.slice(-maxBuffer);
+      }
+    });
+
+    child.on('close', (code) => {
+      const output = [stdout, stderr].filter(Boolean).join('\n').trim();
+      const truncated = output.length > maxLength ? output.slice(0, maxLength) + `\n… [output truncated at ${maxLength} chars]` : output;
+      resolvePromise({
+        success: code === 0,
+        output: truncated || `Process exited with code ${code}`,
+        metadata: { exitCode: code },
+        error: code !== 0 ? 'EXEC_ERROR' : undefined,
+      } as ToolResult);
+    });
+
+    child.on('error', (err) => {
+      resolvePromise({ success: false, output: `Failed to start: ${err.message}`, error: 'SPAWN_ERROR' });
+    });
+  });
 }

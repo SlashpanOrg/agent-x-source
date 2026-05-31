@@ -41,7 +41,7 @@ export class OllamaProvider implements ProviderInterface {
       name: m.name,
       providerId: 'ollama',
       contextWindow: 8192, // Default; varies by model
-      capabilities: ['text', 'streaming'],
+      capabilities: ['text', 'streaming', 'function_calling'],
     }));
   }
 
@@ -116,19 +116,8 @@ export class OllamaProvider implements ProviderInterface {
               prompt_eval_count?: number;
               eval_count?: number;
             };
-            if (parsed.done) {
-              yield {
-                type: 'done',
-                usage: {
-                  inputTokens: parsed.prompt_eval_count ?? 0,
-                  outputTokens: parsed.eval_count ?? 0,
-                },
-              };
-              return;
-            }
-            if (parsed.message?.content) {
-              yield { type: 'text_delta', content: parsed.message.content };
-            }
+            // Ollama may return tool_calls and done in the same JSON line.
+            // Yield tool calls BEFORE done so the agent sees them.
             if (parsed.message?.tool_calls && parsed.message.tool_calls.length > 0) {
               for (const tc of parsed.message.tool_calls) {
                 if (tc.function) {
@@ -145,6 +134,19 @@ export class OllamaProvider implements ProviderInterface {
                   };
                 }
               }
+            }
+            if (parsed.message?.content) {
+              yield { type: 'text_delta', content: parsed.message.content };
+            }
+            if (parsed.done) {
+              yield {
+                type: 'done',
+                usage: {
+                  inputTokens: parsed.prompt_eval_count ?? 0,
+                  outputTokens: parsed.eval_count ?? 0,
+                },
+              };
+              return;
             }
           } catch {
             // Skip

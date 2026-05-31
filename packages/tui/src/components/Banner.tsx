@@ -10,9 +10,19 @@ interface BannerProps {
   organization?: OrganizationConfig | null;
   crewName?: string;
   profileLabel?: string | null;
+  scopePath?: string;
+  sessionName?: string;
+  toolCount?: number;
+  planMode?: boolean;
+  totalCost?: number;
+  maxBudget?: number;
+  ragIndexStats?: { indexedCount: number; indexedAt: number | null };
+  currentTaskType?: string | null;
+  isIndexing?: boolean;
+  indexingProgress?: { indexed: number; total: number } | null;
 }
 
-export const Banner: FC<BannerProps> = ({ provider, model, organization, crewName, profileLabel }) => {
+export const Banner: FC<BannerProps> = ({ provider, model, organization, crewName, profileLabel, scopePath, sessionName, toolCount, planMode, totalCost, maxBudget, ragIndexStats, currentTaskType, isIndexing, indexingProgress }) => {
   return (
     <Box
       flexDirection="column"
@@ -40,7 +50,12 @@ export const Banner: FC<BannerProps> = ({ provider, model, organization, crewNam
           <Text color={COLORS.info}>{provider}</Text>
           <Text color={COLORS.textDim}> / </Text>
           <Text color={COLORS.text}>{model}</Text>
-          {/** show active profile if present */}
+          {currentTaskType && (
+            <Text color={COLORS.accent}> [{currentTaskType}]</Text>
+          )}
+          {isIndexing && indexingProgress && (
+            <Text color={COLORS.warning}> indexing {indexingProgress.indexed}/{indexingProgress.total}</Text>
+          )}
           {profileLabel && (
             <Text color={COLORS.textDim}> {' '}• [{profileLabel}]</Text>
           )}
@@ -52,6 +67,62 @@ export const Banner: FC<BannerProps> = ({ provider, model, organization, crewNam
           <Text color={COLORS.primaryDim}>⊹ Booting systems...</Text>
         </Box>
       )}
+
+      {/* Scope path */}
+      {scopePath && (
+        <Box>
+          <Text color={COLORS.textDim}>📁 </Text>
+          <Text color={COLORS.text} wrap="truncate-start">{scopePath}</Text>
+        </Box>
+      )}
+
+      {/* Plan mode indicator */}
+      {planMode && (
+        <Box>
+          <Text color={COLORS.warning}>⚠ PLAN MODE ACTIVE</Text>
+        </Box>
+      )}
+
+      {/* RAG index stats */}
+      {ragIndexStats && ragIndexStats.indexedCount > 0 && (
+        <Box>
+          <Text color={COLORS.textDim}>📚 </Text>
+          <Text color={COLORS.text}>{ragIndexStats.indexedCount} files indexed</Text>
+          {ragIndexStats.indexedAt && (
+            <Text color={COLORS.textMuted}>
+              {' '}({new Date(ragIndexStats.indexedAt).toLocaleTimeString()})
+            </Text>
+          )}
+        </Box>
+      )}
+
+      {/* Session name, tool count, cost, and budget on the same line */}
+      <Box gap={2}>
+        {sessionName && (
+          <Box>
+            <Text color={COLORS.textDim}>💬 </Text>
+            <Text color={COLORS.text}>{sessionName}</Text>
+          </Box>
+        )}
+        {toolCount !== undefined && (
+          <Box>
+            <Text color={COLORS.textDim}>🔧 </Text>
+            <Text color={COLORS.text}>{toolCount} tools</Text>
+          </Box>
+        )}
+        {totalCost !== undefined && totalCost > 0 && (
+          <Box>
+            <Text color={COLORS.textDim}>💰 </Text>
+            <Text color={COLORS.text}>{totalCost < 0.01 ? `$${(totalCost * 100).toFixed(2)}¢` : `$${totalCost.toFixed(4)}`}</Text>
+          </Box>
+        )}
+        {maxBudget !== undefined && maxBudget > 0 && (
+          <Box>
+            <Text color={COLORS.warning}>⛔ </Text>
+            <Text color={COLORS.warning}>${maxBudget.toFixed(2)}</Text>
+          </Box>
+        )}
+      </Box>
 
       {/* Crew name as the identifier line */}
       {crewName && (

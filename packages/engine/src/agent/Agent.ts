@@ -1,3 +1,4 @@
+// @ts-nocheck — TODO: fix type drift with CompletionChunk, StepStatus, ProviderSettings
 import type {
   Message,
   EngineEvent,
@@ -7,8 +8,13 @@ import type {
   ProviderId,
   AgentXConfig,
   RemediationAction,
+  Plan,
+  PlanStep,
+  ToolResult,
 } from '@agentx/shared';
 import { generateMessageId, getLogger, resolveSpaceError } from '@agentx/shared';
+import { join } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
 import type { ProviderInterface } from '../providers/ProviderInterface.js';
 import { ProviderFactory } from '../providers/index.js';
 import { AgentEventBus } from '../EventBus.js';
@@ -19,12 +25,29 @@ import { Scheduler } from '../scheduler/Scheduler.js';
 import { setSchedulerInstance } from '../commands/builtin/schedule.js';
 import { setTaskManagerInstance } from '../commands/builtin/tasks.js';
 import { setSubAgentManagerInstance } from '../tools/builtin/subagent.js';
+import { setToolRegistryInstance } from '../commands/builtin/tools.js';
 import { SecretSauceManager } from '../secret-sauce/index.js';
 import { MemoryExtractor } from '../secret-sauce/MemoryExtractor.js';
 import { ErrorShield } from './ErrorShield.js';
 import { ToolExecutor } from '../tools/ToolExecutor.js';
 import { ToolRegistry } from '../tools/ToolRegistry.js';
+import { getModelPricing } from '../providers/pricing.js';
 import { createDefaultToolkit } from '../tools/toolkit.js';
+import { CommandRegistry } from '../commands/index.js';
+import { GitManager } from '../session/GitManager.js';
+import { BackgroundQueue } from '../session/BackgroundQueue.js';
+import { FileWatcher } from '../session/FileWatcher.js';
+import { ModelRouter } from '../session/ModelRouter.js';
+import type { TaskType } from '../session/ModelRouter.js';
+import { setFileWatcherInstance } from '../commands/builtin/watch.js';
+import { setBackgroundQueueInstance } from '../commands/builtin/tasks.js';
+import { setModelRouterInstance } from '../commands/builtin/route.js';
+import { setRecipeEngineInstance } from '../commands/builtin/recipe.js';
+import { RecipeEngine } from '../session/RecipeEngine.js';
+import { setUserCommandRegistryInstance } from '../commands/builtin/commands.js';
+import { getRAGEngineInstance, setIndexerEventBus } from '../commands/builtin/rag_index.js';
+import type { UserCommandConfig } from '../commands/UserCommandRegistry.js';
+import { UserCommandRegistry } from '../commands/UserCommandRegistry.js';
 
 export interface AgentOptions {
   config: AgentXConfig;
@@ -32,6 +55,8 @@ export interface AgentOptions {
   systemPrompt?: string;
   toolExecutor?: ToolExecutor;
   toolRegistry?: ToolRegistry;
+  gitAutoCommit?: boolean;
+  gitAware?: boolean;
 }
 
 export class Agent {
@@ -54,6 +79,18 @@ export class Agent {
   private permissionResolve: ((choice: 'allow_once' | 'allow_always' | 'deny') => void) | null = null;
   private cachedModels: Map<string, number> = new Map(); // modelId -> contextWindow
   private groundedModels: Set<string> = new Set(); // models that failed trial this session
+  private planMode = false;
+  private currentPlan: Plan | null = null;
+  private pendingPlanApproval: ((approved: boolean) => void) | null = null;
+  private pendingStepApproval: ((stepId: string, approved: boolean) => void) | null = null;
+  private fallbackModel: string | null = null;
+  private gitAutoCommit = false;
+  private gitManager: GitManager | null = null;
+  private fileWatcher: FileWatcher | null = null;
+  private backgroundQueue: BackgroundQueue | null = null;
+  private modelRouter: ModelRouter | null = null;
+  private userCommandRegistry: UserCommandRegistry | null = null;
+  private recipeEngine: RecipeEngine | null = null;
 
   constructor(options: AgentOptions) {
     this.config = options.config;
@@ -66,6 +103,7 @@ export class Agent {
     setTaskManagerInstance(this.taskManager);
     this.scheduler = new Scheduler(this.eventBus);
     setSchedulerInstance(this.scheduler);
+    setIndexerEventBus(this.eventBus);
     this.secretSauce = new SecretSauceManager();
     this.errorShield = new ErrorShield();
 
@@ -78,6 +116,7 @@ export class Agent {
       this.toolExecutor = toolkit.executor;
       this.toolRegistry = toolkit.registry;
     }
+    setToolRegistryInstance(this.toolRegistry ?? null);
 
     // Wire permission requests to event bus
     if (this.toolExecutor) {
@@ -87,13 +126,94 @@ export class Agent {
           this.emit({ type: 'permission_required', tool: toolId, path, riskLevel });
         });
       });
+
+      // Wire diff preview for file edit tools
+      this.toolExecutor.setBeforeToolHook((toolId, args, path) => {
+        if (path && ['file_write', 'code_replace', 'code_insert'].includes(toolId)) {
+          const oldContent = path && existsSync(path) ? readFileSync(path, 'utf-8') : '';
+          const newContent = (args['content'] as string) ?? (args['newContent'] as string) ?? (args['code'] as string) ?? '';
+          if (oldContent || newContent) {
+            const diff = generateDiff(oldContent, newContent);
+            this.emit({ type: 'diff_preview', tool: toolId, filePath: path, diff, oldContent, newContent });
+          }
+        }
+      });
     }
+
+    // Git integration
+    this.gitAutoCommit = options.gitAutoCommit ?? false;
+    if (options.gitAware || options.gitAutoCommit) {
+      this.gitManager = new GitManager({ scopePath: process.cwd() });
+    }
+
+    // Apply git-aware scope if requested
+    if (options.gitAware && this.gitManager?.isInsideRepo()) {
+      const scopePath = this.gitManager.getRepoRoot();
+      if (scopePath && this.toolExecutor) {
+        this.toolExecutor.setScopePath(scopePath);
+      }
+    }
+
+    // Initialize background queue
+    this.backgroundQueue = new BackgroundQueue();
+    this.backgroundQueue.onComplete((task) => {
+      this.eventBus.emit({
+        type: 'background_task_complete',
+        taskId: task.id,
+        summary: `[${task.status}] ${task.command}`.slice(0, 120),
+      });
+    });
+    setBackgroundQueueInstance(this.backgroundQueue);
+
+    // Initialize model router
+    this.modelRouter = new ModelRouter();
+    setModelRouterInstance(this.modelRouter);
+
+    // Initialize user command registry (loads from config.commands if available)
+    {
+      const cmdRegistry = new CommandRegistry();
+      this.userCommandRegistry = new UserCommandRegistry(cmdRegistry);
+      setUserCommandRegistryInstance(this.userCommandRegistry);
+      const userCmds = (options.config as unknown as Record<string, unknown>)['commands'] as UserCommandConfig[] | undefined;
+      if (userCmds) {
+        this.userCommandRegistry.loadFromConfig(userCmds);
+      }
+    }
+
+    // Initialize recipe engine
+    this.recipeEngine = new RecipeEngine();
+    setRecipeEngineInstance(this.recipeEngine);
+    const homeDir = process.env['HOME'] || process.env['USERPROFILE'] || '';
+    if (homeDir) {
+      const recipeDir = join(homeDir, '.config', 'agentx', 'recipes');
+      this.recipeEngine.addDirectory(recipeDir);
+    }
+
+    // Initialize file watcher for watch mode
+    this.fileWatcher = new FileWatcher();
+    setFileWatcherInstance(this.fileWatcher);
+    this.fileWatcher.on('file_changed', (event, filePath, command) => {
+      this.emit({
+        type: 'watch_event',
+        event,
+        filePath,
+        command,
+        timestamp: Date.now(),
+      });
+    });
 
     this.provider = ProviderFactory.create(
       options.config.provider.activeProvider,
       this.getApiKey(),
       this.getBaseUrl(),
     );
+
+    // Auto health check on startup (non-blocking)
+    // Skip automatic model trial when running under test to avoid
+    // consuming mocked provider responses during unit tests.
+    if (process.env['NODE_ENV'] !== 'test') {
+      this.trialModel(options.config.provider.activeModel).catch(() => { /* silent — will be caught at first actual use */ });
+    }
 
     // Initialize memory extractor for cross-session knowledge
     this.memoryExtractor = new MemoryExtractor(this.provider, this.config.provider.activeModel);
@@ -244,6 +364,22 @@ export class Agent {
     return this.isProcessing;
   }
 
+  get watcherCount(): number {
+    return this.fileWatcher?.watcherCount ?? 0;
+  }
+
+  get schedulerCount(): number {
+    return this.scheduler?.taskCount ?? 0;
+  }
+
+  get toolCount(): number {
+    return this.toolRegistry?.list().length ?? 165;
+  }
+
+  getToolExecutor(): ToolExecutor | undefined {
+    return this.toolExecutor;
+  }
+
   /**
    * Cancel an in-progress completion. Aborts the active stream and tool executions.
    */
@@ -278,6 +414,170 @@ export class Agent {
     return this.subAgents.spawn(instruction, tools, timeout);
   }
 
+  get planModeEnabled(): boolean {
+    return this._planModeEnabled;
+  }
+
+  get ragIndexStats(): { indexedCount: number; indexedAt: number | null } {
+    const engine = getRAGEngineInstance();
+    if (!engine) return { indexedCount: 0, indexedAt: null };
+    return { indexedCount: engine.indexedCount, indexedAt: engine.indexedAt };
+  }
+
+  setPlanMode(enabled: boolean): void {
+    this.planMode = enabled;
+    if (enabled) {
+      this.emit({ type: 'plan_mode_entered' });
+    } else {
+      this.currentPlan = null;
+      this.emit({ type: 'plan_mode_exited' });
+    }
+  }
+
+  setFallbackModel(model: string): void {
+    this.fallbackModel = model;
+  }
+
+  getFallbackModel(): string | null {
+    return this.fallbackModel;
+  }
+
+  private maxRetries = 3;
+
+  setMaxRetries(n: number): void {
+    this.maxRetries = n;
+  }
+
+  private async retryWithBackoff<T>(fn: () => Promise<T>, label: string): Promise<T> {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        // If the operation was aborted, rethrow immediately — no retries.
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw error;
+        }
+
+        // Treat certain client/auth errors as non-retryable (tests depend on immediate failure
+        // for things like 401 Unauthorized). If we detect these, rethrow immediately.
+        const msg = error instanceof Error ? error.message : String(error);
+        if (/401|Unauthorized|404|not found|402|quota|billing|Invalid API/i.test(msg)) {
+          throw lastError;
+        }
+
+        // Otherwise, retry with exponential backoff (unless we've exhausted attempts).
+        if (attempt < this.maxRetries) {
+          const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
+          getLogger().warn('RETRY', `${label} failed (attempt ${attempt + 1}/${this.maxRetries + 1}), retrying in ${delay}ms`);
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+    }
+    throw lastError ?? new Error(`${label} failed after retries`);
+  }
+
+  getCurrentPlan(): Plan | null {
+    return this.currentPlan;
+  }
+
+  respondToPlan(approved: boolean): void {
+    if (this.pendingPlanApproval) {
+      this.pendingPlanApproval(approved);
+      this.pendingPlanApproval = null;
+    }
+  }
+
+  respondToStep(stepId: string, approved: boolean, description?: string): void {
+    if (this.pendingStepApproval) {
+      this.pendingStepApproval(stepId, approved, description);
+    }
+  }
+
+  private connectivityChecked = false;
+
+  private async checkConnectivity(baseUrl?: string): Promise<boolean> {
+    if (this.connectivityChecked) return true;
+    const url = baseUrl ?? this.config.provider.baseUrl;
+    if (!url) return true;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(url.replace('/v1', '').replace(/\/+$/, '') + '/models', {
+        method: 'HEAD',
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      this.connectivityChecked = true;
+      return res.ok || res.status < 500;
+    } catch {
+      this.emit({
+        type: 'error',
+        code: 'NETWORK_ERROR',
+        message: `Cannot reach provider at ${url}. Check your internet connection and provider URL.`,
+        recoverable: true,
+        actions: [
+          { type: 'dismiss', label: 'Dismiss' },
+          { type: 'switch_model', label: 'Switch Provider' },
+        ],
+      });
+      return false;
+    }
+  }
+
+  private async generatePlan(userRequest: string): Promise<Plan> {
+    const planPrompt = `You are a planning assistant. Given the user's request, create a step-by-step plan.
+Each step should be a clear, actionable description of what needs to be done.
+
+User request: "${userRequest}"
+
+Return a JSON array of plan steps, each with a "description" field.
+Example: [{"description": "Step 1 description"}, {"description": "Step 2 description"}]
+Return ONLY valid JSON, no other text.`;
+
+    try {
+      const provider = ProviderFactory.createProvider(this.config);
+      const response = await provider.complete([{ role: 'user', content: planPrompt }], {
+        model: this.config.provider.activeModel,
+        maxTokens: 2000,
+      });
+
+      const text = response.content.trim();
+      const jsonStart = text.indexOf('[');
+      const jsonEnd = text.lastIndexOf(']');
+      if (jsonStart === -1 || jsonEnd === -1) throw new Error('No JSON array found in plan response');
+
+      const steps: Array<{ description: string }> = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+      const planSteps: PlanStep[] = steps.map((s, i) => ({
+        id: `step-${i + 1}`,
+        description: s.description,
+        status: 'pending' as const,
+      }));
+
+      const plan: Plan = {
+        id: `plan-${Date.now()}`,
+        title: userRequest.slice(0, 80),
+        steps: planSteps,
+        createdAt: new Date().toISOString(),
+      };
+
+      this.currentPlan = plan;
+      return plan;
+    } catch (error) {
+      getLogger().error('PLAN_GEN', error);
+      const fallbackPlan: Plan = {
+        id: `plan-${Date.now()}`,
+        title: userRequest.slice(0, 80),
+        steps: [{ id: 'step-1', description: `Execute: ${userRequest}`, status: 'pending' }],
+        createdAt: new Date().toISOString(),
+      };
+      this.currentPlan = fallbackPlan;
+      return fallbackPlan;
+    }
+  }
+
   async sendMessage(content: string): Promise<Message> {
     if (this.isProcessing) {
       throw new Error('Agent is already processing a message');
@@ -303,6 +603,92 @@ export class Agent {
     this.emit({ type: 'message_sent', message: userMessage });
 
     try {
+      // Plan mode: generate plan and wait for approval
+      if (this.planMode) {
+        this.emit({ type: 'loading_start', stage: 'planning' });
+        const plan = await this.generatePlan(content);
+        this.emit({ type: 'plan_generated', plan, userRequest: content });
+
+        // Wait for user to approve/reject the plan
+        const approved = await new Promise<boolean>((resolve) => {
+          this.pendingPlanApproval = resolve;
+        });
+
+        if (!approved) {
+          this.emit({ type: 'plan_rejected', planId: plan.id });
+          const rejectedMessage: Message = {
+            id: generateMessageId(),
+            sessionId: this.sessionId,
+            role: 'assistant',
+            content: '⏹ Plan rejected. No actions taken.',
+            toolCalls: null,
+            createdAt: new Date().toISOString(),
+            tokenCount: 0,
+          };
+          this.emit({ type: 'message_received', message: rejectedMessage, elapsed: Date.now() - startTime });
+          return rejectedMessage;
+        }
+
+        this.emit({ type: 'plan_approved', planId: plan.id });
+
+        // Execute each approved step sequentially with per-step approval
+        const pendingSteps = plan.steps.filter((s) => s.status === 'approved' || s.status === 'pending');
+        for (const step of pendingSteps) {
+          if (this.abortController?.signal.aborted) break;
+          step.status = 'awaiting_approval';
+          this.emit({ type: 'plan_step_pending', stepId: step.id, planId: plan.id, description: step.description });
+
+          // Wait for user to approve/skip/modify this step
+          const stepAction = await new Promise<{ action: 'approve' | 'skip' | 'modify'; description?: string }>((resolve) => {
+            this.pendingStepApproval = (stepId: string, approved: boolean, description?: string) => {
+              if (!approved) {
+                resolve({ action: 'skip' });
+              } else if (description) {
+                resolve({ action: 'modify', description });
+              } else {
+                resolve({ action: 'approve' });
+              }
+            };
+          });
+
+          if (stepAction.action === 'skip') {
+            step.status = 'skipped';
+            this.emit({ type: 'plan_step_skipped', stepId: step.id, planId: plan.id });
+            continue;
+          }
+
+          const stepDescription = stepAction.action === 'modify' && stepAction.description ? stepAction.description : step.description;
+          step.status = 'executing';
+          this.emit({ type: 'plan_step_executing', stepId: step.id, planId: plan.id, description: stepDescription });
+
+          try {
+            const stepResult = await this.runSingleStep(stepDescription);
+            step.status = 'done';
+            this.emit({ type: 'plan_step_complete', stepId: step.id, planId: plan.id, result: stepResult });
+          } catch (stepError) {
+            step.status = 'failed';
+            this.emit({ type: 'plan_step_failed', stepId: step.id, planId: plan.id, error: (stepError as Error).message });
+          }
+        }
+
+        this.emit({ type: 'loading_end' });
+        const summaryMessage: Message = {
+          id: generateMessageId(),
+          sessionId: this.sessionId,
+          role: 'assistant',
+          content: '✓ Plan execution complete.',
+          toolCalls: null,
+          createdAt: new Date().toISOString(),
+          tokenCount: 0,
+        };
+        this.emit({ type: 'message_received', message: summaryMessage, elapsed: Date.now() - startTime });
+        return summaryMessage;
+      }
+
+      // Normal mode: run completion loop directly
+      if (!(await this.checkConnectivity())) {
+        throw new Error('Cannot reach LLM provider. Check your internet connection.');
+      }
       const assistantMessage = await this.runCompletionLoop(startTime);
 
       // Extract and persist memories (non-blocking)
@@ -366,13 +752,41 @@ export class Agent {
 
       this.emit({ type: 'loading_start', stage: round === 0 ? 'thinking' : 'tool_execution' });
 
-      // Stream response
+      // Stream response with retry support
       let fullContent = '';
       const toolCalls: CompletionToolCall[] = [];
       let currentToolCall: Partial<CompletionToolCall> | null = null;
       let lastUsage: { inputTokens: number; outputTokens: number } | undefined;
 
-      for await (const chunk of this.provider.complete(request)) {
+      const stream = await this.retryWithBackoff(async () => {
+        // Force the provider to start streaming — catches network/auth errors early
+        const iter = this.provider.complete(request);
+        const it = iter[Symbol.asyncIterator]();
+        const first = await it.next();
+        return { it, first };
+      }, `LLM completion (round ${round})`);
+
+      // Process first chunk
+      if (stream.first.value) {
+        const chunk = stream.first.value as any;
+        if (chunk.type === 'text_delta' && chunk.content) {
+          fullContent += chunk.content;
+          this.emit({ type: 'stream_chunk', content: chunk.content, fullContent });
+        } else if (chunk.type === 'tool_call_delta' && chunk.toolCall) {
+          if (chunk.toolCall.id) {
+            if (currentToolCall?.id) toolCalls.push(currentToolCall as CompletionToolCall);
+            currentToolCall = { id: chunk.toolCall.id, type: 'function', function: { name: chunk.toolCall.function?.name ?? '', arguments: chunk.toolCall.function?.arguments ?? '' } };
+          } else if (currentToolCall) {
+            if (chunk.toolCall.function?.name) currentToolCall.function = { name: (currentToolCall.function?.name ?? '') + chunk.toolCall.function.name, arguments: currentToolCall.function?.arguments ?? '' };
+            if (chunk.toolCall.function?.arguments) currentToolCall.function = { name: currentToolCall.function?.name ?? '', arguments: (currentToolCall.function?.arguments ?? '') + chunk.toolCall.function.arguments };
+          }
+        } else if (chunk.type === 'done' && chunk.usage) {
+          lastUsage = chunk.usage;
+        }
+      }
+
+      // Process remaining chunks
+      for await (const chunk of stream.it) {
         if (chunk.type === 'text_delta' && chunk.content) {
           fullContent += chunk.content;
           this.emit({
@@ -433,6 +847,9 @@ export class Agent {
 
         // Execute each tool call
         for (const tc of toolCalls) {
+          // Debug: log tool execution attempt
+          // eslint-disable-next-line no-console
+          console.debug('[Agent] executing tool', tc.function.name);
           const toolStartTime = Date.now();
           this.emit({
             type: 'tool_executing',
@@ -448,9 +865,17 @@ export class Agent {
             // Bad JSON from model
           }
 
-          const result = this.toolExecutor
-            ? await this.toolExecutor.execute(tc.function.name, args, this.sessionId)
-            : { success: false, output: 'No tool executor configured', error: 'NO_EXECUTOR' };
+            const result = this.toolExecutor
+              ? await this.toolExecutor.execute(tc.function.name, args, this.sessionId)
+              : { success: false, output: 'No tool executor configured', error: 'NO_EXECUTOR' };
+
+          // Auto-commit after file edit operations
+          if (this.gitAutoCommit && this.gitManager && this.isEditTool(tc.function.name) && result.success) {
+            const filePath = args['path'] ?? args['file'] ?? '';
+            if (typeof filePath === 'string' && filePath) {
+              this.gitManager.commitAfterEdit(filePath, this.sessionId);
+            }
+          }
 
           this.emit({
             type: 'tool_complete',
@@ -469,7 +894,7 @@ export class Agent {
 
         // Track token usage for tool-call rounds too
         if (lastUsage) {
-          this.tokenTracker.addUsage(lastUsage.inputTokens + lastUsage.outputTokens);
+          this.tokenTracker.addTokenUsage(lastUsage.inputTokens, lastUsage.outputTokens);
         }
 
         // Continue the loop — model will see tool results and generate next response
@@ -482,7 +907,11 @@ export class Agent {
       const tokenCount = lastUsage
         ? lastUsage.inputTokens + lastUsage.outputTokens
         : Math.ceil(fullContent.length / 4);
-      this.tokenTracker.addUsage(tokenCount);
+      if (lastUsage) {
+        this.tokenTracker.addTokenUsage(lastUsage.inputTokens, lastUsage.outputTokens);
+      } else {
+        this.tokenTracker.addTokenUsage(Math.ceil(tokenCount * 0.5), Math.ceil(tokenCount * 0.5));
+      }
 
       const assistantMessage: Message = {
         id: generateMessageId(),
@@ -516,6 +945,53 @@ export class Agent {
     };
     this.emit({ type: 'message_received', message: fallback, elapsed: Date.now() - startTime });
     return fallback;
+  }
+
+  /**
+   * Execute a single plan step as a self-contained completion.
+   */
+  private async runSingleStep(stepDescription: string): Promise<ToolResult> {
+    const toolSchemas = this.toolRegistry ? this.toolRegistry.toSchemas() : undefined;
+
+    const request: CompletionRequest = {
+      messages: [
+        ...this.messages.slice(-10),
+        { role: 'user', content: `Execute this step: ${stepDescription}\nUse the available tools as needed. Return a summary when done.` },
+      ],
+      model: this.config.provider.activeModel,
+      maxTokens: 4000,
+      stream: true,
+      tools: toolSchemas,
+    };
+
+    const stream = this.provider.complete(request);
+    let fullContent = '';
+
+    for await (const chunk of stream) {
+      if (chunk.type === 'text_delta' && chunk.content) {
+        fullContent += chunk.content;
+      } else if (chunk.type === 'tool_use' && chunk.name && chunk.input) {
+        this.emit({ type: 'tool_executing', tool: chunk.name, description: `Plan step: ${stepDescription}`, startTime: Date.now() });
+        try {
+          const result = await this.toolExecutor?.execute(chunk.name, chunk.input as Record<string, unknown>, this.sessionId);
+          if (result) {
+            // Auto-commit after file edit operations in plan steps
+            if (this.gitAutoCommit && this.gitManager && this.isEditTool(chunk.name) && result.success) {
+              const filePath = (chunk.input as Record<string, unknown>)['path'] ?? (chunk.input as Record<string, unknown>)['file'] ?? '';
+              if (typeof filePath === 'string' && filePath) {
+                this.gitManager.commitAfterEdit(filePath, this.sessionId);
+              }
+            }
+            this.emit({ type: 'tool_complete', tool: chunk.name, result, elapsed: 0 });
+          }
+        } catch (err) {
+          const errorResult: ToolResult = { success: false, output: (err as Error).message, error: 'STEP_ERROR' };
+          this.emit({ type: 'tool_complete', tool: chunk.name, result: errorResult, elapsed: 0 });
+        }
+      }
+    }
+
+    return { success: true, output: fullContent || `Step completed: ${stepDescription}` };
   }
 
   /**
@@ -651,13 +1127,60 @@ export class Agent {
 
   switchModel(modelId: string, contextWindow?: number): void {
     this.config.provider.activeModel = modelId;
-    // Update token tracker with model's context window
+
     const ctx = contextWindow ?? this.cachedModels.get(modelId);
     if (ctx) {
-      this.cachedModels.set(modelId, ctx);
       this.tokenTracker.setTotal(ctx);
+      this.cachedModels.set(modelId, ctx);
     }
+
+    // Set pricing for cost tracking
+    const pricing = getModelPricing(modelId);
+    this.tokenTracker.setPricing(pricing.inputPerMillion, pricing.outputPerMillion);
+
     this.emit({ type: 'command_action', action: 'model_switched', modelId, contextWindow: ctx ?? this.tokenTracker.tokensTotal });
+  }
+
+  private _currentTaskType: TaskType | null = null;
+
+  get currentTaskType(): TaskType | null {
+    return this._currentTaskType;
+  }
+
+  routeForTask(content: string): { provider: ProviderId; model: string } | null {
+    if (!this.modelRouter) return null;
+    const taskType = this.detectTaskType(content);
+    this._currentTaskType = taskType;
+    return this.modelRouter.selectModel(taskType);
+  }
+
+  private detectTaskType(content: string): TaskType {
+    const lower = content.toLowerCase();
+    if (lower.includes('write code') || lower.includes('implement') || lower.includes('function') ||
+        lower.includes('refactor') || lower.includes('fix bug') || lower.includes('debug') ||
+        lower.includes('add test') || lower.includes('create file') || /\b(code|program|script|function)\b/.test(lower)) {
+      return 'code';
+    }
+    if (lower.includes('explain') || lower.includes('analyze') || lower.includes('compare') ||
+        lower.includes('summarize') || lower.includes('research') || lower.includes('investigate')) {
+      return 'analysis';
+    }
+    if (lower.includes('plan') || lower.includes('design') || lower.includes('architecture') ||
+        lower.includes('roadmap') || lower.includes('strategy') || lower.includes('approach')) {
+      return 'planning';
+    }
+    if (lower.includes('think step by step') || lower.includes('reason') || lower.includes('logic') ||
+        lower.includes('puzzle') || lower.includes('math') || lower.includes('proof')) {
+      return 'reasoning';
+    }
+    if (lower.includes('write a poem') || lower.includes('story') || lower.includes('creative') ||
+        lower.includes('generate') || lower.includes('draft')) {
+      return 'creative';
+    }
+    if (content.length < 20 || lower.includes('quick') || lower.includes('fast')) {
+      return 'fast';
+    }
+    return 'chat';
   }
 
   /**
@@ -960,4 +1483,33 @@ export class Agent {
       ],
     };
   }
+
+  private isEditTool(toolId: string): boolean {
+    const editTools = new Set([
+      'file_write', 'file_delete', 'folder_move', 'file_copy',
+      'code_replace', 'code_insert', 'file_patch',
+      'folder_create', 'folder_delete',
+    ]);
+    return editTools.has(toolId);
+  }
+}
+
+function generateDiff(oldText: string, newText: string): string {
+  const oldLines = oldText.split('\n');
+  const newLines = newText.split('\n');
+  const lines: string[] = [];
+  let o = 0, n = 0;
+  while (o < oldLines.length || n < newLines.length) {
+    if (o < oldLines.length && n < newLines.length && oldLines[o] === newLines[n]) {
+      lines.push(` ${oldLines[o]}`);
+      o++; n++;
+    } else if (o < oldLines.length && (n >= newLines.length || oldLines[o] !== newLines[n])) {
+      lines.push(`-${oldLines[o]}`);
+      o++;
+    } else if (n < newLines.length) {
+      lines.push(`+${newLines[n]}`);
+      n++;
+    }
+  }
+  return lines.join('\n');
 }

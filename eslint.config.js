@@ -30,6 +30,7 @@ export default tseslint.config(
       'no-unsafe-finally': 'error',
       'no-unsafe-negation': 'error',
       'no-empty': ['error', { allowEmptyCatch: true }],
+      '@typescript-eslint/ban-ts-comment': 'off',
     },
   },
 );

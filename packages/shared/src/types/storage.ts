@@ -1,0 +1,64 @@
+export interface RecordMeta {
+  id: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface StorableSession extends RecordMeta {
+  title: string;
+  status: string;
+  providerId: string;
+  modelId: string;
+  crewId: string | null;
+  scopePath: string;
+  tokenUsed: number;
+  tokenAvailable: number;
+}
+
+export interface StorableMessage extends RecordMeta {
+  sessionId: string;
+  role: string;
+  content: string;
+  toolCalls?: string;
+  tokenCount: number;
+}
+
+export interface StorableTokenLog extends RecordMeta {
+  sessionId: string;
+  inputTokens: number;
+  outputTokens: number;
+  model: string;
+}
+
+export interface StorablePermission extends RecordMeta {
+  sessionId: string;
+  toolName: string;
+  targetPath: string | null;
+  decision: string;
+}
+
+export interface StorageAdapter {
+  connect(): Promise<void> | void;
+  disconnect(): Promise<void> | void;
+  isConnected(): boolean;
+
+  createSession(input: Omit<StorableSession, keyof RecordMeta>): StorableSession;
+  getSession(id: string): StorableSession | null;
+  updateSession(id: string, updates: Partial<StorableSession>): void;
+  deleteSession(id: string): void;
+  listSessions(limit?: number): StorableSession[];
+
+  addMessage(sessionId: string, message: Omit<StorableMessage, 'id' | 'createdAt'>): StorableMessage;
+  getMessages(sessionId: string): StorableMessage[];
+  deleteMessages(sessionId: string): void;
+  getMessageCount(sessionId: string): number;
+
+  addTokenLog(sessionId: string, log: Omit<StorableTokenLog, 'id' | 'createdAt'>): void;
+  getTokenLogs(sessionId: string): StorableTokenLog[];
+
+  addPermission(sessionId: string, perm: Omit<StorablePermission, 'id' | 'createdAt'>): void;
+  getPermissions(sessionId: string): StorablePermission[];
+
+  clearAll(): void;
+  close(): void;
+}

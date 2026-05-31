@@ -19,6 +19,7 @@ export class PermissionManager {
   }
 
   check(toolName: string, path?: string): PermissionDecision | null {
+    if (this.permissions.has('__all__')) return 'allow_always';
     const key = this.makeKey(toolName, path);
     const permission = this.permissions.get(key) ?? this.permissions.get(toolName);
     if (!permission) return null;
@@ -55,6 +56,26 @@ export class PermissionManager {
   revokeAll(): void {
     this.permissions.clear();
     this.saveToDisk();
+  }
+
+  /**
+   * Bypass all permission checks — grants `allow_always` for any tool.
+   * Used in CI/CD mode when --allow-all-tools is specified.
+   */
+  allowAll(): void {
+    // Store a sentinel that overrides all checks
+    this.permissions.set('__all__', {
+      id: '__all__',
+      sessionId: this.sessionId,
+      toolName: '*',
+      targetPath: null,
+      decision: 'allow_always',
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  isAllAllowed(): boolean {
+    return this.permissions.has('__all__');
   }
 
   list(): Permission[] {

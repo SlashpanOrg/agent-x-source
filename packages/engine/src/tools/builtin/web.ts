@@ -1,4 +1,7 @@
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { execSync } from 'node:child_process';
 
 export async function httpGet(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
   const url = args['url'] as string;
@@ -142,5 +145,62 @@ export async function webSearch(args: Record<string, unknown>, _context: ToolExe
     };
   } catch (error) {
     return { success: false, output: (error as Error).message, error: 'SEARCH_ERROR' };
+  }
+}
+
+export async function httpDownload(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const url = args['url'] as string;
+  const output = args['output'] as string;
+
+  if (!url || !output) {
+    return { success: false, output: 'url and output are required', error: 'MISSING_INPUT' };
+  }
+
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(60000) });
+    if (!response.ok) {
+      return { success: false, output: `Download failed: HTTP ${response.status}`, error: 'HTTP_ERROR' };
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const filePath = resolve(context.scopePath, output);
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, buffer);
+    return { success: true, output: `Downloaded ${url} to ${output} (${buffer.length} bytes)`, metadata: { size: buffer.length } };
+  } catch (error) {
+    return { success: false, output: `Download failed: ${(error as Error).message}`, error: 'DOWNLOAD_ERROR' };
+  }
+}
+
+export async function webBrowse(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const url = args['url'] as string;
+  if (!url) return { success: false, output: 'url is required', error: 'MISSING_INPUT' };
+
+  // Check if Playwright is available
+  try {
+    execSync('npx playwright --version 2>/dev/null', { timeout: 5000 });
+  } catch {
+    // Fallback to simple fetch for basic scraping
+    return webScrape(args, context);
+  }
+
+  const script = `
+    const { chromium } = require('playwright');
+    (async () => {
+      const browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage();
+      await page.goto(${JSON.stringify(url)}, { timeout: 30000 });
+      const title = await page.title();
+      const text = await page.evaluate(() => document.body.innerText.slice(0, 50000));
+      await browser.close();
+      console.log(JSON.stringify({ title, text }));
+    })();
+  `;
+
+  try {
+    const result = execSync(`node -e ${JSON.stringify(script)}`, { timeout: 30000, encoding: 'utf-8', cwd: context.scopePath });
+    const parsed = JSON.parse(result.trim());
+    return { success: true, output: `Title: ${parsed.title}\n\n${parsed.text}` };
+  } catch (error) {
+    return { success: false, output: `Browse failed: ${(error as Error).message}`, error: 'BROWSE_ERROR' };
   }
 }

@@ -7,12 +7,14 @@ interface AgentProgressProps {
   agentName: string;
   status: 'running' | 'complete' | 'failed' | 'cancelled';
   progress?: string;
+  summary?: string;
   startedAt: number;
+  endTime?: number;
 }
 
 const ORBIT_FRAMES = ['✦', '⊹', '∗', '⋆', '✧', '⋆', '∗', '⊹'];
 
-export function AgentProgress({ agentName, status, progress, startedAt }: AgentProgressProps) {
+export function AgentProgress({ agentName, status, progress, summary, startedAt, endTime }: AgentProgressProps) {
   const [frame, setFrame] = useState(0);
   const [elapsed, setElapsed] = useState(0);
 
@@ -24,6 +26,10 @@ export function AgentProgress({ agentName, status, progress, startedAt }: AgentP
     }, 80);
     return () => clearInterval(interval);
   }, [status, startedAt]);
+
+  const totalElapsed = endTime
+    ? ((endTime - startedAt) / 1000).toFixed(1)
+    : (elapsed / 1000).toFixed(1);
 
   const statusIcon = status === 'running' ? ORBIT_FRAMES[frame]
     : status === 'complete' ? '✓'
@@ -45,8 +51,9 @@ export function AgentProgress({ agentName, status, progress, startedAt }: AgentP
       <Box gap={1}>
         <Text color={statusColor}>{statusIcon}</Text>
         <Text color={COLORS.primary} bold>{label}</Text>
-        {status === 'running' && (
-          <Text color={COLORS.textDim}>{(elapsed / 1000).toFixed(1)}s</Text>
+        <Text color={COLORS.textDim}>{totalElapsed}s</Text>
+        {status === 'complete' && summary && (
+          <Text color={COLORS.textDim} wrap="truncate-end">— {summary}</Text>
         )}
       </Box>
       {progress && (

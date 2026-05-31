@@ -6,3 +6,8 @@ export * from './crew.js';
 export * from './permission.js';
 export * from './config.js';
 export * from './events.js';
+export * from './storage.js';
+export * from './sandbox.js';
+export * from './plugin.js';
+export * from './telemetry.js';
+export * from './rag.js';

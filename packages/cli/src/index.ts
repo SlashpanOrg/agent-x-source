@@ -226,12 +226,30 @@ async function main(): Promise<void> {
     removeCrashMarker();
   });
   process.on('SIGINT', () => {
+    logger.info('SIGNAL', 'Received SIGINT — aborting cleanly');
     removeCrashMarker();
-    process.exit(0);
+    process.exit(130);
   });
-  process.on('SIGTERM', () => {
+  process.on('SIGTERM', async () => {
+    logger.info('SIGNAL', 'Received SIGTERM — saving state and exiting');
+    // Save crash recovery state for resume on next launch
+    try {
+      const { initSessionTrace } = await import('./session-trace.js');
+      initSessionTrace({ path: '/tmp/agentx-last-session.json', maxEvents: 50 });
+    } catch {
+      // non-fatal
+    }
     removeCrashMarker();
-    process.exit(0);
+    process.exit(143);
+  });
+
+  // Terminal resize handling
+  process.on('SIGWINCH', () => {
+    // Ink handles re-layout internally; this prevents the process from exiting
+    // on terminal resize and forces a stdout refresh
+    if (process.stdout.isTTY) {
+      process.stdout.emit('resize' as any);
+    }
   });
 
   const args = process.argv.slice(2);
@@ -256,7 +274,23 @@ async function main(): Promise<void> {
     console.log('');
     console.log('Options:');
     console.log('  --token <token>  Telegram bot token (from @BotFather)');
-    console.log('  -v, --version    Show version');
+  console.log('  --plan           Start in plan mode (approve steps before execution)');
+  console.log('  --fallback-model <model>  Fallback model if primary fails');
+  console.log('  --max-budget <dollars>    Stop spending after this amount');
+  console.log('  --git-auto-commit         Auto-commit after file edits');
+  console.log('  --git-aware               Restrict scope to Git repo root');
+  console.log('  --json                    JSON output mode (for CI/CD)');
+  console.log('  --non-interactive         Non-interactive mode (for CI/CD)');
+  console.log('  --allow-all-tools         Bypass all tool permission prompts (for CI/CD)');
+  console.log('  --voice                   Record voice input before processing');
+  console.log('  --prompt <text>           Prompt to process (for CI/CD mode)');
+  console.log('  --cloud-login             Authenticate with Agent-X Cloud');
+  console.log('  --cloud-list              List cloud sessions');
+  console.log('  --teleport <prompt>       Run task on a cloud worker');
+  console.log('  --resume-from-cloud <id>  Resume a cloud session');
+  console.log('  --tunnel                  Start tunnel server (AGENTX_TUNNEL_PORT, AGENTX_TUNNEL_TOKEN)');
+  console.log('  --connect <url>           Connect to a tunnel server');
+  console.log('  -v, --version    Show version');
     console.log('  agentx uninstall                     Uninstall Agent-X');
     console.log('');
     console.log('Options:');
@@ -394,6 +428,22 @@ async function main(): Promise<void> {
   // Check for crash recovery before starting
   const recovered = handleCrashRecovery();
 
+  // --bg flag: run a command in the background and exit
+  if (bgCommand) {
+    const { BackgroundQueue } = await import('@agentx/engine');
+    const queue = new BackgroundQueue();
+    const task = queue.enqueue(bgCommand, { timeout: 300_000 });
+    const { execSync } = await import('node:child_process');
+    try {
+      execSync(bgCommand, { timeout: 300_000, maxBuffer: 10 * 1024 * 1024, stdio: 'inherit' });
+      console.log(`✦ Background task completed: ${bgCommand}`);
+    } catch (err) {
+      console.error(`✗ Background task failed: ${bgCommand}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
   // Check for session restore
   let sessionId: string | undefined;
   const sessionIdx = args.indexOf('session');
@@ -401,17 +451,248 @@ async function main(): Promise<void> {
     sessionId = args[sessionIdx + 1];
   }
 
+  // Check for --plan flag
+  const planMode = args.includes('--plan');
+
+  // Check for --fallback-model flag
+  const fallbackIdx = args.indexOf('--fallback-model');
+  const fallbackModel = fallbackIdx !== -1 && args[fallbackIdx + 1] ? args[fallbackIdx + 1] : undefined;
+
+  // Check for --max-budget flag
+  const budgetIdx = args.indexOf('--max-budget');
+  const maxBudget = budgetIdx !== -1 && args[budgetIdx + 1] ? parseFloat(args[budgetIdx + 1]) : undefined;
+
+  // Check for git flags
+  const gitAutoCommit = args.includes('--git-auto-commit');
+  const gitAware = args.includes('--git-aware');
+
+  // Check for --bg flag (background queue)
+  const bgIdx = args.indexOf('--bg');
+  const bgCommand = bgIdx !== -1 && args[bgIdx + 1] ? args.slice(bgIdx + 1).join(' ') : undefined;
+
+  // Check for CI/CD mode flags
+  const jsonMode = args.includes('--json');
+  const nonInteractive = args.includes('--non-interactive') || args.includes('--ci');
+  const allowAllTools = args.includes('--allow-all-tools');
+  const voiceFlag = args.includes('--voice');
+  const teleportFlag = args.includes('--teleport');
+  const resumeFlag = args.includes('--resume-from-cloud');
+  const teleportIdx = args.indexOf('--teleport');
+  const teleportPrompt = teleportIdx !== -1 && args[teleportIdx + 1] && !args[teleportIdx + 1]!.startsWith('--')
+    ? args[teleportIdx + 1] : undefined;
+  const resumeIdIdx = args.indexOf('--resume-from-cloud');
+  const resumeId = resumeIdIdx !== -1 && args[resumeIdIdx + 1] ? args[resumeIdIdx + 1] : undefined;
+  const cloudLogin = args.includes('--cloud-login');
+  const cloudList = args.includes('--cloud-list');
+  const tunnelFlag = args.includes('--tunnel');
+  const connectFlag = args.includes('--connect');
+  const connectUrl = connectFlag ? args[args.indexOf('--connect') + 1] : undefined;
+
+  // Cloud handoff operations
+  if (teleportFlag || resumeFlag || cloudLogin || cloudList) {
+    const { CloudHandoff } = await import('@agentx/engine');
+    const handoff = new CloudHandoff({
+      endpoint: process.env['AGENTX_CLOUD_ENDPOINT'] ?? 'https://cloud.agentx.ai',
+    });
+
+    if (cloudLogin) {
+      const ok = await handoff.getAuth().login(
+        process.env['AGENTX_CLOUD_ENDPOINT'] ?? 'https://cloud.agentx.ai',
+        process.env['AGENTX_CLOUD_API_KEY'],
+      );
+      if (ok) {
+        console.log('✓ Logged in to Agent-X Cloud');
+      } else {
+        console.error('✗ Login failed. Set AGENTX_CLOUD_API_KEY or register at cloud.agentx.ai');
+        process.exit(1);
+      }
+      process.exit(0);
+    }
+
+    if (!handoff.getAuth().isAuthenticated()) {
+      console.error('Not authenticated to cloud. Run: agentx --cloud-login');
+      process.exit(1);
+    }
+
+    if (cloudList) {
+      const sessions = await handoff.listRemoteSessions();
+      console.log('Cloud Sessions:');
+      for (const s of sessions) {
+        console.log(`  ${s.id}  [${s.status}]  ${s.prompt?.slice(0, 60) ?? 'N/A'}`);
+      }
+      process.exit(0);
+    }
+
+    if (resumeFlag && resumeId) {
+      console.log(`Resuming cloud session ${resumeId}...`);
+      const session = await handoff.resumeFromCloud(resumeId);
+      if (session.status === 'completed') {
+        console.log('Result:', session.result);
+      } else if (session.status === 'failed') {
+        console.error('Session failed:', session.error);
+        process.exit(1);
+      } else {
+        console.log(`Session status: ${session.status}`);
+      }
+      process.exit(0);
+    }
+
+    if (teleportFlag && teleportPrompt) {
+      console.log('Teleporting to cloud worker...');
+      const session = await handoff.teleport(teleportPrompt);
+      if (session.status === 'completed') {
+        console.log('✓ Completed');
+        console.log(session.result);
+      } else if (session.status === 'failed') {
+        console.error('✗ Failed:', session.error);
+        process.exit(1);
+      } else {
+        console.log(`Session status: ${session.status}`);
+      }
+      process.exit(0);
+    }
+
+    console.error('Usage: agentx --teleport "your task" | --resume-from-cloud <session-id> | --cloud-login | --cloud-list');
+    process.exit(1);
+  }
+
+  // Tunnel server mode
+  if (tunnelFlag) {
+    const { TunnelServer } = await import('@agentx/engine');
+    const port = parseInt(process.env['AGENTX_TUNNEL_PORT'] ?? '8080', 10);
+    const server = new TunnelServer({
+      port,
+      authToken: process.env['AGENTX_TUNNEL_TOKEN'],
+    });
+    console.log(`Starting tunnel server on port ${port}...`);
+    await server.start();
+    console.log(`✓ Tunnel server running at ${server.getUrl()}`);
+    console.log(`  Auth token: ${server.getConfig().authToken.slice(0, 8)}...`);
+    console.log('  Press Ctrl+C to stop');
+    await new Promise(() => {});
+  }
+
+  // Tunnel client mode
+  if (connectFlag) {
+    if (!connectUrl) {
+      console.error('Usage: agentx --connect <tunnel-url>');
+      process.exit(1);
+    }
+    const { TunnelClient } = await import('@agentx/engine');
+    const token = process.env['AGENTX_TUNNEL_TOKEN'] ?? '';
+    console.log(`Connecting to tunnel: ${connectUrl}...`);
+    const client = new TunnelClient({ url: connectUrl, token });
+    client.setOnConnected((sessionId) => {
+      console.log(`✓ Connected! Session: ${sessionId}`);
+    });
+    client.setOnMessage((data) => {
+      console.log('Message:', data);
+    });
+    client.setOnDisconnected(() => {
+      console.log('Disconnected from tunnel');
+    });
+    await client.connect();
+    console.log('Connected. Waiting for messages...');
+    await new Promise(() => {});
+  }
+
+  const promptArg = args.indexOf('--prompt') !== -1 ? args[args.indexOf('--prompt') + 1] : undefined;
+  const taskArg = promptArg || args.find((a) => !a.startsWith('--') && args.indexOf(a) > 2) || (nonInteractive ? args.slice(2).join(' ') : undefined);
+
   // Write crash marker (removed on clean exit)
   writeCrashMarker();
 
-  // Clear terminal before launching
+  // CI/CD mode: non-interactive, JSON output
+  if (jsonMode || nonInteractive) {
+    // Ensure backend is available
+    try { await ensureWebApiRunning(); } catch { /* non-fatal */ }
+    const { Agent } = await import('@agentx/engine');
+    const { ConfigManager } = await import('@agentx/engine');
+    const { generateSessionId } = await import('@agentx/shared');
+    const configMgr = new ConfigManager();
+    const config = configMgr.load();
+    const agent = new Agent({ config, sessionId: generateSessionId() });
+    if (allowAllTools && agent.getToolExecutor()) {
+      agent.getToolExecutor()!.getPermissionManager().allowAll();
+    }
+
+    let input = taskArg || '';
+
+    // Voice input: record and transcribe
+    if (voiceFlag) {
+      try {
+        const { execSync } = await import('node:child_process');
+        const { writeFileSync, unlinkSync, existsSync } = await import('node:fs');
+        const { join } = await import('node:path');
+        const { tmpdir } = await import('node:os');
+        const filePath = join(tmpdir(), `agentx-voice-${Date.now()}.wav`);
+        const duration = 10;
+        console.error(`Recording for ${duration}s...`);
+        execSync(`rec -q -r 16000 -c 1 ${filePath} trim 0 ${duration}`, { stdio: 'pipe', timeout: 20000 });
+        if (existsSync(filePath)) {
+          const key = process.env.OPENAI_API_KEY;
+          if (key) {
+            console.error('Transcribing...');
+          const { readFileSync } = await import('node:fs');
+          const audioBuffer = readFileSync(filePath);
+          const form = new FormData();
+          form.append('file', new Blob([audioBuffer], { type: 'audio/wav' }), 'audio.wav');
+          form.append('model', 'whisper-1');
+            const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${key}` },
+              body: form as unknown as BodyInit,
+            });
+            const data = await res.json() as { text?: string };
+            if (data.text) input = (input ? `${input}\n` : '') + data.text;
+          }
+          try { unlinkSync(filePath); } catch { /* ignore */ }
+        }
+      } catch (e) {
+        console.error('Voice recording/transcription failed:', (e as Error).message);
+      }
+    }
+
+    if (!input) {
+      if (jsonMode) {
+        console.log(JSON.stringify({ error: 'No prompt provided. Usage: agentx --json --prompt "your task"' }));
+      } else {
+        console.error('No prompt provided. Usage: agentx --non-interactive --prompt "your task"');
+      }
+      process.exit(1);
+    }
+
+    if (jsonMode) {
+      console.log(JSON.stringify({ status: 'processing', input }));
+    }
+
+    try {
+      const result = await agent.processUserInput(input);
+      if (jsonMode) {
+        console.log(JSON.stringify({ status: 'complete', output: result.output, tokensUsed: agent.tokens.tokensUsed, totalCost: agent.tokens.totalCost }));
+      } else {
+        console.log(result.output);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (jsonMode) {
+        console.log(JSON.stringify({ status: 'error', error: msg }));
+      } else {
+        console.error(msg);
+      }
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  // Clear terminal before launching TUI
   process.stdout.write('\x1Bc');
 
   // Ensure backend is available for TUI features and the Web UI
   try { await ensureWebApiRunning(); } catch { /* non-fatal */ }
 
   // Render the TUI
-  render(React.createElement(App, { sessionId, recovered }));
+  render(React.createElement(App, { sessionId, recovered, planMode, fallbackModel, maxBudget, gitAutoCommit, gitAware }));
 }
 
 main().catch((err) => {

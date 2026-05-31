@@ -2,6 +2,7 @@ import type { ToolDefinition, ToolCategory, ToolRiskLevel } from '@agentx/shared
 
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
+  private favoriteTools: Set<string> = new Set();
 
   register(tool: ToolDefinition): void {
     this.tools.set(tool.id, tool);
@@ -48,5 +49,21 @@ export class ToolRegistry {
         parameters: t.schema as unknown as Record<string, unknown>,
       },
     }));
+  }
+
+  addFavorite(id: string): void {
+    this.favoriteTools.add(id);
+  }
+
+  removeFavorite(id: string): void {
+    this.favoriteTools.delete(id);
+  }
+
+  isFavorite(id: string): boolean {
+    return this.favoriteTools.has(id);
+  }
+
+  listFavorites(): ToolDefinition[] {
+    return [...this.favoriteTools].map((id) => this.tools.get(id)).filter((t): t is ToolDefinition => t !== undefined);
   }
 }

@@ -10,3 +10,9 @@ coverage/
 *.log
 .turbo/
 .cache/
+
+# Desktop app build output
+packages/desktop/release/
+packages/desktop/renderer/xterm/
+packages/desktop/build/Tray.png
+packages/desktop/build/TrayWin.png

@@ -4,7 +4,7 @@
   <br/>
   <em>Your AI Wingman</em>
   <br/><br/>
-  Multi-provider AI agent in your terminal. 80+ tools. Session persistence. Telegram remote control.
+  Multi-provider AI agent in your terminal. 165+ tools. Session persistence. Telegram remote control.
   <br/>
   One command to launch. Zero configuration required.
   <br/><br/>
@@ -15,7 +15,7 @@
 
 ## Overview
 
-Agent-X is an autonomous AI agent that lives in your terminal. It connects to multiple AI providers, wields 80+ built-in tools, remembers context across sessions, and can be commanded remotely via Telegram — all wrapped in a deep-space-themed interface that makes every interaction feel like commanding a starship.
+Agent-X is an autonomous AI agent that lives in your terminal. It connects to multiple AI providers, wields 165+ built-in tools, remembers context across sessions, and can be commanded remotely via Telegram — all wrapped in a deep-space-themed interface that makes every interaction feel like commanding a starship.
 
 No cloud accounts. No subscriptions. Bring your own API keys and launch.
 
@@ -63,23 +63,31 @@ Switch between providers mid-conversation. No restart needed.
 | Ollama | Any local model |
 | LM Studio | Any local model |
 
-### 80+ Built-in Tools
+### 165+ Built-in Tools
 
 Agent-X does not just talk — it acts. Tools are organized by domain:
 
-- **Filesystem** — read, write, move, delete, search files and directories
-- **Shell** — execute commands, manage background processes
-- **Git** — status, diff, log, commit, branch, stash, blame
-- **Code Intelligence** — search symbols, find definitions, replace, refactor
-- **Packages** — install, remove, list, outdated, run scripts
-- **Testing** — run suites, watch mode, coverage, generate tests
-- **Web / HTTP** — GET, POST, scrape, search the web
-- **Browser Automation** — open pages, click elements, screenshots, evaluate JS
-- **Containers** — Docker lifecycle, compose, logs, exec
-- **Database** — query, inspect schema, export data
-- **GitHub** — issues, PRs, repos, workflows, releases
-- **System** — disk, ports, env, processes, security audit
-- **MCP** — connect to any Model Context Protocol server for extended capabilities
+- **Filesystem** (16) — read, write, copy, diff, metadata, archive, directory tree, find files
+- **Shell & Process** (5) — execute, background processes, process list, streaming output
+- **Git & VCS** (13) — status, diff, log, commit, branch, stash, blame, push, pull, merge
+- **Code Intelligence** (13) — search, grep with context, references, definitions, symbols, format, lint, typecheck, analyze, multi-edit
+- **Documents** (15) — PDF, DOCX, XLSX, PPTX, Markdown, HTML, JSON, YAML, Mermaid diagrams, LaTeX
+- **Browser Automation** (6) — open pages, click, screenshots, type text, extract elements, evaluate JS
+- **Web & HTTP** (7) — GET, POST, request, scrape, search, download files
+- **Containers & Docker** (9) — lifecycle, compose, logs, exec, build images
+- **Database** (5) — SQLite query, schema, export, migrate
+- **GitHub** (9) — issues, PRs, reviews, repos, workflows, releases
+- **Packages** (8) — install, remove, list, outdated, run scripts, update, audit, search registry
+- **Testing** (5) — run tests, watch, coverage, scaffold, benchmarks
+- **System** (12) — info, disk, ports, env, processes, monitor, cron jobs, open apps
+- **Security** (4) — encrypt/decrypt files, JWT decode, generate secrets
+- **AI Meta-Tools** (7) — completion, embeddings, summarize, classify, extract, memory store/recall
+- **Communication** (5) — desktop notifications, Telegram, Slack, clipboard read/write
+- **Media** (2) — SVG charts, QR codes
+- **Scheduler** (3) — set/list/cancel reminders
+- **Sub-Agents** (3) — spawn, status, cancel
+- **MCP** (4) — connect, list tools, call tools, read resources
+- **Plus:** Image processing, project detection, environment variable handling
 
 ### Permission System
 

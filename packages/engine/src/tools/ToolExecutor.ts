@@ -2,6 +2,9 @@ import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 import { PermissionManager } from './permissions/PermissionManager.js';
 import { ScopeGuard } from './permissions/ScopeGuard.js';
 import { ToolRegistry } from './ToolRegistry.js';
+import type { SafetyAuditor } from '../safety/SafetyAuditor.js';
+import type { PolicyEngine } from '../enterprise/PolicyEngine.js';
+
 
 export type PermissionRequestHandler = (
   toolId: string,
@@ -9,12 +12,28 @@ export type PermissionRequestHandler = (
   riskLevel: string,
 ) => Promise<'allow_once' | 'allow_always' | 'deny'>;
 
+export interface ToolExecutionEntry {
+  toolId: string;
+  args: Record<string, unknown>;
+  result: ToolResult;
+  timestamp: number;
+  elapsed: number;
+  sessionId: string;
+}
+
+const MAX_HISTORY = 200;
+
 export class ToolExecutor {
   private registry: ToolRegistry;
   private permissionManager: PermissionManager;
   private scopeGuard: ScopeGuard;
   private handlers: Map<string, (args: Record<string, unknown>, context: ToolExecutionContext) => Promise<ToolResult>> = new Map();
   private permissionRequestHandler?: PermissionRequestHandler;
+  private toolCache: Map<string, ReturnType<ToolRegistry['get']>> = new Map();
+  private beforeToolHook: ((toolId: string, args: Record<string, unknown>, path?: string) => void) | null = null;
+  private safetyAuditor: SafetyAuditor | null = null;
+  private policyEngine: PolicyEngine | null = null;
+  private executionHistory: ToolExecutionEntry[] = [];
 
   constructor(registry: ToolRegistry, scopePath: string) {
     this.registry = registry;
@@ -22,8 +41,28 @@ export class ToolExecutor {
     this.scopeGuard = new ScopeGuard(scopePath);
   }
 
+  getExecutionHistory(): ToolExecutionEntry[] {
+    return this.executionHistory;
+  }
+
+  setSafetyAuditor(auditor: SafetyAuditor): void {
+    this.safetyAuditor = auditor;
+  }
+
+  setPolicyEngine(engine: PolicyEngine): void {
+    this.policyEngine = engine;
+  }
+
+  setBeforeToolHook(hook: (toolId: string, args: Record<string, unknown>, path?: string) => void): void {
+    this.beforeToolHook = hook;
+  }
+
   setPermissionRequestHandler(handler: PermissionRequestHandler): void {
     this.permissionRequestHandler = handler;
+  }
+
+  setScopePath(scopePath: string): void {
+    this.scopeGuard = new ScopeGuard(scopePath);
   }
 
   registerHandler(
@@ -38,9 +77,28 @@ export class ToolExecutor {
     args: Record<string, unknown>,
     sessionId: string,
   ): Promise<ToolResult> {
-    const tool = this.registry.get(toolId);
+    let tool = this.toolCache.get(toolId);
+    if (!tool) {
+      tool = this.registry.get(toolId);
+      if (tool) this.toolCache.set(toolId, tool);
+    }
     if (!tool) {
       return { success: false, output: `Unknown tool: ${toolId}`, error: 'TOOL_NOT_FOUND' };
+    }
+
+    // Safety audit — intercept before execution
+    if (this.safetyAuditor) {
+      const blocked = await this.safetyAuditor.intercept(toolId, args);
+      if (blocked) return blocked;
+    }
+
+    // Enterprise policy evaluation
+    if (this.policyEngine) {
+      const path = (args['path'] ?? args['filePath'] ?? args['file'] ?? args['target'] ?? args['from']) as string | undefined;
+      const decision = this.policyEngine.evaluate(toolId, path);
+      if (decision === 'deny') {
+        return { success: false, output: 'Blocked by enterprise policy', error: 'POLICY_DENIED' };
+      }
     }
 
     // Check scope for path-based tools
@@ -81,6 +139,11 @@ export class ToolExecutor {
       }
     }
 
+    // Fire before-tool hook for diff/preview
+    if (this.beforeToolHook && path) {
+      this.beforeToolHook(toolId, args, path);
+    }
+
     // Execute
     const handler = this.handlers.get(toolId);
     if (!handler) {
@@ -94,14 +157,30 @@ export class ToolExecutor {
     };
 
     try {
+      const startTime = Date.now();
       const result = await handler(args, context);
+      const elapsed = Date.now() - startTime;
+      this.executionHistory.push({ toolId, args, result, timestamp: startTime, elapsed, sessionId });
+      if (this.executionHistory.length > MAX_HISTORY) this.executionHistory.shift();
+
+      // Enterprise audit log
+      this.policyEngine?.logAudit({ action: 'execute', toolId, args, result, sessionId, duration: elapsed });
+
       return result;
     } catch (error) {
-      return {
+      const now = Date.now();
+      const result: ToolResult = {
         success: false,
         output: error instanceof Error ? error.message : 'Tool execution failed',
         error: 'EXECUTION_ERROR',
       };
+      this.executionHistory.push({ toolId, args, result, timestamp: now, elapsed: 0, sessionId });
+      if (this.executionHistory.length > MAX_HISTORY) this.executionHistory.shift();
+
+      // Enterprise audit log
+      this.policyEngine?.logAudit({ action: 'execute', toolId, args, result, sessionId, duration: 0 });
+
+      return result;
     }
   }
 

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
-import { readFileSync, existsSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 
 export async function dbQuery(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
@@ -98,4 +98,54 @@ export async function envRead(args: Record<string, unknown>, context: ToolExecut
     .join('\n');
 
   return { success: true, output: masked, metadata: { note: 'Values masked for security' } };
+}
+
+export async function dbMigrate(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const dbFile = args['database'] as string;
+  const migrationsDir = args['migrationsDir'] as string;
+  const dbPath = resolve(context.scopePath, dbFile);
+  const migDir = resolve(context.scopePath, migrationsDir);
+
+  if (!existsSync(migrationsDir) && !existsSync(migDir)) {
+    return { success: false, output: `Migrations directory not found: ${migrationsDir}`, error: 'NOT_FOUND' };
+  }
+  const actualMigDir = existsSync(migDir) ? migDir : resolve(context.scopePath, migrationsDir);
+
+  try {
+    // Ensure _migrations table exists
+    execFileSync('sqlite3', [dbPath, 'CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, name TEXT UNIQUE, applied_at TEXT DEFAULT CURRENT_TIMESTAMP);'], { encoding: 'utf-8', timeout: 5000 });
+
+    const files = readdirSync(actualMigDir)
+      .filter((f) => f.endsWith('.sql'))
+      .sort();
+
+    if (files.length === 0) {
+      return { success: true, output: 'No migration files found' };
+    }
+
+    // Get already-applied migrations
+    const applied = execFileSync('sqlite3', [dbPath, 'SELECT name FROM _migrations;'], { encoding: 'utf-8', timeout: 5000 });
+    const appliedSet = new Set(applied.trim().split('\n').filter(Boolean));
+
+    const results: string[] = [];
+    for (const file of files) {
+      if (appliedSet.has(file)) {
+        results.push(`SKIP ${file} (already applied)`);
+        continue;
+      }
+      const sql = readFileSync(join(actualMigDir, file), 'utf-8');
+      try {
+        execFileSync('sqlite3', [dbPath, sql], { encoding: 'utf-8', timeout: 30000 });
+        execFileSync('sqlite3', [dbPath, `INSERT INTO _migrations (name) VALUES ('${file.replace(/'/g, "''")}');`], { encoding: 'utf-8', timeout: 5000 });
+        results.push(`OK   ${file}`);
+      } catch (err) {
+        results.push(`FAIL ${file}: ${(err as Error).message}`);
+        return { success: false, output: results.join('\n'), error: 'MIGRATE_ERROR' };
+      }
+    }
+
+    return { success: true, output: results.join('\n'), metadata: { total: files.length, applied: results.filter(r => r.startsWith('OK')).length } };
+  } catch (error) {
+    return { success: false, output: `Migration failed: ${(error as Error).message}`, error: 'MIGRATE_ERROR' };
+  }
 }

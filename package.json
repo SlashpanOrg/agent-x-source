@@ -7,7 +7,7 @@
   "scripts": {
     "prebuild": "vitest run --run packages/engine/tests/platform-parity.test.ts",
     "build": "pnpm -r run build",
-    "dev": "pnpm --filter @agentx/cli run dev",
+    "dev": "pnpm --filter @slashpan-org/agentx run dev",
     "test": "vitest run",
     "prestart": "vitest run --run packages/engine/tests/platform-parity.test.ts",
     "check:platform": "vitest run --run packages/engine/tests/platform-parity.test.ts",
