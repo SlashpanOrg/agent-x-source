@@ -83,31 +83,99 @@ async function startWebApiIfAvailable(): Promise<void> {
   } catch { /* not running */ }
 
   const bundlePath = new URL(import.meta.url).pathname;
-  const candidates = [
-    join(dirname(dirname(bundlePath)), '..', 'web-api'),
-    join(process.cwd(), 'packages', 'web-api'),
-    process.env['AGENTX_SOURCE'] ? join(process.env['AGENTX_SOURCE'], 'packages', 'web-api') : null,
-    join(dirname(bundlePath), 'web-api'),
-  ].filter(Boolean) as string[];
+  const bundleDir = dirname(bundlePath);
+
+  const candidates: string[] = [];
+  const add = (p?: string | null) => { if (p) candidates.push(p); };
+
+  // 1. Installed bundle sibling
+  add(join(bundleDir, 'web-api'));
+
+  // 2. Walk up from bundle
+  let bcur = bundleDir;
+  for (let i = 0; i < 6; i++) {
+    add(join(bcur, 'packages', 'web-api'));
+    add(join(bcur, 'source', 'packages', 'web-api'));
+    add(join(bcur, 'web-api'));
+    const next = dirname(bcur);
+    if (!next || next === bcur) break;
+    bcur = next;
+  }
+
+  // 3. CWD-based candidates
+  add(join(process.cwd(), 'packages', 'web-api'));
+  add(join(process.cwd(), 'source', 'packages', 'web-api'));
+
+  // 4. Environment overrides
+  if (process.env['AGENTX_SOURCE']) add(join(process.env['AGENTX_SOURCE'], 'packages', 'web-api'));
+  if (process.env['AGENTX_HOME']) add(join(process.env['AGENTX_HOME'], 'web-api'));
+
+  // 5. Walk up from CWD
+  let cur = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    add(join(cur, 'packages', 'web-api'));
+    add(join(cur, 'source', 'packages', 'web-api'));
+    add(join(cur, 'web-api'));
+    const next = dirname(cur);
+    if (!next || next === cur) break;
+    cur = next;
+  }
 
   let webApiDir: string | undefined;
   for (const dir of candidates) {
-    if (existsSync(join(dir, 'package.json'))) { webApiDir = dir; break; }
+    if (existsSync(join(dir, 'package.json')) || existsSync(join(dir, 'dist', 'index.js')) || existsSync(join(dir, 'server.js'))) {
+      webApiDir = dir;
+      break;
+    }
   }
-  if (!webApiDir) return;
+  if (!webApiDir) {
+    console.error('⚠ Daemon: Web API not found. Searched:');
+    for (const dir of candidates) console.error(`   ${dir}`);
+    return;
+  }
 
   const builtScript = join(webApiDir, 'dist', 'index.js');
-  if (!existsSync(builtScript)) return;
+  const serverScript = join(webApiDir, 'server.js');
+  const sourceScript = join(webApiDir, 'src', 'index.ts');
+
+  let script: string | undefined;
+  if (existsSync(builtScript)) script = builtScript;
+  else if (existsSync(serverScript)) script = serverScript;
+  else if (existsSync(sourceScript)) script = sourceScript;
+
+  if (!script) {
+    console.error('⚠ Daemon: Web API directory found but no runnable script.');
+    return;
+  }
 
   try {
-    const child = spawn(process.execPath, [builtScript], {
+    const args = script === sourceScript
+      ? [join(webApiDir, 'node_modules', '.bin', 'tsx'), script]
+      : [process.execPath, script];
+    const child = spawn(args[0]!, args.slice(1), {
       detached: true,
       stdio: 'ignore',
       env: { ...process.env, AGENTX_AUTO_STARTED: '1' },
     });
-    child.on('error', () => {});
+    child.on('error', (err) => {
+      console.error(`⚠ Daemon: Failed to spawn web-api: ${err.message}`);
+    });
     child.unref();
-  } catch { /* non-fatal */ }
+  } catch (err) {
+    console.error(`⚠ Daemon: startWebApiIfAvailable error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Keep the web API alive. Runs an initial start and then checks every 30s.
+ */
+function maintainWebApi(): void {
+  // Initial attempt
+  startWebApiIfAvailable().catch(() => {});
+  // Periodic health check / restart
+  setInterval(() => {
+    startWebApiIfAvailable().catch(() => {});
+  }, 30_000);
 }
 
 /**
@@ -127,8 +195,8 @@ export async function startDaemon(): Promise<void> {
 
   const config: AgentXConfig = configManager.load();
 
-  // Ensure web API is running (non-blocking, best-effort)
-  startWebApiIfAvailable().catch(() => {});
+  // Ensure web API is running and keep it alive (non-blocking, best-effort)
+  maintainWebApi();
 
   // Load telegram config
   const telegramStore = new TelegramStore();
