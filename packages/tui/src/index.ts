@@ -22,6 +22,8 @@ export { MissionControl } from './screens/MissionControl.js';
 export { WelcomeScreen } from './screens/WelcomeScreen.js';
 export { CrewSelect } from './screens/CrewSelect.js';
 export { SessionRestore } from './screens/SessionRestore.js';
+export { SetupAuth } from './screens/SetupAuth.js';
+export { Login } from './screens/Login.js';
 export { useSession } from './hooks/useSession.js';
 export { useSlashCommands } from './hooks/useSlashCommands.js';
 export { useKeybindings } from './hooks/useKeybindings.js';

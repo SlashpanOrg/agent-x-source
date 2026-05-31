@@ -11,6 +11,8 @@ import Sessions from './pages/Sessions';
 import Settings from './pages/Settings';
 import PluginHub from './pages/PluginHub';
 import PluginDetail from './pages/PluginDetail';
+import MCPHub from './pages/MCPHub';
+import SubAgentDashboard from './pages/SubAgentDashboard';
 import Login from './pages/Login';
 import SetupAuth from './pages/SetupAuth';
 
@@ -175,6 +177,8 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/plugins" element={<PluginHub />} />
         <Route path="/plugins/:id" element={<PluginDetail />} />
+        <Route path="/mcp" element={<MCPHub />} />
+        <Route path="/subagents" element={<SubAgentDashboard />} />
       </Route>
     </Routes>
   );

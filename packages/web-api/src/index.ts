@@ -164,6 +164,16 @@ const AVAILABLE_PROVIDERS = [
   { id: 'openai', name: 'OpenAI', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.openai.com/v1' },
   { id: 'anthropic', name: 'Anthropic', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.anthropic.com' },
   { id: 'google', name: 'Google', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
+  { id: 'moonshot', name: 'Moonshot AI', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.moonshot.cn/v1' },
+  { id: 'deepseek', name: 'DeepSeek', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.deepseek.com' },
+  { id: 'groq', name: 'Groq', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.groq.com/openai/v1' },
+  { id: 'mistral', name: 'Mistral AI', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.mistral.ai/v1' },
+  { id: 'together', name: 'Together AI', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.together.xyz/v1' },
+  { id: 'xai', name: 'xAI (Grok)', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.x.ai/v1' },
+  { id: 'fireworks', name: 'Fireworks AI', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.fireworks.ai/inference/v1' },
+  { id: 'perplexity', name: 'Perplexity', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.perplexity.ai' },
+  { id: 'azure', name: 'Azure OpenAI', type: 'cloud', requiresApiKey: true, defaultBaseUrl: '' },
+  { id: 'cohere', name: 'Cohere', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.cohere.com/compatibility/v1' },
   { id: 'ollama', name: 'Ollama', type: 'local', requiresApiKey: false, defaultBaseUrl: 'http://localhost:11434' },
   { id: 'lmstudio', name: 'LM Studio', type: 'local', requiresApiKey: false, defaultBaseUrl: 'http://localhost:1234/v1' },
 ];
@@ -584,9 +594,15 @@ app.post('/api/sessions/:id/restore', (req, res) => {
     destroyAgent();
     const session = eng.sessionManager.restoreSession(req.params['id']!);
     if (!session) { res.status(404).json({ error: 'not-found' }); return; }
-    createAgent();
-    const store = (eng.sessionManager as unknown as { store: { getMessages: (id: string) => Record<string, unknown>[] } }).store;
-    const messages = store.getMessages(req.params['id']!);
+    createAgent(undefined, req.params['id']!);
+    // Read messages from conversation.json (where ws.ts persists them)
+    const convPath = join(getSessionDir(req.params['id']!), 'conversation.json');
+    let messages: Array<Record<string, unknown>> = [];
+    try {
+      messages = JSON.parse(readFileSync(convPath, 'utf-8')) as Array<Record<string, unknown>>;
+    } catch {
+      messages = [];
+    }
     res.json({ session, messages });
   } catch (e: unknown) {
     res.status(500).json({ error: e instanceof Error ? e.message : 'restore-failed' });
@@ -721,6 +737,130 @@ app.get('/api/telegram/status', (_req, res) => {
   const plugin = eng.pluginRegistry.getPlugin('telegram');
   const configured = !!plugin?.enabled && !!plugin?.config?.['botToken'];
   res.json({ configured, botToken: configured ? '***configured***' : null });
+});
+
+// ───── Discord Bridge ─────
+app.post('/api/discord/start', async (req, res) => {
+  try {
+    const { token, channelId } = req.body as { token: string; channelId?: string };
+    const eng = getEngine();
+    const existing = eng.pluginRegistry.getPlugin('discord');
+    if (existing) {
+      eng.pluginRegistry.updateConfig('discord', { botToken: token, channelId });
+    } else {
+      const { getBuiltinPlugin } = await import('@agentx/engine');
+      const entry = getBuiltinPlugin('discord');
+      if (entry) {
+        eng.pluginRegistry.install(entry);
+        eng.pluginRegistry.updateConfig('discord', { botToken: token, channelId });
+      }
+    }
+    res.json({ ok: true, message: 'Discord bot configured.' });
+  } catch (e: unknown) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'save-failed' });
+  }
+});
+
+app.post('/api/discord/stop', (_req, res) => {
+  try {
+    const eng = getEngine();
+    if (eng.pluginRegistry.isInstalled('discord')) {
+      eng.pluginRegistry.uninstall('discord');
+    }
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'clear-failed' });
+  }
+});
+
+app.get('/api/discord/status', (_req, res) => {
+  const eng = getEngine();
+  const plugin = eng.pluginRegistry.getPlugin('discord');
+  const configured = !!plugin?.enabled && !!plugin?.config?.['botToken'];
+  res.json({ configured, botToken: configured ? '***configured***' : null });
+});
+
+// ───── Slack Bridge ─────
+app.post('/api/slack/start', async (req, res) => {
+  try {
+    const { webhookUrl, botToken, channel } = req.body as { webhookUrl?: string; botToken?: string; channel?: string };
+    const eng = getEngine();
+    const existing = eng.pluginRegistry.getPlugin('slack');
+    if (existing) {
+      eng.pluginRegistry.updateConfig('slack', { webhookUrl, botToken, channel });
+    } else {
+      const { getBuiltinPlugin } = await import('@agentx/engine');
+      const entry = getBuiltinPlugin('slack');
+      if (entry) {
+        eng.pluginRegistry.install(entry);
+        eng.pluginRegistry.updateConfig('slack', { webhookUrl, botToken, channel });
+      }
+    }
+    res.json({ ok: true, message: 'Slack integration configured.' });
+  } catch (e: unknown) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'save-failed' });
+  }
+});
+
+app.post('/api/slack/stop', (_req, res) => {
+  try {
+    const eng = getEngine();
+    if (eng.pluginRegistry.isInstalled('slack')) {
+      eng.pluginRegistry.uninstall('slack');
+    }
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'clear-failed' });
+  }
+});
+
+app.get('/api/slack/status', (_req, res) => {
+  const eng = getEngine();
+  const plugin = eng.pluginRegistry.getPlugin('slack');
+  const configured = !!plugin?.enabled && (!!plugin?.config?.['webhookUrl'] || !!plugin?.config?.['botToken']);
+  res.json({ configured });
+});
+
+// ───── Email Bridge ─────
+app.post('/api/email/start', async (req, res) => {
+  try {
+    const { smtpHost, smtpPort, smtpUser, smtpPass, fromAddress, imapHost, imapPort, imapUser, imapPass } = req.body as Record<string, string>;
+    const eng = getEngine();
+    const existing = eng.pluginRegistry.getPlugin('email');
+    const config = { smtpHost, smtpPort, smtpUser, smtpPass, fromAddress, imapHost, imapPort, imapUser, imapPass };
+    if (existing) {
+      eng.pluginRegistry.updateConfig('email', config);
+    } else {
+      const { getBuiltinPlugin } = await import('@agentx/engine');
+      const entry = getBuiltinPlugin('email');
+      if (entry) {
+        eng.pluginRegistry.install(entry);
+        eng.pluginRegistry.updateConfig('email', config);
+      }
+    }
+    res.json({ ok: true, message: 'Email bridge configured.' });
+  } catch (e: unknown) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'save-failed' });
+  }
+});
+
+app.post('/api/email/stop', (_req, res) => {
+  try {
+    const eng = getEngine();
+    if (eng.pluginRegistry.isInstalled('email')) {
+      eng.pluginRegistry.uninstall('email');
+    }
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'clear-failed' });
+  }
+});
+
+app.get('/api/email/status', (_req, res) => {
+  const eng = getEngine();
+  const plugin = eng.pluginRegistry.getPlugin('email');
+  const configured = !!plugin?.enabled && !!plugin?.config?.['smtpHost'];
+  res.json({ configured });
 });
 
 // ───── Tools ─────
@@ -953,6 +1093,56 @@ app.delete('/api/files/:id', (req, res) => {
     res.json({ ok: true });
   } catch (e: unknown) {
     res.status(500).json({ error: e instanceof Error ? e.message : 'delete-failed' });
+  }
+});
+
+// ───── Natural Language Cron ─────
+app.post('/api/scheduler/parse-cron', async (req, res) => {
+  const { text } = req.body as { text?: string };
+  if (!text) {
+    res.status(400).json({ error: 'text is required' });
+    return;
+  }
+  try {
+    const eng = getEngine();
+    const agent = getOrCreateAgent();
+    const prompt = `Convert the following natural language schedule to a standard 5-field cron expression (minute hour day-of-month month day-of-week).
+
+Examples:
+- "every morning at 9am" → 0 9 * * *
+- "every 15 minutes" → */15 * * * *
+- "every Monday at 10am" → 0 10 * * 1
+- "first day of every month at midnight" → 0 0 1 * *
+- "every weekday at 5pm" → 0 17 * * 1-5
+- "every hour" → 0 * * * *
+- "at midnight" → 0 0 * * *
+- "every Sunday at 8am" → 0 8 * * 0
+
+User input: "${text}"
+
+Return ONLY the cron expression, nothing else.`;
+    const provider = eng.agent ? (eng.agent as any).provider : ProviderFactory.create('openai', undefined, undefined);
+    const result = await provider.complete({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      stream: false,
+    });
+    let cronExpr = '';
+    for await (const chunk of result) {
+      if (chunk.type === 'text_delta' && chunk.content) {
+        cronExpr += chunk.content;
+      }
+    }
+    cronExpr = cronExpr.trim().replace(/`/g, '').replace(/^cron\s+/i, '');
+    // Basic validation: must have 5 fields
+    const parts = cronExpr.split(/\s+/);
+    if (parts.length === 5) {
+      res.json({ cron: cronExpr, original: text });
+    } else {
+      res.status(400).json({ error: 'Could not parse schedule', attempted: cronExpr });
+    }
+  } catch (e: unknown) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'parse-failed' });
   }
 });
 

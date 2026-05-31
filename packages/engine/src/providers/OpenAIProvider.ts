@@ -8,10 +8,10 @@ import type { ProviderInterface } from './ProviderInterface.js';
 
 export class OpenAIProvider implements ProviderInterface {
   readonly id: ProviderId = 'openai';
-  readonly name = 'OpenAI';
+  readonly name: string = 'OpenAI';
 
-  private apiKey: string;
-  private baseUrl: string;
+  protected apiKey: string;
+  protected baseUrl: string;
 
   constructor(apiKey: string, baseUrl?: string) {
     this.apiKey = apiKey;
@@ -175,7 +175,7 @@ export class OpenAIProvider implements ProviderInterface {
     yield { type: 'done', usage };
   }
 
-  private getContextWindow(modelId: string): number {
+  protected getContextWindow(modelId: string): number {
     if (modelId.includes('gpt-4o')) return 128000;
     if (modelId.includes('gpt-4-turbo')) return 128000;
     if (modelId.includes('gpt-4')) return 8192;
@@ -184,7 +184,7 @@ export class OpenAIProvider implements ProviderInterface {
     return 128000;
   }
 
-  private getCapabilities(modelId: string): ModelInfo['capabilities'] {
+  protected getCapabilities(modelId: string): ModelInfo['capabilities'] {
     const caps: ModelInfo['capabilities'] = ['text', 'streaming'];
     if (modelId.includes('gpt-4o') || modelId.includes('gpt-4-turbo')) {
       caps.push('vision', 'function_calling', 'json_mode');

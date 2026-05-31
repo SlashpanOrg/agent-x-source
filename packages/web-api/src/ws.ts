@@ -57,8 +57,29 @@ export function setupWebSocket(server: Server): void {
   });
 }
 
-function handleWsMessage(msg: { type: string; [key: string]: unknown }): void {
+async function handleWsMessage(msg: { type: string; [key: string]: unknown }): Promise<void> {
   switch (msg.type) {
+    case 'chat_message': {
+      const text = msg.text as string;
+      if (!text || typeof text !== 'string') {
+        broadcast({ type: 'error', message: 'Invalid message: text is required' });
+        return;
+      }
+      try {
+        const eng = getEngine();
+        const agent = eng.agent;
+        if (!agent) {
+          broadcast({ type: 'engine_event', event: 'error', data: { code: 'no-session', message: 'No active session — create a session first' } });
+          return;
+        }
+        ensureSubscribed();
+        await agent.sendMessage(text);
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : 'Chat failed';
+        broadcast({ type: 'engine_event', event: 'error', data: { code: 'AGENT_ERROR', message } });
+      }
+      break;
+    }
     case 'cancel': {
       const eng = getEngine();
       const agent = eng.agent;

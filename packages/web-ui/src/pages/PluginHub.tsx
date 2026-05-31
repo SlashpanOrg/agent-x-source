@@ -122,132 +122,139 @@ export default function PluginHub() {
     return grouped;
   }
 
-  if (loading) {
-    return (
-      <div className="page">
-        <div className="page-header">
-          <h2>Plugin Hub</h2>
-        </div>
-        <div className="loading-spinner" style={{ textAlign: 'center', padding: 40, opacity: 0.5 }}>Loading plugins...</div>
-      </div>
-    );
-  }
-
   return (
-    <div className="page">
-      <div className="page-header">
-        <h2>Plugin Hub</h2>
-        <div className="page-header-actions">
-          <span className="plugin-count">{installed.length} installed</span>
+    <>
+      <div className="topbar">
+        <div className="topbar-left">
+          <div className="topbar-label">System</div>
+          <div className="topbar-value">Plugin Hub</div>
+        </div>
+        <div className="topbar-right">
+          <span className="topbar-pill">{installed.length} installed</span>
         </div>
       </div>
 
-      <div className="plugin-tabs">
-        <button
-          className={`plugin-tab ${activeTab === 'installed' ? 'active' : ''}`}
-          onClick={() => setActiveTab('installed')}
-        >
-          Installed ({installed.length})
-        </button>
-        <button
-          className={`plugin-tab ${activeTab === 'available' ? 'active' : ''}`}
-          onClick={() => setActiveTab('available')}
-        >
-          Available ({available.length})
-        </button>
+      <div className="page-scroll">
+        <div style={{ padding: 24, maxWidth: 900, margin: '0 auto', width: '100%' }}>
+          {loading ? (
+            <div style={{ textAlign: 'center', padding: 40, opacity: 0.5 }}>
+              <div className="spinner" style={{ width: 24, height: 24, margin: '0 auto 12px' }} />
+              <div style={{ fontSize: '0.8rem', color: '#666' }}>Loading plugins...</div>
+            </div>
+          ) : (
+            <>
+              <div className="plugin-tabs">
+                <button
+                  className={`plugin-tab ${activeTab === 'installed' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('installed')}
+                >
+                  Installed ({installed.length})
+                </button>
+                <button
+                  className={`plugin-tab ${activeTab === 'available' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('available')}
+                >
+                  Available ({available.length})
+                </button>
+              </div>
+
+              {activeTab === 'installed' && (
+                <div className="plugin-categories">
+                  {Object.entries(groupByCategory(installed)).map(([category, plugins]) => (
+                    <div key={category} className="plugin-category-section">
+                      <div className="plugin-category-header">
+                        <span className="plugin-category-dot" style={{ background: CATEGORY_COLORS[category] || '#9b9b9b' }} />
+                        <h3>{CATEGORY_LABELS[category] || category}</h3>
+                        <span style={{ fontSize: '0.7rem', color: '#555', marginLeft: 'auto' }}>{plugins.length} plugin{plugins.length !== 1 ? 's' : ''}</span>
+                      </div>
+                      <div className="plugin-grid">
+                        {plugins.map((p: InstalledPlugin) => (
+                          <div key={p.id} className={`plugin-card ${p.enabled ? '' : 'disabled'}`}>
+                            <div className="plugin-card-header">
+                              <span className="plugin-name">{p.name}</span>
+                              <span className="plugin-version">v{p.version}</span>
+                            </div>
+                            <div className="plugin-desc">{p.description}</div>
+                            <div className="plugin-status-row">
+                              <span className={`plugin-status ${p.enabled ? 'enabled' : 'disabled'}`}>
+                                {p.enabled ? 'Enabled' : 'Disabled'}
+                              </span>
+                              {p.isBuiltin && <span className="plugin-builtin-badge">Built-in</span>}
+                            </div>
+                            <div className="plugin-actions">
+                              <button className="btn btn-sm btn-secondary" onClick={() => navigate(`/plugins/${p.id}`)}>
+                                Configure
+                              </button>
+                              <button className="btn btn-sm btn-secondary" onClick={() => handleToggle(p.id)}>
+                                {p.enabled ? 'Disable' : 'Enable'}
+                              </button>
+                              {!p.isBuiltin && (
+                                <button className="btn btn-sm btn-ghost" style={{ color: '#c66' }} onClick={() => handleUninstall(p.id)}>
+                                  Remove
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {installed.length === 0 && (
+                    <div className="empty-state">
+                      <p>No plugins installed yet.</p>
+                      <p className="text-muted">Browse the Available tab to install plugins.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeTab === 'available' && (
+                <div className="plugin-categories">
+                  {Object.entries(groupByCategory(available)).map(([category, plugins]) => (
+                    <div key={category} className="plugin-category-section">
+                      <div className="plugin-category-header">
+                        <span className="plugin-category-dot" style={{ background: CATEGORY_COLORS[category] || '#9b9b9b' }} />
+                        <h3>{CATEGORY_LABELS[category] || category}</h3>
+                        <span style={{ fontSize: '0.7rem', color: '#555', marginLeft: 'auto' }}>{plugins.length} plugin{plugins.length !== 1 ? 's' : ''}</span>
+                      </div>
+                      <div className="plugin-grid">
+                        {plugins.map((p: PluginHubEntry) => (
+                          <div key={p.id} className="plugin-card available">
+                            <div className="plugin-card-header">
+                              <span className="plugin-name">{p.name}</span>
+                              <span className="plugin-version">v{p.version}</span>
+                            </div>
+                            <div className="plugin-desc">{p.description}</div>
+                            <div className="plugin-tags">
+                              {p.tags.map((tag) => (
+                                <span key={tag} className="plugin-tag">{tag}</span>
+                              ))}
+                            </div>
+                            <div className="plugin-actions">
+                              <button
+                                className="btn btn-primary btn-sm"
+                                onClick={() => handleInstall(p.id)}
+                                disabled={installing === p.id}
+                              >
+                                {installing === p.id ? 'Installing...' : 'Install'}
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {available.length === 0 && (
+                    <div className="empty-state">
+                      <p>All plugins are installed!</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
-
-      {activeTab === 'installed' && (
-        <div className="plugin-categories">
-          {Object.entries(groupByCategory(installed)).map(([category, plugins]) => (
-            <div key={category} className="plugin-category-section">
-              <div className="plugin-category-header">
-                <span className="plugin-category-dot" style={{ background: CATEGORY_COLORS[category] || '#9b9b9b' }} />
-                <h3>{CATEGORY_LABELS[category] || category}</h3>
-              </div>
-              <div className="plugin-grid">
-                {plugins.map((p: InstalledPlugin) => (
-                  <div key={p.id} className={`plugin-card ${p.enabled ? '' : 'disabled'}`}>
-                    <div className="plugin-card-header">
-                      <span className="plugin-name">{p.name}</span>
-                      <span className="plugin-version">v{p.version}</span>
-                    </div>
-                    <div className="plugin-desc">{p.description}</div>
-                    <div className="plugin-status-row">
-                      <span className={`plugin-status ${p.enabled ? 'enabled' : 'disabled'}`}>
-                        {p.enabled ? 'Enabled' : 'Disabled'}
-                      </span>
-                      <span className="plugin-builtin-badge" style={{ visibility: p.isBuiltin ? 'visible' : 'hidden' }}>
-                        Built-in
-                      </span>
-                    </div>
-                    <div className="plugin-actions">
-                      <button className="btn btn-sm" onClick={() => navigate(`/plugins/${p.id}`)}>
-                        Configure
-                      </button>
-                      <button className="btn btn-sm" onClick={() => handleToggle(p.id)}>
-                        {p.enabled ? 'Disable' : 'Enable'}
-                      </button>
-                      <button className="btn btn-sm btn-danger" onClick={() => handleUninstall(p.id)}>
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-          {installed.length === 0 && (
-            <div className="empty-state">
-              <p>No plugins installed yet.</p>
-              <p className="text-muted">Browse the Available tab to install plugins.</p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'available' && (
-        <div className="plugin-categories">
-          {Object.entries(groupByCategory(available)).map(([category, plugins]) => (
-            <div key={category} className="plugin-category-section">
-              <div className="plugin-category-header">
-                <span className="plugin-category-dot" style={{ background: CATEGORY_COLORS[category] || '#9b9b9b' }} />
-                <h3>{CATEGORY_LABELS[category] || category}</h3>
-              </div>
-              <div className="plugin-grid">
-                {plugins.map((p: PluginHubEntry) => (
-                  <div key={p.id} className="plugin-card available">
-                    <div className="plugin-card-header">
-                      <span className="plugin-name">{p.name}</span>
-                      <span className="plugin-version">v{p.version}</span>
-                    </div>
-                    <div className="plugin-desc">{p.description}</div>
-                    <div className="plugin-tags">
-                      {p.tags.map((tag) => (
-                        <span key={tag} className="plugin-tag">{tag}</span>
-                      ))}
-                    </div>
-                    <div className="plugin-actions">
-                      <button
-                        className="btn btn-primary btn-sm"
-                        onClick={() => handleInstall(p.id)}
-                        disabled={installing === p.id}
-                      >
-                        {installing === p.id ? 'Installing...' : 'Install'}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-          {available.length === 0 && (
-            <div className="empty-state">
-              <p>All plugins are installed!</p>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+    </>
   );
 }

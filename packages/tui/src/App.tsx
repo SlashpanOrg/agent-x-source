@@ -1,16 +1,25 @@
 import { type FC, useState, useCallback, useEffect } from 'react';
-import { Box } from 'ink';
+import { Box, Text } from 'ink';
 import { MissionControl } from './screens/MissionControl.js';
 import { CrewSelect } from './screens/CrewSelect.js';
 import { WelcomeScreen } from './screens/WelcomeScreen.js';
-import { ConfigManager, SessionStore, PluginRegistry, MCPBridge, ACPBridge } from '@agentx/engine';
-import { CrewManager } from '@agentx/engine';
-import { PostgresStorageAdapter } from '@agentx/engine';
-import { TelegramBridge } from '@agentx/engine';
+import { SetupAuth } from './screens/SetupAuth.js';
+import { Login } from './screens/Login.js';
+import {
+  ConfigManager,
+  SessionStore,
+  PluginRegistry,
+  MCPBridge,
+  ACPBridge,
+  CrewManager,
+  PostgresStorageAdapter,
+  TelegramBridge,
+} from '@agentx/engine';
 import type { AgentXConfig, Crew } from '@agentx/shared';
-import { getLogger } from '@agentx/shared';
+import { authManager, getLogger } from '@agentx/shared';
+import { COLORS } from './theme/colors.js';
 
-type AppState = 'loading' | 'setup' | 'crew' | 'main';
+type AppState = 'checking' | 'setup-auth' | 'login' | 'setup' | 'crew' | 'main';
 
 interface AppProps {
   sessionId?: string;
@@ -22,104 +31,28 @@ interface AppProps {
   gitAware?: boolean;
 }
 
-export const App: FC<AppProps> = ({ sessionId: restoreSessionId, recovered, planMode: initialPlanMode, fallbackModel, maxBudget, gitAutoCommit, gitAware }) => {
-  const configManager = new ConfigManager();
-  const isSetupDone = configManager.isSetupComplete();
+export const App: FC<AppProps> = ({
+  sessionId: restoreSessionId,
+  recovered,
+  planMode: initialPlanMode,
+  fallbackModel,
+  maxBudget,
+  gitAutoCommit,
+  gitAware,
+}) => {
+  const [state, setState] = useState<AppState>('checking');
+  const [config, setConfig] = useState<AgentXConfig | null>(null);
+  const [activeCrew, setActiveCrew] = useState<Crew | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
 
-  const [state, setState] = useState<AppState>(() => {
-    if (!isSetupDone) return 'setup';
-    if (restoreSessionId) return 'main';
-    return 'crew';
-  });
-
-  const [config, setConfig] = useState<AgentXConfig | null>(() => {
-    if (isSetupDone) {
-      try {
-        return configManager.load();
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  });
-
-  const [activeCrew, setActiveCrew] = useState<Crew | null>(() => {
-    if (restoreSessionId) {
-      try {
-        const store = new SessionStore();
-        const session = store.getSession(restoreSessionId);
-        if (session) {
-          const pm = new CrewManager();
-          const crewId = session['crew_id'] as string | null;
-          if (crewId) {
-            return pm.get(crewId) ?? pm.getActive();
-          }
-        }
-      } catch { /* fallback */ }
-      const pm = new CrewManager();
-      return pm.getActive();
-    }
-    return null;
-  });
-
-  // Shared plugin registry — created once, used by both PluginHub and WelcomeScreen
+  // Shared plugin registry
   const [pluginRegistry] = useState(() => new PluginRegistry());
 
-  // Plugin lifecycle state (PostgreSQL adapter, Telegram bridge)
+  // Plugin lifecycle state
   const [pgAdapter, setPgAdapter] = useState<PostgresStorageAdapter | null>(null);
   const [telegramBridge, setTelegramBridge] = useState<TelegramBridge | null>(null);
   const [lifecycleVersion, setLifecycleVersion] = useState(0);
-
-  // Re-initialize plugin-based adapters when lifecycle changes
-  useEffect(() => {
-    const logger = getLogger();
-
-    // ── PostgreSQL ──
-    const pgPlugin = pluginRegistry.getPlugin('postgresql');
-    const pgConfig = pgPlugin?.config ?? {};
-    if (pgPlugin?.enabled && pgConfig['connectionString']) {
-      if (!pgAdapter) {
-        const adapter = new PostgresStorageAdapter({
-          connectionString: pgConfig['connectionString'] as string,
-          max: (pgConfig['poolSize'] as number) ?? 5,
-        });
-        adapter.connect().then(() => {
-          setPgAdapter(adapter);
-          logger.info('PG_ADAPTER_STARTED', 'PostgreSQL storage adapter initialized from Plugin Hub');
-        }).catch((e) => {
-          logger.error('PG_ADAPTER_FAILED', e);
-        });
-      }
-    } else {
-      if (pgAdapter) {
-        pgAdapter.disconnect().catch(() => {});
-        setPgAdapter(null);
-        logger.info('PG_ADAPTER_STOPPED', 'PostgreSQL storage adapter stopped');
-      }
-    }
-
-    // ── Telegram ──
-    const tgPlugin = pluginRegistry.getPlugin('telegram');
-    const tgConfig = tgPlugin?.config ?? {};
-    if (tgPlugin?.enabled && tgConfig['botToken']) {
-      if (!telegramBridge) {
-        const token = tgConfig['botToken'] as string;
-        const bridge = new TelegramBridge({ botToken: token });
-        bridge.start().then(() => {
-          setTelegramBridge(bridge);
-          logger.info('TG_BRIDGE_STARTED', 'Telegram bridge started from Plugin Hub');
-        }).catch((e) => {
-          logger.error('TG_BRIDGE_FAILED', e);
-        });
-      }
-    } else {
-      if (telegramBridge) {
-        telegramBridge.stop();
-        setTelegramBridge(null);
-        logger.info('TG_BRIDGE_STOPPED', 'Telegram bridge stopped');
-      }
-    }
-  }, [lifecycleVersion, pluginRegistry]);
 
   // Auto-start MCP servers
   const [mcpBridge] = useState(() => new MCPBridge());
@@ -137,9 +70,7 @@ export const App: FC<AppProps> = ({ sessionId: restoreSessionId, recovered, plan
             logger.warn('MCP_START_FAILED', `Failed to start MCP ${m.name}: ${e}`);
           }
         }
-        if (loaded > 0) {
-          logger.info('MCP_SERVERS_STARTED', `Auto-started ${loaded} MCP server(s)`);
-        }
+        if (loaded > 0) logger.info('MCP_SERVERS_STARTED', `Auto-started ${loaded} MCP server(s)`);
       } catch (e) {
         logger.warn('MCP_DISCOVER', `MCP discovery failed: ${e}`);
       }
@@ -154,9 +85,112 @@ export const App: FC<AppProps> = ({ sessionId: restoreSessionId, recovered, plan
     return () => { void acpBridge.dispose(); };
   }, []);
 
-  const handlePluginChanged = useCallback(() => {
-    setLifecycleVersion((v) => v + 1);
+  // Plugin lifecycle effect
+  useEffect(() => {
+    const logger = getLogger();
+
+    // PostgreSQL
+    const pgPlugin = pluginRegistry.getPlugin('postgresql');
+    const pgConfig = pgPlugin?.config ?? {};
+    if (pgPlugin?.enabled && pgConfig['connectionString']) {
+      if (!pgAdapter) {
+        const adapter = new PostgresStorageAdapter({
+          connectionString: pgConfig['connectionString'] as string,
+          max: (pgConfig['poolSize'] as number) ?? 5,
+        });
+        adapter.connect().then(() => {
+          setPgAdapter(adapter);
+          logger.info('PG_ADAPTER_STARTED', 'PostgreSQL storage adapter initialized');
+        }).catch((e) => logger.error('PG_ADAPTER_FAILED', e));
+      }
+    } else if (pgAdapter) {
+      pgAdapter.disconnect().catch(() => {});
+      setPgAdapter(null);
+      logger.info('PG_ADAPTER_STOPPED', 'PostgreSQL storage adapter stopped');
+    }
+
+    // Telegram
+    const tgPlugin = pluginRegistry.getPlugin('telegram');
+    const tgConfig = tgPlugin?.config ?? {};
+    if (tgPlugin?.enabled && tgConfig['botToken']) {
+      if (!telegramBridge) {
+        const bridge = new TelegramBridge({ botToken: tgConfig['botToken'] as string });
+        bridge.start().then(() => {
+          setTelegramBridge(bridge);
+          logger.info('TG_BRIDGE_STARTED', 'Telegram bridge started');
+        }).catch((e) => logger.error('TG_BRIDGE_FAILED', e));
+      }
+    } else if (telegramBridge) {
+      telegramBridge.stop();
+      setTelegramBridge(null);
+      logger.info('TG_BRIDGE_STOPPED', 'Telegram bridge stopped');
+    }
+  }, [lifecycleVersion, pluginRegistry]);
+
+  // ─── Auth Gate ──────────────────────────────────────────────────────
+
+  // On mount: check auth state
+  useEffect(() => {
+    const hasRoot = authManager.hasRootUser();
+    if (!hasRoot) {
+      setState('setup-auth');
+    } else {
+      setState('login');
+    }
   }, []);
+
+  const handleAuthSetupComplete = useCallback(() => {
+    setState('login');
+  }, []);
+
+  const handleLogin = useCallback((token: string) => {
+    setAuthToken(token);
+    const session = authManager.validateSession(token);
+    if (!session) {
+      setAuthError('Session validation failed');
+      setState('login');
+      return;
+    }
+
+    // Set DEK on ConfigManager so encrypted config can be read
+    const configManager = new ConfigManager();
+    configManager.setDEK(session.dek);
+
+    const isSetupDone = configManager.isSetupComplete();
+
+    if (restoreSessionId) {
+      // Restore crew from session
+      try {
+        const store = new SessionStore();
+        const sess = store.getSession(restoreSessionId);
+        if (sess) {
+          const pm = new CrewManager();
+          const crewId = sess['crew_id'] as string | null;
+          const crew = crewId ? pm.get(crewId) ?? pm.getActive() : pm.getActive();
+          setActiveCrew(crew);
+        }
+      } catch { /* fallback */ }
+    }
+
+    if (!isSetupDone) {
+      setState('setup');
+    } else {
+      try {
+        const cfg = configManager.load();
+        setConfig(cfg);
+        if (!activeCrew) {
+          const pm = new CrewManager();
+          setActiveCrew(pm.getActive());
+        }
+        setState('crew');
+      } catch (e) {
+        setAuthError(e instanceof Error ? e.message : 'Failed to load config');
+        setState('setup');
+      }
+    }
+  }, [restoreSessionId, activeCrew]);
+
+  // ─── Setup / Main Flow ──────────────────────────────────────────────
 
   const handleMissionComplete = useCallback((newConfig: AgentXConfig, crew: Crew) => {
     process.stdout.write('\x1Bc');
@@ -178,8 +212,40 @@ export const App: FC<AppProps> = ({ sessionId: restoreSessionId, recovered, plan
     setState('crew');
   }, []);
 
+  const handlePluginChanged = useCallback(() => {
+    setLifecycleVersion((v) => v + 1);
+  }, []);
+
+  // ─── Render ─────────────────────────────────────────────────────────
+
+  if (state === 'checking') {
+    return (
+      <Box flexDirection="column" padding={2}>
+        <Text color={COLORS.primary}>Initializing Agent-X...</Text>
+      </Box>
+    );
+  }
+
+  if (state === 'setup-auth') {
+    return <SetupAuth onComplete={handleAuthSetupComplete} />;
+  }
+
+  if (state === 'login') {
+    return (
+      <Box flexDirection="column">
+        {authError && (
+          <Box padding={1}>
+            <Text color={COLORS.error}>⚠ {authError}</Text>
+          </Box>
+        )}
+        <Login onLogin={handleLogin} />
+      </Box>
+    );
+  }
+
   if (state === 'setup') {
-    return <MissionControl onComplete={handleMissionComplete} onCancel={handleSetupCancel} />;
+    const session = authToken ? authManager.validateSession(authToken) : null;
+    return <MissionControl onComplete={handleMissionComplete} onCancel={handleSetupCancel} dek={session?.dek ?? null} />;
   }
 
   if (state === 'crew' && config) {

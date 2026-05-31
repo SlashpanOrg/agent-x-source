@@ -18,6 +18,16 @@ const PROVIDERS = [
   { id: 'openai', name: 'OpenAI', needsKey: true, defaultBaseUrl: 'https://api.openai.com/v1' },
   { id: 'anthropic', name: 'Anthropic', needsKey: true, defaultBaseUrl: 'https://api.anthropic.com' },
   { id: 'google', name: 'Google AI', needsKey: true, defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
+  { id: 'moonshot', name: 'Moonshot AI', needsKey: true, defaultBaseUrl: 'https://api.moonshot.cn/v1' },
+  { id: 'deepseek', name: 'DeepSeek', needsKey: true, defaultBaseUrl: 'https://api.deepseek.com' },
+  { id: 'groq', name: 'Groq', needsKey: true, defaultBaseUrl: 'https://api.groq.com/openai/v1' },
+  { id: 'mistral', name: 'Mistral AI', needsKey: true, defaultBaseUrl: 'https://api.mistral.ai/v1' },
+  { id: 'together', name: 'Together AI', needsKey: true, defaultBaseUrl: 'https://api.together.xyz/v1' },
+  { id: 'xai', name: 'xAI (Grok)', needsKey: true, defaultBaseUrl: 'https://api.x.ai/v1' },
+  { id: 'fireworks', name: 'Fireworks AI', needsKey: true, defaultBaseUrl: 'https://api.fireworks.ai/inference/v1' },
+  { id: 'perplexity', name: 'Perplexity', needsKey: true, defaultBaseUrl: 'https://api.perplexity.ai' },
+  { id: 'azure', name: 'Azure OpenAI', needsKey: true, defaultBaseUrl: '' },
+  { id: 'cohere', name: 'Cohere', needsKey: true, defaultBaseUrl: 'https://api.cohere.com/compatibility/v1' },
   { id: 'ollama', name: 'Ollama', needsKey: false, defaultBaseUrl: 'http://localhost:11434' },
   { id: 'lmstudio', name: 'LM Studio', needsKey: false, defaultBaseUrl: 'http://localhost:1234/v1' },
 ];
@@ -147,7 +157,7 @@ export default function Wizard({ onComplete }: Props) {
       try { toastCtx.push('API key is required', 'warn'); } catch { /* ignore */ }
       return;
     }
-    if (!provider.needsKey && !baseUrl.trim()) {
+    if ((!provider.needsKey || provider.id === 'azure') && !baseUrl.trim()) {
       setBaseUrlTouched(true);
       try { toastCtx.push('Base URL is required', 'warn'); } catch { /* ignore */ }
       return;
@@ -161,14 +171,14 @@ export default function Wizard({ onComplete }: Props) {
       try {
         const res = await apiPost<{ valid: boolean; error?: string }>('/api/provider/validate', {
           provider: selectedProvider,
-          apiKey: provider.needsKey ? apiKey : undefined,
-          baseUrl: provider.needsKey ? undefined : baseUrl,
+          apiKey: apiKey.trim() || undefined,
+          baseUrl: baseUrl.trim() || undefined,
         });
       if (res.valid) {
         await apiPost('/api/provider/configure', {
           provider: selectedProvider,
-          apiKey: provider.needsKey ? apiKey : undefined,
-          baseUrl: provider.needsKey ? undefined : baseUrl,
+          apiKey: apiKey.trim() || undefined,
+          baseUrl: baseUrl.trim() || undefined,
           profileName: (profileName || 'default').trim() || 'default',
         });
         try { toastCtx.push('Provider linked and profile created', 'success'); } catch { /* ignore */ }
@@ -186,10 +196,9 @@ export default function Wizard({ onComplete }: Props) {
     if (step !== 1) return;
     let mounted = true;
     setLoadingModels(true);
-    const p = PROVIDERS.find((pr) => pr.id === selectedProvider)!;
     const params = new URLSearchParams({ provider: selectedProvider });
-    if (p.needsKey) params.set('apiKey', apiKey);
-    else params.set('baseUrl', baseUrl);
+    if (apiKey.trim()) params.set('apiKey', apiKey.trim());
+    if (baseUrl.trim()) params.set('baseUrl', baseUrl.trim());
     apiGet<Array<{ id: string; name: string }>>(`/api/provider/models?${params}`)
       .then((ms) => { if (mounted) { setModels(ms); if (ms.length > 0) setSelectedModel(ms[0].id); } })
       .catch(() => { if (mounted) setModels([]); })
@@ -305,13 +314,13 @@ export default function Wizard({ onComplete }: Props) {
             </div>
           )}
 
-          {!provider.needsKey && (
+          {(!provider.needsKey || provider.id === 'azure') && (
             <div className="field" style={{ maxWidth: 480, margin: '20px auto 0' }}>
               <label className="label">Base URL</label>
               <input className={`input ${baseUrlTouched && !baseUrl.trim() ? 'input-error' : ''}`}
                 value={baseUrl}
                 onChange={(e) => { setBaseUrl(e.target.value); setBaseUrlTouched(false); }}
-                placeholder="http://localhost:..." />
+                placeholder={provider.id === 'azure' ? 'https://your-resource.openai.azure.com/openai/deployments/...' : 'http://localhost:...'} />
             </div>
           )}
 

@@ -42,6 +42,52 @@ const PRICING: Record<string, ModelPricing> = {
 
   // Cohere
   'command-r7b': { inputPerMillion: 0.15, outputPerMillion: 0.60 },
+  'command-r': { inputPerMillion: 0.15, outputPerMillion: 0.60 },
+  'command-r-plus': { inputPerMillion: 2.50, outputPerMillion: 10.00 },
+
+  // Moonshot
+  'moonshot-v1-8k': { inputPerMillion: 0.50, outputPerMillion: 0.50 },
+  'moonshot-v1-32k': { inputPerMillion: 1.00, outputPerMillion: 1.00 },
+  'moonshot-v1-128k': { inputPerMillion: 3.00, outputPerMillion: 3.00 },
+
+  // DeepSeek
+  'deepseek-chat': { inputPerMillion: 0.27, outputPerMillion: 1.10 },
+  'deepseek-reasoner': { inputPerMillion: 0.55, outputPerMillion: 2.19 },
+
+  // Groq
+  'llama-3.1-70b-versatile': { inputPerMillion: 0.59, outputPerMillion: 0.79 },
+  'llama-3.1-8b-instant': { inputPerMillion: 0.05, outputPerMillion: 0.08 },
+  'mixtral-8x7b-32768': { inputPerMillion: 0.24, outputPerMillion: 0.24 },
+  'gemma-7b-it': { inputPerMillion: 0.07, outputPerMillion: 0.07 },
+
+  // Mistral
+  'mistral-large-latest': { inputPerMillion: 2.00, outputPerMillion: 6.00 },
+  'mistral-small-latest': { inputPerMillion: 0.20, outputPerMillion: 0.60 },
+  'codestral-latest': { inputPerMillion: 0.20, outputPerMillion: 0.60 },
+
+  // Together AI
+  'llama-3.1-70b-instruct-turbo': { inputPerMillion: 0.88, outputPerMillion: 0.88 },
+  'llama-3.1-8b-instruct-turbo': { inputPerMillion: 0.18, outputPerMillion: 0.18 },
+  'qwen2.5-72b-instruct-turbo': { inputPerMillion: 1.20, outputPerMillion: 1.20 },
+
+  // xAI (Grok)
+  'grok-3': { inputPerMillion: 3.00, outputPerMillion: 15.00 },
+  'grok-3-mini': { inputPerMillion: 0.30, outputPerMillion: 0.50 },
+  'grok-2': { inputPerMillion: 2.00, outputPerMillion: 10.00 },
+  'grok-2-mini': { inputPerMillion: 0.20, outputPerMillion: 0.40 },
+  'grok-beta': { inputPerMillion: 5.00, outputPerMillion: 15.00 },
+
+  // Fireworks AI
+  'accounts/fireworks/models/llama-v3p1-70b-instruct': { inputPerMillion: 0.90, outputPerMillion: 0.90 },
+  'accounts/fireworks/models/llama-v3p1-8b-instruct': { inputPerMillion: 0.20, outputPerMillion: 0.20 },
+  'accounts/fireworks/models/qwen2p5-72b-instruct': { inputPerMillion: 0.90, outputPerMillion: 0.90 },
+
+  // Perplexity
+  'sonar': { inputPerMillion: 1.00, outputPerMillion: 1.00 },
+  'sonar-pro': { inputPerMillion: 3.00, outputPerMillion: 15.00 },
+  'sonar-reasoning': { inputPerMillion: 2.00, outputPerMillion: 8.00 },
+
+  // Azure OpenAI (same as OpenAI — uses OpenAI model IDs, already priced above)
 
   // OpenRouter (dynamic — default estimate)
   'openrouter': { inputPerMillion: 2.00, outputPerMillion: 8.00 },

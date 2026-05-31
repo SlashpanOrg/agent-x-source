@@ -61,6 +61,7 @@ export default function Layout() {
 
   const pluginItems = [
     { path: '/plugins', label: 'Plugin Hub', icon: '<path d="M2 3h12v4H2V3zM2 7h12v6H2V7zM5 10h6M8 8v4" strokeWidth="1.2"/><circle cx="8" cy="13.5" r="1.2" fill="currentColor"/>' },
+    { path: '/mcp', label: 'MCP Hub', icon: '<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01" strokeWidth="1.5"/>' },
   ];
 
   const navItems = [
@@ -71,6 +72,7 @@ export default function Layout() {
   const mgmtItems = [
     { path: '/crews', label: 'Crews', icon: '<path d="M5.5 5.5v5M10.5 5.5v5M3 3h10v10H3z"/><circle cx="8" cy="5" r="1"/><circle cx="8" cy="11" r="1"/>' },
     { path: '/sessions', label: 'Sessions', icon: '<circle cx="5.5" cy="5.5" r="1.5"/><circle cx="10.5" cy="5.5" r="1.5"/><circle cx="5.5" cy="10.5" r="1.5"/><circle cx="10.5" cy="10.5" r="1.5"/>' },
+    { path: '/subagents', label: 'Sub-Agents', icon: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>' },
   ];
 
   const sysItems = [

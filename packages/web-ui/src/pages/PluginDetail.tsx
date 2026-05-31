@@ -146,40 +146,59 @@ export default function PluginDetail() {
 
   if (loading) {
     return (
-      <div className="page">
-        <div className="page-header">
-          <h2>Plugin</h2>
+      <>
+        <div className="topbar">
+          <div className="topbar-left">
+            <div className="topbar-label">System</div>
+            <div className="topbar-value">Plugin</div>
+          </div>
         </div>
-        <div style={{ textAlign: 'center', padding: 40, opacity: 0.5 }}>Loading...</div>
-      </div>
+        <div className="page-scroll">
+          <div style={{ padding: 40, textAlign: 'center', opacity: 0.5 }}>Loading...</div>
+        </div>
+      </>
     );
   }
 
   if (!plugin) {
     return (
-      <div className="page">
-        <div className="page-header">
-          <h2>Plugin</h2>
+      <>
+        <div className="topbar">
+          <div className="topbar-left">
+            <div className="topbar-label">System</div>
+            <div className="topbar-value">Plugin</div>
+          </div>
         </div>
-        <div className="empty-state">
-          <p>Plugin not found.</p>
-          <button className="btn btn-sm" onClick={() => navigate('/plugins')}>Back to Plugin Hub</button>
+        <div className="page-scroll">
+          <div style={{ padding: 24, maxWidth: 720, margin: '0 auto' }}>
+            <div className="empty-state">
+              <p>Plugin not found.</p>
+              <button className="btn btn-sm btn-secondary" onClick={() => navigate('/plugins')}>Back to Plugin Hub</button>
+            </div>
+          </div>
         </div>
-      </div>
+      </>
     );
   }
 
   const fields = catalogEntry?.config ?? {};
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button className="btn btn-sm" onClick={() => navigate('/plugins')}>← Back</button>
-          <h2 style={{ margin: 0 }}>{plugin.name}</h2>
-          <span className="plugin-version">v{plugin.version}</span>
+    <>
+      <div className="topbar">
+        <div className="topbar-left" style={{ gap: 8 }}>
+          <button className="btn btn-sm btn-secondary" onClick={() => navigate('/plugins')}>← Back</button>
+          <div className="topbar-value">{plugin.name} <span style={{ color: '#555', fontWeight: 400 }}>v{plugin.version}</span></div>
+        </div>
+        <div className="topbar-right">
+          <button className="btn btn-sm btn-secondary" onClick={handleToggle}>
+            {plugin.enabled ? 'Disable' : 'Enable'}
+          </button>
         </div>
       </div>
+
+      <div className="page-scroll">
+        <div style={{ padding: 24, maxWidth: 720, margin: '0 auto', width: '100%' }}>
 
       <div className="plugin-detail-card">
         <p className="plugin-detail-desc">{plugin.description}</p>
@@ -303,6 +322,8 @@ export default function PluginDetail() {
           </div>
         </div>
       )}
-    </div>
+        </div>
+      </div>
+    </>
   );
 }

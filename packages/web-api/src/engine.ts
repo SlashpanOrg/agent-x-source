@@ -128,7 +128,7 @@ export function setEngineDEK(dek: Buffer | null): void {
   }
 }
 
-export function createAgent(config?: AgentXConfig): Agent {
+export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
   const eng = getEngine();
   let cfg: AgentXConfig;
   if (config) {
@@ -156,12 +156,27 @@ export function createAgent(config?: AgentXConfig): Agent {
 
   const activeCrew = eng.crewManager.getActive();
 
-  const session = eng.sessionManager.createSession(
-    activeProvider,
-    cfg.provider.activeModel,
-    activeCrew.id,
-    process.cwd(),
-  );
+  let session;
+  if (sessionId) {
+    // Re-use an existing session instead of creating a new one
+    session = eng.sessionManager.restoreSession(sessionId);
+    if (!session) {
+      // Fallback to creating a new session if the requested one doesn't exist
+      session = eng.sessionManager.createSession(
+        activeProvider,
+        cfg.provider.activeModel,
+        activeCrew.id,
+        process.cwd(),
+      );
+    }
+  } else {
+    session = eng.sessionManager.createSession(
+      activeProvider,
+      cfg.provider.activeModel,
+      activeCrew.id,
+      process.cwd(),
+    );
+  }
 
   const agent = new Agent({
     config: cfg,
