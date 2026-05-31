@@ -24,7 +24,7 @@ pnpm run dev
 4. Health screen
 - The Web UI probes the local Agent worker at `http://127.0.0.1:3333/api/health`. If the worker is not running the UI will show instructions to start it:
 	- `agentx start` — if the CLI is installed system-wide
-	- `pnpm --filter @agentx/cli run dev` — to start the CLI in development from the repository root
+	- `pnpm --filter @slashpan-org/agentx run dev` — to start the CLI in development from the repository root
 	- `node source/packages/web-api/server.js` — to start the lightweight backend only
 
 5. Provider

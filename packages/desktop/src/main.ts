@@ -1,6 +1,6 @@
-import { app, BrowserWindow, Tray, Menu, Notification, globalShortcut, ipcMain, nativeImage, protocol } from 'electron';
-import { join, resolve } from 'path';
-import { readFileSync, existsSync } from 'fs';
+import { app, BrowserWindow, Tray, Menu, Notification, globalShortcut, ipcMain, nativeImage } from 'electron';
+import { join } from 'path';
+import { existsSync } from 'fs';
 import { autoUpdater } from 'electron-updater';
 
 let mainWindow: BrowserWindow | null = null;
@@ -13,33 +13,11 @@ function getCliPath(): string {
   if (isDev) {
     return join(__dirname, '..', '..', 'cli', 'dist', 'index.js');
   }
-  return join(process.resourcesPath, 'cli', 'index.js');
-}
-
-function registerNodeProtocol(): void {
-  protocol.handle('node', (request) => {
-    const url = new URL(request.url);
-    const filePath = resolve(join(__dirname, '..', url.pathname));
-    if (!existsSync(filePath)) {
-      return new Response('Not found', { status: 404 });
-    }
-    const ext = filePath.split('.').pop()?.toLowerCase();
-    const mimeTypes: Record<string, string> = {
-      js: 'application/javascript',
-      css: 'text/css',
-      json: 'application/json',
-      png: 'image/png',
-      svg: 'image/svg+xml',
-      woff: 'font/woff',
-      woff2: 'font/woff2',
-      ttf: 'font/ttf',
-    };
-    const contentType = mimeTypes[ext ?? ''] ?? 'application/octet-stream';
-    const content = readFileSync(filePath);
-    return new Response(content, {
-      headers: { 'Content-Type': contentType },
-    });
-  });
+  const p = join(process.resourcesPath, 'cli', 'index.js');
+  if (!existsSync(p)) {
+    throw new Error(`CLI not found at ${p}. Run 'pnpm build' first.`);
+  }
+  return p;
 }
 
 function createWindow(): void {
@@ -76,7 +54,10 @@ function createWindow(): void {
 }
 
 function createTray(): void {
-  const icon = nativeImage.createEmpty();
+  const trayIconPath = join(__dirname, '..', 'build', process.platform === 'darwin' ? 'Tray.png' : 'TrayWin.png');
+  const icon = existsSync(trayIconPath)
+    ? nativeImage.createFromPath(trayIconPath).resize({ width: 16, height: 16 })
+    : nativeImage.createEmpty();
   tray = new Tray(icon);
 
   const contextMenu = Menu.buildFromTemplate([
@@ -160,7 +141,17 @@ function setupAutoUpdater(): void {
 }
 
 // PTY terminal
-let ptyProcess: unknown = null;
+import type { IPty } from 'node-pty';
+
+let ptyProcess: IPty | null = null;
+
+ipcMain.on('pty:write', (_e, data: string) => {
+  ptyProcess?.write(data);
+});
+
+ipcMain.on('pty:resize', (_e, { cols, rows }: { cols: number; rows: number }) => {
+  try { ptyProcess?.resize(cols, rows); } catch { /* ignore */ }
+});
 
 ipcMain.handle('pty:spawn', async () => {
   try {
@@ -170,27 +161,20 @@ ipcMain.handle('pty:spawn', async () => {
     const args = process.platform === 'win32' ? [] : [cliPath];
 
     ptyProcess = spawn(shell, args, {
-      name: 'xterm-color',
+      name: 'xterm-256color',
       cols: 100,
       rows: 30,
       cwd: process.cwd(),
       env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '3' },
     });
 
-    (ptyProcess as { onData: (cb: (data: string) => void) => void }).onData((data: string) => {
+    ptyProcess.onData((data: string) => {
       mainWindow?.webContents.send('pty:data', data);
     });
 
-    (ptyProcess as { onExit: (cb: (info: { exitCode: number; signal: number }) => void) => void }).onExit(({ exitCode, signal }: { exitCode: number; signal: number }) => {
+    ptyProcess.onExit(({ exitCode, signal }) => {
       mainWindow?.webContents.send('pty:exit', { exitCode, signal });
-    });
-
-    ipcMain.on('pty:write', (_e: Electron.IpcMainEvent, data: string) => {
-      (ptyProcess as { write: (data: string) => void }).write(data);
-    });
-
-    ipcMain.on('pty:resize', (_e: Electron.IpcMainEvent, { cols, rows }: { cols: number; rows: number }) => {
-      (ptyProcess as { resize: (cols: number, rows: number) => void }).resize(cols, rows);
+      ptyProcess = null;
     });
 
     return { ok: true };
@@ -201,7 +185,6 @@ ipcMain.handle('pty:spawn', async () => {
 });
 
 app.whenReady().then(() => {
-  registerNodeProtocol();
   createWindow();
   createTray();
   registerHotkey();

@@ -172,12 +172,12 @@ jobs:
 
             ### npm
             ```bash
-            npm install -g @agentx/cli
+            npm install -g @slashpan-org/agentx
             ```
 
             ### Docker
             ```bash
-            docker pull agentx/agent-x:${{ needs.check-version.outputs.tag }}
+            docker pull slashpan-org/agentx:${{ needs.check-version.outputs.tag }}
             ```
 
             ### Checksums
@@ -211,7 +211,7 @@ jobs:
           context: .
           push: true
           tags: |
-            agentx/agent-x:${{ needs.check-version.outputs.version }}
-            agentx/agent-x:latest
+            slashpan-org/agentx:${{ needs.check-version.outputs.version }}
+            slashpan-org/agentx:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max

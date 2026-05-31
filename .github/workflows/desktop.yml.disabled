@@ -1,0 +1,106 @@
+name: Desktop Build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: 'Attempt code signing'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write  # for Sigstore OIDC
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: mac
+            ext: dmg
+          - os: ubuntu-latest
+            target: linux
+            ext: AppImage
+          - os: windows-latest
+            target: win
+            ext: exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm build
+
+      - name: Build desktop app
+        run: pnpm --filter @agentx/desktop build
+        env:
+          NODE_ENV: production
+
+      - name: Sign with Sigstore (macOS/Linux)
+        if: runner.os != 'Windows' && github.event_name == 'push'
+        run: |
+          npm install -g cosign
+          for f in packages/desktop/release/**/*.dmg packages/desktop/release/**/*.AppImage; do
+            [ -f "$f" ] && cosign sign-blob "$f" --bundle "$f.sigstore.bundle" --yes || true
+          done
+
+      - name: Sign with Sigstore (Windows)
+        if: runner.os == 'Windows' && github.event_name == 'push'
+        shell: pwsh
+        run: |
+          npm install -g cosign
+          Get-ChildItem -Path packages/desktop/release -Recurse -Include *.exe,*.msi | ForEach-Object {
+            cosign sign-blob $_.FullName --bundle "$($_.FullName).sigstore.bundle" --yes
+          }
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: pnpm --filter @agentx/desktop dist:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_ID: ${{ secrets.APPLE_ID || '' }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD || '' }}
+          TEAM_ID: ${{ secrets.TEAM_ID || '' }}
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: pnpm --filter @agentx/desktop dist:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: pnpm --filter @agentx/desktop dist:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD || '' }}
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'push'
+        with:
+          files: |
+            packages/desktop/release/**/*.dmg
+            packages/desktop/release/**/*.zip
+            packages/desktop/release/**/*.AppImage
+            packages/desktop/release/**/*.deb
+            packages/desktop/release/**/*.exe
+            packages/desktop/release/**/*.msi
+            packages/desktop/release/**/*.sigstore.bundle

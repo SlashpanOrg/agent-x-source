@@ -4,6 +4,7 @@
 **Covers**: All 34 gaps from `docs/COMPETITIVE_GAP_ANALYSIS.md`
 
 > **Current Status**: Phase 1 ✓ (100%), Phase 2 ✓ (100%), Phase 3 ✓ (100%), Phase 4 ✓ (100%), Phase 5 ✓ (100%), Phase 6 ✓ (100%), Phase 7 ✓ (100%), Phase 8 ✓ (100%). **All phases complete.**
+> **Desktop App**: ⏸️ PAUSED (2026-05-31) — CI/CD disabled, development deferred. Focus: TUI + Web-UI.
 
 ---
 
@@ -379,10 +380,12 @@ Phase 8: Enterprise & Platform    → Production-ready
 - [x] **8.1.6** — Cloud authentication — **DONE** (`CloudAuth` with login/register/logout, token stored in `~/.config/agentx/cloud-auth.json`, `--cloud-login` flag)
 
 ### Step 8.2 — Desktop app
+> **⚠️ PAUSED (2026-05-31)** — Desktop app development deferred until TUI and Web-UI are stable and all required assets (code signing certs, app icon, CI/CD) are ready. The implementation is complete and builds successfully (`packages/desktop/release/mac-arm64/Agent-X.app` at 252MB). Resumption requires: Apple Developer Program enrollment ($99/yr) for notarization, Windows code signing cert (SignPath free tier), professional app icon, and cross-platform QA.
 - [x] **8.2.1** — `packages/desktop/` Electron app — **DONE** (Electron + node-pty + xterm.js, spawns CLI in embedded terminal)
 - [x] **8.2.2** — Embed TUI — **DONE** (PTY spawns CLI via node-pty, xterm.js renders in BrowserWindow)
 - [x] **8.2.3** — Desktop features — **DONE** (system tray icon with menu, desktop notifications, Alt+A global hotkey, electron-updater auto-update)
 - [x] **8.2.4** — macOS entitlements — **DONE** (`build/entitlements.mac.plist` with network, filesystem, unsigned-executable-memory for node-pty)
+- [x] **8.2.5** — CI/CD disabled — **DONE** (`.github/workflows/desktop.yml` renamed to `.yml.disabled`; electron-builder packaging config retained for future use)
 
 ### Step 8.3 — Enterprise policy
 - [x] **8.3.1** — Policy engine — **DONE** (`PolicyEngine` in `packages/engine/src/enterprise/` with glob-based allow/deny rules, priority/expiry, `evaluate()` method, wired into `ToolExecutor`)

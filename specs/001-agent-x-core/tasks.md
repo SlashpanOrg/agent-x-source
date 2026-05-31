@@ -433,7 +433,7 @@
 - [ ] T163.3 [US10] Install script: print post-install success message with version and next steps
 
 **Priority 2: npm package**
-- [ ] T162 [P] [US10] Create npm package configuration in `packages/cli/package.json` (bin entry, `@agentx/cli` scope, publish config)
+- [ ] T162 [P] [US10] Create npm package configuration in `packages/cli/package.json` (bin entry, `@slashpan-org/agentx` scope, publish config)
 - [ ] T168 [US10] Create `tsup.config.ts` for production bundling (single-file CLI output)
 - [ ] T168.1 [US10] Add npm postinstall script that prints welcome banner
 
@@ -441,7 +441,7 @@
 - [ ] T164 [P] [US10] Create Dockerfile in `docker/Dockerfile` (multi-stage: build → production alpine image, interactive TTY)
 - [ ] T165 [P] [US10] Create docker-compose.yml in `docker/docker-compose.yml` (dev environment with volume mounts for scope folder)
 - [ ] T164.1 [US10] Docker: ensure `-it` mode launches TUI correctly, `-v` mounts scope folder
-- [ ] T164.2 [US10] Publish to Docker Hub as `agentx/agent-x` (public, auto-tagged with version)
+- [ ] T164.2 [US10] Publish to Docker Hub as `slashpan-org/agentx` (public, auto-tagged with version)
 
 **CI/CD**
 - [ ] T166 [US10] Create `.github/workflows/release.yml` — on tag push: build binaries (macOS/Linux x64/arm64), publish to npm, build & push Docker image to Hub, create GitHub Release with binaries + checksums
@@ -451,7 +451,7 @@
 - [ ] T167 [US10] Create Homebrew formula in `Formula/agentx.rb` (points to GitHub Release binary, auto-detect arch)
 - [ ] T167.1 [US10] Add brew formula update step to release.yml (auto-bump version + SHA in formula on release)
 
-**Checkpoint**: `curl -fsSL .../install.sh | bash && agentx --version` works; `npm install -g @agentx/cli && agentx` works; `docker run -it agentx/agent-x` shows TUI; `brew install agentx/tap/agentx` works
+**Checkpoint**: `curl -fsSL .../install.sh | bash && agentx --version` works; `npm install -g @slashpan-org/agentx && agentx` works; `docker run -it slashpan-org/agentx` shows TUI; `brew install agentx/tap/agentx` works
 
 ---
 

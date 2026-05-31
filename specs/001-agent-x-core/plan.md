@@ -783,13 +783,13 @@ Following XDG Base Directory Specification:
    - Install to `/usr/local/bin/agentx` (or `~/.local/bin/` if no sudo)
    - Verify checksum (SHA-256)
    - Post-install: print version + "Run `agentx` to get started"
-2. **npm package** — `npm install -g @agentx/cli`
+2. **npm package** — `npm install -g @slashpan-org/agentx`
    - Package published to npm registry under `@agentx` org scope
    - `bin` entry in package.json maps to bundled CLI
    - Postinstall script prints welcome message
-3. **Docker image** — `docker run -it agentx/agent-x`
+3. **Docker image** — `docker run -it slashpan-org/agentx`
    - Multi-stage Dockerfile (build → alpine production)
-   - Published to Docker Hub as `agentx/agent-x`
+   - Published to Docker Hub as `slashpan-org/agentx`
    - Supports `-v` volume mount for scope folder
    - Interactive TTY mode by default for TUI
 4. **brew** (bonus, self-managed tap) — `brew install agentx/tap/agentx`

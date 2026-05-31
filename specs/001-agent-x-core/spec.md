@@ -208,16 +208,16 @@ A user installs Agent-X via their preferred method and the agent is immediately 
 
 **Installation Priority Order**:
 1. **curl** — `curl -fsSL https://github.com/agentx/install.sh | bash` (recommended, zero dependencies)
-2. **npm** — `npm install -g @agentx/cli` (for Node.js users)
-3. **Docker** — `docker run -it agentx/agent-x` (public Docker Hub image)
+2. **npm** — `npm install -g @slashpan-org/agentx` (for Node.js users)
+3. **Docker** — `docker run -it slashpan-org/agentx` (public Docker Hub image)
 
 **Independent Test**: Install via each method → run `agentx --version` → verify version output → run `agentx` → verify TUI launches.
 
 **Acceptance Scenarios**:
 
 1. **Given** user runs `curl -fsSL https://github.com/agentx/install.sh | bash`, **When** install completes, **Then** `agentx` command is available in PATH and correct version is installed
-2. **Given** user runs `npm install -g @agentx/cli`, **When** install completes, **Then** `agentx` command works globally
-3. **Given** user runs `docker run -it agentx/agent-x`, **When** container starts, **Then** agent TUI launches within interactive container
+2. **Given** user runs `npm install -g @slashpan-org/agentx`, **When** install completes, **Then** `agentx` command works globally
+3. **Given** user runs `docker run -it slashpan-org/agentx`, **When** container starts, **Then** agent TUI launches within interactive container
 4. **Given** any installation method, **When** `agentx --version` is run, **Then** current SemVer version is displayed
 5. **Given** install script is run, **When** OS is macOS/Linux, **Then** script auto-detects platform/arch and downloads correct binary
 
@@ -291,7 +291,7 @@ A user installs Agent-X via their preferred method and the agent is immediately 
 - **FR-031**: Agent MUST maintain an internal TODO list for complex multi-step tasks — decomposing user requests into trackable steps, marking progress, and following the list to ensure completeness. The TODO state is visible to the user as a compact progress indicator in the UI
 - **FR-021**: System MUST auto-summarize Secret Sauce MD files when they grow too large
 - **FR-022**: System MUST differentiate between commands and conversation messages locally (no AI call needed)
-- **FR-023**: System MUST support installation via (in priority order): 1) curl install script (`curl | bash`), 2) npm global install (`@agentx/cli`), 3) Docker Hub public image, 4) brew (self-managed tap, no external approval needed)
+- **FR-023**: System MUST support installation via (in priority order): 1) curl install script (`curl | bash`), 2) npm global install (`@slashpan-org/agentx`), 3) Docker Hub public image, 4) brew (self-managed tap, no external approval needed)
 - **FR-023a**: System MUST perform session compaction when token usage exceeds 70% of model context window — summarize older messages into `content.txt` scratch file, replace in-context, then clear the file immediately after use
 - **FR-023b**: Session compaction MUST show animated progress in UI ("Optimizing session memory...") and MUST NOT interrupt or block user input between turns
 - **FR-024**: System MUST implement a Web-UI that shares the same backend as the TUI

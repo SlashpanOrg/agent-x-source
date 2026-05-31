@@ -44,10 +44,10 @@ remove_binary() {
 remove_global_package() {
   # Remove if installed via npm/pnpm globally
   if command -v npm >/dev/null 2>&1; then
-    npm uninstall -g @agentx/cli >/dev/null 2>&1 && ok "Removed global npm package" || true
+    npm uninstall -g @slashpan-org/agentx >/dev/null 2>&1 && ok "Removed global npm package" || true
   fi
   if command -v pnpm >/dev/null 2>&1; then
-    pnpm remove -g @agentx/cli >/dev/null 2>&1 && ok "Removed global pnpm package" || true
+    pnpm remove -g @slashpan-org/agentx >/dev/null 2>&1 && ok "Removed global pnpm package" || true
   fi
 }
 
