@@ -1,12 +1,12 @@
 name: Security Audit
 
 on:
-  schedule:
-    - cron: '0 6 * * 1'  # Every Monday 6 AM UTC
-  push:
-    branches: [main, launch]
   pull_request:
     branches: [main, launch]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

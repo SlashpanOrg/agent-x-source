@@ -30,11 +30,20 @@ const {
   const createTracker = () => {
     let used = 0;
     let total = 128_000;
+    const addUsage = vi.fn((t: number) => { used += t; });
+    const addTokenUsage = vi.fn((input: number, output?: number) => { return addUsage(input + (output ?? 0)); });
+    const setTotal = vi.fn((t: number) => { total = t; });
+    const setUsed = vi.fn();
+    const setPricing = vi.fn();
+    const reset = vi.fn();
     return {
-      addUsage: vi.fn((t: number) => { used += t; }),
-      setTotal: vi.fn((t: number) => { total = t; }),
-      setUsed: vi.fn(),
-      reset: vi.fn(),
+      addUsage,
+      // Compatibility shim for older/newer method names used by Agent
+      addTokenUsage,
+      setTotal,
+      setUsed,
+      setPricing,
+      reset,
       get tokensUsed() { return used; },
       get tokensTotal() { return total; },
       get tokensRemaining() { return Math.max(0, total - used); },
@@ -175,6 +184,8 @@ vi.mock('../src/tools/builtin/subagent.js', () => ({
 
 vi.mock('../src/commands/builtin/tasks.js', () => ({
   setTaskManagerInstance: vi.fn(),
+  setBackgroundQueueInstance: vi.fn(),
+  getBackgroundQueueInstance: vi.fn(() => null),
 }));
 
 vi.mock('../src/commands/builtin/schedule.js', () => ({
@@ -283,6 +294,8 @@ describe('Agent', () => {
       const executor = {
         execute: vi.fn(),
         setPermissionRequestHandler: vi.fn(),
+        setBeforeToolHook: vi.fn(),
+        setScopePath: vi.fn(),
       } as unknown as Parameters<typeof Agent>[0]['toolExecutor'];
       const agent = createTestAgent({ toolRegistry: registry, toolExecutor: executor });
 
@@ -405,6 +418,8 @@ describe('Agent', () => {
       const executor = {
         execute: vi.fn(async () => ({ success: true, output: 'file content' })),
         setPermissionRequestHandler: vi.fn(),
+        setBeforeToolHook: vi.fn(),
+        setScopePath: vi.fn(),
       };
 
       const agent = createTestAgent({ toolRegistry: registry as unknown as Parameters<typeof Agent>[0]['toolRegistry'], toolExecutor: executor as unknown as Parameters<typeof Agent>[0]['toolExecutor'] });
@@ -473,6 +488,8 @@ describe('Agent', () => {
       const executor = {
         execute: vi.fn(async () => ({ success: true, output: 'content' })),
         setPermissionRequestHandler: vi.fn(),
+        setBeforeToolHook: vi.fn(),
+        setScopePath: vi.fn(),
       };
 
       const agent = createTestAgent({ toolRegistry: registry as unknown as Parameters<typeof Agent>[0]['toolRegistry'], toolExecutor: executor as unknown as Parameters<typeof Agent>[0]['toolExecutor'] });
@@ -615,6 +632,8 @@ describe('Agent', () => {
       const executor = {
         execute: vi.fn(),
         setPermissionRequestHandler: vi.fn(),
+        setBeforeToolHook: vi.fn(),
+        setScopePath: vi.fn(),
       };
 
       const agent = createTestAgent({

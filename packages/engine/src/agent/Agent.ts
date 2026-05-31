@@ -209,7 +209,11 @@ export class Agent {
     );
 
     // Auto health check on startup (non-blocking)
-    this.trialModel(options.config.provider.activeModel).catch(() => { /* silent — will be caught at first actual use */ });
+    // Skip automatic model trial when running under test to avoid
+    // consuming mocked provider responses during unit tests.
+    if (process.env['NODE_ENV'] !== 'test') {
+      this.trialModel(options.config.provider.activeModel).catch(() => { /* silent — will be caught at first actual use */ });
+    }
 
     // Initialize memory extractor for cross-session knowledge
     this.memoryExtractor = new MemoryExtractor(this.provider, this.config.provider.activeModel);
@@ -829,6 +833,9 @@ Return ONLY valid JSON, no other text.`;
 
         // Execute each tool call
         for (const tc of toolCalls) {
+          // Debug: log tool execution attempt
+          // eslint-disable-next-line no-console
+          console.debug('[Agent] executing tool', tc.function.name);
           const toolStartTime = Date.now();
           this.emit({
             type: 'tool_executing',
@@ -844,9 +851,9 @@ Return ONLY valid JSON, no other text.`;
             // Bad JSON from model
           }
 
-          const result = this.toolExecutor
-            ? await this.toolExecutor.execute(tc.function.name, args, this.sessionId)
-            : { success: false, output: 'No tool executor configured', error: 'NO_EXECUTOR' };
+            const result = this.toolExecutor
+              ? await this.toolExecutor.execute(tc.function.name, args, this.sessionId)
+              : { success: false, output: 'No tool executor configured', error: 'NO_EXECUTOR' };
 
           // Auto-commit after file edit operations
           if (this.gitAutoCommit && this.gitManager && this.isEditTool(tc.function.name) && result.success) {
