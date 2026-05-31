@@ -118,7 +118,6 @@ export async function chartGenerate(args: Record<string, unknown>, context: Tool
     const cx = width / 2;
     const cy = height / 2 - 30;
     const radius = Math.min(chartW, chartH) / 2 - 10;
-    const total = datasets.reduce((s, ds) => s + ds.data.reduce((a, b) => a + b, 0), 0);
 
     if (datasets.length === 1 && datasets[0]!.data.length > 0) {
       const data = datasets[0]!.data;
@@ -142,7 +141,6 @@ export async function chartGenerate(args: Record<string, unknown>, context: Tool
         const midAngle = startAngle + sliceAngle / 2;
         const lx = cx + (radius * 0.65) * Math.cos(midAngle);
         const ly = cy + (radius * 0.65) * Math.sin(midAngle);
-        const label = labels[i] ?? `Item ${i}`;
         svg += `<text x="${lx}" y="${ly}" text-anchor="middle" fill="white" font-size="12" font-weight="bold">${Math.round(val / totalData * 100)}%</text>`;
 
         startAngle = endAngle;

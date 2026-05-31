@@ -9,7 +9,7 @@ async function tryImport<T>(path: string, exportName: string): Promise<T | null>
   }
 }
 
-export async function aiComplete(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+export async function aiComplete(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
   const prompt = args['prompt'] as string;
   const maxTokens = (args['maxTokens'] as number) ?? 256;
 
@@ -47,7 +47,7 @@ export async function aiEmbed(args: Record<string, unknown>, _context: ToolExecu
   }
 }
 
-export async function aiSummarize(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+export async function aiSummarize(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
   const text = args['text'] as string;
   const maxLength = (args['maxLength'] as number) ?? 200;
 
@@ -67,7 +67,7 @@ export async function aiSummarize(args: Record<string, unknown>, context: ToolEx
   }
 }
 
-export async function aiClassify(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+export async function aiClassify(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
   const text = args['text'] as string;
   const categories = args['categories'] as string;
 
@@ -87,7 +87,7 @@ export async function aiClassify(args: Record<string, unknown>, context: ToolExe
   }
 }
 
-export async function aiExtract(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+export async function aiExtract(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
   const text = args['text'] as string;
   const schema = args['schema'] as string;
 
@@ -107,7 +107,7 @@ export async function aiExtract(args: Record<string, unknown>, context: ToolExec
   }
 }
 
-export async function memoryStore(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+export async function memoryStore(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
   const key = args['key'] as string;
   const value = args['value'] as string;
 
@@ -127,7 +127,7 @@ export async function memoryStore(args: Record<string, unknown>, context: ToolEx
   }
 }
 
-export async function memoryRecall(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+export async function memoryRecall(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
   const key = args['key'] as string;
 
   if (!key) {
