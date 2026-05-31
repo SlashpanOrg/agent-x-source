@@ -1,0 +1,424 @@
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import type { PluginHubEntry, PluginCategory, InstalledPlugin } from '@agentx/shared';
+import { getLogger } from '@agentx/shared';
+import { getPluginRegistryPath, getAcpConfigPath, getConfigDir } from '../config/paths.js';
+import { getBuiltinCatalog } from './PluginCatalog.js';
+
+const logger = getLogger();
+
+export interface AcpServerConfig {
+  id: string;
+  name: string;
+  command?: string;
+  args?: string[];
+  host?: string;
+  port?: number;
+  enabled: boolean;
+  createdAt: string;
+}
+
+export interface McpServerRegistryEntry {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+  enabled: boolean;
+  timeout?: number;
+  maxOutputSize?: number;
+  permissionLevel?: 'low' | 'medium' | 'high' | 'critical';
+  createdAt: string;
+}
+
+export class PluginRegistry {
+  private installed: Map<string, InstalledPlugin> = new Map();
+  private registryPath: string;
+  private acpConfigPath: string;
+  private mcpConfigPath: string;
+  private acpServers: Map<string, AcpServerConfig> = new Map();
+  private mcpServers: Map<string, McpServerRegistryEntry> = new Map();
+
+  constructor(registryPath?: string) {
+    this.registryPath = registryPath ?? getPluginRegistryPath();
+    this.acpConfigPath = getAcpConfigPath();
+    this.mcpConfigPath = join(getConfigDir(), 'mcp.json');
+    this.load();
+    this.loadAcpServers();
+    this.loadMcpServers();
+  }
+
+  getInstalled(): InstalledPlugin[] {
+    return [...this.installed.values()];
+  }
+
+  getInstalledByCategory(category: PluginCategory): InstalledPlugin[] {
+    return this.getInstalled().filter((p) => p.category === category);
+  }
+
+  getInstalledCount(): number {
+    return this.installed.size;
+  }
+
+  isInstalled(id: string): boolean {
+    return this.installed.has(id);
+  }
+
+  getPlugin(id: string): InstalledPlugin | undefined {
+    return this.installed.get(id);
+  }
+
+  isEnabled(id: string): boolean {
+    return this.installed.get(id)?.enabled ?? false;
+  }
+
+  install(hubEntry: PluginHubEntry): InstalledPlugin {
+    if (this.installed.has(hubEntry.id)) {
+      throw new Error(`Plugin "${hubEntry.id}" is already installed`);
+    }
+
+    const now = new Date().toISOString();
+    const defaults: Record<string, unknown> = {};
+    if (hubEntry.config) {
+      for (const [key, field] of Object.entries(hubEntry.config)) {
+        if (field.default !== undefined) {
+          defaults[key] = field.default;
+        }
+      }
+    }
+
+    const plugin: InstalledPlugin = {
+      id: hubEntry.id,
+      name: hubEntry.name,
+      version: hubEntry.version,
+      description: hubEntry.description,
+      category: hubEntry.category,
+      enabled: true,
+      config: defaults,
+      installedAt: now,
+      updatedAt: now,
+      isBuiltin: hubEntry.isBuiltin,
+    };
+
+    this.installed.set(hubEntry.id, plugin);
+    this.save();
+    logger.info('PLUGIN_INSTALLED', `Installed plugin "${hubEntry.id}" (${hubEntry.name})`);
+    return plugin;
+  }
+
+  uninstall(id: string): void {
+    if (!this.installed.has(id)) {
+      throw new Error(`Plugin "${id}" is not installed`);
+    }
+    this.installed.delete(id);
+    this.save();
+    logger.info('PLUGIN_UNINSTALLED', `Uninstalled plugin "${id}"`);
+  }
+
+  toggle(id: string): boolean {
+    const plugin = this.installed.get(id);
+    if (!plugin) throw new Error(`Plugin "${id}" is not installed`);
+    plugin.enabled = !plugin.enabled;
+    plugin.updatedAt = new Date().toISOString();
+    this.save();
+    logger.info('PLUGIN_TOGGLED', `Toggled plugin "${id}" -> ${plugin.enabled}`);
+    return plugin.enabled;
+  }
+
+  enable(id: string): void {
+    const plugin = this.installed.get(id);
+    if (!plugin) throw new Error(`Plugin "${id}" is not installed`);
+    if (!plugin.enabled) {
+      plugin.enabled = true;
+      plugin.updatedAt = new Date().toISOString();
+      this.save();
+    }
+  }
+
+  disable(id: string): void {
+    const plugin = this.installed.get(id);
+    if (!plugin) throw new Error(`Plugin "${id}" is not installed`);
+    if (plugin.enabled) {
+      plugin.enabled = false;
+      plugin.updatedAt = new Date().toISOString();
+      this.save();
+    }
+  }
+
+  updateConfig(id: string, config: Record<string, unknown>): InstalledPlugin {
+    const plugin = this.installed.get(id);
+    if (!plugin) throw new Error(`Plugin "${id}" is not installed`);
+    plugin.config = { ...plugin.config, ...config };
+    plugin.updatedAt = new Date().toISOString();
+    this.save();
+    logger.info('PLUGIN_CONFIG', `Updated config for plugin "${id}"`);
+    return plugin;
+  }
+
+  getConfig(id: string): Record<string, unknown> {
+    return this.installed.get(id)?.config ?? {};
+  }
+
+  getAvailable(): PluginHubEntry[] {
+    const catalog = getBuiltinCatalog();
+    return catalog.filter((entry) => !this.installed.has(entry.id));
+  }
+
+  getAvailableByCategory(): Record<PluginCategory, PluginHubEntry[]> {
+    const grouped: Record<string, PluginHubEntry[]> = {};
+    for (const entry of this.getAvailable()) {
+      const cat = entry.category;
+      if (!grouped[cat]) grouped[cat] = [];
+      grouped[cat]!.push(entry);
+    }
+    return grouped as Record<PluginCategory, PluginHubEntry[]>;
+  }
+
+  getInstalledByCategoryGrouped(): Record<PluginCategory, InstalledPlugin[]> {
+    const grouped: Record<string, InstalledPlugin[]> = {};
+    for (const entry of this.getInstalled()) {
+      const cat = entry.category;
+      if (!grouped[cat]) grouped[cat] = [];
+      grouped[cat]!.push(entry);
+    }
+    return grouped as Record<PluginCategory, InstalledPlugin[]>;
+  }
+
+  getCategories(): PluginCategory[] {
+    const cats = new Set<PluginCategory>();
+    for (const entry of getBuiltinCatalog()) {
+      cats.add(entry.category);
+    }
+    for (const entry of this.getInstalled()) {
+      cats.add(entry.category);
+    }
+    return [...cats];
+  }
+
+  // ── ACP server config ──
+
+  listAcpServers(): AcpServerConfig[] {
+    return [...this.acpServers.values()];
+  }
+
+  getAcpServer(id: string): AcpServerConfig | undefined {
+    return this.acpServers.get(id);
+  }
+
+  addAcpServer(config: Omit<AcpServerConfig, 'id' | 'createdAt' | 'enabled'>): AcpServerConfig {
+    const server: AcpServerConfig = {
+      id: randomUUID(),
+      name: config.name,
+      command: config.command,
+      args: config.args,
+      host: config.host,
+      port: config.port,
+      enabled: true,
+      createdAt: new Date().toISOString(),
+    };
+    this.acpServers.set(server.id, server);
+    this.saveAcpServers();
+    return server;
+  }
+
+  removeAcpServer(id: string): boolean {
+    const existed = this.acpServers.delete(id);
+    if (existed) this.saveAcpServers();
+    return existed;
+  }
+
+  toggleAcpServer(id: string): AcpServerConfig | undefined {
+    const server = this.acpServers.get(id);
+    if (!server) return undefined;
+    server.enabled = !server.enabled;
+    this.saveAcpServers();
+    return server;
+  }
+
+  private loadAcpServers(): void {
+    try {
+      if (!existsSync(this.acpConfigPath)) return;
+      const raw = readFileSync(this.acpConfigPath, 'utf-8');
+      const data: AcpServerConfig[] = JSON.parse(raw);
+      for (const server of data) {
+        this.acpServers.set(server.id, server);
+      }
+    } catch (error) {
+      logger.error('ACP_CONFIG_LOAD_FAILED', error);
+    }
+  }
+
+  private saveAcpServers(): void {
+    try {
+      const dir = dirname(this.acpConfigPath);
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+      const data = [...this.acpServers.values()];
+      writeFileSync(this.acpConfigPath, JSON.stringify(data, null, 2), 'utf-8');
+    } catch (error) {
+      logger.error('ACP_CONFIG_SAVE_FAILED', error);
+    }
+  }
+
+  // ── MCP server config ──
+
+  listMcpServers(): McpServerRegistryEntry[] {
+    return [...this.mcpServers.values()];
+  }
+
+  getMcpServer(id: string): McpServerRegistryEntry | undefined {
+    return this.mcpServers.get(id);
+  }
+
+  addMcpServer(config: Omit<McpServerRegistryEntry, 'id' | 'createdAt'>): McpServerRegistryEntry {
+    const server: McpServerRegistryEntry = {
+      id: randomUUID(),
+      ...config,
+      createdAt: new Date().toISOString(),
+    };
+    this.mcpServers.set(server.id, server);
+    this.saveMcpServers();
+    return server;
+  }
+
+  removeMcpServer(id: string): boolean {
+    const existed = this.mcpServers.delete(id);
+    if (existed) this.saveMcpServers();
+    return existed;
+  }
+
+  toggleMcpServer(id: string): McpServerRegistryEntry | undefined {
+    const server = this.mcpServers.get(id);
+    if (!server) return undefined;
+    server.enabled = !server.enabled;
+    this.saveMcpServers();
+    return server;
+  }
+
+  private seedDefaultMcpServers(): void {
+    const scripts: Array<{ name: string; level: 'low' | 'medium' | 'high' | 'critical'; enabled: boolean }> = [
+      { name: 'filesystem', level: 'medium', enabled: true },
+      { name: 'database', level: 'medium', enabled: true },
+      { name: 'browser', level: 'medium', enabled: true },
+      { name: 'search', level: 'low', enabled: true },
+      { name: 'shell', level: 'critical', enabled: true },
+      { name: 'git', level: 'medium', enabled: true },
+      { name: 'json', level: 'low', enabled: true },
+      { name: 'math', level: 'low', enabled: true },
+      { name: 'uuid', level: 'low', enabled: true },
+      { name: 'crypto', level: 'low', enabled: true },
+      { name: 'datetime', level: 'low', enabled: true },
+      { name: 'encoding', level: 'low', enabled: true },
+      { name: 'http', level: 'medium', enabled: true },
+      { name: 'fs-diff', level: 'medium', enabled: true },
+      { name: 'template', level: 'low', enabled: true },
+    ];
+
+    // Path relative to the engine package: packages/engine/ -> packages/mcp-servers/
+    const engineRoot = join(dirname(dirname(fileURLToPath(import.meta.url))), '..');
+    const mcpServersDist = join(engineRoot, 'mcp-servers', 'dist', 'servers');
+
+    if (!existsSync(mcpServersDist)) {
+      logger.warn('MCP_CONFIG_SEED_SKIPPED', `@agentx/mcp-servers dist not found at ${mcpServersDist}`);
+      return;
+    }
+
+    const configs: Record<string, unknown> = {};
+    for (const s of scripts) {
+      configs[s.name] = {
+        command: 'node',
+        args: [join(mcpServersDist, `${s.name}.js`)],
+        enabled: s.enabled,
+        transport: 'stdio',
+        permissionLevel: s.level,
+      };
+    }
+
+    const dir = dirname(this.mcpConfigPath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(this.mcpConfigPath, JSON.stringify(configs, null, 2), 'utf-8');
+    logger.info('MCP_CONFIG_SEEDED', `Seeded ${scripts.length} default MCP servers`);
+  }
+
+  private loadMcpServers(): void {
+    try {
+      if (!existsSync(this.mcpConfigPath)) {
+        this.seedDefaultMcpServers();
+        if (!existsSync(this.mcpConfigPath)) return;
+      }
+      const raw = readFileSync(this.mcpConfigPath, 'utf-8');
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      for (const [key, val] of Object.entries(parsed)) {
+        if (key.startsWith('_')) continue;
+        const cfg = val as Omit<McpServerRegistryEntry, 'id' | 'createdAt'> & { id?: string; createdAt?: string };
+        this.mcpServers.set(cfg.id ?? key, {
+          id: cfg.id ?? key,
+          name: key,
+          command: cfg.command ?? '',
+          args: cfg.args ?? [],
+          env: cfg.env,
+          enabled: cfg.enabled ?? true,
+          timeout: cfg.timeout,
+          maxOutputSize: cfg.maxOutputSize,
+          permissionLevel: cfg.permissionLevel,
+          createdAt: cfg.createdAt ?? new Date().toISOString(),
+        });
+      }
+    } catch (error) {
+      logger.error('MCP_CONFIG_LOAD_FAILED', error);
+    }
+  }
+
+  private saveMcpServers(): void {
+    try {
+      const dir = dirname(this.mcpConfigPath);
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+      const configs: Record<string, unknown> = {};
+      for (const server of this.mcpServers.values()) {
+        configs[server.name] = {
+          command: server.command,
+          args: server.args,
+          env: server.env,
+          enabled: server.enabled,
+          timeout: server.timeout,
+          maxOutputSize: server.maxOutputSize,
+          permissionLevel: server.permissionLevel,
+        };
+      }
+      writeFileSync(this.mcpConfigPath, JSON.stringify(configs, null, 2), 'utf-8');
+    } catch (error) {
+      logger.error('MCP_CONFIG_SAVE_FAILED', error);
+    }
+  }
+
+  private load(): void {
+    try {
+      if (!existsSync(this.registryPath)) return;
+      const raw = readFileSync(this.registryPath, 'utf-8');
+      const data: InstalledPlugin[] = JSON.parse(raw);
+      for (const plugin of data) {
+        this.installed.set(plugin.id, plugin);
+      }
+    } catch (error) {
+      logger.error('PLUGIN_REGISTRY_LOAD_FAILED', error);
+    }
+  }
+
+  private save(): void {
+    try {
+      const dir = dirname(this.registryPath);
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+      const data = [...this.installed.values()];
+      writeFileSync(this.registryPath, JSON.stringify(data, null, 2), 'utf-8');
+    } catch (error) {
+      logger.error('PLUGIN_REGISTRY_SAVE_FAILED', error);
+    }
+  }
+}

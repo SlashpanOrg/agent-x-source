@@ -51,6 +51,25 @@ export async function ghRelease(args: Record<string, unknown>, context: ToolExec
   return { success: false, output: 'Use action: list', error: 'INVALID_ACTION' };
 }
 
+export async function ghPrReview(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const number = args['number'] as number;
+  const body = args['body'] as string | undefined;
+  const event = ((args['event'] as string) ?? 'COMMENT').toUpperCase();
+
+  if (!number) {
+    return { success: false, output: 'PR number is required', error: 'MISSING_INPUT' };
+  }
+
+  const validEvents = ['APPROVE', 'COMMENT', 'REQUEST_CHANGES'];
+  if (!validEvents.includes(event)) {
+    return { success: false, output: `Invalid event: ${event}. Use: ${validEvents.join(', ')}`, error: 'INVALID_ARGS' };
+  }
+
+  let cmd = `pr review ${number} --${event.toLowerCase()}`;
+  if (body) cmd += ` --body "${body.replace(/"/g, '\\"')}"`;
+  return ghCommand(cmd, context);
+}
+
 function ghCommand(cmd: string, context: ToolExecutionContext): ToolResult {
   const cwd = resolve(context.scopePath);
   try {

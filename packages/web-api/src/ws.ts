@@ -1,6 +1,41 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'http';
+import { join } from 'node:path';
+import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { getEngine } from './engine.js';
+
+const DATA_DIR = process.env['XDG_DATA_HOME']
+  ? join(process.env['XDG_DATA_HOME'], 'agentx')
+  : join(homedir(), '.local', 'share', 'agentx');
+const SESSIONS_DIR = join(DATA_DIR, 'sessions');
+
+function atomicWriteFileSync(filePath: string, content: string): void {
+  const tmpPath = filePath + '.tmp.' + Date.now();
+  writeFileSync(tmpPath, content, 'utf-8');
+  renameSync(tmpPath, filePath);
+}
+
+function appendContextFile(sessionId: string, role: string, content: string): void {
+  if (!sessionId || !content) return;
+  const dir = join(SESSIONS_DIR, sessionId);
+  if (!existsSync(dir)) {
+    try { mkdirSync(dir, { recursive: true }); } catch { return; }
+  }
+  const contextPath = join(dir, 'context.txt');
+  const convPath = join(dir, 'conversation.json');
+  try {
+    const timestamp = new Date().toISOString();
+    const entry = `[${timestamp}] ${role}:\n${content}\n\n`;
+    const existing = existsSync(contextPath) ? readFileSync(contextPath, 'utf-8') : '';
+    atomicWriteFileSync(contextPath, existing + entry);
+    // Update conversation.json
+    let conv: unknown[] = [];
+    try { conv = JSON.parse(existsSync(convPath) ? readFileSync(convPath, 'utf-8') : '[]') as unknown[]; } catch { conv = []; }
+    conv.push({ timestamp, role, content: content.slice(0, 2000) });
+    atomicWriteFileSync(convPath, JSON.stringify(conv, null, 2));
+  } catch { /* best-effort */ }
+}
 
 let wss: WebSocketServer | null = null;
 let subscribedAgent: unknown | null = null;
@@ -64,11 +99,14 @@ export function subscribeToAgent(agent: { events: { on: (handler: (event: Record
       data: event,
     });
 
-    // Auto-fill session title from the first user message (only if still default)
+    // Persist conversation to session context files
     try {
+      const eng = getEngine();
+      const sess = eng.sessionManager.getActiveSession();
+      const sessionId = sess?.id || (event as any).sessionId || '';
+
+      // Auto-fill session title from the first user message (only if still default)
       if (evType === 'message_sent') {
-        const eng = getEngine();
-        const sess = eng.sessionManager.getActiveSession();
         const rawMsg: any = (event as any).message?.content;
         if (sess && typeof rawMsg === 'string' && sess.title === 'New Session') {
           const firstLine = String(rawMsg).split('\n')[0] || '';
@@ -76,8 +114,35 @@ export function subscribeToAgent(agent: { events: { on: (handler: (event: Record
           if (title.length > 0) eng.sessionManager.updateSession({ title });
         }
       }
+
+      // Write to context.txt on user send and assistant response
+      if (evType === 'message_sent' || evType === 'message_received') {
+        const msg: any = (event as any).message;
+        const role = evType === 'message_sent' ? 'user' : 'assistant';
+        const text = (msg?.content as string) || (event as any).content as string || '';
+        if (sessionId && text) {
+          appendContextFile(sessionId, role, text);
+        }
+      }
+
+      // Write tool execution results to context.txt
+      if (evType === 'tool_executing') {
+        const tool = (event as any).tool as string || '';
+        if (sessionId && tool) {
+          appendContextFile(sessionId, 'system', `[tool] executing: ${tool}`);
+        }
+      }
+      if (evType === 'tool_complete') {
+        const tool = (event as any).tool as string || '';
+        const elapsed = (event as any).elapsed as number || 0;
+        const result = (event as any).result as string || (event as any).output as string || '';
+        if (sessionId && tool) {
+          const snippet = result.length > 500 ? result.slice(0, 500) + '...' : result;
+          appendContextFile(sessionId, 'system', `[tool] ${tool} completed (${elapsed}ms)\n${snippet}`);
+        }
+      }
     } catch {
-      // ignore failures here — title auto-fill is best-effort
+      // ignore failures — context file persistence is best-effort
     }
   });
 }

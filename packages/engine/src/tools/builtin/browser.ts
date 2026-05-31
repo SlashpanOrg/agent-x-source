@@ -151,3 +151,61 @@ export async function browserEval(args: Record<string, unknown>, context: ToolEx
     return { success: false, output: `Eval failed: ${(error as Error).message}`, error: 'BROWSER_ERROR' };
   }
 }
+
+export async function browserType(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const url = args['url'] as string;
+  const selector = args['selector'] as string;
+  const text = args['text'] as string;
+  if (!url || !selector || !text) return { success: false, output: 'url, selector, and text are required', error: 'INVALID_ARGS' };
+  if (!checkPlaywright()) {
+    return { success: false, output: 'Playwright not installed. Run: npx playwright install', error: 'DEPENDENCY_MISSING' };
+  }
+
+  const script = `
+    const { chromium } = require('playwright');
+    (async () => {
+      const browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage();
+      await page.goto(${JSON.stringify(url)}, { timeout: ${context.timeout} });
+      await page.fill(${JSON.stringify(selector)}, ${JSON.stringify(text)});
+      await browser.close();
+      console.log('ok');
+    })();
+  `;
+
+  try {
+    execSync(`node -e ${JSON.stringify(script)}`, { timeout: context.timeout, encoding: 'utf-8', cwd: context.scopePath });
+    return { success: true, output: `Typed "${text}" into ${selector} on ${url}` };
+  } catch (error) {
+    return { success: false, output: `Type failed: ${(error as Error).message}`, error: 'BROWSER_ERROR' };
+  }
+}
+
+export async function browserExtract(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const url = args['url'] as string;
+  const selector = args['selector'] as string;
+  if (!url || !selector) return { success: false, output: 'url and selector are required', error: 'INVALID_ARGS' };
+  if (!checkPlaywright()) {
+    return { success: false, output: 'Playwright not installed. Run: npx playwright install', error: 'DEPENDENCY_MISSING' };
+  }
+
+  const script = `
+    const { chromium } = require('playwright');
+    (async () => {
+      const browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage();
+      await page.goto(${JSON.stringify(url)}, { timeout: ${context.timeout} });
+      const elements = await page.$$eval(${JSON.stringify(selector)}, els => els.map(el => el.textContent?.trim() || ''));
+      await browser.close();
+      console.log(JSON.stringify({ elements, count: elements.length }));
+    })();
+  `;
+
+  try {
+    const result = execSync(`node -e ${JSON.stringify(script)}`, { timeout: context.timeout, encoding: 'utf-8', cwd: context.scopePath });
+    const parsed = JSON.parse(result.trim());
+    return { success: true, output: parsed.elements.join('\n\n'), metadata: { count: parsed.count } };
+  } catch (error) {
+    return { success: false, output: `Extract failed: ${(error as Error).message}`, error: 'BROWSER_ERROR' };
+  }
+}

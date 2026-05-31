@@ -1,13 +1,28 @@
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readdirSync, statSync, renameSync, rmSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readdirSync, statSync, renameSync, rmSync, cpSync, copyFileSync } from 'node:fs';
+import { resolve, dirname, basename, join } from 'node:path';
 import { execSync } from 'node:child_process';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 import { IS_WINDOWS } from '../platform.js';
+import { getAICommentMarker } from './markers.js';
 
 export async function fileRead(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
   const filePath = resolve(context.scopePath, args['path'] as string);
   try {
     const content = readFileSync(filePath, 'utf-8');
+    const offset = (args['offset'] as number) ?? 0;
+    const limit = args['limit'] as number | undefined;
+
+    if (offset > 0 || limit !== undefined) {
+      const lines = content.split('\n');
+      const start = Math.max(0, offset);
+      const end = limit !== undefined ? start + limit : undefined;
+      const sliced = lines.slice(start, end);
+      const total = lines.length;
+      const output = sliced.join('\n');
+      const meta = { totalLines: total, returnedLines: sliced.length, offset: start };
+      return { success: true, output, metadata: meta };
+    }
+
     return { success: true, output: content };
   } catch (error) {
     return { success: false, output: `Failed to read file: ${(error as Error).message}`, error: 'READ_ERROR' };
@@ -19,7 +34,10 @@ export async function fileWrite(args: Record<string, unknown>, context: ToolExec
   const content = args['content'] as string;
   try {
     mkdirSync(dirname(filePath), { recursive: true });
-    writeFileSync(filePath, content, 'utf-8');
+    const ext = extname(filePath);
+    const marker = getAICommentMarker(ext);
+    const contentWithMarker = content.endsWith('\n') ? `${content}${marker}\n` : `${content}\n${marker}\n`;
+    writeFileSync(filePath, contentWithMarker, 'utf-8');
     return { success: true, output: `Written to ${filePath}` };
   } catch (error) {
     return { success: false, output: `Failed to write file: ${(error as Error).message}`, error: 'WRITE_ERROR' };
@@ -115,5 +133,157 @@ export async function fileFind(args: Record<string, unknown>, context: ToolExecu
     return { success: true, output: files.join('\n'), metadata: { count: files.length } };
   } catch {
     return { success: true, output: 'No files matched' };
+  }
+}
+
+export async function fileCopy(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const from = resolve(context.scopePath, args['from'] as string);
+  const to = resolve(context.scopePath, args['to'] as string);
+  try {
+    if (!existsSync(from)) {
+      return { success: false, output: 'Source does not exist', error: 'NOT_FOUND' };
+    }
+    mkdirSync(dirname(to), { recursive: true });
+    const fromStat = statSync(from);
+    if (fromStat.isDirectory()) {
+      cpSync(from, to, { recursive: true });
+    } else {
+      copyFileSync(from, to);
+    }
+    return { success: true, output: `Copied ${from} → ${to}` };
+  } catch (error) {
+    return { success: false, output: `Copy failed: ${(error as Error).message}`, error: 'COPY_ERROR' };
+  }
+}
+
+export async function fileDiff(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const file1 = resolve(context.scopePath, args['file1'] as string);
+  const file2 = resolve(context.scopePath, args['file2'] as string);
+  if (!existsSync(file1)) return { success: false, output: `File not found: ${file1}`, error: 'NOT_FOUND' };
+  if (!existsSync(file2)) return { success: false, output: `File not found: ${file2}`, error: 'NOT_FOUND' };
+  try {
+    const cmd = IS_WINDOWS ? `fc "${file1}" "${file2}"` : `diff -u "${file1}" "${file2}"`;
+    const output = execSync(cmd, { encoding: 'utf-8', timeout: 10000 });
+    return { success: true, output: output.trim() || '(files are identical)' };
+  } catch (error) {
+    const err = error as { stdout?: string; status?: number };
+    if (err.stdout) {
+      return { success: true, output: err.stdout.trim() };
+    }
+    return { success: true, output: '(files differ — diff output unavailable)' };
+  }
+}
+
+export async function fileMetadata(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const filePath = resolve(context.scopePath, args['path'] as string);
+  if (!existsSync(filePath)) {
+    return { success: false, output: 'Path does not exist', error: 'NOT_FOUND' };
+  }
+  try {
+    const stat = statSync(filePath);
+    const isDir = stat.isDirectory();
+    const info = [
+      `Path: ${filePath}`,
+      `Type: ${isDir ? 'directory' : 'file'}`,
+      `Size: ${isDir ? '-' : `${stat.size} bytes`}`,
+      `Created: ${stat.birthtime.toISOString()}`,
+      `Modified: ${stat.mtime.toISOString()}`,
+      `Permissions: ${(stat.mode & 0o777).toString(8)}`,
+      `Owner: ${stat.uid}:${stat.gid}`,
+    ];
+    return { success: true, output: info.join('\n') };
+  } catch (error) {
+    return { success: false, output: `Failed to read metadata: ${(error as Error).message}`, error: 'STAT_ERROR' };
+  }
+}
+
+export async function fileOpen(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const filePath = resolve(context.scopePath, args['path'] as string);
+  if (!existsSync(filePath)) {
+    return { success: false, output: 'File does not exist', error: 'NOT_FOUND' };
+  }
+  try {
+    const cmd = IS_WINDOWS ? `start "" "${filePath}"` : `open "${filePath}"`;
+    execSync(cmd, { timeout: 5000 });
+    return { success: true, output: `Opened ${filePath}` };
+  } catch (error) {
+    return { success: false, output: `Failed to open: ${(error as Error).message}`, error: 'OPEN_ERROR' };
+  }
+}
+
+export async function folderTree(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const dirPath = resolve(context.scopePath, (args['path'] as string) ?? '.');
+  const depth = Math.min((args['depth'] as number) ?? 3, 5);
+  if (!existsSync(dirPath)) {
+    return { success: false, output: 'Directory does not exist', error: 'NOT_FOUND' };
+  }
+  try {
+    if (!IS_WINDOWS) {
+      const cmd = `find "${dirPath}" -maxdepth ${depth} -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null | head -200 | sed 's|[^/]*/|  |g'`;
+      const output = execSync(cmd, { encoding: 'utf-8', timeout: 10000 });
+      return { success: true, output: basename(dirPath) + '\n' + output.trim() };
+    }
+    const cmd = `cmd /c "dir /s /b "${dirPath}" 2>nul"`;
+    const output = execSync(cmd, { encoding: 'utf-8', timeout: 10000 });
+    return { success: true, output: basename(dirPath) + '\n' + output.trim().split('\n').slice(0, 100).map(l => '  ' + l.replace(dirPath, '')).join('\n') };
+  } catch (error) {
+    return { success: false, output: `Tree failed: ${(error as Error).message}`, error: 'TREE_ERROR' };
+  }
+}
+
+export async function folderOpen(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const dirPath = resolve(context.scopePath, args['path'] as string);
+  if (!existsSync(dirPath)) {
+    return { success: false, output: 'Directory does not exist', error: 'NOT_FOUND' };
+  }
+  try {
+    const cmd = IS_WINDOWS ? `explorer "${dirPath}"` : `open "${dirPath}"`;
+    execSync(cmd, { timeout: 5000 });
+    return { success: true, output: `Opened directory ${dirPath}` };
+  } catch (error) {
+    return { success: false, output: `Failed to open directory: ${(error as Error).message}`, error: 'OPEN_ERROR' };
+  }
+}
+
+export async function archiveCreate(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const output = resolve(context.scopePath, args['output'] as string);
+  const source = (args['source'] as string).split(' ').map(s => resolve(context.scopePath, s));
+  const format = (args['format'] as string) ?? 'tar.gz';
+  try {
+    for (const src of source) {
+      if (!existsSync(src)) {
+        return { success: false, output: `Source not found: ${src}`, error: 'NOT_FOUND' };
+      }
+    }
+    mkdirSync(dirname(output), { recursive: true });
+    if (format === 'zip') {
+      const srcStr = source.map(s => `"${s}"`).join(' ');
+      execSync(`zip -r "${output}" ${srcStr}`, { encoding: 'utf-8', timeout: 60000 });
+    } else {
+      const srcStr = source.map(s => `"${s}"`).join(' ');
+      execSync(`tar -czf "${output}" ${srcStr}`, { encoding: 'utf-8', timeout: 60000 });
+    }
+    return { success: true, output: `Archive created: ${output}`, metadata: { format } };
+  } catch (error) {
+    return { success: false, output: `Archive failed: ${(error as Error).message}`, error: 'ARCHIVE_ERROR' };
+  }
+}
+
+export async function archiveExtract(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const archive = resolve(context.scopePath, args['archive'] as string);
+  const outputDir = args['output'] ? resolve(context.scopePath, args['output'] as string) : dirname(archive) + '/' + basename(archive).replace(/\.(tar\.gz|tgz|zip)$/, '');
+  if (!existsSync(archive)) {
+    return { success: false, output: 'Archive not found', error: 'NOT_FOUND' };
+  }
+  try {
+    mkdirSync(outputDir, { recursive: true });
+    if (archive.endsWith('.zip')) {
+      execSync(`unzip -o "${archive}" -d "${outputDir}"`, { encoding: 'utf-8', timeout: 60000 });
+    } else {
+      execSync(`tar -xzf "${archive}" -C "${outputDir}"`, { encoding: 'utf-8', timeout: 60000 });
+    }
+    return { success: true, output: `Extracted to ${outputDir}` };
+  } catch (error) {
+    return { success: false, output: `Extraction failed: ${(error as Error).message}`, error: 'EXTRACT_ERROR' };
   }
 }

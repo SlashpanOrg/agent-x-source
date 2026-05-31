@@ -1,0 +1,42 @@
+name: Security Audit
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday 6 AM UTC
+  push:
+    branches: [main, launch]
+  pull_request:
+    branches: [main, launch]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run npm audit
+        run: pnpm audit --audit-level=high || true
+        continue-on-error: true
+
+      - name: Run security scan
+        run: pnpm run build 2>/dev/null; npx --yes @agentx/cli security_audit --target . || true
+        continue-on-error: true
+
+      - name: Scan for secrets
+        run: |
+          echo "Checking for common secret patterns..."
+          SECRET_PATTERNS='(?:api[_-]?key|secret|token|password|credential|auth[_-]?token)["'"'"']?\s*[:=]\s*["'"'"'](?!\s*(?:your_|example_|\$|process\.| Bun\.|Deno\.))'
+          grep -rnIE "$SECRET_PATTERNS" --include='*.ts' --include='*.js' --include='*.json' --include='*.yml' --include='*.yaml' packages/ 2>/dev/null | grep -v node_modules | grep -v '.spec.' | grep -v '.test.' | head -20 || echo "No obvious secrets found"

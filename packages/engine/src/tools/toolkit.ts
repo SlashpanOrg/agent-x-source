@@ -20,11 +20,15 @@ import * as testing from './builtin/testing.js';
 import * as web from './builtin/web.js';
 import * as image from './builtin/image.js';
 import * as project from './builtin/project.js';
+import * as ai from './builtin/ai.js';
+import * as notifications from './builtin/notifications.js';
+import * as security from './builtin/security.js';
+import * as media from './builtin/media.js';
 
 // All tool definitions with schemas the model uses to invoke them
 const CORE_TOOLS: ToolDefinition[] = [
   // ═══ FILESYSTEM ═══
-  { id: 'file_read', name: 'Read File', description: 'Read the contents of a file', modelDescription: 'Read file contents. Use for examining code, config, or data files.', category: 'filesystem', riskLevel: 'low', schema: { type: 'object', properties: { path: { type: 'string', description: 'File path' } }, required: ['path'] }, composable: true, source: 'builtin' },
+  { id: 'file_read', name: 'Read File', description: 'Read the contents of a file', modelDescription: 'Read file contents. Supports paging via offset (line number) and limit (number of lines). Use for examining code, config, or data files.', category: 'filesystem', riskLevel: 'low', schema: { type: 'object', properties: { path: { type: 'string', description: 'File path' }, offset: { type: 'number', description: 'Starting line number (0-based, default: 0)' }, limit: { type: 'number', description: 'Number of lines to return (default: all)' } }, required: ['path'] }, composable: true, source: 'builtin' },
   { id: 'file_write', name: 'Write File', description: 'Write content to a file', modelDescription: 'Write/create a file with given content. Creates parent directories automatically.', category: 'filesystem', riskLevel: 'medium', schema: { type: 'object', properties: { path: { type: 'string', description: 'File path' }, content: { type: 'string', description: 'File content' } }, required: ['path', 'content'] }, composable: true, source: 'builtin' },
   { id: 'file_delete', name: 'Delete File', description: 'Delete a file', modelDescription: 'Delete a file at the given path.', category: 'filesystem', riskLevel: 'high', schema: { type: 'object', properties: { path: { type: 'string', description: 'File path to delete' } }, required: ['path'] }, composable: true, source: 'builtin' },
   { id: 'folder_create', name: 'Create Folder', description: 'Create a directory (recursive)', modelDescription: 'Create a directory and any parent directories.', category: 'filesystem', riskLevel: 'low', schema: { type: 'object', properties: { path: { type: 'string', description: 'Directory path' } }, required: ['path'] }, composable: true, source: 'builtin' },
@@ -32,12 +36,21 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'folder_delete', name: 'Delete Folder', description: 'Delete a directory recursively', modelDescription: 'Delete a directory and all its contents.', category: 'filesystem', riskLevel: 'critical', schema: { type: 'object', properties: { path: { type: 'string', description: 'Directory path' } }, required: ['path'] }, composable: true, source: 'builtin' },
   { id: 'folder_move', name: 'Move/Rename', description: 'Move or rename a file or directory', modelDescription: 'Move or rename a file or directory.', category: 'filesystem', riskLevel: 'medium', schema: { type: 'object', properties: { from: { type: 'string', description: 'Source path' }, to: { type: 'string', description: 'Destination path' } }, required: ['from', 'to'] }, composable: true, source: 'builtin' },
   { id: 'file_find', name: 'Find Files', description: 'Find files by name pattern', modelDescription: 'Search for files by glob name pattern (e.g. "*.ts", "config*"). Excludes node_modules and .git.', category: 'filesystem', riskLevel: 'low', schema: { type: 'object', properties: { pattern: { type: 'string', description: 'File name glob (e.g. "*.ts", "README*")' }, path: { type: 'string', description: 'Directory to search (default: .)' } }, required: ['pattern'] }, composable: true, source: 'builtin' },
+  { id: 'file_copy', name: 'Copy File', description: 'Copy a file or directory', modelDescription: 'Copy a file or directory from source to destination.', category: 'filesystem', riskLevel: 'medium', schema: { type: 'object', properties: { from: { type: 'string', description: 'Source path' }, to: { type: 'string', description: 'Destination path' } }, required: ['from', 'to'] }, composable: true, source: 'builtin' },
+  { id: 'file_diff', name: 'Diff Files', description: 'Compare two files', modelDescription: 'Show line-by-line diff between two files.', category: 'filesystem', riskLevel: 'low', schema: { type: 'object', properties: { file1: { type: 'string', description: 'First file path' }, file2: { type: 'string', description: 'Second file path' } }, required: ['file1', 'file2'] }, composable: true, source: 'builtin' },
+  { id: 'file_metadata', name: 'File Metadata', description: 'Show file/directory metadata', modelDescription: 'Show file size, permissions, modified time, and type.', category: 'filesystem', riskLevel: 'low', schema: { type: 'object', properties: { path: { type: 'string', description: 'File or directory path' } }, required: ['path'] }, composable: true, source: 'builtin' },
+  { id: 'file_open', name: 'Open File', description: 'Open a file in default editor', modelDescription: 'Open a file in the system default editor/application.', category: 'filesystem', riskLevel: 'medium', schema: { type: 'object', properties: { path: { type: 'string', description: 'File path to open' } }, required: ['path'] }, composable: true, source: 'builtin' },
+  { id: 'folder_tree', name: 'Directory Tree', description: 'Show directory tree', modelDescription: 'Display a tree view of directories with indentation (depth-limited).', category: 'filesystem', riskLevel: 'low', schema: { type: 'object', properties: { path: { type: 'string', description: 'Directory path (default: .)' }, depth: { type: 'number', description: 'Max depth (default: 3)' } }, required: [] }, composable: true, source: 'builtin' },
+  { id: 'folder_open', name: 'Open Folder', description: 'Open directory in file manager', modelDescription: 'Open a directory in the system file manager (Finder, Explorer, Nautilus).', category: 'filesystem', riskLevel: 'medium', schema: { type: 'object', properties: { path: { type: 'string', description: 'Directory path' } }, required: ['path'] }, composable: true, source: 'builtin' },
+  { id: 'archive_create', name: 'Create Archive', description: 'Create a tar/zip archive', modelDescription: 'Create a tar.gz or zip archive from files and directories.', category: 'filesystem', riskLevel: 'medium', schema: { type: 'object', properties: { output: { type: 'string', description: 'Archive path (.tar.gz or .zip)' }, source: { type: 'string', description: 'Source files/directories (space-separated)' }, format: { type: 'string', description: 'Format: tar.gz, zip (default: tar.gz)' } }, required: ['output', 'source'] }, composable: true, source: 'builtin' },
+  { id: 'archive_extract', name: 'Extract Archive', description: 'Extract a tar/zip archive', modelDescription: 'Extract a tar.gz or zip archive to a directory.', category: 'filesystem', riskLevel: 'medium', schema: { type: 'object', properties: { archive: { type: 'string', description: 'Archive file path' }, output: { type: 'string', description: 'Output directory (default: same name as archive)' } }, required: ['archive'] }, composable: true, source: 'builtin' },
 
   // ═══ SHELL & PROCESS ═══
-  { id: 'shell_exec', name: 'Execute Command', description: 'Run a shell command', modelDescription: 'Execute a shell command. Returns stdout/stderr. Use for builds, installs, tests.', category: 'shell_process', riskLevel: 'high', schema: { type: 'object', properties: { command: { type: 'string', description: 'Shell command' }, cwd: { type: 'string', description: 'Working directory (optional)' }, timeout: { type: 'number', description: 'Timeout ms (default: 30000)' } }, required: ['command'] }, composable: true, source: 'builtin' },
+  { id: 'shell_exec', name: 'Execute Command', description: 'Run a shell command', modelDescription: 'Execute a shell command. Returns stdout/stderr. Use for builds, installs, tests.', category: 'shell_process', riskLevel: 'high', schema: { type: 'object', properties: { command: { type: 'string', description: 'Shell command' }, cwd: { type: 'string', description: 'Working directory (optional)' }, timeout: { type: 'number', description: 'Timeout ms (default: 30000, max: 600000)' }, maxLength: { type: 'number', description: 'Max output chars (default: 30000)' } }, required: ['command'] }, composable: true, source: 'builtin' },
   { id: 'shell_background', name: 'Background Process', description: 'Start a long-running background process', modelDescription: 'Start a detached background process (dev server, watcher). Returns PID.', category: 'shell_process', riskLevel: 'high', schema: { type: 'object', properties: { command: { type: 'string', description: 'Command to run' }, cwd: { type: 'string', description: 'Working directory' } }, required: ['command'] }, composable: true, source: 'builtin' },
   { id: 'process_kill', name: 'Kill Process', description: 'Kill a process by PID', modelDescription: 'Send signal to terminate a process.', category: 'shell_process', riskLevel: 'high', schema: { type: 'object', properties: { pid: { type: 'number', description: 'Process ID' }, signal: { type: 'string', description: 'Signal (default: SIGTERM)' } }, required: ['pid'] }, composable: true, source: 'builtin' },
   { id: 'process_list', name: 'List Processes', description: 'List running processes', modelDescription: 'Show running processes with PID, CPU%, MEM%, and command.', category: 'shell_process', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
+  { id: 'shell_exec_streaming', name: 'Stream Command Output', description: 'Run command with streaming output', modelDescription: 'Execute a shell command and stream output in real-time as it runs. Use for long-running commands where you want to see progress.', category: 'shell_process', riskLevel: 'high', schema: { type: 'object', properties: { command: { type: 'string', description: 'Shell command' }, cwd: { type: 'string', description: 'Working directory (optional)' }, maxLength: { type: 'number', description: 'Max output chars (default: 30000)' } }, required: ['command'] }, composable: false, source: 'builtin' },
 
   // ═══ GIT & VCS ═══
   { id: 'git_status', name: 'Git Status', description: 'Show repository status', modelDescription: 'Show modified, staged, and untracked files.', category: 'git_vcs', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
@@ -61,6 +74,13 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'code_definitions', name: 'Find Definitions', description: 'List definitions in a file', modelDescription: 'Scan a source file for top-level definitions. Supports TS, JS, Python, Rust, Go.', category: 'code_intelligence', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'File path' } }, required: ['file'] }, composable: true, source: 'builtin' },
   { id: 'code_symbols', name: 'List Symbols', description: 'List all symbols in a file', modelDescription: 'List code symbols with kind and line number.', category: 'code_intelligence', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'File path' } }, required: ['file'] }, composable: true, source: 'builtin' },
   { id: 'file_patch', name: 'Multi-Edit File', description: 'Apply multiple edits to a file atomically', modelDescription: 'Apply multiple search-and-replace edits to a single file. Each edit must have a unique search string. More efficient than multiple code_replace calls.', category: 'code_intelligence', riskLevel: 'medium', schema: { type: 'object', properties: { file: { type: 'string', description: 'File path' }, edits: { type: 'array', description: 'Array of {search, replace} objects' } }, required: ['file', 'edits'] }, composable: true, source: 'builtin' },
+  { id: 'code_grep', name: 'Grep Code', description: 'Extended code search with context lines', modelDescription: 'Search code with regex, showing context lines around matches. Supports file type filtering.', category: 'code_intelligence', riskLevel: 'low', schema: { type: 'object', properties: { pattern: { type: 'string', description: 'Regex pattern' }, path: { type: 'string', description: 'Directory (default: .)' }, context: { type: 'number', description: 'Context lines around match (default: 2)' }, glob: { type: 'string', description: 'File glob (e.g. "*.ts")' } }, required: ['pattern'] }, composable: true, source: 'builtin' },
+  { id: 'code_references', name: 'Find References', description: 'Find all references to a symbol', modelDescription: 'Search for all references/usages of a given symbol name in the codebase.', category: 'code_intelligence', riskLevel: 'low', schema: { type: 'object', properties: { symbol: { type: 'string', description: 'Symbol name to find' }, path: { type: 'string', description: 'Directory (default: .)' }, glob: { type: 'string', description: 'File glob (e.g. "*.ts")' } }, required: ['symbol'] }, composable: true, source: 'builtin' },
+  { id: 'code_format', name: 'Format Code', description: 'Format source code with prettier/dprint', modelDescription: 'Format code files using Prettier (if available) in the project.', category: 'code_intelligence', riskLevel: 'medium', schema: { type: 'object', properties: { path: { type: 'string', description: 'File or directory path' } }, required: [] }, composable: true, source: 'builtin' },
+  { id: 'code_lint', name: 'Lint Code', description: 'Run linter on code', modelDescription: 'Run ESLint (or project linter) on files. Returns lint results.', category: 'code_intelligence', riskLevel: 'low', schema: { type: 'object', properties: { path: { type: 'string', description: 'File or directory path (default: .)' }, fix: { type: 'boolean', description: 'Auto-fix fixable issues' } }, required: [] }, composable: true, source: 'builtin' },
+  { id: 'code_fix', name: 'Fix Code', description: 'Auto-fix lint issues', modelDescription: 'Run linter with auto-fix to correct fixable issues in code.', category: 'code_intelligence', riskLevel: 'medium', schema: { type: 'object', properties: { path: { type: 'string', description: 'File or directory path (default: .)' } }, required: [] }, composable: true, source: 'builtin' },
+  { id: 'code_typecheck', name: 'Type Check', description: 'Run TypeScript type checker', modelDescription: 'Run tsc --noEmit to check TypeScript types in the project.', category: 'code_intelligence', riskLevel: 'low', schema: { type: 'object', properties: { path: { type: 'string', description: 'Project path (default: .)' } }, required: [] }, composable: true, source: 'builtin' },
+  { id: 'code_analyze', name: 'Analyze Code', description: 'Analyze code complexity and structure', modelDescription: 'Analyze a source file for structural metrics: functions, classes, imports, complexity indicators.', category: 'code_intelligence', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Source file path' } }, required: ['file'] }, composable: true, source: 'builtin' },
 
   // ═══ DOCUMENTS ═══
   { id: 'csv_create', name: 'Create CSV', description: 'Create a CSV file', modelDescription: 'Create a CSV file. Provide headers + rows, or raw content.', category: 'documents', riskLevel: 'medium', schema: { type: 'object', properties: { file: { type: 'string', description: 'Output path' }, headers: { type: 'array', description: 'Column headers' }, rows: { type: 'array', description: 'Row arrays' }, content: { type: 'string', description: 'Raw CSV (alternative)' } }, required: ['file'] }, composable: true, source: 'builtin' },
@@ -72,6 +92,12 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'docx_read', name: 'Read Word Doc', description: 'Extract text from a DOCX file', modelDescription: 'Read and extract text from a Word (.docx) document.', category: 'documents', riskLevel: 'low', schema: { type: 'object', properties: { path: { type: 'string', description: 'Path to the DOCX file' } }, required: ['path'] }, composable: true, source: 'builtin' },
   { id: 'xlsx_read', name: 'Read Spreadsheet', description: 'Extract data from an XLSX file', modelDescription: 'Read and extract data from an Excel (.xlsx) spreadsheet. Returns tab-separated values.', category: 'documents', riskLevel: 'low', schema: { type: 'object', properties: { path: { type: 'string', description: 'Path to the XLSX file' } }, required: ['path'] }, composable: true, source: 'builtin' },
   { id: 'pptx_read', name: 'Read Presentation', description: 'Extract text from a PPTX file', modelDescription: 'Read and extract text from a PowerPoint (.pptx) presentation.', category: 'documents', riskLevel: 'low', schema: { type: 'object', properties: { path: { type: 'string', description: 'Path to the PPTX file' } }, required: ['path'] }, composable: true, source: 'builtin' },
+  { id: 'doc_markdown', name: 'Generate Markdown', description: 'Generate a Markdown document', modelDescription: 'Create a Markdown (.md) document from structured content.', category: 'documents', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Output file path' }, title: { type: 'string', description: 'Document title' }, sections: { type: 'array', description: 'Array of {heading, content, code} objects' } }, required: ['file', 'sections'] }, composable: true, source: 'builtin' },
+  { id: 'doc_html', name: 'Generate HTML', description: 'Generate an HTML document', modelDescription: 'Create an HTML file with optional CSS styling.', category: 'documents', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Output file path' }, title: { type: 'string', description: 'Page title' }, body: { type: 'string', description: 'HTML body content' }, style: { type: 'string', description: 'CSS styles (optional)' } }, required: ['file', 'body'] }, composable: true, source: 'builtin' },
+  { id: 'doc_json', name: 'Generate JSON Doc', description: 'Generate a JSON document', modelDescription: 'Write structured data as a formatted JSON file.', category: 'documents', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Output file path' }, data: { type: 'object', description: 'JSON data to write' } }, required: ['file', 'data'] }, composable: true, source: 'builtin' },
+  { id: 'doc_yaml', name: 'Generate YAML', description: 'Generate a YAML document', modelDescription: 'Write structured data as a YAML file.', category: 'documents', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Output file path' }, data: { type: 'object', description: 'Data to write as YAML' } }, required: ['file', 'data'] }, composable: true, source: 'builtin' },
+  { id: 'doc_diagram', name: 'Generate Diagram', description: 'Generate a Mermaid diagram', modelDescription: 'Create a Mermaid diagram (.mmd) file from diagram definition text.', category: 'documents', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Output .mmd file path' }, definition: { type: 'string', description: 'Mermaid diagram definition' } }, required: ['file', 'definition'] }, composable: true, source: 'builtin' },
+  { id: 'doc_latex', name: 'Generate LaTeX', description: 'Generate a LaTeX document', modelDescription: 'Create a LaTeX (.tex) document with preamble and body.', category: 'documents', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Output .tex file path' }, title: { type: 'string', description: 'Document title' }, author: { type: 'string', description: 'Author name' }, sections: { type: 'array', description: 'Array of {heading, content} objects' } }, required: ['file', 'sections'] }, composable: true, source: 'builtin' },
 
   // ═══ SCHEDULER ═══
   { id: 'reminder_set', name: 'Set Reminder', description: 'Set a reminder or recurring task', modelDescription: 'Set a reminder. One-time: use at_time (ISO 8601 with timezone) for absolute times like "at 5pm", or delay_seconds for relative delays like "in 5 minutes". Recurring: interval_seconds (sub-minute) or interval_minutes.', category: 'scheduler', riskLevel: 'low', schema: { type: 'object', properties: { name: { type: 'string', description: 'Short name' }, message: { type: 'string', description: 'Reminder message' }, at_time: { type: 'string', description: 'ISO 8601 datetime for absolute time (e.g. 2026-05-25T17:04:00+05:30)' }, delay_seconds: { type: 'number', description: 'Seconds until fire (one-time, relative)' }, interval_seconds: { type: 'number', description: 'Interval in seconds (recurring, sub-minute)' }, interval_minutes: { type: 'number', description: 'Interval in minutes (recurring)' }, cron: { type: 'string', description: 'Cron expression (advanced)' } }, required: ['name', 'message'] }, composable: true, source: 'builtin' },
@@ -88,6 +114,8 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'browser_screenshot', name: 'Screenshot Page', description: 'Screenshot a web page', modelDescription: 'Capture full-page screenshot of a URL.', category: 'browser_automation', riskLevel: 'medium', schema: { type: 'object', properties: { url: { type: 'string', description: 'URL' }, output: { type: 'string', description: 'Output file (default: screenshot.png)' } }, required: ['url'] }, composable: true, source: 'builtin' },
   { id: 'browser_click', name: 'Click Element', description: 'Click an element on a page', modelDescription: 'Navigate to URL and click a CSS selector.', category: 'browser_automation', riskLevel: 'medium', schema: { type: 'object', properties: { url: { type: 'string', description: 'URL' }, selector: { type: 'string', description: 'CSS selector' } }, required: ['url', 'selector'] }, composable: true, source: 'builtin' },
   { id: 'browser_eval', name: 'Evaluate JS', description: 'Run JavaScript on a page', modelDescription: 'Evaluate a JS expression in page context.', category: 'browser_automation', riskLevel: 'high', schema: { type: 'object', properties: { url: { type: 'string', description: 'URL' }, expression: { type: 'string', description: 'JS expression' } }, required: ['url', 'expression'] }, composable: true, source: 'builtin' },
+  { id: 'browser_type', name: 'Type Text', description: 'Type text into an input field', modelDescription: 'Navigate to URL and type text into a CSS selector field.', category: 'browser_automation', riskLevel: 'medium', schema: { type: 'object', properties: { url: { type: 'string', description: 'URL' }, selector: { type: 'string', description: 'CSS selector' }, text: { type: 'string', description: 'Text to type' } }, required: ['url', 'selector', 'text'] }, composable: true, source: 'builtin' },
+  { id: 'browser_extract', name: 'Extract Elements', description: 'Extract text from CSS selectors', modelDescription: 'Open a page and extract text content from all elements matching a CSS selector.', category: 'browser_automation', riskLevel: 'medium', schema: { type: 'object', properties: { url: { type: 'string', description: 'URL' }, selector: { type: 'string', description: 'CSS selector' } }, required: ['url', 'selector'] }, composable: true, source: 'builtin' },
 
   // ═══ CONTAINERS ═══
   { id: 'container_list', name: 'List Containers', description: 'List Docker containers', modelDescription: 'List all Docker containers with status and ports.', category: 'containers_infra', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
@@ -98,6 +126,7 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'container_run', name: 'Run Container', description: 'Run new container from image', modelDescription: 'Start a new container from a Docker image with port/env config.', category: 'containers_infra', riskLevel: 'high', schema: { type: 'object', properties: { image: { type: 'string', description: 'Docker image' }, name: { type: 'string', description: 'Container name' }, ports: { type: 'string', description: 'Port mapping (e.g. "8080:80")' }, env: { type: 'string', description: 'Env vars (KEY=VAL,KEY=VAL)' }, detach: { type: 'boolean', description: 'Background (default: true)' } }, required: ['image'] }, composable: true, source: 'builtin' },
   { id: 'container_compose', name: 'Docker Compose', description: 'Run docker compose commands', modelDescription: 'Docker compose: up, down, ps, logs, restart.', category: 'containers_infra', riskLevel: 'medium', schema: { type: 'object', properties: { action: { type: 'string', description: 'Action: up, down, ps, logs, restart' }, services: { type: 'string', description: 'Services (space-separated)' } }, required: ['action'] }, composable: true, source: 'builtin' },
   { id: 'container_images', name: 'List Images', description: 'List Docker images', modelDescription: 'List locally available Docker images.', category: 'containers_infra', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
+  { id: 'docker_build', name: 'Build Docker Image', description: 'Build a Docker image from Dockerfile', modelDescription: 'Build a Docker image from a Dockerfile in the specified directory.', category: 'containers_infra', riskLevel: 'medium', schema: { type: 'object', properties: { path: { type: 'string', description: 'Directory with Dockerfile (default: .)' }, tag: { type: 'string', description: 'Image tag (e.g. myapp:latest)' }, dockerfile: { type: 'string', description: 'Dockerfile name (default: Dockerfile)' } }, required: ['tag'] }, composable: true, source: 'builtin' },
 
   // ═══ DATA PROCESSING ═══
   { id: 'json_parse', name: 'Parse JSON', description: 'Parse JSON from file or string', modelDescription: 'Parse and pretty-print JSON from a file or raw string.', category: 'data_processing', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'JSON file path' }, input: { type: 'string', description: 'Raw JSON string' } }, required: [] }, composable: true, source: 'builtin' },
@@ -105,12 +134,16 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'json_set', name: 'Set JSON Value', description: 'Set a value in a JSON file', modelDescription: 'Set a value at a dot-notation path in a JSON file.', category: 'data_processing', riskLevel: 'medium', schema: { type: 'object', properties: { file: { type: 'string', description: 'JSON file' }, path: { type: 'string', description: 'Dot path' }, value: { type: 'string', description: 'Value (JSON-encoded)' } }, required: ['file', 'path', 'value'] }, composable: true, source: 'builtin' },
   { id: 'csv_parse', name: 'Parse CSV', description: 'Parse a CSV file', modelDescription: 'Parse CSV into structured data with headers and rows.', category: 'data_processing', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'CSV file path' }, delimiter: { type: 'string', description: 'Delimiter (default: ,)' }, limit: { type: 'number', description: 'Max rows' } }, required: ['file'] }, composable: true, source: 'builtin' },
   { id: 'text_transform', name: 'Transform Text', description: 'Apply text transformations', modelDescription: 'Transform text: uppercase, lowercase, trim, lines, words, chars, reverse, base64_encode, base64_decode.', category: 'data_processing', riskLevel: 'low', schema: { type: 'object', properties: { input: { type: 'string', description: 'Text input' }, operation: { type: 'string', description: 'Operation name' } }, required: ['input', 'operation'] }, composable: true, source: 'builtin' },
+  { id: 'regex_match', name: 'Regex Match', description: 'Match regex against text', modelDescription: 'Apply a regex pattern to text and return matched groups and positions.', category: 'data_processing', riskLevel: 'low', schema: { type: 'object', properties: { text: { type: 'string', description: 'Text to search in' }, pattern: { type: 'string', description: 'Regex pattern' }, flags: { type: 'string', description: 'Regex flags (g, i, m, etc.)' } }, required: ['text', 'pattern'] }, composable: true, source: 'builtin' },
+  { id: 'text_diff', name: 'Diff Text', description: 'Compare two text strings', modelDescription: 'Show line-by-line diff between two text strings.', category: 'data_processing', riskLevel: 'low', schema: { type: 'object', properties: { text1: { type: 'string', description: 'First text' }, text2: { type: 'string', description: 'Second text' } }, required: ['text1', 'text2'] }, composable: true, source: 'builtin' },
+  { id: 'validate_schema', name: 'Validate Schema', description: 'Validate data against JSON Schema', modelDescription: 'Validate a JSON object against a JSON Schema specification.', category: 'data_processing', riskLevel: 'low', schema: { type: 'object', properties: { data: { type: 'object', description: 'Data to validate' }, schema: { type: 'object', description: 'JSON Schema to validate against' } }, required: ['data', 'schema'] }, composable: true, source: 'builtin' },
 
   // ═══ DATABASE ═══
   { id: 'db_query', name: 'Database Query', description: 'Execute SQL on SQLite', modelDescription: 'Run a SQL query against a SQLite database file.', category: 'database', riskLevel: 'medium', schema: { type: 'object', properties: { database: { type: 'string', description: 'Path to .db file' }, query: { type: 'string', description: 'SQL query' } }, required: ['database', 'query'] }, composable: true, source: 'builtin' },
   { id: 'db_schema', name: 'Database Schema', description: 'Inspect database schema', modelDescription: 'Show tables and schema of a SQLite database.', category: 'database', riskLevel: 'low', schema: { type: 'object', properties: { database: { type: 'string', description: 'Path to .db file' }, table: { type: 'string', description: 'Table name (optional)' } }, required: ['database'] }, composable: true, source: 'builtin' },
   { id: 'db_export', name: 'Database Export', description: 'Export table to CSV/TSV', modelDescription: 'Export a table to CSV or TSV format.', category: 'database', riskLevel: 'low', schema: { type: 'object', properties: { database: { type: 'string', description: 'Path to .db file' }, table: { type: 'string', description: 'Table name' }, format: { type: 'string', description: 'csv or tsv' } }, required: ['database', 'table'] }, composable: true, source: 'builtin' },
   { id: 'env_read', name: 'Read .env', description: 'Read .env file', modelDescription: 'Read a .env file (values masked for security).', category: 'database', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: '.env file path (default: .env)' } }, required: [] }, composable: true, source: 'builtin' },
+  { id: 'db_migrate', name: 'Database Migration', description: 'Run SQL migration files', modelDescription: 'Run SQL migration files against a SQLite database. Migrations are tracked in a _migrations table.', category: 'database', riskLevel: 'high', schema: { type: 'object', properties: { database: { type: 'string', description: 'Path to .db file' }, migrationsDir: { type: 'string', description: 'Directory containing .sql migration files' } }, required: ['database', 'migrationsDir'] }, composable: true, source: 'builtin' },
 
   // ═══ GITHUB ═══
   { id: 'gh_issue_list', name: 'List Issues', description: 'List GitHub issues', modelDescription: 'List GitHub issues. Requires gh CLI.', category: 'communication', riskLevel: 'low', schema: { type: 'object', properties: { state: { type: 'string', description: 'open, closed, all' }, limit: { type: 'number', description: 'Max results' } }, required: [] }, composable: true, source: 'builtin' },
@@ -121,10 +154,13 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'gh_repo_view', name: 'View Repo', description: 'View repository info', modelDescription: 'Show current repository info.', category: 'communication', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
   { id: 'gh_workflow_list', name: 'Workflow Runs', description: 'List CI/CD runs', modelDescription: 'Show recent GitHub Actions workflow runs.', category: 'communication', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
   { id: 'gh_release', name: 'Releases', description: 'List releases', modelDescription: 'List GitHub releases.', category: 'communication', riskLevel: 'low', schema: { type: 'object', properties: { action: { type: 'string', description: 'Action (default: list)' } }, required: [] }, composable: true, source: 'builtin' },
+  { id: 'gh_pr_review', name: 'Review PR', description: 'Add review to a pull request', modelDescription: 'Submit a review on a pull request (approve, comment, or request changes).', category: 'communication', riskLevel: 'high', schema: { type: 'object', properties: { number: { type: 'number', description: 'PR number' }, body: { type: 'string', description: 'Review body/comment' }, event: { type: 'string', description: 'APPROVE, COMMENT, REQUEST_CHANGES (default: COMMENT)' } }, required: ['number'] }, composable: true, source: 'builtin' },
 
   // ═══ MCP ═══
   { id: 'mcp_call', name: 'MCP Tool Call', description: 'Call tool on MCP server', modelDescription: 'Call a tool on an external MCP server via stdio.', category: 'mcp_integration', riskLevel: 'medium', schema: { type: 'object', properties: { command: { type: 'string', description: 'MCP server command' }, args: { type: 'array', description: 'Command arguments' }, server: { type: 'string', description: 'Server name' }, method: { type: 'string', description: 'Method (e.g. tools/call)' }, params: { type: 'object', description: 'Method params' } }, required: ['command', 'method'] }, composable: true, source: 'builtin' },
   { id: 'mcp_list_tools', name: 'MCP List Tools', description: 'List MCP server tools', modelDescription: 'Discover tools on an MCP server.', category: 'mcp_integration', riskLevel: 'low', schema: { type: 'object', properties: { command: { type: 'string', description: 'MCP server command' }, args: { type: 'array', description: 'Command arguments' } }, required: ['command'] }, composable: true, source: 'builtin' },
+  { id: 'mcp_server_connect', name: 'MCP Server Connect', description: 'Connect to an MCP server', modelDescription: 'Connect to an MCP server via stdio and list available tools/resources.', category: 'mcp_integration', riskLevel: 'medium', schema: { type: 'object', properties: { command: { type: 'string', description: 'MCP server command' }, args: { type: 'array', description: 'Command arguments' } }, required: ['command'] }, composable: true, source: 'builtin' },
+  { id: 'mcp_resource_read', name: 'MCP Resource Read', description: 'Read MCP server resource', modelDescription: 'Read a resource from an MCP server (e.g. files, configs, schemas).', category: 'mcp_integration', riskLevel: 'medium', schema: { type: 'object', properties: { command: { type: 'string', description: 'MCP server command' }, args: { type: 'array', description: 'Command arguments' }, uri: { type: 'string', description: 'Resource URI' } }, required: ['command', 'uri'] }, composable: true, source: 'builtin' },
 
   // ═══ PACKAGES ═══
   { id: 'package_install', name: 'Install Packages', description: 'Install dependencies', modelDescription: 'Install packages (auto-detects npm/pnpm/yarn).', category: 'package_managers', riskLevel: 'medium', schema: { type: 'object', properties: { packages: { type: 'string', description: 'Package names (space-separated)' }, dev: { type: 'boolean', description: 'As devDependency' } }, required: [] }, composable: true, source: 'builtin' },
@@ -132,6 +168,9 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'package_list', name: 'List Dependencies', description: 'List project deps', modelDescription: 'Show all dependencies from package.json.', category: 'package_managers', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
   { id: 'package_outdated', name: 'Outdated Packages', description: 'Check outdated deps', modelDescription: 'Show packages with newer versions available.', category: 'package_managers', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
   { id: 'package_run', name: 'Run Script', description: 'Run package.json script', modelDescription: 'Run a script from package.json.', category: 'package_managers', riskLevel: 'medium', schema: { type: 'object', properties: { script: { type: 'string', description: 'Script name' } }, required: ['script'] }, composable: true, source: 'builtin' },
+  { id: 'pkg_update', name: 'Update Packages', description: 'Update dependencies to latest', modelDescription: 'Update all packages to latest compatible versions per semver range.', category: 'package_managers', riskLevel: 'medium', schema: { type: 'object', properties: { packages: { type: 'string', description: 'Specific packages to update (space-separated, optional)' } }, required: [] }, composable: true, source: 'builtin' },
+  { id: 'pkg_audit', name: 'Audit Packages', description: 'Audit packages for vulnerabilities', modelDescription: 'Run npm audit or pnpm audit to find vulnerabilities in dependencies.', category: 'package_managers', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
+  { id: 'pkg_search', name: 'Search Packages', description: 'Search npm registry for packages', modelDescription: 'Search the npm registry for packages matching a query.', category: 'package_managers', riskLevel: 'low', schema: { type: 'object', properties: { query: { type: 'string', description: 'Search query' }, limit: { type: 'number', description: 'Max results (default: 10)' } }, required: ['query'] }, composable: true, source: 'builtin' },
 
   // ═══ SYSTEM ═══
   { id: 'system_info', name: 'System Info', description: 'Get system information', modelDescription: 'Show OS, CPU, memory, Node.js version.', category: 'system_os', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
@@ -143,12 +182,16 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'security_audit', name: 'Security Audit', description: 'Audit dependencies', modelDescription: 'Run npm/pnpm audit for vulnerabilities.', category: 'system_os', riskLevel: 'low', schema: { type: 'object', properties: { target: { type: 'string', description: 'Target path' } }, required: [] }, composable: true, source: 'builtin' },
   { id: 'security_secrets', name: 'Scan Secrets', description: 'Scan for leaked secrets', modelDescription: 'Grep codebase for API keys, tokens, passwords.', category: 'system_os', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
   { id: 'file_checksum', name: 'File Checksum', description: 'Calculate file hash', modelDescription: 'Generate sha256/md5/sha1 checksum for a file.', category: 'system_os', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'File path' }, algorithm: { type: 'string', description: 'sha256, md5, sha1 (default: sha256)' } }, required: ['file'] }, composable: true, source: 'builtin' },
+  { id: 'system_monitor', name: 'System Monitor', description: 'Monitor system resources', modelDescription: 'Show real-time system resource usage: CPU, memory, disk I/O, network.', category: 'system_os', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
+  { id: 'cron_create', name: 'Create Cron Job', description: 'Schedule a cron job', modelDescription: 'Create a cron job. Adds entry to crontab for the current user.', category: 'system_os', riskLevel: 'high', schema: { type: 'object', properties: { expression: { type: 'string', description: 'Cron expression (e.g. "0 9 * * *")' }, command: { type: 'string', description: 'Command to run' }, label: { type: 'string', description: 'Label/comment for the job' } }, required: ['expression', 'command'] }, composable: true, source: 'builtin' },
+  { id: 'open_app', name: 'Open Application', description: 'Open an application or file', modelDescription: 'Open a file/URL/application in the default system application.', category: 'system_os', riskLevel: 'medium', schema: { type: 'object', properties: { target: { type: 'string', description: 'File path, URL, or app name to open' } }, required: ['target'] }, composable: true, source: 'builtin' },
 
   // ═══ TESTING ═══
   { id: 'test_run', name: 'Run Tests', description: 'Run test suite', modelDescription: 'Run tests (vitest). Optional file or pattern filter.', category: 'testing', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Test file' }, pattern: { type: 'string', description: 'Test name pattern' } }, required: [] }, composable: true, source: 'builtin' },
   { id: 'test_watch', name: 'Run Test File', description: 'Run single test file', modelDescription: 'Run a specific test file.', category: 'testing', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Test file path' } }, required: [] }, composable: true, source: 'builtin' },
   { id: 'test_coverage', name: 'Test Coverage', description: 'Run tests with coverage', modelDescription: 'Run tests and generate coverage report.', category: 'testing', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
   { id: 'test_create', name: 'Generate Test', description: 'Scaffold test file', modelDescription: 'Generate a test file with stubs for a source file.', category: 'testing', riskLevel: 'medium', schema: { type: 'object', properties: { sourceFile: { type: 'string', description: 'Source file to test' } }, required: ['sourceFile'] }, composable: true, source: 'builtin' },
+  { id: 'benchmark_run', name: 'Run Benchmark', description: 'Run performance benchmarks', modelDescription: 'Run benchmark tests (vitest bench).', category: 'testing', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Benchmark file (optional)' } }, required: [] }, composable: true, source: 'builtin' },
 
   // ═══ WEB & NETWORK ═══
   { id: 'http_get', name: 'HTTP GET', description: 'Make GET request', modelDescription: 'Fetch data from a URL via GET.', category: 'web_network', riskLevel: 'medium', schema: { type: 'object', properties: { url: { type: 'string', description: 'URL' }, headers: { type: 'object', description: 'Custom headers' } }, required: ['url'] }, composable: true, source: 'builtin' },
@@ -156,6 +199,8 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'http_request', name: 'HTTP Request', description: 'Generic HTTP request', modelDescription: 'HTTP request with any method. Returns status, headers, body.', category: 'web_network', riskLevel: 'medium', schema: { type: 'object', properties: { url: { type: 'string', description: 'URL' }, method: { type: 'string', description: 'HTTP method' }, headers: { type: 'object', description: 'Headers' }, body: { type: 'string', description: 'Body' } }, required: ['url', 'method'] }, composable: true, source: 'builtin' },
   { id: 'web_scrape', name: 'Scrape Page', description: 'Extract text from web page', modelDescription: 'Fetch page and extract text (HTML stripped).', category: 'web_network', riskLevel: 'medium', schema: { type: 'object', properties: { url: { type: 'string', description: 'URL' }, selector: { type: 'string', description: 'CSS selector (optional)' } }, required: ['url'] }, composable: true, source: 'builtin' },
   { id: 'web_search', name: 'Web Search', description: 'Search the web', modelDescription: 'Search the web via DuckDuckGo. Returns snippets and URLs.', category: 'web_network', riskLevel: 'low', schema: { type: 'object', properties: { query: { type: 'string', description: 'Search query' } }, required: ['query'] }, composable: true, source: 'builtin' },
+  { id: 'http_download', name: 'HTTP Download', description: 'Download a file from URL', modelDescription: 'Download a file from a URL and save it to disk.', category: 'web_network', riskLevel: 'medium', schema: { type: 'object', properties: { url: { type: 'string', description: 'File URL to download' }, output: { type: 'string', description: 'Output file path' } }, required: ['url', 'output'] }, composable: true, source: 'builtin' },
+  { id: 'web_browse', name: 'Browse Web', description: 'Browse a URL with browser rendering', modelDescription: 'Browse a URL using Playwright browser for JavaScript-rendered pages. Returns title and text content.', category: 'web_network', riskLevel: 'medium', schema: { type: 'object', properties: { url: { type: 'string', description: 'URL to browse' } }, required: ['url'] }, composable: true, source: 'builtin' },
 
   // ═══ IMAGE ═══
   { id: 'image_view', name: 'Image Info', description: 'Get image metadata', modelDescription: 'Show image dimensions, format, and file size.', category: 'media_image', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Image file path' } }, required: ['file'] }, composable: true, source: 'builtin' },
@@ -165,6 +210,32 @@ const CORE_TOOLS: ToolDefinition[] = [
 
   // ═══ PROJECT ═══
   { id: 'project_detect', name: 'Detect Project', description: 'Auto-detect project type and tools', modelDescription: 'Detect language, framework, package manager, build tool, and test framework from project files.', category: 'project_management', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
+
+  // ═══ AI META-TOOLS ═══
+  { id: 'ai_complete', name: 'AI Complete', description: 'Get AI code completion', modelDescription: 'Get AI-powered code completion suggestions for a given context.', category: 'ai_meta', riskLevel: 'low', schema: { type: 'object', properties: { prompt: { type: 'string', description: 'Code context / prompt for completion' }, maxTokens: { type: 'number', description: 'Max tokens (default: 256)' } }, required: ['prompt'] }, composable: true, source: 'builtin' },
+  { id: 'ai_embed', name: 'AI Embed', description: 'Generate text embeddings', modelDescription: 'Generate embeddings for text input using the configured LLM provider.', category: 'ai_meta', riskLevel: 'low', schema: { type: 'object', properties: { text: { type: 'string', description: 'Text to embed' } }, required: ['text'] }, composable: true, source: 'builtin' },
+  { id: 'ai_summarize', name: 'AI Summarize', description: 'Summarize text using AI', modelDescription: 'Summarize text content using the configured AI provider.', category: 'ai_meta', riskLevel: 'low', schema: { type: 'object', properties: { text: { type: 'string', description: 'Text to summarize' }, maxLength: { type: 'number', description: 'Max summary length (default: 200)' } }, required: ['text'] }, composable: true, source: 'builtin' },
+  { id: 'ai_classify', name: 'AI Classify', description: 'Classify text into categories', modelDescription: 'Classify input text into predefined categories using AI.', category: 'ai_meta', riskLevel: 'low', schema: { type: 'object', properties: { text: { type: 'string', description: 'Text to classify' }, categories: { type: 'string', description: 'Comma-separated category list' } }, required: ['text', 'categories'] }, composable: true, source: 'builtin' },
+  { id: 'ai_extract', name: 'AI Extract', description: 'Extract structured data from text', modelDescription: 'Extract structured information from unstructured text using AI.', category: 'ai_meta', riskLevel: 'low', schema: { type: 'object', properties: { text: { type: 'string', description: 'Text to extract from' }, schema: { type: 'string', description: 'Description of what to extract (JSON-like)' } }, required: ['text', 'schema'] }, composable: true, source: 'builtin' },
+  { id: 'memory_store', name: 'Memory Store', description: 'Store a value in agent memory', modelDescription: 'Store a key-value pair in the agent\'s persistent memory.', category: 'ai_meta', riskLevel: 'low', schema: { type: 'object', properties: { key: { type: 'string', description: 'Memory key' }, value: { type: 'string', description: 'Value to store' } }, required: ['key', 'value'] }, composable: true, source: 'builtin' },
+  { id: 'memory_recall', name: 'Memory Recall', description: 'Recall a value from agent memory', modelDescription: 'Retrieve a value from the agent\'s persistent memory by key.', category: 'ai_meta', riskLevel: 'low', schema: { type: 'object', properties: { key: { type: 'string', description: 'Memory key' } }, required: ['key'] }, composable: true, source: 'builtin' },
+
+  // ═══ COMMUNICATION ═══
+  { id: 'notify_desktop', name: 'Desktop Notification', description: 'Send a desktop notification', modelDescription: 'Display a desktop notification to the user. Works on macOS, Linux, and Windows.', category: 'communication', riskLevel: 'low', schema: { type: 'object', properties: { title: { type: 'string', description: 'Notification title' }, message: { type: 'string', description: 'Notification message body' } }, required: ['title', 'message'] }, composable: true, source: 'builtin' },
+  { id: 'notify_telegram', name: 'Telegram Notification', description: 'Send a Telegram message', modelDescription: 'Send a notification/message via Telegram bot.', category: 'communication', riskLevel: 'low', schema: { type: 'object', properties: { message: { type: 'string', description: 'Message text' } }, required: ['message'] }, composable: true, source: 'builtin' },
+  { id: 'notify_slack', name: 'Slack Notification', description: 'Send a Slack message', modelDescription: 'Send a notification/message via Slack webhook.', category: 'communication', riskLevel: 'low', schema: { type: 'object', properties: { message: { type: 'string', description: 'Message text' } }, required: ['message'] }, composable: true, source: 'builtin' },
+  { id: 'clipboard_read', name: 'Read Clipboard', description: 'Read text from clipboard', modelDescription: 'Read the current text content from the system clipboard.', category: 'communication', riskLevel: 'medium', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
+  { id: 'clipboard_write', name: 'Write Clipboard', description: 'Copy text to clipboard', modelDescription: 'Write text to the system clipboard.', category: 'communication', riskLevel: 'low', schema: { type: 'object', properties: { text: { type: 'string', description: 'Text to copy' } }, required: ['text'] }, composable: true, source: 'builtin' },
+
+  // ═══ SECURITY ═══
+  { id: 'encrypt_file', name: 'Encrypt File', description: 'Encrypt a file with AES-256', modelDescription: 'Encrypt a file using AES-256-GCM with a passphrase.', category: 'security_crypto', riskLevel: 'critical', schema: { type: 'object', properties: { file: { type: 'string', description: 'File to encrypt' }, passphrase: { type: 'string', description: 'Encryption passphrase' } }, required: ['file', 'passphrase'] }, composable: true, source: 'builtin' },
+  { id: 'decrypt_file', name: 'Decrypt File', description: 'Decrypt a file with AES-256', modelDescription: 'Decrypt a file encrypted with AES-256-GCM using the passphrase.', category: 'security_crypto', riskLevel: 'critical', schema: { type: 'object', properties: { file: { type: 'string', description: 'File to decrypt (.enc)' }, passphrase: { type: 'string', description: 'Decryption passphrase' } }, required: ['file', 'passphrase'] }, composable: true, source: 'builtin' },
+  { id: 'jwt_decode', name: 'Decode JWT', description: 'Decode a JWT token', modelDescription: 'Decode a JWT token and show its header and payload (no signature verification).', category: 'security_crypto', riskLevel: 'low', schema: { type: 'object', properties: { token: { type: 'string', description: 'JWT token string' } }, required: ['token'] }, composable: true, source: 'builtin' },
+  { id: 'secret_generate', name: 'Generate Secret', description: 'Generate a cryptographically secure secret', modelDescription: 'Generate a random secret key with configurable length and encoding.', category: 'security_crypto', riskLevel: 'low', schema: { type: 'object', properties: { length: { type: 'number', description: 'Length (default: 32)' }, encoding: { type: 'string', description: 'hex, base64, base64url (default: hex)' } }, required: [] }, composable: true, source: 'builtin' },
+
+  // ═══ MEDIA ═══
+  { id: 'chart_generate', name: 'Generate Chart', description: 'Generate a chart/plot as image', modelDescription: 'Create a chart or plot as an image file (bar, line, pie) from data.', category: 'media_image', riskLevel: 'medium', schema: { type: 'object', properties: { file: { type: 'string', description: 'Output file path (.png)' }, type: { type: 'string', description: 'Chart type: bar, line, pie' }, title: { type: 'string', description: 'Chart title' }, labels: { type: 'array', description: 'X-axis labels' }, datasets: { type: 'array', description: 'Array of {label, data, color} objects' }, width: { type: 'number', description: 'Chart width (default: 800)' }, height: { type: 'number', description: 'Chart height (default: 600)' } }, required: ['file', 'type', 'labels', 'datasets'] }, composable: true, source: 'builtin' },
+  { id: 'qr_generate', name: 'Generate QR Code', description: 'Generate a QR code image', modelDescription: 'Create a QR code PNG image from text/URL data.', category: 'media_image', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Output file path (.png)' }, data: { type: 'string', description: 'Data to encode in QR code' }, size: { type: 'number', description: 'QR code size in pixels (default: 256)' } }, required: ['file', 'data'] }, composable: true, source: 'builtin' },
 
   // ═══ TELEGRAM ═══
   { id: 'telegram_send_file', name: 'Send File via Telegram', description: 'Upload and send a file to the user via Telegram', modelDescription: 'Send/upload a file to the user via Telegram. Use this when the user asks you to share, send, or upload a file. The file must exist on disk.', category: 'communication', riskLevel: 'medium', schema: { type: 'object', properties: { path: { type: 'string', description: 'Path to the file to send' }, caption: { type: 'string', description: 'Optional caption/description for the file' } }, required: ['path'] }, composable: true, source: 'builtin' },
@@ -191,12 +262,21 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('folder_list', fs.folderList);
   executor.registerHandler('folder_move', fs.folderMove);
   executor.registerHandler('file_find', fs.fileFind);
+  executor.registerHandler('file_copy', fs.fileCopy);
+  executor.registerHandler('file_diff', fs.fileDiff);
+  executor.registerHandler('file_metadata', fs.fileMetadata);
+  executor.registerHandler('file_open', fs.fileOpen);
+  executor.registerHandler('folder_tree', fs.folderTree);
+  executor.registerHandler('folder_open', fs.folderOpen);
+  executor.registerHandler('archive_create', fs.archiveCreate);
+  executor.registerHandler('archive_extract', fs.archiveExtract);
 
   // ═══ Shell & Process ═══
   executor.registerHandler('shell_exec', shell.shellExec);
   executor.registerHandler('shell_background', shell.shellBackground);
   executor.registerHandler('process_kill', shell.processKill);
   executor.registerHandler('process_list', shell.processList);
+  executor.registerHandler('shell_exec_streaming', shell.shellExecStreaming);
 
   // ═══ Git ═══
   executor.registerHandler('git_status', git.gitStatus);
@@ -220,6 +300,13 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('code_definitions', code.codeDefinitions);
   executor.registerHandler('code_symbols', code.codeSymbols);
   executor.registerHandler('file_patch', code.filePatch);
+  executor.registerHandler('code_grep', code.codeGrep);
+  executor.registerHandler('code_references', code.codeReferences);
+  executor.registerHandler('code_format', code.codeFormat);
+  executor.registerHandler('code_lint', code.codeLint);
+  executor.registerHandler('code_fix', code.codeFix);
+  executor.registerHandler('code_typecheck', code.codeTypecheck);
+  executor.registerHandler('code_analyze', code.codeAnalyze);
 
   // ═══ Documents ═══
   executor.registerHandler('csv_create', documents.csvCreate);
@@ -231,6 +318,12 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('docx_read', documents.docxRead);
   executor.registerHandler('xlsx_read', documents.xlsxRead);
   executor.registerHandler('pptx_read', documents.pptxRead);
+  executor.registerHandler('doc_markdown', documents.docMarkdown);
+  executor.registerHandler('doc_html', documents.docHtml);
+  executor.registerHandler('doc_json', documents.docJson);
+  executor.registerHandler('doc_yaml', documents.docYaml);
+  executor.registerHandler('doc_diagram', documents.docDiagram);
+  executor.registerHandler('doc_latex', documents.docLatex);
 
   // ═══ Scheduler ═══
   executor.registerHandler('reminder_set', scheduler.reminderSet);
@@ -247,6 +340,8 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('browser_screenshot', browser.browserScreenshot);
   executor.registerHandler('browser_click', browser.browserClick);
   executor.registerHandler('browser_eval', browser.browserEval);
+  executor.registerHandler('browser_type', browser.browserType);
+  executor.registerHandler('browser_extract', browser.browserExtract);
 
   // ═══ Containers ═══
   executor.registerHandler('container_list', containers.containerList);
@@ -257,6 +352,7 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('container_run', containers.containerRun);
   executor.registerHandler('container_compose', containers.containerCompose);
   executor.registerHandler('container_images', containers.containerImages);
+  executor.registerHandler('docker_build', containers.dockerBuild);
 
   // ═══ Data Processing ═══
   executor.registerHandler('json_parse', data.jsonParse);
@@ -264,12 +360,16 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('json_set', data.jsonSet);
   executor.registerHandler('csv_parse', data.csvParse);
   executor.registerHandler('text_transform', data.textTransform);
+  executor.registerHandler('regex_match', data.regexMatch);
+  executor.registerHandler('text_diff', data.textDiff);
+  executor.registerHandler('validate_schema', data.validateSchema);
 
   // ═══ Database ═══
   executor.registerHandler('db_query', database.dbQuery);
   executor.registerHandler('db_schema', database.dbSchema);
   executor.registerHandler('db_export', database.dbExport);
   executor.registerHandler('env_read', database.envRead);
+  executor.registerHandler('db_migrate', database.dbMigrate);
 
   // ═══ GitHub ═══
   executor.registerHandler('gh_issue_list', github.ghIssueList);
@@ -280,10 +380,13 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('gh_repo_view', github.ghRepoView);
   executor.registerHandler('gh_workflow_list', github.ghWorkflowList);
   executor.registerHandler('gh_release', github.ghRelease);
+  executor.registerHandler('gh_pr_review', github.ghPrReview);
 
   // ═══ MCP ═══
   executor.registerHandler('mcp_call', mcp.mcpCall);
   executor.registerHandler('mcp_list_tools', mcp.mcpListTools);
+  executor.registerHandler('mcp_server_connect', mcp.mcpServerConnect);
+  executor.registerHandler('mcp_resource_read', mcp.mcpResourceRead);
 
   // ═══ Packages ═══
   executor.registerHandler('package_install', packages.packageInstall);
@@ -291,6 +394,9 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('package_list', packages.packageList);
   executor.registerHandler('package_outdated', packages.packageOutdated);
   executor.registerHandler('package_run', packages.packageRun);
+  executor.registerHandler('pkg_update', packages.pkgUpdate);
+  executor.registerHandler('pkg_audit', packages.pkgAudit);
+  executor.registerHandler('pkg_search', packages.pkgSearch);
 
   // ═══ System ═══
   executor.registerHandler('system_info', system.systemInfo);
@@ -302,12 +408,16 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('security_audit', system.securityAudit);
   executor.registerHandler('security_secrets', system.securitySecrets);
   executor.registerHandler('file_checksum', system.fileChecksum);
+  executor.registerHandler('system_monitor', system.systemMonitor);
+  executor.registerHandler('cron_create', system.cronCreate);
+  executor.registerHandler('open_app', system.openApp);
 
   // ═══ Testing ═══
   executor.registerHandler('test_run', testing.testRun);
   executor.registerHandler('test_watch', testing.testWatch);
   executor.registerHandler('test_coverage', testing.testCoverage);
   executor.registerHandler('test_create', testing.testCreate);
+  executor.registerHandler('benchmark_run', testing.benchmarkRun);
 
   // ═══ Web ═══
   executor.registerHandler('http_get', web.httpGet);
@@ -315,6 +425,8 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('http_request', web.httpRequest);
   executor.registerHandler('web_scrape', web.webScrape);
   executor.registerHandler('web_search', web.webSearch);
+  executor.registerHandler('http_download', web.httpDownload);
+  executor.registerHandler('web_browse', web.webBrowse);
 
   // ═══ Image ═══
   executor.registerHandler('image_view', image.imageView);
@@ -324,6 +436,32 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
 
   // ═══ Project ═══
   executor.registerHandler('project_detect', project.projectDetect);
+
+  // ═══ AI Meta-Tools ═══
+  executor.registerHandler('ai_complete', ai.aiComplete);
+  executor.registerHandler('ai_embed', ai.aiEmbed);
+  executor.registerHandler('ai_summarize', ai.aiSummarize);
+  executor.registerHandler('ai_classify', ai.aiClassify);
+  executor.registerHandler('ai_extract', ai.aiExtract);
+  executor.registerHandler('memory_store', ai.memoryStore);
+  executor.registerHandler('memory_recall', ai.memoryRecall);
+
+  // ═══ Communication ═══
+  executor.registerHandler('notify_desktop', notifications.notifyDesktop);
+  executor.registerHandler('notify_telegram', notifications.notifyTelegram);
+  executor.registerHandler('notify_slack', notifications.notifySlack);
+  executor.registerHandler('clipboard_read', notifications.clipboardRead);
+  executor.registerHandler('clipboard_write', notifications.clipboardWrite);
+
+  // ═══ Security ═══
+  executor.registerHandler('encrypt_file', security.encryptFile);
+  executor.registerHandler('decrypt_file', security.decryptFile);
+  executor.registerHandler('jwt_decode', security.jwtDecode);
+  executor.registerHandler('secret_generate', security.secretGenerate);
+
+  // ═══ Media ═══
+  executor.registerHandler('chart_generate', media.chartGenerate);
+  executor.registerHandler('qr_generate', media.qrGenerate);
 
   // ═══ Telegram ═══
   // Default handler — overridden by daemon when Telegram bridge is active

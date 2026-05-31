@@ -1,8 +1,9 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, extname } from 'node:path';
 import { execSync } from 'node:child_process';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 import { IS_WINDOWS } from '../platform.js';
+import { getAICommentMarker } from './markers.js';
 
 export async function codeSearch(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
   const pattern = args['pattern'] as string;
@@ -93,7 +94,10 @@ export async function codeReplace(args: Record<string, unknown>, context: ToolEx
 
   const { writeFileSync } = await import('node:fs');
   const updated = content.replace(oldStr, newStr);
-  writeFileSync(file, updated, 'utf-8');
+  const ext = extname(file);
+  const marker = getAICommentMarker(ext, 'code replace');
+  const finalContent = updated.endsWith('\n') ? `${updated}${marker}\n` : `${updated}\n${marker}\n`;
+  writeFileSync(file, finalContent, 'utf-8');
 
   return { success: true, output: `Replaced 1 occurrence in ${file}` };
 }
@@ -115,8 +119,12 @@ export async function codeInsert(args: Record<string, unknown>, context: ToolExe
   }
 
   lines.splice(line, 0, content);
+  let finalContent = lines.join('\n');
+  const ext = extname(file);
+  const marker = getAICommentMarker(ext, 'code insert');
+  finalContent = finalContent.endsWith('\n') ? `${finalContent}${marker}\n` : `${finalContent}\n${marker}\n`;
   const { writeFileSync } = await import('node:fs');
-  writeFileSync(file, lines.join('\n'), 'utf-8');
+  writeFileSync(file, finalContent, 'utf-8');
 
   return { success: true, output: `Inserted at line ${line} in ${file}` };
 }
@@ -185,7 +193,133 @@ export async function filePatch(args: Record<string, unknown>, context: ToolExec
     results.push(`Edit ${i + 1}: OK`);
   }
 
-  const { writeFileSync: writeFs } = await import('node:fs');
-  writeFs(filePath, content, 'utf-8');
+  const ext = extname(filePath);
+  const marker = getAICommentMarker(ext, 'multi-edit patch');
+  content = content.endsWith('\n') ? `${content}${marker}\n` : `${content}\n${marker}\n`;
+  writeFileSync(filePath, content, 'utf-8');
   return { success: true, output: results.join('\n'), metadata: { applied: results.filter(r => r.includes('OK')).length, total: edits.length } };
+}
+
+export async function codeGrep(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const pattern = args['pattern'] as string;
+  const searchPath = (args['path'] as string) ?? '.';
+  const contextLines = (args['context'] as number) ?? 2;
+  const glob = args['glob'] as string | undefined;
+  const cwd = resolve(context.scopePath, searchPath);
+
+  try {
+    let cmd: string;
+    if (IS_WINDOWS) {
+      const extFilter = glob ? `*.${glob.replace(/^\*?\.?/, '')}` : '*';
+      cmd = `findstr /n /r "${pattern}" ${extFilter} 2>nul | head -50`;
+    } else {
+      const p = pattern.replace(/"/g, '\\"');
+      const globFilter = glob ? `--include='${glob}'` : '--include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.py" --include="*.rs" --include="*.go" --include="*.c" --include="*.cpp" --include="*.java"';
+      cmd = `grep -rn -C${contextLines} "${p}" ${globFilter} . 2>/dev/null | head -100`;
+    }
+    const output = execSync(cmd, { cwd, encoding: 'utf-8', timeout: 15000 });
+    return { success: true, output: output.trim() || 'No matches found' };
+  } catch {
+    return { success: true, output: 'No matches found' };
+  }
+}
+
+export async function codeReferences(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const symbol = args['symbol'] as string;
+  const searchPath = (args['path'] as string) ?? '.';
+  const glob = args['glob'] as string | undefined;
+  const cwd = resolve(context.scopePath, searchPath);
+
+  try {
+    let cmd: string;
+    if (IS_WINDOWS) {
+      cmd = `findstr /s /n /r "${symbol}" *.ts *.tsx *.js 2>nul | findstr /v node_modules | findstr /v ".git" | head -50`;
+    } else {
+      const s = symbol.replace(/"/g, '\\"');
+      const globFilter = glob ? `--include='${glob}'` : '--include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx"';
+      cmd = `grep -rn "${s}" ${globFilter} . --color=never 2>/dev/null | grep -v node_modules | grep -v '.git/' | grep -v '.spec.' | head -50`;
+    }
+    const output = execSync(cmd, { cwd, encoding: 'utf-8', timeout: 15000 });
+    return { success: true, output: output.trim() || 'No references found', metadata: { symbol, count: output.trim().split('\n').length } };
+  } catch {
+    return { success: true, output: 'No references found' };
+  }
+}
+
+export async function codeFormat(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const path = (args['path'] as string) ?? '.';
+  const cwd = resolve(context.scopePath, path);
+  try {
+    const output = execSync('npx prettier --write . 2>&1 || true', { cwd, encoding: 'utf-8', timeout: 60000 });
+    return { success: true, output: output.trim() || 'Formatting complete' };
+  } catch (error) {
+    return { success: false, output: `Format failed: ${(error as Error).message}`, error: 'FORMAT_ERROR' };
+  }
+}
+
+export async function codeLint(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const path = (args['path'] as string) ?? '.';
+  const fix = args['fix'] as boolean;
+  const cwd = resolve(context.scopePath, path);
+  try {
+    const cmd = fix ? 'npx eslint --fix . 2>&1 || true' : 'npx eslint . 2>&1 || true';
+    const output = execSync(cmd, { cwd, encoding: 'utf-8', timeout: 60000 });
+    return { success: true, output: output.trim() || 'No lint issues found' };
+  } catch (error) {
+    return { success: false, output: `Lint failed: ${(error as Error).message}`, error: 'LINT_ERROR' };
+  }
+}
+
+export async function codeFix(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const path = (args['path'] as string) ?? '.';
+  const cwd = resolve(context.scopePath, path);
+  try {
+    const output = execSync('npx eslint --fix . 2>&1 || true', { cwd, encoding: 'utf-8', timeout: 60000 });
+    return { success: true, output: output.trim() || 'No issues to fix' };
+  } catch (error) {
+    return { success: false, output: `Fix failed: ${(error as Error).message}`, error: 'FIX_ERROR' };
+  }
+}
+
+export async function codeTypecheck(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const path = (args['path'] as string) ?? '.';
+  const cwd = resolve(context.scopePath, path);
+  try {
+    const output = execSync('npx tsc --noEmit 2>&1 || true', { cwd, encoding: 'utf-8', timeout: 120000 });
+    return { success: true, output: output.trim() || 'Type check passed' };
+  } catch (error) {
+    return { success: false, output: `Type check failed: ${(error as Error).message}`, error: 'TYPECHECK_ERROR' };
+  }
+}
+
+export async function codeAnalyze(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const file = resolve(context.scopePath, args['file'] as string);
+  if (!existsSync(file)) {
+    return { success: false, output: 'File not found', error: 'NOT_FOUND' };
+  }
+  try {
+    const content = readFileSync(file, 'utf-8');
+    const lines = content.split('\n');
+    const imports = content.match(/^import\s+/gm)?.length ?? 0;
+    const functions = content.match(/function\s+\w+/g)?.length ?? 0;
+    const classes = content.match(/class\s+\w+/g)?.length ?? 0;
+    const exports = content.match(/^export\s+/gm)?.length ?? 0;
+    const emptyLines = lines.filter(l => l.trim() === '').length;
+    const avgLineLength = Math.round(content.replace(/\s+/g, '').length / lines.length);
+
+    const analysis = [
+      `File: ${file}`,
+      `Lines: ${lines.length}`,
+      `Characters: ${content.length}`,
+      `Imports: ${imports}`,
+      `Functions: ${functions}`,
+      `Classes: ${classes}`,
+      `Exports: ${exports}`,
+      `Empty lines: ${emptyLines}`,
+      `Avg line length (non-whitespace): ${avgLineLength}`,
+    ];
+    return { success: true, output: analysis.join('\n') };
+  } catch (error) {
+    return { success: false, output: `Analysis failed: ${(error as Error).message}`, error: 'ANALYZE_ERROR' };
+  }
 }

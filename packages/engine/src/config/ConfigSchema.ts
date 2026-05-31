@@ -27,6 +27,7 @@ export const uiSettingsSchema = z.object({
   showTokenBar: z.boolean().default(true),
   showTimers: z.boolean().default(true),
   animationSpeed: z.enum(['normal', 'fast', 'reduced']).default('normal'),
+  disabledTools: z.array(z.string()).optional(),
 });
 
 export const organizationConfigSchema = z.object({
@@ -38,6 +39,15 @@ export const userConfigSchema = z.object({
   callsign: z.string().min(1).max(30),
 }).optional();
 
+export const ragConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  embeddingModel: z.string().default('text-embedding-3-small'),
+  chunkSize: z.number().default(512),
+  chunkOverlap: z.number().default(64),
+  topK: z.number().default(5),
+  minScore: z.number().default(0.0),
+}).optional();
+
 export const agentXConfigSchema = z.object({
   provider: providerSettingsSchema,
   ui: uiSettingsSchema.default({}),
@@ -46,6 +56,7 @@ export const agentXConfigSchema = z.object({
   timezone: z.string().optional(),
   user: userConfigSchema,
   setupComplete: z.boolean().optional(),
+  rag: ragConfigSchema,
 });
 
 export type ValidatedConfig = z.infer<typeof agentXConfigSchema>;

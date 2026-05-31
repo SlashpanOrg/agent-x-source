@@ -121,3 +121,128 @@ export async function textTransform(args: Record<string, unknown>): Promise<Tool
 
   return { success: true, output };
 }
+
+export async function regexMatch(args: Record<string, unknown>): Promise<ToolResult> {
+  const text = args['text'] as string;
+  const pattern = args['pattern'] as string;
+  const flags = (args['flags'] as string) ?? 'g';
+
+  if (!text || !pattern) {
+    return { success: false, output: 'text and pattern are required', error: 'MISSING_INPUT' };
+  }
+
+  try {
+    const regex = new RegExp(pattern, flags);
+    const matches: Array<{ match: string; index: number; groups: Record<string, string> }> = [];
+    let match: RegExpExecArray | null;
+    let count = 0;
+
+    while ((match = regex.exec(text)) !== null && count < 100) {
+      const groups: Record<string, string> = {};
+      if (match.groups) {
+        for (const key of Object.keys(match.groups)) {
+          groups[key] = match.groups[key]!;
+        }
+      }
+      matches.push({ match: match[0], index: match.index, groups });
+      count++;
+      if (!flags.includes('g')) break;
+    }
+
+    if (matches.length === 0) {
+      return { success: true, output: 'No matches found' };
+    }
+
+    const output = matches.map((m, i) =>
+      `Match ${i + 1}: "${m.match}" at index ${m.index}${Object.keys(m.groups).length ? '\n  Groups: ' + JSON.stringify(m.groups) : ''}`
+    ).join('\n');
+    return { success: true, output, metadata: { count: matches.length } };
+  } catch (error) {
+    return { success: false, output: `Regex error: ${(error as Error).message}`, error: 'REGEX_ERROR' };
+  }
+}
+
+export async function textDiff(args: Record<string, unknown>): Promise<ToolResult> {
+  const text1 = args['text1'] as string;
+  const text2 = args['text2'] as string;
+
+  if (text1 === undefined || text2 === undefined) {
+    return { success: false, output: 'text1 and text2 are required', error: 'MISSING_INPUT' };
+  }
+
+  const lines1 = text1.split('\n');
+  const lines2 = text2.split('\n');
+  const maxLen = Math.max(lines1.length, lines2.length);
+  const diffs: string[] = [];
+
+  for (let i = 0; i < maxLen; i++) {
+    const l1 = lines1[i] ?? '';
+    const l2 = lines2[i] ?? '';
+    if (l1 !== l2) {
+      if (l1 && l2) {
+        diffs.push(`~ L${i + 1}: "${l1}" → "${l2}"`);
+      } else if (l1) {
+        diffs.push(`- L${i + 1}: "${l1}"`);
+      } else {
+        diffs.push(`+ L${i + 1}: "${l2}"`);
+      }
+    }
+  }
+
+  return {
+    success: true,
+    output: diffs.length > 0 ? diffs.join('\n') : '(texts are identical)',
+    metadata: { changedLines: diffs.length, totalLines: maxLen },
+  };
+}
+
+export async function validateSchema(args: Record<string, unknown>): Promise<ToolResult> {
+  const data = args['data'];
+  const schema = args['schema'] as Record<string, unknown>;
+
+  if (!data || !schema) {
+    return { success: false, output: 'data and schema are required', error: 'MISSING_INPUT' };
+  }
+
+  const errors: string[] = [];
+  const schemaType = schema['type'] as string | undefined;
+  const schemaProps = schema['properties'] as Record<string, unknown> | undefined;
+  const schemaRequired = schema['required'] as string[] | undefined;
+
+  // Basic JSON Schema validation
+  if (schemaType) {
+    const actualType = Array.isArray(data) ? 'array' : typeof data;
+    if (actualType !== schemaType && !(schemaType === 'array' && Array.isArray(data))) {
+      errors.push(`Type mismatch: expected "${schemaType}", got "${actualType}"`);
+    }
+  }
+
+  if (schemaRequired && typeof data === 'object' && data !== null && !Array.isArray(data)) {
+    for (const field of schemaRequired) {
+      if (!(field in (data as Record<string, unknown>))) {
+        errors.push(`Missing required field: "${field}"`);
+      }
+    }
+  }
+
+  if (schemaProps && typeof data === 'object' && data !== null && !Array.isArray(data)) {
+    for (const [key, propSchema] of Object.entries(schemaProps)) {
+      const prop = propSchema as Record<string, unknown>;
+      if (key in (data as Record<string, unknown>)) {
+        const val = (data as Record<string, unknown>)[key];
+        if (prop['type']) {
+          const valType = Array.isArray(val) ? 'array' : typeof val;
+          if (valType !== prop['type']) {
+            errors.push(`Field "${key}": type mismatch, expected "${prop['type']}", got "${valType}"`);
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    success: errors.length === 0,
+    output: errors.length > 0 ? `Validation errors:\n${errors.join('\n')}` : 'Validation passed',
+    metadata: { valid: errors.length === 0, errorCount: errors.length },
+  };
+}

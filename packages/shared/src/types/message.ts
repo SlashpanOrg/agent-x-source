@@ -5,6 +5,7 @@ export interface Message {
   content: string;
   toolCalls: ToolCall[] | null;
   tokenCount: number;
+  tokenCost?: number;
   createdAt: string;
   elapsed?: number;
 }

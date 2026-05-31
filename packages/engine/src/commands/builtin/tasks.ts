@@ -1,30 +1,114 @@
 import type { CommandInterface, CommandContext, CommandResult } from '../CommandInterface.js';
 import type { TaskManager } from '../../agent/TaskManager.js';
+import { BackgroundQueue } from '../../session/BackgroundQueue.js';
 
 let taskManagerInstance: TaskManager | null = null;
+let backgroundQueueInstance: BackgroundQueue | null = null;
 
 export function setTaskManagerInstance(tm: TaskManager): void {
   taskManagerInstance = tm;
 }
 
+export function setBackgroundQueueInstance(queue: BackgroundQueue): void {
+  backgroundQueueInstance = queue;
+}
+
+export function getBackgroundQueueInstance(): BackgroundQueue | null {
+  return backgroundQueueInstance;
+}
+
 export const bgCommand: CommandInterface = {
   name: 'bg',
-  description: 'Move current task to background',
-  usage: '/bg',
-  async execute(_args: string[], context: CommandContext): Promise<CommandResult> {
-    if (!taskManagerInstance) {
-      context.emit('Task manager not available.');
-      return { success: false, action: 'none' };
+  description: 'Background tasks — /bg <cmd> to run shell command, /bg (no args) to background current task',
+  usage: '/bg [<command>|list|cancel <id>|result <id>]',
+  async execute(args: string[], context: CommandContext): Promise<CommandResult> {
+    const sub = args[0];
+
+    // /bg list — list background tasks from the queue
+    if (sub === 'list') {
+      if (!backgroundQueueInstance) {
+        context.emit('No background tasks.');
+        return { success: true, action: 'none' };
+      }
+      const tasks = backgroundQueueInstance.listTasks();
+      if (tasks.length === 0) {
+        context.emit('No background tasks.');
+        return { success: true, action: 'none' };
+      }
+      const lines = tasks.map((t) => {
+        const age = Math.round((Date.now() - t.createdAt) / 1000);
+        return `  [${t.status}] ${t.id.slice(0, 8)} — "${t.command.slice(0, 60)}" (${age}s ago) ${t.progress}`;
+      });
+      context.emit(`Background tasks:\n${lines.join('\n')}`);
+      return { success: true, action: 'none' };
     }
 
-    const foreground = taskManagerInstance.getForegroundTask();
-    if (!foreground) {
-      context.emit('No foreground task to background.');
-      return { success: false, action: 'none' };
+    // /bg cancel <id> — cancel a background task
+    if (sub === 'cancel') {
+      const id = args[1];
+      if (!id) {
+        context.emit('Usage: /bg cancel <task-id>');
+        return { success: false, action: 'none' };
+      }
+      if (!backgroundQueueInstance) {
+        context.emit('No background tasks.');
+        return { success: false, action: 'none' };
+      }
+      const ok = backgroundQueueInstance.cancel(id);
+      context.emit(ok ? `Task ${id.slice(0, 8)} cancelled.` : `Task not found or already completed.`);
+      return { success: true, action: 'none' };
     }
 
-    taskManagerInstance.backgroundTask(foreground.id);
-    context.emit(`Task "${foreground.name}" moved to background.`);
+    // /bg result <id> — show full output of a completed/failed task
+    if (sub === 'result') {
+      const id = args[1];
+      if (!id) {
+        context.emit('Usage: /bg result <task-id>');
+        return { success: false, action: 'none' };
+      }
+      if (!backgroundQueueInstance) {
+        context.emit('No background tasks.');
+        return { success: false, action: 'none' };
+      }
+      const task = backgroundQueueInstance.getTask(id);
+      if (!task) {
+        context.emit(`Task ${id.slice(0, 8)} not found.`);
+        return { success: false, action: 'none' };
+      }
+      if (task.status === 'queued' || task.status === 'running') {
+        context.emit(`Task ${id.slice(0, 8)} is still ${task.status}.`);
+        return { success: true, action: 'none' };
+      }
+      const header = `[${task.status}] ${task.command}\n${'─'.repeat(40)}`;
+      const output = task.result ? `\n${task.result}` : '\n(no output)';
+      context.emit(`${header}${output}`);
+      return { success: true, action: 'none' };
+    }
+
+    // No args — background current foreground task (TaskManager)
+    if (!sub) {
+      if (!taskManagerInstance) {
+        context.emit('Task manager not available.');
+        return { success: false, action: 'none' };
+      }
+      const foreground = taskManagerInstance.getForegroundTask();
+      if (!foreground) {
+        context.emit('No foreground task to background.');
+        return { success: false, action: 'none' };
+      }
+      taskManagerInstance.backgroundTask(foreground.id);
+      context.emit(`Task "${foreground.name}" moved to background.`);
+      return { success: true, action: 'none' };
+    }
+
+    // /bg <command> — run a shell command in the background queue
+    const command = args.join(' ');
+    if (!backgroundQueueInstance) {
+      backgroundQueueInstance = new BackgroundQueue();
+      setBackgroundQueueInstance(backgroundQueueInstance);
+    }
+    const task = backgroundQueueInstance.enqueue(command);
+    context.emit(`Background task ${task.id.slice(0, 8)} queued: "${command.slice(0, 60)}"`);
     return { success: true, action: 'none' };
   },
 };

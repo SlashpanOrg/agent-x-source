@@ -70,6 +70,29 @@ export async function containerImages(_args: Record<string, unknown>, context: T
   return dockerCommand('images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}"', context);
 }
 
+export async function dockerBuild(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const path = (args['path'] as string) ?? '.';
+  const tag = args['tag'] as string;
+  const dockerfile = args['dockerfile'] as string | undefined;
+  const cwd = resolve(context.scopePath, path);
+
+  if (!tag) {
+    return { success: false, output: 'tag is required', error: 'MISSING_INPUT' };
+  }
+
+  let cmd = `docker build -t ${tag}`;
+  if (dockerfile) cmd += ` -f ${dockerfile}`;
+  cmd += ` .`;
+
+  try {
+    const output = execSync(cmd, { cwd, encoding: 'utf-8', timeout: 300000 });
+    return { success: true, output: output.trim() || `Image built: ${tag}` };
+  } catch (error) {
+    const err = error as { stderr?: string; message: string };
+    return { success: false, output: err.stderr ?? err.message, error: 'BUILD_ERROR' };
+  }
+}
+
 function dockerCommand(cmd: string, context: ToolExecutionContext): ToolResult {
   const cwd = resolve(context.scopePath);
   try {

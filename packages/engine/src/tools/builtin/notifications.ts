@@ -1,0 +1,126 @@
+import { execSync } from 'node:child_process';
+import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
+
+export async function notifyDesktop(args: Record<string, unknown>): Promise<ToolResult> {
+  const title = args['title'] as string;
+  const message = args['message'] as string;
+
+  if (!title || !message) {
+    return { success: false, output: 'title and message are required', error: 'MISSING_INPUT' };
+  }
+
+  try {
+    if (process.platform === 'darwin') {
+      const script = `display notification "${message.replace(/"/g, '\\"')}" with title "${title.replace(/"/g, '\\"')}"`;
+      execSync(`osascript -e '${script}'`, { timeout: 5000 });
+    } else if (process.platform === 'linux') {
+      execSync(`notify-send "${title.replace(/"/g, '\\"')}" "${message.replace(/"/g, '\\"')}"`, { timeout: 5000 });
+    } else if (process.platform === 'win32') {
+      execSync(`msg * "${title}: ${message}"`, { timeout: 5000 });
+    } else {
+      return { success: true, output: `[${title}] ${message}` };
+    }
+    return { success: true, output: `Notification sent: ${title} - ${message}` };
+  } catch (error) {
+    return { success: true, output: `[${title}] ${message} (notification display may have failed: ${(error as Error).message})` };
+  }
+}
+
+export async function notifyTelegram(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
+  const message = args['message'] as string;
+
+  if (!message) {
+    return { success: false, output: 'message is required', error: 'MISSING_INPUT' };
+  }
+
+  const botToken = process.env['TELEGRAM_BOT_TOKEN'];
+  const chatId = process.env['TELEGRAM_CHAT_ID'];
+
+  if (!botToken || !chatId) {
+    return { success: false, output: 'TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars required', error: 'CONFIG_MISSING' };
+  }
+
+  try {
+    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: message }),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      return { success: false, output: `Telegram API error: ${response.status}`, error: 'API_ERROR' };
+    }
+    return { success: true, output: 'Telegram notification sent' };
+  } catch (error) {
+    return { success: false, output: `Telegram send failed: ${(error as Error).message}`, error: 'SEND_ERROR' };
+  }
+}
+
+export async function notifySlack(args: Record<string, unknown>, _context: ToolExecutionContext): Promise<ToolResult> {
+  const message = args['message'] as string;
+
+  if (!message) {
+    return { success: false, output: 'message is required', error: 'MISSING_INPUT' };
+  }
+
+  const webhookUrl = process.env['SLACK_WEBHOOK_URL'];
+
+  if (!webhookUrl) {
+    return { success: false, output: 'SLACK_WEBHOOK_URL env var required', error: 'CONFIG_MISSING' };
+  }
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: message }),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      return { success: false, output: `Slack webhook error: ${response.status}`, error: 'API_ERROR' };
+    }
+    return { success: true, output: 'Slack notification sent' };
+  } catch (error) {
+    return { success: false, output: `Slack send failed: ${(error as Error).message}`, error: 'SEND_ERROR' };
+  }
+}
+
+export async function clipboardRead(): Promise<ToolResult> {
+  try {
+    let text: string;
+    if (process.platform === 'darwin') {
+      text = execSync('pbpaste', { encoding: 'utf-8', timeout: 5000 });
+    } else if (process.platform === 'win32') {
+      text = execSync('powershell -command "Get-Clipboard"', { encoding: 'utf-8', timeout: 5000 });
+    } else {
+      text = execSync('xclip -o -selection clipboard 2>/dev/null || xsel -b 2>/dev/null', { encoding: 'utf-8', timeout: 5000 });
+    }
+    return { success: true, output: text.trim() || '(clipboard empty)' };
+  } catch (error) {
+    return { success: false, output: `Clipboard read failed: ${(error as Error).message}`, error: 'CLIPBOARD_ERROR' };
+  }
+}
+
+export async function clipboardWrite(args: Record<string, unknown>): Promise<ToolResult> {
+  const text = args['text'] as string;
+
+  if (text === undefined) {
+    return { success: false, output: 'text is required', error: 'MISSING_INPUT' };
+  }
+
+  try {
+    if (process.platform === 'darwin') {
+      execSync(`echo ${JSON.stringify(text)} | pbcopy`, { encoding: 'utf-8', timeout: 5000 });
+    } else if (process.platform === 'win32') {
+      execSync(`powershell -command "Set-Clipboard -Value '${text.replace(/'/g, "''")}'"`, { encoding: 'utf-8', timeout: 5000 });
+    } else {
+      execSync(`echo ${JSON.stringify(text)} | xclip -selection clipboard 2>/dev/null || echo ${JSON.stringify(text)} | xsel -b`, { encoding: 'utf-8', timeout: 5000 });
+    }
+    return { success: true, output: `Copied to clipboard: ${text.length > 50 ? text.slice(0, 50) + '...' : text}` };
+  } catch (error) {
+    return { success: false, output: `Clipboard write failed: ${(error as Error).message}`, error: 'CLIPBOARD_ERROR' };
+  }
+}

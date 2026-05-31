@@ -165,3 +165,61 @@ export async function fileChecksum(args: Record<string, unknown>, context: ToolE
   const hash = createHash(algorithm).update(content).digest('hex');
   return { success: true, output: `${algorithm}: ${hash}` };
 }
+
+export async function systemMonitor(_args: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    const isMac = currentPlatform === 'darwin';
+    const cmd = isMac
+      ? 'top -l 1 -n 10 -stats pid,command,cpu,mem 2>/dev/null | head -20'
+      : 'top -b -n 1 -o %CPU | head -20 2>/dev/null || ps aux --sort=-%cpu | head -10';
+    const output = execSync(cmd, { encoding: 'utf-8', timeout: 5000 });
+    const memInfo = `Memory: ${(freemem() / 1024 / 1024 / 1024).toFixed(1)}G free / ${(totalmem() / 1024 / 1024 / 1024).toFixed(1)}G total`;
+    const cpuInfo = `CPU: ${cpus().length} cores, Load: ${osLoadAvg()}`;
+    return { success: true, output: `${cpuInfo}\n${memInfo}\n\n${output.trim()}` };
+  } catch (error) {
+    return { success: false, output: `Monitor failed: ${(error as Error).message}`, error: 'MONITOR_ERROR' };
+  }
+}
+
+function osLoadAvg(): string {
+  try {
+    const output = execSync('sysctl -n vm.loadavg 2>/dev/null || echo "0 0 0"', { encoding: 'utf-8', timeout: 2000 });
+    return output.trim();
+  } catch {
+    return '0 0 0';
+  }
+}
+
+export async function cronCreate(args: Record<string, unknown>): Promise<ToolResult> {
+  const expression = args['expression'] as string;
+  const command = args['command'] as string;
+  const label = args['label'] as string | undefined;
+
+  if (!expression || !command) {
+    return { success: false, output: 'expression and command are required', error: 'MISSING_INPUT' };
+  }
+
+  try {
+    const comment = label ? `# ${label}\n` : '';
+    const entry = `${comment}${expression} ${command}\n`;
+    const currentCrontab = execSync('crontab -l 2>/dev/null || true', { encoding: 'utf-8', timeout: 5000 });
+    const newCrontab = currentCrontab + entry;
+    execSync(`echo "${newCrontab.replace(/"/g, '\\"')}" | crontab -`, { encoding: 'utf-8', timeout: 5000 });
+    return { success: true, output: `Cron job created: ${expression} ${command}` };
+  } catch (error) {
+    return { success: false, output: `Cron failed: ${(error as Error).message}`, error: 'CRON_ERROR' };
+  }
+}
+
+export async function openApp(args: Record<string, unknown>): Promise<ToolResult> {
+  const target = args['target'] as string;
+  if (!target) return { success: false, output: 'target is required', error: 'MISSING_INPUT' };
+
+  try {
+    const cmd = IS_WINDOWS ? `start "" "${target}"` : `open "${target}"`;
+    execSync(cmd, { encoding: 'utf-8', timeout: 10000 });
+    return { success: true, output: `Opened: ${target}` };
+  } catch (error) {
+    return { success: false, output: `Failed to open: ${(error as Error).message}`, error: 'OPEN_ERROR' };
+  }
+}

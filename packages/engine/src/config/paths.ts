@@ -40,3 +40,11 @@ export function getLogDir(): string {
 export function getCompactionFile(): string {
   return join(getCacheDir(), 'content.txt');
 }
+
+export function getPluginRegistryPath(): string {
+  return join(getConfigDir(), 'plugin-registry.json');
+}
+
+export function getAcpConfigPath(): string {
+  return join(getConfigDir(), 'acp.json');
+}

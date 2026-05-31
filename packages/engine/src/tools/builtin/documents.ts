@@ -959,3 +959,147 @@ function truncateOutput(text: string, maxChars = 100_000): string {
   if (text.length <= maxChars) return text;
   return text.slice(0, maxChars) + '\n\n... [truncated, file too large]';
 }
+
+export async function docMarkdown(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const file = args['file'] as string;
+  const title = args['title'] as string | undefined;
+  const sections = args['sections'] as Array<{ heading?: string; content?: string; code?: string }> | undefined;
+
+  if (!file || !sections) {
+    return { success: false, output: 'file and sections are required', error: 'MISSING_INPUT' };
+  }
+
+  let md = '';
+  if (title) md += `# ${title}\n\n`;
+  for (const section of sections) {
+    if (section.heading) md += `## ${section.heading}\n\n`;
+    if (section.content) md += `${section.content}\n\n`;
+    if (section.code) md += '```\n' + section.code + '\n```\n\n';
+  }
+
+  const filePath = resolve(context.scopePath, file);
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, md, 'utf-8');
+  return { success: true, output: `Markdown written to ${file}` };
+}
+
+export async function docHtml(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const file = args['file'] as string;
+  const title = (args['title'] as string) ?? 'Document';
+  const body = args['body'] as string;
+  const style = args['style'] as string | undefined;
+
+  if (!file || !body) {
+    return { success: false, output: 'file and body are required', error: 'MISSING_INPUT' };
+  }
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${escapeXml(title)}</title>
+${style ? `<style>${style}</style>` : ''}
+</head>
+<body>
+${body}
+</body>
+</html>`;
+
+  const filePath = resolve(context.scopePath, file);
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, html, 'utf-8');
+  return { success: true, output: `HTML written to ${file}` };
+}
+
+export async function docJson(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const file = args['file'] as string;
+  const data = args['data'];
+
+  if (!file || data === undefined) {
+    return { success: false, output: 'file and data are required', error: 'MISSING_INPUT' };
+  }
+
+  const filePath = resolve(context.scopePath, file);
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+  return { success: true, output: `JSON written to ${file}` };
+}
+
+export async function docYaml(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const file = args['file'] as string;
+  const data = args['data'] as Record<string, unknown> | undefined;
+
+  if (!file || !data) {
+    return { success: false, output: 'file and data are required', error: 'MISSING_INPUT' };
+  }
+
+  const toYaml = (obj: Record<string, unknown>, indent = 0): string => {
+    const prefix = '  '.repeat(indent);
+    return Object.entries(obj).map(([key, val]) => {
+      if (val === null || val === undefined) return `${prefix}${key}: null`;
+      if (typeof val === 'string') return `${prefix}${key}: "${val.replace(/"/g, '\\"')}"`;
+      if (typeof val === 'number' || typeof val === 'boolean') return `${prefix}${key}: ${val}`;
+      if (Array.isArray(val)) {
+        if (val.length === 0) return `${prefix}${key}: []`;
+        return `${prefix}${key}:\n${val.map((item) => {
+          if (typeof item === 'object' && item !== null) {
+            return `${prefix}- ${toYaml(item as Record<string, unknown>, indent + 1).trimStart()}`;
+          }
+          return `${prefix}- ${item}`;
+        }).join('\n')}`;
+      }
+      if (typeof val === 'object') {
+        return `${prefix}${key}:\n${toYaml(val as Record<string, unknown>, indent + 1)}`;
+      }
+      return `${prefix}${key}: ${val}`;
+    }).join('\n');
+  };
+
+  const filePath = resolve(context.scopePath, file);
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, toYaml(data) + '\n', 'utf-8');
+  return { success: true, output: `YAML written to ${file}` };
+}
+
+export async function docDiagram(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const file = args['file'] as string;
+  const definition = args['definition'] as string;
+
+  if (!file || !definition) {
+    return { success: false, output: 'file and definition are required', error: 'MISSING_INPUT' };
+  }
+
+  const filePath = resolve(context.scopePath, file);
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, definition, 'utf-8');
+  return { success: true, output: `Mermaid diagram written to ${file}\n\nTip: Use https://mermaid.live to render it.` };
+}
+
+export async function docLatex(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const file = args['file'] as string;
+  const title = (args['title'] as string) ?? 'Document';
+  const author = (args['author'] as string) ?? 'Agent-X';
+  const sections = args['sections'] as Array<{ heading: string; content: string }> | undefined;
+
+  if (!file || !sections) {
+    return { success: false, output: 'file and sections are required', error: 'MISSING_INPUT' };
+  }
+
+  let latex = `\\documentclass{article}\n\\usepackage[utf8]{inputenc}\n`;
+  latex += `\\title{${escapeLatex(title)}}\n\\author{${escapeLatex(author)}}\n\\date{\\today}\n\\begin{document}\n\\maketitle\n`;
+  for (const section of sections) {
+    if (section.heading) latex += `\\section{${escapeLatex(section.heading)}}\n`;
+    if (section.content) latex += `${escapeLatex(section.content)}\n\n`;
+  }
+  latex += '\\end{document}\n';
+
+  const filePath = resolve(context.scopePath, file);
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, latex, 'utf-8');
+  return { success: true, output: `LaTeX written to ${file}` };
+}
+
+function escapeLatex(str: string): string {
+  return str.replace(/[&%$#_{}~^\\]/g, (c) => `\\${c}`);
+}

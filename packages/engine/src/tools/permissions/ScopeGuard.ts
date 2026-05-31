@@ -1,25 +1,48 @@
 import { resolve, normalize, sep } from 'node:path';
 import { realpathSync, existsSync } from 'node:fs';
 import { platform } from 'node:os';
+import { GitManager } from '../../session/GitManager.js';
 
 export class ScopeGuard {
   private scopePath: string;
   private scopePathReal: string;
   private dangerousPaths: string[];
+  private gitManager: GitManager | null = null;
+  private gitAware: boolean = false;
 
-  constructor(scopePath: string) {
+  constructor(scopePath: string, gitAware = false) {
     this.scopePath = normalize(resolve(scopePath));
     this.scopePathReal = resolveRealPath(this.scopePath);
     this.dangerousPaths = getDangerousPaths();
+    this.gitAware = gitAware;
+    if (gitAware) {
+      this.gitManager = new GitManager({ scopePath: this.scopePath });
+    }
   }
 
   isWithinScope(targetPath: string): boolean {
     const normalizedTarget = normalize(resolve(targetPath));
-    return normalizedTarget.startsWith(this.scopePath) || normalizedTarget.startsWith(this.scopePathReal);
+    const withinScope = normalizedTarget.startsWith(this.scopePath) || normalizedTarget.startsWith(this.scopePathReal);
+    if (!withinScope) return false;
+    if (this.gitAware && this.gitManager?.isInsideRepo()) {
+      return this.gitManager.isPathInsideRepo(normalizedTarget);
+    }
+    return true;
   }
 
   validatePath(targetPath: string): { valid: boolean; resolved: string; error?: string } {
     const resolved = normalize(resolve(targetPath));
+
+    // Git-aware scope: reject paths outside repo root
+    if (this.gitAware && this.gitManager?.isInsideRepo()) {
+      if (!this.gitManager.isPathInsideRepo(resolved)) {
+        return {
+          valid: false,
+          resolved,
+          error: `Path is outside the Git repository root: ${resolved}`,
+        };
+      }
+    }
 
     // Resolve symlinks and check if the real target is within scope
     if (existsSync(resolved)) {
@@ -70,6 +93,10 @@ export class ScopeGuard {
 
   getScopePath(): string {
     return this.scopePath;
+  }
+
+  getGitManager(): GitManager | null {
+    return this.gitManager;
   }
 }
 

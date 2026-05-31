@@ -101,6 +101,10 @@ export class Scheduler {
   private onJobTrigger: ((job: ScheduledJob) => void) | null = null;
   private persistPath: string;
 
+  get taskCount(): number {
+    return this.jobs.size;
+  }
+
   constructor(eventBus: AgentEventBus) {
     this.eventBus = eventBus;
     const dataDir = process.env['XDG_DATA_HOME']

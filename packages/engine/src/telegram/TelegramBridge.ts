@@ -380,7 +380,7 @@ export class TelegramBridge {
     }
   }
 
-  private async sendMessage(chatId: number, text: string): Promise<void> {
+  async sendMessage(chatId: number, text: string): Promise<void> {
     // Telegram has a 4096 character limit per message
     const maxLen = 4096;
     const chunks: string[] = [];

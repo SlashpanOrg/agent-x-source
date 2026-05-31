@@ -119,3 +119,55 @@ export async function mcpListTools(args: Record<string, unknown>, context: ToolE
     return { success: false, output: `MCP list-tools failed: ${(error as Error).message}`, error: 'MCP_ERROR' };
   }
 }
+
+export async function mcpServerConnect(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const command = args['command'] as string;
+  const serverArgs = (args['args'] as string[]) ?? [];
+
+  if (!command) {
+    return { success: false, output: 'command is required', error: 'INVALID_ARGS' };
+  }
+
+  const server: McpServerConfig = { command, args: serverArgs };
+
+  try {
+    // Try to list tools first, then resources to show what's available
+    const tools = await callMcpServer(server, 'tools/list', {}, context.timeout);
+    const resources = await callMcpServer(server, 'resources/list', {}, context.timeout).catch(() => null);
+
+    const parts: string[] = ['Connected to MCP server'];
+
+    if (tools) {
+      const toolsStr = typeof tools === 'string' ? tools : JSON.stringify(tools, null, 2);
+      parts.push(`\nAvailable tools:\n${toolsStr}`);
+    }
+    if (resources) {
+      const resStr = typeof resources === 'string' ? resources : JSON.stringify(resources, null, 2);
+      parts.push(`\nAvailable resources:\n${resStr}`);
+    }
+
+    return { success: true, output: parts.join('\n') };
+  } catch (error) {
+    return { success: false, output: `Connection failed: ${(error as Error).message}`, error: 'MCP_ERROR' };
+  }
+}
+
+export async function mcpResourceRead(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
+  const command = args['command'] as string;
+  const serverArgs = (args['args'] as string[]) ?? [];
+  const uri = args['uri'] as string;
+
+  if (!command || !uri) {
+    return { success: false, output: 'command and uri are required', error: 'INVALID_ARGS' };
+  }
+
+  const server: McpServerConfig = { command, args: serverArgs };
+
+  try {
+    const result = await callMcpServer(server, 'resources/read', { uri }, context.timeout);
+    const output = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+    return { success: true, output };
+  } catch (error) {
+    return { success: false, output: `Resource read failed: ${(error as Error).message}`, error: 'MCP_ERROR' };
+  }
+}
