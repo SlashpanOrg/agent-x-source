@@ -24,6 +24,7 @@ interface SessionItem {
   model?: string;
   token_used?: number;
   updatedAt?: string;
+  createdAt?: string;
 }
 
 export default function Chat() {
@@ -53,6 +54,11 @@ export default function Chat() {
   const streamCounter = useRef(0);
   const [searchParams, setSearchParams] = useSearchParams();
 
+  // File attachment
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [attachedFile, setAttachedFile] = useState<{ id: string; name: string } | null>(null);
+  const [uploading, setUploading] = useState(false);
+
   // Restore session from URL query param on mount
   useEffect(() => {
     const urlSessionId = searchParams.get('session_id');
@@ -65,6 +71,16 @@ export default function Chat() {
   useEffect(() => {
     loadEverything();
     const unsub = onWsEvent((event) => {
+      // Handle raw error messages from WS (fallback for ws.ts catch blocks)
+      if (event.type === 'error') {
+        setSending(false);
+        setThinking(false);
+        stopTimer();
+        const msg = (event.message as string) || (event.data as Record<string, unknown>)?.message as string || 'Unknown error';
+        setMessages((prev) => [...prev, { role: 'assistant', text: `Error: ${msg}`, done: true }]);
+        return;
+      }
+
       if (event.type === 'engine_event') {
           const ev = event.event as string;
           const data = event.data as Record<string, unknown>;
@@ -138,7 +154,8 @@ export default function Chat() {
             if (data.tokenUsed != null) {
               setTokens({ used: data.tokenUsed as number, available: data.tokenAvailable as number || 128000 });
             }
-            loadSessions();
+            // Do NOT reload sessions here — it causes the list to flicker/reorder on every message.
+            // Sessions only need reloading on explicit actions: new, delete, restore.
           }
 
         if (ev === 'permission_required') {
@@ -149,11 +166,11 @@ export default function Chat() {
           setSending(false);
           setThinking(false);
           stopTimer();
-          setMessages((prev) => [...prev, { role: 'assistant', text: `Error: ${(data.message as string) || 'Unknown error'}`, done: true }]);
+          setMessages((prev) => [...prev, { role: 'assistant', text: `Error: ${(data.message as string) || 'Unknown error'}`, done: true, entered: true }]);
         }
 
         if (ev === 'tool_executing') {
-          setMessages((prev) => [...prev, { role: 'tool', text: `⏱ Running ${data.tool as string}...`, done: true, entered: false }]);
+          setMessages((prev) => [...prev, { role: 'tool', text: `⏱ Running ${data.tool as string}...`, done: true, entered: true }]);
         }
 
         if (ev === 'tool_complete') {
@@ -167,7 +184,7 @@ export default function Chat() {
             role: 'tool',
             text: `✓ ${data.tool as string} (${elapsedStr})\n${output}`,
             done: true,
-            entered: false,
+            entered: true,
           }]);
         }
       }
@@ -191,8 +208,8 @@ export default function Chat() {
   // Smooth entry: mark newly-added messages as entered after a tick so CSS transitions apply
   useEffect(() => {
     if (messages.length === 0) return;
-    const idsToEnter = messages.filter((m) => !m.entered).map((m) => m.id).filter(Boolean) as string[];
-    if (idsToEnter.length === 0) return;
+    const hasUnentered = messages.some((m) => !m.entered);
+    if (!hasUnentered) return;
     const t = setTimeout(() => {
       setMessages((prev) => prev.map((m) => (m.entered ? m : { ...m, entered: true })));
     }, 20);
@@ -232,7 +249,20 @@ export default function Chat() {
   async function loadSessions() {
     try {
       const list = await apiGet<SessionItem[]>('/api/sessions');
-      setSessions(list);
+      // Deduplicate by session ID — backend may return duplicates during rapid reconnects
+      const seen = new Set<string>();
+      const deduped = list.filter((s) => {
+        if (seen.has(s.id)) return false;
+        seen.add(s.id);
+        return true;
+      });
+      // Stable sort: newest first by createdAt, so the list never jumps around
+      deduped.sort((a, b) => {
+        const ta = a.createdAt || a.updatedAt || '';
+        const tb = b.createdAt || b.updatedAt || '';
+        return tb.localeCompare(ta);
+      });
+      setSessions(deduped);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to load sessions';
       try { toast.push(msg, 'error'); } catch { /* ignore */ }
@@ -258,20 +288,54 @@ export default function Chat() {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
   }
 
+  async function handleFileUpload(file: File) {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/files/upload', {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Upload failed');
+      const data = await res.json() as { id: string; originalName: string };
+      setAttachedFile({ id: data.id, name: data.originalName });
+      toast.push(`Attached: ${data.originalName}`, 'success');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to upload file';
+      toast.push(msg, 'error');
+    }
+    setUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  function removeAttachment() {
+    setAttachedFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
   async function sendMessage() {
     if (!input.trim() || sending) return;
     if (!activeSessionId) {
       try { toast.push('No active session — create or restore a session first', 'error'); } catch { /* ignore */ }
       return;
     }
-    const text = input.trim();
+    let text = input.trim();
+    // Append file reference if attached
+    if (attachedFile) {
+      text += `\n\n[Attached file: ${attachedFile.name}]`;
+    }
     setInput('');
+    setAttachedFile(null);
     setMessages((prev) => [...prev, { role: 'user', text, entered: true }]);
     setSending(true);
     setThinking(true);
     startTimer();
     try {
-      await apiPost('/api/chat/message', { text });
+      // Send via WebSocket for real-time streaming (preferred)
+      sendWs({ type: 'chat_message', text });
     } catch (e) {
       setSending(false); setThinking(false); stopTimer();
       const msg = e instanceof Error ? e.message : 'Failed to send message';
@@ -490,15 +554,50 @@ export default function Chat() {
           </div>
 
           <div className="chat-input-area">
+            {attachedFile && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', marginBottom: 8, background: '#0f0f0f', border: '1px solid #1a2a1a', borderRadius: 6, fontSize: '0.75rem', color: '#8c8' }}>
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ width: 12, height: 12, flexShrink: 0 }}>
+                  <path d="M8.5 2.5v8a2.5 2.5 0 1 1-5 0v-6a1.5 1.5 0 0 1 3 0v5"/>
+                </svg>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{attachedFile.name}</span>
+                <button className="btn btn-ghost" style={{ padding: '2px 6px', fontSize: '0.7rem' }} onClick={removeAttachment}>
+                  Remove
+                </button>
+              </div>
+            )}
             <div className="chat-input-row">
+              <input
+                ref={fileInputRef}
+                type="file"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleFileUpload(file);
+                }}
+              />
+              <button
+                className="btn btn-ghost"
+                style={{ padding: '8px 10px' }}
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading || sending}
+                title="Attach file"
+              >
+                {uploading ? (
+                  <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
+                ) : (
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ width: 14, height: 14 }}>
+                    <path d="M8.5 2.5v8a2.5 2.5 0 1 1-5 0v-6a1.5 1.5 0 0 1 3 0v5"/>
+                  </svg>
+                )}
+              </button>
               <input className="input" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
-                placeholder="Ask your agent anything..." disabled={sending} />
+                placeholder={attachedFile ? 'Add a message (optional)...' : 'Ask your agent anything...'} disabled={sending} />
               {sending ? (
                 <button className="btn btn-ghost" onClick={cancelMessage}>
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" style={{ width: 14, height: 14 }}><rect x="3" y="3" width="10" height="10" rx="2"/></svg>
                 </button>
               ) : (
-                <button className="btn btn-primary" onClick={sendMessage} disabled={!input.trim()}>
+                <button className="btn btn-primary" onClick={sendMessage} disabled={!input.trim() && !attachedFile}>
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14 }}><path d="M2 8h12M8 2l6 6-6 6"/></svg>
                 </button>
               )}

@@ -45,6 +45,7 @@ type MissionStep =
 interface MissionControlProps {
   onComplete: (config: AgentXConfig, crew: Crew) => void;
   onCancel: () => void;
+  dek?: Buffer | null;
 }
 
 // ─── Tone Options ────────────────────────────────────────────────────
@@ -74,7 +75,7 @@ const PROVIDER_DESCRIPTIONS: Record<string, string> = {
 
 // ─── Main Component ──────────────────────────────────────────────────
 
-export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }) => {
+export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel, dek }) => {
   const { exit } = useApp();
   const [step, setStep] = useState<MissionStep>('splash');
   const TRACE = process.env.AGENTX_TRACE === '1' || process.env.AGENTX_TRACE === 'true';
@@ -184,10 +185,13 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
     const cm = new ConfigManager();
+    if (dek) {
+      cm.setDEK(dek);
+    }
     cm.ensureDirectories();
     cm.save(config);
     setStep('transition_1');
-  }, [selectedProvider, apiKey, baseUrl]);
+  }, [selectedProvider, apiKey, baseUrl, dek]);
 
   const handleCallsignSubmit = useCallback(() => {
     if (!callsign.trim()) return;
@@ -213,6 +217,9 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
 
     // Update config with callsign
     const cm = new ConfigManager();
+    if (dek) {
+      cm.setDEK(dek);
+    }
     try {
       const existingConfig = cm.load();
       existingConfig.user = { callsign: callsign.trim() };
@@ -275,13 +282,16 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel }
   const handleLaunchComplete = useCallback(() => {
     // Mark setup as complete and load final state
     const cm = new ConfigManager();
+    if (dek) {
+      cm.setDEK(dek);
+    }
     const pm = new CrewManager();
     const config = cm.load();
     config.setupComplete = true;
     cm.save(config);
     const crew = pm.getActive();
     onComplete(config, crew);
-  }, [onComplete]);
+  }, [onComplete, dek]);
 
   // ─── Global key handler for Escape (back navigation) ─────────────────
 

@@ -18,6 +18,28 @@ export default function Settings() {
   const [tgToken, setTgToken] = useState('');
   const [tgSaving, setTgSaving] = useState(false);
 
+  // Discord
+  const [dcConfigured, setDcConfigured] = useState(false);
+  const [dcToken, setDcToken] = useState('');
+  const [dcChannel, setDcChannel] = useState('');
+  const [dcSaving, setDcSaving] = useState(false);
+
+  // Slack
+  const [slConfigured, setSlConfigured] = useState(false);
+  const [slWebhook, setSlWebhook] = useState('');
+  const [slBotToken, setSlBotToken] = useState('');
+  const [slChannel, setSlChannel] = useState('');
+  const [slSaving, setSlSaving] = useState(false);
+
+  // Email
+  const [emConfigured, setEmConfigured] = useState(false);
+  const [emSmtpHost, setEmSmtpHost] = useState('');
+  const [emSmtpPort, setEmSmtpPort] = useState('587');
+  const [emSmtpUser, setEmSmtpUser] = useState('');
+  const [emSmtpPass, setEmSmtpPass] = useState('');
+  const [emFrom, setEmFrom] = useState('');
+  const [emSaving, setEmSaving] = useState(false);
+
   // Danger zone
   const [clearConfirm, setClearConfirm] = useState(false);
   const [resetConfirm, setResetConfirm] = useState(false);
@@ -31,7 +53,7 @@ export default function Settings() {
   const toast = useToast();
 
   async function load() {
-    await Promise.all([loadConfig(), loadTelegram(), loadTools()]);
+    await Promise.all([loadConfig(), loadTelegram(), loadDiscord(), loadSlack(), loadEmail(), loadTools()]);
   }
 
   async function loadConfig() {
@@ -61,6 +83,36 @@ export default function Settings() {
       setTgConfigured(tg.configured);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to load Telegram status';
+      try { toast.push(msg, 'error'); } catch { /* ignore */ }
+    }
+  }
+
+  async function loadDiscord() {
+    try {
+      const dc = await apiGet<{ configured: boolean }>('/api/discord/status');
+      setDcConfigured(dc.configured);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to load Discord status';
+      try { toast.push(msg, 'error'); } catch { /* ignore */ }
+    }
+  }
+
+  async function loadSlack() {
+    try {
+      const sl = await apiGet<{ configured: boolean }>('/api/slack/status');
+      setSlConfigured(sl.configured);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to load Slack status';
+      try { toast.push(msg, 'error'); } catch { /* ignore */ }
+    }
+  }
+
+  async function loadEmail() {
+    try {
+      const em = await apiGet<{ configured: boolean }>('/api/email/status');
+      setEmConfigured(em.configured);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to load Email status';
       try { toast.push(msg, 'error'); } catch { /* ignore */ }
     }
   }
@@ -123,6 +175,97 @@ export default function Settings() {
       try { toast.push('Telegram disconnected', 'success'); } catch { /* ignore */ }
     } catch (e) {
       const raw = e instanceof Error ? e.message : 'Failed to disconnect Telegram';
+      try { toast.push(raw, 'error'); } catch { /* ignore */ }
+    }
+  }
+
+  async function saveDiscord() {
+    if (!dcToken.trim()) return;
+    setDcSaving(true);
+    try {
+      await apiPost('/api/discord/start', { token: dcToken.trim(), channelId: dcChannel.trim() || undefined });
+      setDcConfigured(true);
+      setDcToken('');
+      setDcChannel('');
+      try { toast.push('Discord connected', 'success'); } catch { /* ignore */ }
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : 'Failed to connect Discord';
+      try { toast.push(raw, 'error'); } catch { /* ignore */ }
+    }
+    setDcSaving(false);
+  }
+
+  async function stopDiscord() {
+    try {
+      await apiPost('/api/discord/stop');
+      setDcConfigured(false);
+      try { toast.push('Discord disconnected', 'success'); } catch { /* ignore */ }
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : 'Failed to disconnect Discord';
+      try { toast.push(raw, 'error'); } catch { /* ignore */ }
+    }
+  }
+
+  async function saveSlack() {
+    if (!slWebhook.trim() && !slBotToken.trim()) return;
+    setSlSaving(true);
+    try {
+      await apiPost('/api/slack/start', { webhookUrl: slWebhook.trim() || undefined, botToken: slBotToken.trim() || undefined, channel: slChannel.trim() || undefined });
+      setSlConfigured(true);
+      setSlWebhook('');
+      setSlBotToken('');
+      setSlChannel('');
+      try { toast.push('Slack connected', 'success'); } catch { /* ignore */ }
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : 'Failed to connect Slack';
+      try { toast.push(raw, 'error'); } catch { /* ignore */ }
+    }
+    setSlSaving(false);
+  }
+
+  async function stopSlack() {
+    try {
+      await apiPost('/api/slack/stop');
+      setSlConfigured(false);
+      try { toast.push('Slack disconnected', 'success'); } catch { /* ignore */ }
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : 'Failed to disconnect Slack';
+      try { toast.push(raw, 'error'); } catch { /* ignore */ }
+    }
+  }
+
+  async function saveEmail() {
+    if (!emSmtpHost.trim() || !emSmtpUser.trim() || !emSmtpPass.trim()) return;
+    setEmSaving(true);
+    try {
+      await apiPost('/api/email/start', {
+        smtpHost: emSmtpHost.trim(),
+        smtpPort: emSmtpPort.trim(),
+        smtpUser: emSmtpUser.trim(),
+        smtpPass: emSmtpPass.trim(),
+        fromAddress: emFrom.trim() || emSmtpUser.trim(),
+      });
+      setEmConfigured(true);
+      setEmSmtpHost('');
+      setEmSmtpPort('587');
+      setEmSmtpUser('');
+      setEmSmtpPass('');
+      setEmFrom('');
+      try { toast.push('Email bridge connected', 'success'); } catch { /* ignore */ }
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : 'Failed to connect Email';
+      try { toast.push(raw, 'error'); } catch { /* ignore */ }
+    }
+    setEmSaving(false);
+  }
+
+  async function stopEmail() {
+    try {
+      await apiPost('/api/email/stop');
+      setEmConfigured(false);
+      try { toast.push('Email bridge disconnected', 'success'); } catch { /* ignore */ }
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : 'Failed to disconnect Email';
       try { toast.push(raw, 'error'); } catch { /* ignore */ }
     }
   }
@@ -254,6 +397,103 @@ export default function Settings() {
                 </div>
                 <button className="btn btn-sm btn-primary" onClick={saveTelegram} disabled={tgSaving || !tgToken.trim()}>
                   {tgSaving ? 'Connecting...' : 'Connect'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Discord */}
+          <div className="card mb-16">
+            <div className="card-title mb-16">Discord</div>
+            {dcConfigured ? (
+              <div>
+                <div style={{ color: '#888', fontSize: '0.85rem', marginBottom: 12 }}>
+                  Discord bot is configured and active.
+                </div>
+                <button className="btn btn-sm btn-secondary" onClick={stopDiscord}>Disconnect</button>
+              </div>
+            ) : (
+              <div>
+                <div className="field">
+                  <label className="label">Bot Token</label>
+                  <input className="input" value={dcToken} onChange={(e) => setDcToken(e.target.value)} placeholder="Bot token from Discord Developer Portal" />
+                </div>
+                <div className="field">
+                  <label className="label">Channel ID (optional)</label>
+                  <input className="input" value={dcChannel} onChange={(e) => setDcChannel(e.target.value)} placeholder="123456789012345678" />
+                </div>
+                <button className="btn btn-sm btn-primary" onClick={saveDiscord} disabled={dcSaving || !dcToken.trim()}>
+                  {dcSaving ? 'Connecting...' : 'Connect'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Slack */}
+          <div className="card mb-16">
+            <div className="card-title mb-16">Slack</div>
+            {slConfigured ? (
+              <div>
+                <div style={{ color: '#888', fontSize: '0.85rem', marginBottom: 12 }}>
+                  Slack integration is configured and active.
+                </div>
+                <button className="btn btn-sm btn-secondary" onClick={stopSlack}>Disconnect</button>
+              </div>
+            ) : (
+              <div>
+                <div className="field">
+                  <label className="label">Webhook URL (optional)</label>
+                  <input className="input" value={slWebhook} onChange={(e) => setSlWebhook(e.target.value)} placeholder="https://hooks.slack.com/services/..." />
+                </div>
+                <div className="field">
+                  <label className="label">Bot Token (optional)</label>
+                  <input className="input" value={slBotToken} onChange={(e) => setSlBotToken(e.target.value)} placeholder="xoxb-..." />
+                </div>
+                <div className="field">
+                  <label className="label">Channel (optional)</label>
+                  <input className="input" value={slChannel} onChange={(e) => setSlChannel(e.target.value)} placeholder="#general" />
+                </div>
+                <button className="btn btn-sm btn-primary" onClick={saveSlack} disabled={slSaving || (!slWebhook.trim() && !slBotToken.trim())}>
+                  {slSaving ? 'Connecting...' : 'Connect'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Email */}
+          <div className="card mb-16">
+            <div className="card-title mb-16">Email Bridge</div>
+            {emConfigured ? (
+              <div>
+                <div style={{ color: '#888', fontSize: '0.85rem', marginBottom: 12 }}>
+                  Email bridge is configured and active.
+                </div>
+                <button className="btn btn-sm btn-secondary" onClick={stopEmail}>Disconnect</button>
+              </div>
+            ) : (
+              <div>
+                <div className="field">
+                  <label className="label">SMTP Host</label>
+                  <input className="input" value={emSmtpHost} onChange={(e) => setEmSmtpHost(e.target.value)} placeholder="smtp.gmail.com" />
+                </div>
+                <div className="field">
+                  <label className="label">SMTP Port</label>
+                  <input className="input" value={emSmtpPort} onChange={(e) => setEmSmtpPort(e.target.value)} placeholder="587" />
+                </div>
+                <div className="field">
+                  <label className="label">SMTP Username</label>
+                  <input className="input" value={emSmtpUser} onChange={(e) => setEmSmtpUser(e.target.value)} placeholder="user@example.com" />
+                </div>
+                <div className="field">
+                  <label className="label">SMTP Password</label>
+                  <input className="input" type="password" value={emSmtpPass} onChange={(e) => setEmSmtpPass(e.target.value)} placeholder="App-specific password" />
+                </div>
+                <div className="field">
+                  <label className="label">From Address</label>
+                  <input className="input" value={emFrom} onChange={(e) => setEmFrom(e.target.value)} placeholder="Agent-X <agent@example.com>" />
+                </div>
+                <button className="btn btn-sm btn-primary" onClick={saveEmail} disabled={emSaving || !emSmtpHost.trim() || !emSmtpUser.trim() || !emSmtpPass.trim()}>
+                  {emSaving ? 'Connecting...' : 'Connect'}
                 </button>
               </div>
             )}

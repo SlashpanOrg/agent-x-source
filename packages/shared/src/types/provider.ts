@@ -7,7 +7,22 @@ export interface ProviderConfig {
   defaultBaseUrl?: string;
 }
 
-export type ProviderId = 'openai' | 'anthropic' | 'google' | 'ollama' | 'lmstudio';
+export type ProviderId =
+  | 'openai'
+  | 'anthropic'
+  | 'google'
+  | 'ollama'
+  | 'lmstudio'
+  | 'moonshot'
+  | 'deepseek'
+  | 'groq'
+  | 'mistral'
+  | 'together'
+  | 'xai'
+  | 'fireworks'
+  | 'perplexity'
+  | 'azure'
+  | 'cohere';
 
 export interface ModelInfo {
   id: string;
