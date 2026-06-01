@@ -1,13 +1,31 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import TextField from '@mui/material/TextField';
 import Button from '@mui/material/Button';
 import Alert from '@mui/material/Alert';
+import LinearProgress from '@mui/material/LinearProgress';
 import LockIcon from '@mui/icons-material/Lock';
 import { auth } from '../api';
 import { useApp } from '../store/AppContext';
 import { colors } from '../theme';
+
+function getPasswordStrength(pw: string): { score: number; label: string; color: string } {
+  if (!pw) return { score: 0, label: '', color: colors.text.dim };
+  let score = 0;
+  if (pw.length >= 8) score++;
+  if (pw.length >= 12) score++;
+  if (/[A-Z]/.test(pw)) score++;
+  if (/[a-z]/.test(pw)) score++;
+  if (/[0-9]/.test(pw)) score++;
+  if (/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(pw)) score++;
+  if (pw.length >= 16) score++;
+
+  if (score <= 2) return { score: Math.round((score / 7) * 100), label: 'WEAK', color: colors.accent.red };
+  if (score <= 4) return { score: Math.round((score / 7) * 100), label: 'FAIR', color: colors.accent.orange };
+  if (score <= 5) return { score: Math.round((score / 7) * 100), label: 'GOOD', color: colors.accent.blue };
+  return { score: Math.round((score / 7) * 100), label: 'STRONG', color: colors.accent.green };
+}
 
 export function SetupAuth() {
   const { setView, setAuthenticated } = useApp();
@@ -16,6 +34,8 @@ export function SetupAuth() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const strength = useMemo(() => getPasswordStrength(password), [password]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -76,6 +96,38 @@ export function SetupAuth() {
             fullWidth
             helperText="Min 8 chars: uppercase, lowercase, number, special"
           />
+          {password && (
+            <Box sx={{ mt: -1 }}>
+              <LinearProgress
+                variant="determinate"
+                value={strength.score}
+                sx={{
+                  height: 4,
+                  borderRadius: 2,
+                  bgcolor: colors.bg.tertiary,
+                  '& .MuiLinearProgress-bar': {
+                    bgcolor: strength.color,
+                    borderRadius: 2,
+                    transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease',
+                  },
+                }}
+              />
+              <Typography
+                variant="caption"
+                sx={{
+                  mt: 0.5,
+                  display: 'block',
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: '0.65rem',
+                  letterSpacing: '2px',
+                  color: strength.color,
+                  transition: 'color 0.3s ease',
+                }}
+              >
+                {strength.label}
+              </Typography>
+            </Box>
+          )}
           <TextField
             label="Confirm Password"
             type="password"

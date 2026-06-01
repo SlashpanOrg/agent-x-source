@@ -69,7 +69,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       // 3. Check if we have a valid session
       const authStatus = await auth.status();
-      if (!authStatus.authenticated) {
+      if (!authStatus.isAuthenticated) {
         setView('login');
         return;
       }
@@ -99,12 +99,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [refreshHealth]);
 
-  // Connect SSE when authenticated
+  // Connect SSE only when in console view (session exists)
   useEffect(() => {
-    if (!authenticated) return;
+    if (view !== 'console') return;
     const disconnect = connectSSE(pushEvent);
     return disconnect;
-  }, [authenticated, pushEvent]);
+  }, [view, pushEvent]);
 
   const state: AppState = {
     view, authenticated, username, config: appConfig, serverOnline, events, healthData,

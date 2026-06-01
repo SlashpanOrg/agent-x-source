@@ -2,6 +2,8 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createRequire } from 'module';
 import { getDbPath } from '../config/paths.js';
+import { encrypt, decrypt } from '@agentx/shared';
+import type { EncryptedData } from '@agentx/shared';
 
 // Try to load better-sqlite3, but don't crash if native bindings are missing.
 let BetterSqlite3: any = null;
@@ -141,6 +143,7 @@ export class SessionStore {
   private memMessages: Map<string, Array<Record<string, unknown>>> = new Map();
   private memTokenLogs: Map<string, Array<Record<string, unknown>>> = new Map();
   private memPermissions: Map<string, Array<Record<string, unknown>>> = new Map();
+  private dek: Buffer | null = null;
 
   constructor(dbPath?: string) {
     const path = dbPath ?? getDbPath();
@@ -156,6 +159,49 @@ export class SessionStore {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.initialize();
+  }
+
+  /**
+   * Set the Data Encryption Key for encrypting/decrypting sensitive fields.
+   * When set, message content, tool I/O, and crew prompts are encrypted at rest.
+   * If the DEK is lost (auth.json tampered), all encrypted data becomes irrecoverable.
+   */
+  setDEK(dek: Buffer | null): void {
+    this.dek = dek;
+  }
+
+  /**
+   * Encrypt a string value if DEK is available.
+   * Returns a JSON-serialized EncryptedData envelope, or the plaintext if no DEK.
+   */
+  private encryptField(value: string): string {
+    if (!this.dek || !value) return value;
+    const encrypted = encrypt(value, this.dek);
+    return JSON.stringify({ __enc: true, ...encrypted });
+  }
+
+  /**
+   * Decrypt a field value. Detects encrypted envelope vs plaintext automatically.
+   * This allows transparent migration: old plaintext data reads fine, new data is encrypted.
+   */
+  private decryptField(value: string | null): string | null {
+    if (!value) return value;
+    // Check if it's an encrypted envelope
+    if (value.startsWith('{"__enc":true,')) {
+      if (!this.dek) {
+        // DEK not available — data is irrecoverable (self-destruct property)
+        return '[ENCRYPTED - DEK UNAVAILABLE]';
+      }
+      try {
+        const envelope = JSON.parse(value) as { __enc: boolean } & EncryptedData;
+        return decrypt(envelope, this.dek);
+      } catch {
+        // Tampered or wrong DEK — data is destroyed
+        return '[ENCRYPTED - INTEGRITY FAILURE]';
+      }
+    }
+    // Plaintext (legacy data before encryption was enabled)
+    return value;
   }
 
   private initialize(): void {
@@ -316,15 +362,18 @@ export class SessionStore {
     toolCalls?: string;
     createdAt: string;
   }): void {
+    const encContent = this.encryptField(message.content);
+    const encToolCalls = message.toolCalls ? this.encryptField(message.toolCalls) : null;
+
     if (this.memMode) {
       const arr = this.memMessages.get(message.sessionId) ?? [];
       arr.push({
         id: message.id,
         session_id: message.sessionId,
         role: message.role,
-        content: message.content,
+        content: encContent,
         token_count: message.tokenCount ?? 0,
-        tool_calls: message.toolCalls ?? null,
+        tool_calls: encToolCalls,
         created_at: message.createdAt,
       });
       this.memMessages.set(message.sessionId, arr);
@@ -339,20 +388,30 @@ export class SessionStore {
       message.id,
       message.sessionId,
       message.role,
-      message.content,
+      encContent,
       message.tokenCount ?? 0,
-      message.toolCalls ?? null,
+      encToolCalls,
       message.createdAt,
     );
   }
 
   getMessages(sessionId: string): Array<Record<string, unknown>> {
     if (this.memMode) {
-      return (this.memMessages.get(sessionId) ?? []) as Array<Record<string, unknown>>;
+      const msgs = (this.memMessages.get(sessionId) ?? []) as Array<Record<string, unknown>>;
+      return msgs.map((m) => ({
+        ...m,
+        content: this.decryptField(m.content as string | null),
+        tool_calls: this.decryptField(m.tool_calls as string | null),
+      }));
     }
 
     const stmt = this.db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC');
-    return stmt.all(sessionId) as Array<Record<string, unknown>>;
+    const rows = stmt.all(sessionId) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      ...row,
+      content: this.decryptField(row['content'] as string | null),
+      tool_calls: this.decryptField(row['tool_calls'] as string | null),
+    }));
   }
 
   deleteMessages(sessionId: string): void {
@@ -445,6 +504,9 @@ export class SessionStore {
       return;
     }
 
+    const encInput = this.encryptField(exec.input);
+    const encOutput = exec.output ? this.encryptField(exec.output) : null;
+
     const stmt = this.db.prepare(`
       INSERT INTO tool_executions (id, session_id, agent_task_id, tool_name, input, output, success, elapsed_ms)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -454,8 +516,8 @@ export class SessionStore {
       exec.sessionId,
       exec.agentTaskId ?? null,
       exec.toolName,
-      exec.input,
-      exec.output ?? null,
+      encInput,
+      encOutput,
       exec.success != null ? (exec.success ? 1 : 0) : null,
       exec.elapsedMs ?? null,
     );

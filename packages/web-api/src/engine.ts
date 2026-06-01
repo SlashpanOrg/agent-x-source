@@ -137,12 +137,15 @@ export function getEngine(): EngineState {
 
 /**
  * Set the Data Encryption Key on the engine.
- * This enables encrypted config read/write.
+ * This enables encrypted config read/write, encrypted session storage,
+ * and encrypted crew/personality data.
  */
 export function setEngineDEK(dek: Buffer | null): void {
   if (state) {
     state.dek = dek;
     state.configManager.setDEK(dek);
+    state.sessionManager.setDEK(dek);
+    state.crewManager.setDEK(dek);
   }
 }
 
@@ -205,6 +208,11 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
   });
 
   eng.agent = agent;
+
+  // Bridge agent events → telemetry bus so SSE stream receives them
+  agent.events.on((event) => {
+    eng.telemetry.emit(event as any);
+  });
 
   // Start Telegram bridge if plugin is configured
   // Skip if running in daemon mode — the daemon handles Telegram directly

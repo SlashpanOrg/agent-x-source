@@ -51,6 +51,8 @@ import { UserCommandRegistry } from '../commands/UserCommandRegistry.js';
 import { PromptEngine } from '../prompt/PromptEngine.js';
 import { SmartSubAgent } from './SmartSubAgent.js';
 import type { IntentResult } from '../prompt/PromptEngine.js';
+import { DecisionEngine } from './DecisionEngine.js';
+import type { DecisionResult } from './DecisionEngine.js';
 import { AgentBus, getAgentBus } from './AgentBus.js';
 import { SpecialistRegistry } from './SpecialistRegistry.js';
 import type { SpecialistType } from './SpecialistRegistry.js';
@@ -102,7 +104,9 @@ export class Agent {
   private userCommandRegistry: UserCommandRegistry | null = null;
   private recipeEngine: RecipeEngine | null = null;
   private promptEngine: PromptEngine;
+  private decisionEngine: DecisionEngine;
   private currentIntent: IntentResult | null = null;
+  private currentDecision: DecisionResult | null = null;
   private treeOfThoughts: TreeOfThoughts | null = null;
   private researchEngine: ResearchEngine | null = null;
   private lastRagResults: Array<{ content: string; score?: number; metadata?: Record<string, unknown> }> = [];
@@ -240,6 +244,9 @@ export class Agent {
 
     // Initialize prompt engine for token-efficient prompting
     this.promptEngine = new PromptEngine(this.getContextWindow());
+
+    // Initialize decision engine for message classification and routing
+    this.decisionEngine = new DecisionEngine();
 
     // Initialize agent mesh components
     this.agentBus = getAgentBus();
@@ -686,22 +693,47 @@ Return ONLY valid JSON, no other text.`;
 
     this.emit({ type: 'message_sent', message: userMessage });
 
+    // ─── DECISION ENGINE: Classify message & determine execution path ───
+    const conversationLen = this.messages.filter(m => m.role === 'user').length;
+    this.currentDecision = this.decisionEngine.classify(content, conversationLen);
+    this.emit({
+      type: 'decision_made',
+      messageClass: this.currentDecision.messageClass,
+      executionPath: this.currentDecision.executionPath,
+      confidence: this.currentDecision.confidence,
+      reasoning: this.currentDecision.reasoning,
+    } as EngineEvent);
+
+    // ─── FAST REPLY PATH: Greetings, farewells, conversational ───
+    if (this.currentDecision.executionPath === 'fast_reply' && this.currentDecision.confidence >= 0.85) {
+      this.emit({ type: 'loading_start', stage: 'fast_reply' });
+      try {
+        const fastMessage = await this.runFastReply(content, startTime);
+        return fastMessage;
+      } catch (e) {
+        // Fall through to normal path if fast reply fails
+        getLogger().warn('FAST_REPLY', 'Fast reply failed, falling through to standard path');
+      }
+    }
+
     // ─── SMART PROMPTING & RAG ───
     // Detect intent for dynamic tool selection and reasoning mode
     this.currentIntent = this.promptEngine.detectIntent(content);
     this.emit({ type: 'intent_detected', intent: this.currentIntent.intent, confidence: this.currentIntent.confidence });
 
-    // Auto-query RAG for relevant documents
+    // Auto-query RAG for relevant documents (skip for conversational messages)
     this.lastRagResults = [];
-    const rag = getRAGEngineInstance();
-    if (rag && rag.isEnabled) {
-      try {
-        const ragStart = Date.now();
-        const docs = await rag.search(content, 3);
-        this.lastRagResults = docs.map((d) => ({ content: d.content, score: d.score, metadata: d.metadata }));
-        this.emit({ type: 'rag_queried', resultCount: docs.length, elapsed: Date.now() - ragStart });
-      } catch (e) {
-        getLogger().warn('RAG_QUERY', e instanceof Error ? e.message : String(e));
+    if (!this.currentDecision.skipRag) {
+      const rag = getRAGEngineInstance();
+      if (rag && rag.isEnabled) {
+        try {
+          const ragStart = Date.now();
+          const docs = await rag.search(content, 3);
+          this.lastRagResults = docs.map((d) => ({ content: d.content, score: d.score, metadata: d.metadata }));
+          this.emit({ type: 'rag_queried', resultCount: docs.length, elapsed: Date.now() - ragStart });
+        } catch (e) {
+          getLogger().warn('RAG_QUERY', e instanceof Error ? e.message : String(e));
+        }
       }
     }
 
@@ -869,6 +901,70 @@ Return ONLY valid JSON, no other text.`;
       this.isProcessing = false;
       this.abortController = null;
     }
+  }
+
+  /**
+   * Fast reply path for simple messages (greetings, farewells, conversational).
+   * Uses minimal system prompt, no tools, no RAG — saves significant tokens.
+   */
+  private async runFastReply(content: string, startTime: number): Promise<Message> {
+    // Build minimal prompt — just identity + user message
+    const sauceCtx = this.secretSauce.buildSystemContext(1000);
+    const identity = sauceCtx.soul || sauceCtx.crew || '';
+    const fastPrompt = this.decisionEngine.buildFastReplyPrompt(identity);
+
+    const callsign = this.config.user?.callsign;
+    const userNote = callsign ? `\nThe user's name is "${callsign}".` : '';
+
+    const fastMessages: CompletionMessage[] = [
+      { role: 'system', content: fastPrompt + userNote },
+      // Include last 2 messages for context (if any)
+      ...this.messages.slice(-3).filter(m => m.role !== 'system'),
+      { role: 'user', content },
+    ];
+
+    const request: CompletionRequest = {
+      model: this.config.provider.activeModel,
+      messages: fastMessages,
+      stream: true,
+      // No tools for fast reply
+      signal: this.abortController?.signal,
+    };
+
+    let fullContent = '';
+    const stream = await this.provider.complete(request);
+
+    for await (const chunk of stream) {
+      if (chunk.type === 'text_delta' && chunk.content) {
+        fullContent += chunk.content;
+        this.emit({ type: 'stream_chunk', content: chunk.content, fullContent });
+      }
+    }
+
+    // Add to conversation history
+    this.messages.push({ role: 'assistant', content: fullContent });
+
+    const assistantMessage: Message = {
+      id: generateMessageId(),
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: fullContent,
+      toolCalls: null,
+      createdAt: new Date().toISOString(),
+      tokenCount: Math.ceil(fullContent.length / 4),
+    };
+
+    this.emit({ type: 'loading_end' });
+    this.emit({ type: 'message_received', message: assistantMessage, elapsed: Date.now() - startTime });
+
+    // Update token tracker
+    const tokensUsed = Math.ceil((fastPrompt.length + content.length + fullContent.length) / 4);
+    this.tokenTracker.addUsage(tokensUsed);
+    this.emit({ type: 'token_usage', totalTokens: this.tokenTracker.tokensUsed, contextWindow: this.getContextWindow() } as EngineEvent);
+
+    this.isProcessing = false;
+    this.abortController = null;
+    return assistantMessage;
   }
 
   /**

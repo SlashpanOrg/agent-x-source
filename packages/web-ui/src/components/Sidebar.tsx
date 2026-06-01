@@ -4,17 +4,13 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import Divider from '@mui/material/Divider';
 import ChatIcon from '@mui/icons-material/Chat';
-import HistoryIcon from '@mui/icons-material/History';
 import BuildIcon from '@mui/icons-material/Build';
 import ExtensionIcon from '@mui/icons-material/Extension';
 import HubIcon from '@mui/icons-material/Hub';
 import CellTowerIcon from '@mui/icons-material/CellTower';
 import SettingsIcon from '@mui/icons-material/Settings';
-import ChecklistIcon from '@mui/icons-material/Checklist';
 import ScheduleIcon from '@mui/icons-material/Schedule';
 import StorageIcon from '@mui/icons-material/Storage';
-import FolderIcon from '@mui/icons-material/Folder';
-import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import LogoutIcon from '@mui/icons-material/Logout';
 import { auth } from '../api';
 import { useApp } from '../store/AppContext';
@@ -28,15 +24,11 @@ interface Props {
 
 const NAV_ITEMS: { id: PanelId; icon: typeof ChatIcon; label: string }[] = [
   { id: 'chat', icon: ChatIcon, label: 'Chat' },
-  { id: 'sessions', icon: HistoryIcon, label: 'Sessions' },
-  { id: 'todos', icon: ChecklistIcon, label: 'Todos' },
-  { id: 'orchestrator', icon: AccountTreeIcon, label: 'Orchestrator' },
   { id: 'tools', icon: BuildIcon, label: 'Tools' },
   { id: 'plugins', icon: ExtensionIcon, label: 'Plugins' },
   { id: 'mcp', icon: HubIcon, label: 'MCP Servers' },
-  { id: 'rag', icon: StorageIcon, label: 'RAG Knowledge' },
-  { id: 'files', icon: FolderIcon, label: 'Files' },
-  { id: 'bridges', icon: CellTowerIcon, label: 'Bridges' },
+  { id: 'knowledge', icon: StorageIcon, label: 'Knowledge' },
+  { id: 'channels', icon: CellTowerIcon, label: 'Channels' },
   { id: 'scheduler', icon: ScheduleIcon, label: 'Scheduler' },
   { id: 'settings', icon: SettingsIcon, label: 'Settings' },
 ];

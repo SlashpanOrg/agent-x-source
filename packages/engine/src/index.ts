@@ -26,6 +26,8 @@ export { SubAgentManager } from './agent/SubAgentManager.js';
 export type { SubAgentTask } from './agent/SubAgentManager.js';
 export { SmartSubAgent } from './agent/SmartSubAgent.js';
 export type { SmartSubAgentOptions, SmartSubAgentResult } from './agent/SmartSubAgent.js';
+export { DecisionEngine } from './agent/DecisionEngine.js';
+export type { MessageClass, ExecutionPath, DecisionResult } from './agent/DecisionEngine.js';
 export { PromptEngine } from './prompt/PromptEngine.js';
 export type { IntentResult, PromptBudget } from './prompt/PromptEngine.js';
 export { AgentEventBus } from './EventBus.js';

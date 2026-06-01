@@ -30,6 +30,16 @@ export class SessionManager {
     return this.store as SessionStore;
   }
 
+  /**
+   * Inject the Data Encryption Key for encrypting sensitive session data at rest.
+   * Must be called after successful authentication to enable field-level encryption.
+   */
+  setDEK(dek: Buffer | null): void {
+    if (!this.usingStorageAdapter) {
+      this.getSessionStore().setDEK(dek);
+    }
+  }
+
   private createSessionRecord(session: Session): void {
     if (this.usingStorageAdapter) {
       const adapter = this.store as StorageAdapter;

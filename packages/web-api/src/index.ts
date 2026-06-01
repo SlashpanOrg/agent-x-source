@@ -6,7 +6,7 @@ import { join, dirname, basename } from 'node:path';
 import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, createReadStream, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { generateId } from '@agentx/shared';
+import { generateId, VERSION } from '@agentx/shared';
 import { getEngine, createAgent, destroyAgent, clearEngine, getOrCreateAgent } from './engine.js';
 import { setupWebSocket, ensureSubscribed } from './ws.js';
 import { authMiddleware, createAuthRouter } from './auth.js';
@@ -16,6 +16,8 @@ import type { ProviderId, AgentXConfig, CompletionRequest } from '@agentx/shared
 const PORT = Number(process.env['PORT']) || 3333;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const UI_DIST = join(__dirname, '..', '..', 'web-ui', 'dist');
+
+
 
 const HOME = homedir();
 const DATA_DIR = process.env['XDG_DATA_HOME']
@@ -96,6 +98,8 @@ app.get('/api/health', (_req, res) => {
   let crewCount = 0;
   let agentActive = false;
   let configInfo: Record<string, unknown> = {};
+  let activeCrew: string | null = null;
+  let telegramConnected = false;
   if (eng) {
     try {
       const sessions = eng.sessionManager.listSessions(9999);
@@ -104,15 +108,22 @@ app.get('/api/health', (_req, res) => {
     try {
       const crews = eng.crewManager.list();
       crewCount = crews.length;
+      const active = eng.crewManager.getActive();
+      activeCrew = active?.name || null;
     } catch { /* ignore */ }
     try {
       const cfg = eng.configManager.load();
       configInfo = { provider: cfg.provider.activeProvider, model: cfg.provider.activeModel, user: cfg.user?.callsign || null };
     } catch { /* ignore */ }
     agentActive = !!eng.agent;
+    try {
+      const tgPlugin = eng.pluginRegistry.getPlugin('telegram');
+      telegramConnected = !!tgPlugin?.enabled && !!tgPlugin?.config?.['botToken'];
+    } catch { /* ignore */ }
   }
   res.json({
     status: 'ok',
+    version: VERSION,
     pid: process.pid,
     node: process.version,
     platform: process.platform,
@@ -121,7 +132,9 @@ app.get('/api/health', (_req, res) => {
     config: configInfo,
     sessions: sessionCount,
     crews: crewCount,
+    activeCrew,
     agentActive,
+    telegramConnected,
   });
 });
 
@@ -438,13 +451,25 @@ app.delete('/api/crews/:id', (req, res) => {
 // ───── Chat ─────
 app.post('/api/chat/message', async (req, res) => {
   try {
-    const { text } = req.body as { text: string };
+    const { text, attachments } = req.body as { text: string; attachments?: { name: string; content: string }[] };
     if (!text || typeof text !== 'string') { res.status(400).json({ error: 'text-required' }); return; }
     const eng = getEngine();
+    // Auto-create agent if none exists (first message in session)
+    if (!eng.agent) {
+      getOrCreateAgent();
+    }
     const agent = eng.agent;
     if (!agent) { res.status(400).json({ error: 'no-session' }); return; }
     ensureSubscribed();
-    const message = await agent.sendMessage(text);
+
+    // Build the full message content with attachments if provided
+    let fullText = text;
+    if (attachments && attachments.length > 0) {
+      const attachmentSection = attachments.map(a => `\n\n--- File: ${a.name} ---\n${a.content}`).join('');
+      fullText = text + attachmentSection;
+    }
+
+    const message = await agent.sendMessage(fullText);
     res.json({ ok: true, message });
   } catch (e: unknown) {
     res.status(500).json({ error: e instanceof Error ? e.message : 'chat-failed' });
@@ -490,8 +515,6 @@ app.post('/api/chat/clear', (_req, res) => {
 // ───── SSE Chat Stream ─────
 app.get('/api/chat/stream', (req, res) => {
   const eng = getEngine();
-  const agent = eng.agent;
-  if (!agent) { res.status(400).json({ error: 'no-session' }); return; }
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -510,8 +533,17 @@ app.get('/api/chat/stream', (req, res) => {
     sendEvent('telemetry', ev);
   });
 
+  // Also subscribe to agent events if agent exists
+  let agentUnsub: (() => void) | null = null;
+  if (eng.agent) {
+    agentUnsub = eng.agent.events.on((event) => {
+      sendEvent('telemetry', event);
+    });
+  }
+
   req.on('close', () => {
     unsub();
+    agentUnsub?.();
     res.end();
   });
 });
@@ -824,7 +856,9 @@ app.post('/api/telegram/start', async (req, res) => {
         eng.pluginRegistry.updateConfig('telegram', { botToken: token });
       }
     }
-    res.json({ ok: true, message: 'Token saved. Telegram plugin configured.' });
+    // Auto-enable the plugin
+    eng.pluginRegistry.enable('telegram');
+    res.json({ ok: true, message: 'Token saved. Telegram plugin configured and enabled.' });
   } catch (e: unknown) {
     res.status(400).json({ error: e instanceof Error ? e.message : 'save-failed' });
   }
@@ -1108,7 +1142,39 @@ app.get('/api/tools', (_req, res) => {
   } else if (enabledParam === 'false') {
     tools = tools.filter((t) => disabled.includes(t.id));
   }
-  res.json(tools);
+  // Always include enabled status
+  res.json(tools.map((t) => ({ ...t, enabled: !disabled.includes(t.id) })));
+});
+
+app.post('/api/tools/bulk-toggle', (req, res) => {
+  try {
+    const eng = getEngine();
+    const { ids, enabled } = req.body as { ids?: string[]; enabled: boolean; category?: string };
+    const cfg = eng.configManager.load();
+    const disabledSet = new Set(cfg.ui?.disabledTools || []);
+
+    let targetIds = ids;
+    if (!targetIds) {
+      // If no ids but category provided, toggle all in category
+      const category = req.body.category as string | undefined;
+      const allTools = eng.toolkit.registry.list();
+      targetIds = category
+        ? allTools.filter((t) => t.category === category).map((t) => t.id)
+        : allTools.map((t) => t.id);
+    }
+
+    for (const id of targetIds) {
+      if (enabled) disabledSet.delete(id);
+      else disabledSet.add(id);
+    }
+
+    cfg.ui = cfg.ui || {};
+    cfg.ui.disabledTools = [...disabledSet];
+    eng.configManager.save(cfg);
+    res.json({ ok: true, toggled: targetIds.length, enabled });
+  } catch {
+    res.status(500).json({ error: 'bulk-toggle-failed' });
+  }
 });
 
 app.get('/api/tools/categories', (_req, res) => {

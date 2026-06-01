@@ -23,7 +23,7 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
 // ─── Auth ───
 export const auth = {
   check: () => request<{ hasRootUser: boolean }>('/auth/check'),
-  status: () => request<{ authenticated: boolean; username?: string }>('/auth/status'),
+  status: () => request<{ isAuthenticated: boolean; username?: string | null }>('/auth/status'),
   setup: (username: string, password: string) => request<{ ok: boolean }>('/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
   login: (username: string, password: string) => request<{ ok: boolean; username: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
@@ -43,10 +43,10 @@ export const health = {
 
 // ─── Providers ───
 export const providers = {
-  available: () => request<ProviderInfo[]>('/providers/available'),
-  configured: () => request<ConfiguredProvider[]>('/providers'),
-  validate: (provider: string, apiKey: string, baseUrl?: string) => request<{ valid: boolean; error?: string }>('/provider/validate', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl }) }),
-  configure: (provider: string, apiKey: string, baseUrl?: string) => request<{ ok: boolean }>('/provider/configure', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl }) }),
+  available: () => request<{ providers: ProviderInfo[] }>('/providers/available').then(r => r.providers),
+  configured: () => request<{ active: string; providers: ConfiguredProvider[] }>('/providers').then(r => r.providers),
+  validate: (provider: string, apiKey?: string, baseUrl?: string) => request<{ valid: boolean; error?: string }>('/provider/validate', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl }) }),
+  configure: (provider: string, apiKey?: string, baseUrl?: string) => request<{ ok: boolean }>('/provider/configure', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl }) }),
   models: (provider: string) => request<ModelInfo[]>('/provider/models?provider=' + provider),
   createProfile: (providerId: string, label: string, apiKey: string, baseUrl?: string) => request<{ ok: boolean }>('/provider/profile', { method: 'POST', body: JSON.stringify({ providerId, label, apiKey, baseUrl }) }),
   switchProfile: (providerId: string, profileId: string) => request<{ ok: boolean }>('/provider/profile/switch', { method: 'POST', body: JSON.stringify({ providerId, profileId }) }),
@@ -60,7 +60,7 @@ export const models = {
 
 // ─── Crews ───
 export const crews = {
-  list: () => request<Crew[]>('/crews'),
+  list: () => request<{ crews: Crew[]; activeId?: string }>('/crews').then(r => r.crews ?? []),
   current: () => request<Crew>('/crew/current'),
   switch: (id: string) => request<{ ok: boolean }>('/crew/switch', { method: 'POST', body: JSON.stringify({ id }) }),
   create: (data: CrewInput) => request<{ ok: boolean; crew: Crew }>('/crews', { method: 'POST', body: JSON.stringify(data) }),
@@ -70,7 +70,7 @@ export const crews = {
 
 // ─── Chat ───
 export const chat = {
-  send: (text: string) => request<{ ok: boolean; message: ChatMessage }>('/chat/message', { method: 'POST', body: JSON.stringify({ text }) }),
+  send: (text: string, attachments?: { name: string; content: string }[]) => request<{ ok: boolean; message: ChatMessage }>('/chat/message', { method: 'POST', body: JSON.stringify({ text, attachments }) }),
   cancel: () => request<{ ok: boolean }>('/chat/cancel', { method: 'POST' }),
   history: () => request<ChatMessage[]>('/chat/history'),
   clear: () => request<{ ok: boolean }>('/chat/clear', { method: 'POST' }),
@@ -97,13 +97,14 @@ export const tools = {
   categories: () => request<ToolCategory[]>('/tools/categories'),
   get: (id: string) => request<ToolInfo>(`/tools/${id}`),
   toggle: (id: string, enabled: boolean) => request<{ ok: boolean }>(`/tools/${id}`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
+  bulkToggle: (opts: { ids?: string[]; category?: string; enabled: boolean }) => request<{ ok: boolean; toggled: number }>('/tools/bulk-toggle', { method: 'POST', body: JSON.stringify(opts) }),
 };
 
 // ─── Plugins ───
 export const plugins = {
-  list: () => request<PluginInfo[]>('/plugins'),
-  available: () => request<PluginInfo[]>('/plugins/available'),
-  installed: () => request<PluginInfo[]>('/plugins/installed'),
+  list: () => request<{ plugins: PluginInfo[] }>('/plugins').then(r => r.plugins ?? []),
+  available: () => request<{ plugins: PluginInfo[] }>('/plugins/available').then(r => r.plugins ?? []),
+  installed: () => request<{ plugins: PluginInfo[] }>('/plugins/installed').then(r => r.plugins ?? []),
   install: (id: string) => request<{ ok: boolean }>(`/plugins/${id}/install`, { method: 'POST' }),
   uninstall: (id: string) => request<{ ok: boolean }>(`/plugins/${id}/uninstall`, { method: 'POST' }),
   toggle: (id: string) => request<{ ok: boolean }>(`/plugins/${id}/toggle`, { method: 'POST' }),
@@ -113,7 +114,7 @@ export const plugins = {
 
 // ─── MCP ───
 export const mcp = {
-  servers: () => request<MCPServer[]>('/mcp/servers'),
+  servers: () => request<{ servers: MCPServer[] }>('/mcp/servers').then(r => r.servers ?? []),
   add: (data: MCPServerInput) => request<{ ok: boolean }>('/mcp/servers', { method: 'POST', body: JSON.stringify(data) }),
   restart: (id: string) => request<{ ok: boolean }>(`/mcp/servers/${id}/restart`, { method: 'POST' }),
   status: (id: string) => request<MCPServerStatus>(`/mcp/servers/${id}/status`),
@@ -122,7 +123,7 @@ export const mcp = {
 
 // ─── RAG ───
 export const rag = {
-  status: () => request<{ enabled: boolean; chunkCount: number }>('/rag/status'),
+  status: () => request<{ enabled: boolean; indexedChunks: number }>('/rag/status').then(r => ({ enabled: r.enabled, chunkCount: r.indexedChunks ?? 0 })),
   index: (content: string, metadata?: Record<string, string>) => request<{ ok: boolean }>('/rag/index', { method: 'POST', body: JSON.stringify({ content, metadata }) }),
   search: (query: string, topK?: number) => request<RAGResult[]>('/rag/search', { method: 'POST', body: JSON.stringify({ query, topK }) }),
   clear: () => request<{ ok: boolean }>('/rag/clear', { method: 'POST' }),
@@ -154,7 +155,7 @@ export const bridges = {
 
 // ─── Scheduler ───
 export const scheduler = {
-  jobs: () => request<SchedulerJob[]>('/scheduler/jobs'),
+  jobs: () => request<{ jobs: SchedulerJob[] }>('/scheduler/jobs').then(r => r.jobs ?? []),
   create: (name: string, cron: string, instruction: string) => request<{ ok: boolean }>('/scheduler/jobs', { method: 'POST', body: JSON.stringify({ name, cron, instruction }) }),
   delete: (id: string) => request<{ ok: boolean }>(`/scheduler/jobs/${id}`, { method: 'DELETE' }),
   parseCron: (natural: string) => request<{ cron: string; description: string }>('/scheduler/parse-cron', { method: 'POST', body: JSON.stringify({ natural }) }),
@@ -162,27 +163,49 @@ export const scheduler = {
 
 // ─── Todos ───
 export const todos = {
-  list: (sessionId?: string) => request<TodoItem[]>(`/todos${sessionId ? '?sessionId=' + sessionId : ''}`),
+  list: (sessionId?: string) => request<{ todos: TodoItem[] }>(`/todos${sessionId ? '?sessionId=' + sessionId : ''}`).then(r => r.todos ?? []),
   save: (items: TodoItem[], sessionId?: string) => request<{ ok: boolean }>('/todos', { method: 'POST', body: JSON.stringify({ items, sessionId }) }),
   update: (itemId: string, data: Partial<TodoItem>) => request<{ ok: boolean }>(`/todos/${itemId}`, { method: 'PUT', body: JSON.stringify(data) }),
 };
 
 // ─── SSE Stream Connection ───
 export function connectSSE(onEvent: (event: TelemetryEvent) => void): () => void {
-  const es = new EventSource(`${BASE}/chat/stream`, { withCredentials: true });
+  let es: EventSource | null = null;
+  let closed = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryCount = 0;
 
-  es.addEventListener('telemetry', (e) => {
-    try {
-      const data = JSON.parse(e.data) as TelemetryEvent;
-      onEvent(data);
-    } catch { /* ignore parse errors */ }
-  });
+  function connect() {
+    if (closed) return;
+    es = new EventSource(`${BASE}/chat/stream`, { withCredentials: true });
 
-  es.onerror = () => {
-    // Reconnect handled automatically by EventSource
+    es.addEventListener('telemetry', (e) => {
+      try {
+        retryCount = 0; // Reset on successful message
+        const data = JSON.parse(e.data) as TelemetryEvent;
+        onEvent(data);
+      } catch { /* ignore parse errors */ }
+    });
+
+    es.onopen = () => { retryCount = 0; };
+
+    es.onerror = () => {
+      es?.close();
+      if (!closed) {
+        retryCount++;
+        const delay = Math.min(3000 * Math.pow(2, retryCount - 1), 30000); // Exponential backoff, max 30s
+        retryTimer = setTimeout(connect, delay);
+      }
+    };
+  }
+
+  connect();
+
+  return () => {
+    closed = true;
+    if (retryTimer) clearTimeout(retryTimer);
+    es?.close();
   };
-
-  return () => es.close();
 }
 
 // ─── Types ───
@@ -208,8 +231,10 @@ export interface ProviderSettings {
 export interface ProviderInfo {
   id: string;
   name: string;
-  description: string;
+  description?: string;
   type: 'cloud' | 'local';
+  requiresApiKey?: boolean;
+  defaultBaseUrl?: string;
   models?: ModelInfo[];
 }
 
@@ -223,7 +248,9 @@ export interface ConfiguredProvider {
 export interface ModelInfo {
   id: string;
   name: string;
+  providerId?: string;
   contextWindow?: number;
+  capabilities?: string[];
   pricing?: { input: number; output: number };
 }
 
@@ -336,6 +363,8 @@ export interface BridgeStatus {
   configured: boolean;
   connected: boolean;
   error?: string;
+  token?: string;
+  chatId?: string;
   [key: string]: unknown;
 }
 
@@ -366,11 +395,15 @@ export interface TodoItem {
 
 export interface HealthStatus {
   status: string;
+  version: string;
   uptime: number;
   sessionCount: number;
   crewCount: number;
+  activeCrew: string | null;
   agentActive: boolean;
+  telegramConnected: boolean;
   memory: { rss: number; heapUsed: number };
+  config?: { provider?: string; model?: string; user?: string };
 }
 
 export interface TelemetryEvent {
