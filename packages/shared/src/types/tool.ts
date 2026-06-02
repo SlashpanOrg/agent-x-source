@@ -1,3 +1,5 @@
+import type { ParallelMode } from './communication.js';
+
 export interface ToolDefinition {
   id: string;
   name: string;
@@ -9,6 +11,11 @@ export interface ToolDefinition {
   examples?: string[];
   composable: boolean;
   source: 'builtin' | 'plugin' | 'mcp';
+  parallelMode?: ParallelMode;
+  isInteractive?: boolean;
+  isDestructive?: boolean;
+  maxRetries?: number;
+  timeoutMs?: number;
 }
 
 export type ToolCategory =

@@ -204,14 +204,18 @@ export function SetupWizard() {
   const handleComplete = async () => {
     setLoading(true);
     try {
-      await config.update({ setupComplete: true, user: { callsign } });
+      const result = await config.update({ setupComplete: true, user: { callsign } });
+      if (!result.ok) {
+        setError('Failed to save setup. Config may be read-only. Ensure Docker volume mount is writable: remove :ro from config mount in docker-compose.yml.');
+        setLoading(false);
+        return;
+      }
       const cfg = await config.get();
       setConfig(cfg);
       clearProgress();
       navigate('/');
-    } catch {
-      clearProgress();
-      navigate('/');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Setup could not be saved. Please check your configuration.');
     } finally {
       setLoading(false);
     }

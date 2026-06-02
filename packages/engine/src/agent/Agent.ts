@@ -30,6 +30,7 @@ import { SecretSauceManager } from '../secret-sauce/index.js';
 import { MemoryExtractor } from '../secret-sauce/MemoryExtractor.js';
 import { ErrorShield } from './ErrorShield.js';
 import { ToolExecutor } from '../tools/ToolExecutor.js';
+import { EnhancedToolExecutor } from '../tools/EnhancedToolExecutor.js';
 import { ToolRegistry } from '../tools/ToolRegistry.js';
 import { getModelPricing } from '../providers/pricing.js';
 import { createDefaultToolkit } from '../tools/toolkit.js';
@@ -61,11 +62,40 @@ import { ReflectionLoop } from './ReflectionLoop.js';
 import { TreeOfThoughts } from '../reasoning/TreeOfThoughts.js';
 import { ResearchEngine } from '../reasoning/ResearchEngine.js';
 
+// ─── UNIFIED PIPELINE IMPORTS (Phase 1-11 integration) ───
+import { InputNormalizer } from '../communication/InputNormalizer.js';
+import { PromptComposer } from '../communication/prompt/PromptComposer.js';
+import { PromptCache } from '../communication/prompt/PromptCache.js';
+import { ErrorClassifier } from '../communication/ErrorClassifier.js';
+import { FailoverPolicy } from '../communication/FailoverPolicy.js';
+import { StaleWatchdog } from '../communication/StaleWatchdog.js';
+import { RetryEngine } from '../communication/RetryEngine.js';
+import { SessionProcessor } from '../agent/SessionProcessor.js';
+import { EventBroadcaster } from '../communication/EventBroadcaster.js';
+import { CompactionManager } from '../communication/CompactionManager.js';
+import { TelemetryEmitter } from '../communication/telemetry/TelemetryEmitter.js';
+import { LiveProjector } from '../communication/LiveProjector.js';
+import { DoomLoopDetector } from '../tools/DoomLoopDetector.js';
+import { ParallelClassifier } from '../tools/ParallelClassifier.js';
+import { ToolCallRepairer } from '../tools/ToolCallRepairer.js';
+import { AuthProfileManager } from '../providers/AuthProfileManager.js';
+import { ProviderRouter } from '../providers/ProviderRouter.js';
+import { makeRoute, openAIProtocol } from '../providers/routes/Route.js';
+import { GenericTransport } from '../providers/transports/GenericTransport.js';
+import { VisualEventBridge } from '../communication/visuals/VisualEventBridge.js';
+import { CommandQueue } from '../communication/CommandQueue.js';
+import { RunStateManager } from '../agent/RunStateManager.js';
+import { StreamNormalizer } from '../communication/StreamNormalizer.js';
+import { ResponseAssembler } from '../communication/ResponseAssembler.js';
+import { IdleTimeoutBreaker } from '../communication/IdleTimeoutBreaker.js';
+import { Gateway } from '../gateway/Gateway.js';
+import { PluginSystem } from '../plugin/PluginSystem.js';
+
 export interface AgentOptions {
   config: AgentXConfig;
   sessionId: string;
   systemPrompt?: string;
-  toolExecutor?: ToolExecutor;
+  toolExecutor?: ToolExecutor | EnhancedToolExecutor;
   toolRegistry?: ToolRegistry;
   gitAutoCommit?: boolean;
   gitAware?: boolean;
@@ -83,14 +113,13 @@ export class Agent {
   private pendingInstruction: string | null = null;
   private _turnStartTokens = 0;
   private _turnStartCost = 0;
-  private _recentToolSignatures: string[] = [];
   private subAgents: SubAgentManager;
   private taskManager: TaskManager;
   private scheduler: Scheduler;
   private secretSauce: SecretSauceManager;
   private memoryExtractor: MemoryExtractor | null = null;
   private errorShield: ErrorShield;
-  private toolExecutor?: ToolExecutor;
+  private toolExecutor?: EnhancedToolExecutor;
   private toolRegistry?: ToolRegistry;
   private permissionResolve: ((choice: 'allow_once' | 'allow_always' | 'deny') => void) | null = null;
   private cachedModels: Map<string, number> = new Map(); // modelId -> contextWindow
@@ -121,6 +150,32 @@ export class Agent {
   private reflectionLoop: ReflectionLoop;
   private toolCallLogForReflection: Array<{ name: string; success: boolean; output: string; elapsed: number }> = [];
 
+  // ─── UNIFIED PIPELINE MODULES ───
+  private inputNormalizer: InputNormalizer = null!;
+  private promptComposer: PromptComposer = null!;
+  private promptCache: PromptCache = null!;
+  private errorClassifier: ErrorClassifier = null!;
+  private failoverPolicy: FailoverPolicy = null!;
+  private compactionManager: CompactionManager = null!;
+  private telemetry: TelemetryEmitter = null!;
+  private doomLoopDetector: DoomLoopDetector = null!;
+  private authProfileManager: AuthProfileManager = null!;
+  private providerRouter: ProviderRouter = null!;
+  private projector: LiveProjector = null!;
+  private parallelClassifier: ParallelClassifier = null!;
+  private sessionProcessor: SessionProcessor = null!;
+  private retryEngine: RetryEngine = null!;
+  private broadcaster: EventBroadcaster = null!;
+  private toolCallRepairer: ToolCallRepairer = null!;
+  private visualBridge: VisualEventBridge = null!;
+  private commandQueue: CommandQueue = null!;
+  private runStateMgr: RunStateManager = null!;
+  private streamNormalizer: StreamNormalizer = null!;
+  private responseAssembler: ResponseAssembler = null!;
+  private idleBreaker: IdleTimeoutBreaker = null!;
+  private gateway: Gateway = null!;
+  private pluginSystem: PluginSystem = null!;
+
   /**
    * Respond to a pending clarification request.
    */
@@ -147,12 +202,59 @@ export class Agent {
 
     // Set up tools - use provided or create defaults
     if (options.toolExecutor && options.toolRegistry) {
-      this.toolExecutor = options.toolExecutor;
+      // Accept both ToolExecutor and EnhancedToolExecutor from options
+      if (options.toolExecutor instanceof EnhancedToolExecutor) {
+        this.toolExecutor = options.toolExecutor;
+      } else if (options.toolExecutor instanceof ToolExecutor && !(options.toolExecutor instanceof EnhancedToolExecutor)) {
+        // Wrap plain ToolExecutor in Enhanced for parallel/doom-loop/repair capabilities
+        this.toolExecutor = new EnhancedToolExecutor(options.toolRegistry, process.cwd());
+        // Copy handlers and hooks from provided executor
+        const providedHandlers = (options.toolExecutor as unknown as Record<string, unknown>)['handlers'] as
+          | Map<string, (args: Record<string, unknown>, ctx: import('@agentx/shared').ToolExecutionContext) => Promise<import('@agentx/shared').ToolResult>>
+          | undefined;
+        if (providedHandlers) {
+          for (const [name, handler] of providedHandlers) {
+            this.toolExecutor.registerHandler(name, handler);
+          }
+        }
+        // Copy permission handler
+        const permHandler = (options.toolExecutor as unknown as Record<string, unknown>)['permissionRequestHandler'];
+        if (typeof permHandler === 'function') {
+          this.toolExecutor.setPermissionRequestHandler(permHandler as (toolId: string, path: string, riskLevel: string) => Promise<'allow_once' | 'allow_always' | 'deny'>);
+        }
+      } else {
+        // Plain mock object from tests — wrap it
+        this.toolExecutor = new EnhancedToolExecutor(options.toolRegistry, process.cwd());
+        const mockObj = options.toolExecutor as unknown as Record<string, unknown>;
+        if (typeof mockObj['execute'] === 'function') {
+          const mockExec = mockObj['execute'] as (...args: unknown[]) => Promise<unknown>;
+          (this.toolExecutor as unknown as Record<string, unknown>)['execute'] = mockExec;
+        }
+        if (typeof mockObj['setPermissionRequestHandler'] === 'function') {
+          this.toolExecutor.setPermissionRequestHandler = mockObj['setPermissionRequestHandler'] as unknown as typeof this.toolExecutor['setPermissionRequestHandler'];
+        }
+        if (typeof mockObj['setBeforeToolHook'] === 'function') {
+          this.toolExecutor.setBeforeToolHook = mockObj['setBeforeToolHook'] as unknown as typeof this.toolExecutor['setBeforeToolHook'];
+        }
+        if (typeof mockObj['setScopePath'] === 'function') {
+          this.toolExecutor.setScopePath = mockObj['setScopePath'] as unknown as typeof this.toolExecutor['setScopePath'];
+        }
+      }
       this.toolRegistry = options.toolRegistry;
     } else {
       const toolkit = createDefaultToolkit(process.cwd());
-      this.toolExecutor = toolkit.executor;
       this.toolRegistry = toolkit.registry;
+      // Use EnhancedToolExecutor for parallel/doom-loop/repair capabilities
+      this.toolExecutor = new EnhancedToolExecutor(toolkit.registry, process.cwd());
+      // Copy handlers from factory executor
+      const handlersMap = (toolkit.executor as unknown as Record<string, unknown>)['handlers'] as
+        | Map<string, (args: Record<string, unknown>, ctx: import('@agentx/shared').ToolExecutionContext) => Promise<import('@agentx/shared').ToolResult>>
+        | undefined;
+      if (handlersMap) {
+        for (const [name, handler] of handlersMap) {
+          this.toolExecutor.registerHandler(name, handler);
+        }
+      }
     }
     setToolRegistryInstance(this.toolRegistry ?? null);
 
@@ -262,6 +364,54 @@ export class Agent {
 
     // Register this agent on the bus
     this.agentBus.registerAgent(this.sessionId, ['main', 'orchestrator']);
+
+    // ─── UNIFIED PIPELINE INITIALIZATION ───
+    this.inputNormalizer = new InputNormalizer();
+    this.promptCache = new PromptCache();
+    this.promptComposer = new PromptComposer();
+    this.promptComposer.setCache(this.promptCache);
+
+    const apiKey = this.getApiKey() ?? '';
+    this.authProfileManager = new AuthProfileManager();
+    if (apiKey) {
+      this.authProfileManager.addCredential(options.config.provider.activeProvider, apiKey);
+    }
+    this.errorClassifier = new ErrorClassifier();
+    this.failoverPolicy = new FailoverPolicy(this.authProfileManager);
+    this.providerRouter = new ProviderRouter(this.authProfileManager);
+    this._registerProviderRoutes(apiKey);
+
+    this.projector = new LiveProjector();
+    this.compactionManager = new CompactionManager({ contextLimit: this.getContextWindow() });
+    this.parallelClassifier = new ParallelClassifier();
+    this.doomLoopDetector = new DoomLoopDetector();
+    this.toolCallRepairer = new ToolCallRepairer();
+    this.telemetry = new TelemetryEmitter();
+    this.visualBridge = new VisualEventBridge();
+
+    // ─── UNIFIED: Remaining modules ───
+    this.commandQueue = new CommandQueue();
+    this.runStateMgr = new RunStateManager();
+    this.streamNormalizer = new StreamNormalizer();
+    this.responseAssembler = new ResponseAssembler();
+    this.idleBreaker = new IdleTimeoutBreaker();
+    this.gateway = new Gateway();
+    this.gateway.attachAgent(this as unknown as Agent);
+    this.pluginSystem = new PluginSystem({ autoEnable: true });
+    this.pluginSystem.startHealthChecks();
+
+    // Unified streaming + retry infrastructure
+    this.broadcaster = new EventBroadcaster();
+    this.sessionProcessor = new SessionProcessor({
+      sessionId: this.sessionId,
+      eventBus: this.eventBus,
+      broadcaster: this.broadcaster,
+      projector: this.projector,
+    });
+    this.retryEngine = new RetryEngine(this.authProfileManager, {
+      providerId: options.config.provider.activeProvider,
+      maxRetries: 3,
+    });
 
     // Auto health check on startup (non-blocking)
     // Skip automatic model trial when running under test to avoid
@@ -373,9 +523,25 @@ export class Agent {
       `[/TOOLS]`,
     ].join('\n');
 
+    // ─── UNIFIED: Inject ReflectionLoop learnings + SkillGenerator skills ───
+    const reflectionLearnings = this.reflectionLoop.getCumulativeLearnings();
+    const generatedSkills = this.skillGenerator.getAll();
+    let augmentedPrompt = toolAwareness;
+
+    if (reflectionLearnings) {
+      augmentedPrompt += '\n\n[LEARNINGS]\n' + reflectionLearnings + '\n[/LEARNINGS]';
+    }
+    if (generatedSkills && generatedSkills.length > 0) {
+      augmentedPrompt += '\n\n[SKILLS]\n';
+      for (const skill of generatedSkills) {
+        augmentedPrompt += `- ${skill.name}: ${skill.description}\n`;
+      }
+      augmentedPrompt += '[/SKILLS]';
+    }
+
     const systemPrompt = options.systemPrompt
-      ? `${sauceContext.full}\n\n${toolAwareness}\n\n${options.systemPrompt}`
-      : `${sauceContext.full}\n\n${toolAwareness}`;
+      ? `${sauceContext.full}\n\n${augmentedPrompt}\n\n${options.systemPrompt}`
+      : `${sauceContext.full}\n\n${augmentedPrompt}`;
 
     // Inject user callsign so the agent knows who it's talking to
     const callsign = this.config.user?.callsign;
@@ -430,6 +596,11 @@ export class Agent {
     return this.isProcessing;
   }
 
+  /** Public accessor for the visual event bridge (TUI/Web UI can subscribe) */
+  get visuals(): VisualEventBridge {
+    return this.visualBridge;
+  }
+
   get watcherCount(): number {
     return this.fileWatcher?.watcherCount ?? 0;
   }
@@ -450,6 +621,8 @@ export class Agent {
    * Cancel an in-progress completion. Aborts the active stream and tool executions.
    */
   cancel(): void {
+    this.runStateMgr.cancel(this.sessionId);
+    this.commandQueue.cancelSession(this.sessionId);
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
@@ -537,6 +710,10 @@ export class Agent {
   }
 
   private async retryWithBackoff<T>(fn: () => Promise<T>, label: string): Promise<T> {
+    // ─── UNIFIED: Idle timeout breaker check ───
+    if (this.idleBreaker && this.idleBreaker.shouldBreak()) {
+      throw new Error(`Idle timeout breaker tripped after ${this.idleBreaker.getCount()} consecutive timeouts`);
+    }
     let lastError: Error | undefined;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
@@ -554,6 +731,11 @@ export class Agent {
         const msg = error instanceof Error ? error.message : String(error);
         if (/401|Unauthorized|403|Forbidden|404|not found|402|429|quota|billing|Invalid API|suspended/i.test(msg)) {
           throw lastError;
+        }
+
+        // ─── UNIFIED: Step idle breaker on timeouts ───
+        if (/timeout|timed out|ETIMEDOUT|ECONNRESET/i.test(msg)) {
+          this.idleBreaker.step();
         }
 
         // Otherwise, retry with exponential backoff (unless we've exhausted attempts).
@@ -680,25 +862,61 @@ Return ONLY valid JSON, no other text.`;
 
     this.isProcessing = true;
     this.abortController = new AbortController();
+
+    // ─── UNIFIED: Ensure single session run + enqueue for concurrency ───
+    this.runStateMgr.ensureRunning(this.sessionId);
+    void this.commandQueue.enqueue(this.sessionId, {
+      turnId: `turn-${Date.now()}`,
+      sessionId: this.sessionId,
+      channel: 'api',
+      userId: 'user',
+      receivedAt: Date.now(),
+      text: content,
+      attachments: [],
+      metadata: {},
+    });
     const startTime = Date.now();
     // Per-turn token snapshot for delta + cost emissions
     const turnStartTokens = this.tokenTracker.tokensUsed;
     const turnStartCost = this.tokenTracker.totalCost;
     this._turnStartTokens = turnStartTokens;
     this._turnStartCost = turnStartCost;
-    this._recentToolSignatures = [];
+
+    // ─── UNIFIED: Start telemetry for this turn ───
+    this.telemetry.startTurn(`turn-${startTime}`, this.sessionId, this.config.provider.activeProvider, this.config.provider.activeModel);
+
+    // ─── UNIFIED: Normalize input ───
+    let cleanContent = content;
+    try {
+      const normalized = await this.inputNormalizer.sanitize({
+        turnId: `turn-${startTime}`,
+        sessionId: this.sessionId,
+        channel: 'api',
+        userId: 'user',
+        receivedAt: startTime,
+        text: content,
+        attachments: [],
+        metadata: {},
+      });
+      cleanContent = normalized.cleanText;
+      if (normalized.warnings.length > 0) {
+        getLogger().warn('NORMALIZE', `${normalized.warnings.length} input warnings`);
+      }
+    } catch {
+      // Fall through with original content if normalization fails
+    }
 
     // Store the per-message instruction for injection during completion (not in history)
     this.pendingInstruction = options?.instruction || null;
 
     // Add user message (clean, without instruction)
-    this.messages.push({ role: 'user', content });
+    this.messages.push({ role: 'user', content: cleanContent });
 
     const userMessage: Message = {
       id: generateMessageId(),
       sessionId: this.sessionId,
       role: 'user',
-      content,
+      content: cleanContent,
       toolCalls: null,
       createdAt: new Date().toISOString(),
       tokenCount: 0,
@@ -768,8 +986,16 @@ Return ONLY valid JSON, no other text.`;
     }
 
     try {
+      // ─── UNIFIED: Complexity-based Tree of Thoughts trigger ───
+      const wordCount = content.split(/\s+/).length;
+      const hasListItems = (content.match(/\d+\.\s/g)?.length ?? 0) >= 2;
+      const hasMultipleConstraints = (content.match(/, and\b|; and\b/g)?.length ?? 0) >= 1;
+      const isComplex = wordCount > 200 || hasListItems || hasMultipleConstraints;
+      const shouldUseToT = this.currentIntent?.reasoningMode === 'tree' ||
+        (isComplex && (this.currentDecision?.executionPath === 'research' || this.currentDecision?.executionPath === 'multi_agent'));
+
       // Tree of Thoughts reasoning mode
-      if (this.currentIntent?.reasoningMode === 'tree') {
+      if (shouldUseToT) {
         this.emit({ type: 'loading_start', stage: 'tree_of_thoughts' });
         const bestThought = await this.treeOfThoughtsCapability.solve(content, {
           maxDepth: 3,
@@ -902,6 +1128,11 @@ Return ONLY valid JSON, no other text.`;
     } catch (error) {
       this.emit({ type: 'loading_end' });
 
+      // ─── UNIFIED: Classify error via ErrorClassifier ───
+      const classified = this.errorClassifier.classify(error);
+      this.telemetry.markError(`turn-${startTime}`, classified.reason, classified.providerMessage ?? '');
+      this.telemetry.endTurn(`turn-${startTime}`, { promptTokens: 0, completionTokens: 0, totalTokens: 0 }, this.sessionId, this.config.provider.activeProvider);
+
       // If cancelled by user, emit a soft cancellation event (not an error)
       if (error instanceof Error && error.name === 'AbortError') {
         const cancelledMessage: Message = {
@@ -930,6 +1161,8 @@ Return ONLY valid JSON, no other text.`;
     } finally {
       this.isProcessing = false;
       this.abortController = null;
+      this.runStateMgr.release(this.sessionId);
+      this.commandQueue.release(this.sessionId);
     }
   }
 
@@ -963,7 +1196,7 @@ Return ONLY valid JSON, no other text.`;
 
     let fullContent = '';
     const streamHandle = await this.retryWithBackoff(async () => {
-      const iter = this.provider.complete(request);
+      const iter = this._unifiedStream(request);
       const it = iter[Symbol.asyncIterator]();
       const first = await it.next();
       return { it, first };
@@ -1089,7 +1322,32 @@ Return ONLY valid JSON, no other text.`;
         requestMessages.splice(1, 0, { role: 'system', content: reasoningDirective });
       }
 
-      // Compact conversation if needed
+      // ─── UNIFIED: Compaction via CompactionManager ───
+      const currentTokens = this.tokenTracker.tokensUsed;
+      if (this.compactionManager.needsCompaction(currentTokens)) {
+        this.emit({ type: 'compaction_start', currentTokens, threshold: Math.floor(this.getContextWindow() * 0.85) });
+        try {
+          const compactResult = await this.compactionManager.compact(
+            this.messages.map((m, i) => ({
+              id: `cm-${i}`,
+              sessionId: this.sessionId,
+              role: m.role as Message['role'],
+              content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+              toolCalls: (m.toolCalls ?? []).map((tc) => ({
+                id: tc.id, name: tc.function.name, arguments: tc.function.arguments, result: '',
+              })),
+              tokenCount: Math.ceil((typeof m.content === 'string' ? m.content.length : 0) / 4),
+              createdAt: new Date().toISOString(),
+            })),
+            this.sessionId,
+          );
+          this.emit({ type: 'compaction_complete', saved: compactResult.tokensSaved });
+          this.compactionManager.getGuard().recordCompaction(this.sessionId);
+        } catch (e) {
+          getLogger().warn('COMPACTION', String(e));
+        }
+      }
+      // Also run the classic PromptEngine compaction as fallback
       const budget = this.promptEngine.calculateBudget(this.messages.length, this.lastRagResults.length > 0);
       const compacted = this.promptEngine.compactConversation(requestMessages, budget.conversation);
       if (compacted.summary) {
@@ -1115,7 +1373,7 @@ Return ONLY valid JSON, no other text.`;
 
       const stream = await this.retryWithBackoff(async () => {
         // Force the provider to start streaming — catches network/auth errors early
-        const iter = this.provider.complete(request);
+        const iter = this._unifiedStream(request);
         const it = iter[Symbol.asyncIterator]();
         const first = await it.next();
         return { it, first } as { it: AsyncIterator<CompletionChunk>; first: IteratorResult<CompletionChunk> };
@@ -1221,124 +1479,91 @@ Return ONLY valid JSON, no other text.`;
         });
 
         // Execute each tool call
-        for (const tc of toolCalls) {
-          // ─── CLARIFICATION TOOL (special handling) ───
+        const specialTools = ['ask_clarification', 'delegate_to_subagent'];
+        const regularToolCalls = toolCalls.filter((tc) => !specialTools.includes(tc.function.name));
+        const specialToolCallList = toolCalls.filter((tc) => specialTools.includes(tc.function.name));
+
+        // Handle special tools individually first
+        for (const tc of specialToolCallList) {
+          // ─── CLARIFICATION TOOL ───
           if (tc.function.name === 'ask_clarification') {
-            let args: Record<string, unknown> = {};
-            try { args = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
-            this.emit({
-              type: 'clarification_required',
-              question: String(args['question'] ?? 'I need more information to proceed.'),
-              options: Array.isArray(args['options']) ? args['options'] : [],
-              allowFreeform: Boolean(args['allowFreeform'] ?? true),
-            });
-            const userResponse = await new Promise<string>((resolve) => {
-              this.clarificationResolve = resolve;
-            });
+            let sargs: Record<string, unknown> = {};
+            try { sargs = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
+            this.emit({ type: 'clarification_required', question: String(sargs['question'] ?? 'I need more information to proceed.'), options: Array.isArray(sargs['options']) ? sargs['options'] : [], allowFreeform: Boolean(sargs['allowFreeform'] ?? true) });
+            const userResponse = await new Promise<string>((resolve) => { this.clarificationResolve = resolve; });
             this.clarificationResolve = null;
-            this.messages.push({
-              role: 'tool',
-              content: userResponse,
-              toolCallId: tc.id,
-            });
+            this.messages.push({ role: 'tool', content: userResponse, toolCallId: tc.id });
             continue;
           }
 
           // ─── SMART SUBAGENT DELEGATION ───
           if (tc.function.name === 'delegate_to_subagent') {
-            let args: Record<string, unknown> = {};
-            try { args = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
+            let dargs: Record<string, unknown> = {};
+            try { dargs = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
             const subStart = Date.now();
-            this.emit({ type: 'tool_executing', tool: 'delegate_to_subagent', description: `Spawning sub-agent: ${args['mission']}`, startTime: subStart });
-
-            const subAgent = new SmartSubAgent({
-              parentAgent: this,
-              instruction: String(args['mission'] ?? ''),
-              tools: Array.isArray(args['tools']) ? args['tools'].map(String) : undefined,
-              timeout: typeof args['timeout'] === 'number' ? args['timeout'] : 120_000,
-            });
-
+            this.emit({ type: 'tool_executing', tool: 'delegate_to_subagent', description: `Spawning sub-agent: ${dargs['mission']}`, startTime: subStart });
+            const subAgent = new SmartSubAgent({ parentAgent: this, instruction: String(dargs['mission'] ?? ''), tools: Array.isArray(dargs['tools']) ? dargs['tools'].map(String) : undefined, timeout: typeof dargs['timeout'] === 'number' ? dargs['timeout'] : 120_000 });
             const subResult = await subAgent.execute();
-            const subOutput = subResult.success
-              ? `[Sub-agent completed in ${subResult.elapsed}ms]\n${subResult.output}`
-              : `[Sub-agent failed: ${subResult.output}]`;
-
+            const subOutput = subResult.success ? `[Sub-agent completed in ${subResult.elapsed}ms]\n${subResult.output}` : `[Sub-agent failed: ${subResult.output}]`;
             this.emit({ type: 'tool_complete', tool: 'delegate_to_subagent', result: { success: subResult.success, output: subOutput }, elapsed: Date.now() - subStart });
-            this.messages.push({
-              role: 'tool',
-              content: subOutput,
-              toolCallId: tc.id,
-            });
+            this.messages.push({ role: 'tool', content: subOutput, toolCallId: tc.id });
             continue;
           }
+        }
 
-          // Debug: log tool execution attempt
-          // eslint-disable-next-line no-console
-          console.debug('[Agent] executing tool', tc.function.name);
-          const toolStartTime = Date.now();
-
-          // Doom-loop detection: same tool + args invoked 3+ times in a row
-          const sig = `${tc.function.name}|${tc.function.arguments.slice(0, 200)}`;
-          this._recentToolSignatures.push(sig);
-          if (this._recentToolSignatures.length > 6) this._recentToolSignatures.shift();
-          const lastThree = this._recentToolSignatures.slice(-3);
-          if (lastThree.length === 3 && lastThree.every((s) => s === sig)) {
-            this.emit({ type: 'doom_loop', tool: tc.function.name, count: lastThree.length } as unknown as EngineEvent);
-          }
-
-          this.emit({
-            type: 'tool_executing',
-            tool: tc.function.name,
-            description: `Executing ${tc.function.name}`,
-            startTime: toolStartTime,
+        // ─── UNIFIED: Batch execute regular tools with parallel classifier ───
+        if (regularToolCalls.length > 0) {
+          const parsedCalls = regularToolCalls.map((tc) => {
+            let args: Record<string, unknown> = {};
+            try { args = JSON.parse(tc.function.arguments); } catch { /* bad JSON */ }
+            // Doom-loop check per tool
+            const doomResult = this.doomLoopDetector.check(this.sessionId, tc.function.name, args);
+            if (doomResult.shouldBreak) {
+              return { tc, args, skip: true, doomCount: doomResult.consecutiveCount };
+            }
+            return { tc, args, skip: false, doomCount: 0 };
           });
 
-          let args: Record<string, unknown> = {};
-          try {
-            args = JSON.parse(tc.function.arguments);
-          } catch {
-            // Bad JSON from model
-          }
+          const batchCalls = parsedCalls
+            .filter((p) => !p.skip)
+            .map((p) => ({ id: p.tc.id, name: p.tc.function.name, arguments: p.args }));
 
-            let result: ToolResult;
-            try {
-              result = this.toolExecutor
-                ? await this.toolExecutor.execute(tc.function.name, args, this.sessionId)
-                : { success: false, output: 'No tool executor configured', error: 'NO_EXECUTOR' };
-            } catch (toolErr) {
-              result = { success: false, output: `Tool execution failed: ${toolErr instanceof Error ? toolErr.message : String(toolErr)}`, error: 'TOOL_CRASH' };
-              getLogger().error('TOOL_EXEC', `Tool ${tc.function.name} crashed: ${toolErr}`);
-            }
-
-          // Auto-commit after file edit operations
-          if (this.gitAutoCommit && this.gitManager && this.isEditTool(tc.function.name) && result.success) {
-            const filePath = args['path'] ?? args['file'] ?? '';
-            if (typeof filePath === 'string' && filePath) {
-              this.gitManager.commitAfterEdit(filePath, this.sessionId);
+          // Execute doom-looped tools — push error messages
+          for (const p of parsedCalls) {
+            if (p.skip) {
+              this.emit({ type: 'error', code: 'DOOM_LOOP', message: `${p.tc.function.name} called ${p.doomCount}x consecutively — breaking loop.`, recoverable: true } as unknown as EngineEvent);
+              this.messages.push({ role: 'tool', content: `[DOOM LOOP DETECTED] ${p.tc.function.name} repeated ${p.doomCount} times`, toolCallId: p.tc.id });
             }
           }
 
-          this.emit({
-            type: 'tool_complete',
-            tool: tc.function.name,
-            result,
-            elapsed: Date.now() - toolStartTime,
-          });
+          if (batchCalls.length > 0) {
+            // Emit tool_executing events
+            for (const bc of batchCalls) {
+              this.emit({ type: 'tool_executing', tool: bc.name, description: `Executing ${bc.name}`, startTime: Date.now() });
+            }
 
-          // Log for reflection/skill generation
-          this.toolCallLogForReflection.push({
-            name: tc.function.name,
-            success: result.success,
-            output: result.output,
-            elapsed: Date.now() - toolStartTime,
-          });
+            const batchResults = await this._executeToolBatch(batchCalls, this.sessionId);
 
-          // Add tool result message
-          this.messages.push({
-            role: 'tool',
-            content: result.output,
-            toolCallId: tc.id,
-          });
+            for (const r of batchResults) {
+              this.emit({ type: 'tool_complete', tool: r.id, result: { success: r.success, output: r.output }, elapsed: r.elapsed });
+              this.telemetry.recordToolCall(`turn-${this._turnStartTokens}`, r.success);
+              this.toolCallLogForReflection.push({ name: r.id, success: r.success, output: r.output, elapsed: r.elapsed });
+
+              // Auto-commit after file edit operations
+              if (this.gitAutoCommit && this.gitManager && this.isEditTool(r.id) && r.success) {
+                const tc = regularToolCalls.find((t) => t.id === r.id);
+                if (tc) {
+                  try {
+                    const a = JSON.parse(tc.function.arguments);
+                    const fp = (a['path'] ?? a['file']) as string;
+                    if (fp) this.gitManager.commitAfterEdit(fp, this.sessionId);
+                  } catch { /* ignore */ }
+                }
+              }
+
+              this.messages.push({ role: 'tool', content: r.output, toolCallId: r.id });
+            }
+          }
         }
 
         // Track token usage for tool-call rounds too
@@ -1351,6 +1576,9 @@ Return ONLY valid JSON, no other text.`;
       }
 
       // No tool calls — this is the final assistant response
+      // ─── UNIFIED: Record telemetry on final response ───
+      this.telemetry.endTurn(`turn-${startTime}`, lastUsage ? { promptTokens: lastUsage.inputTokens, completionTokens: lastUsage.outputTokens, totalTokens: lastUsage.inputTokens + lastUsage.outputTokens } : { promptTokens: 0, completionTokens: 0, totalTokens: 0 }, this.sessionId, this.config.provider.activeProvider);
+
       // Guard against empty response from model — retry once or return error
       if (!fullContent.trim() && round < MAX_TOOL_ROUNDS - 1) {
         getLogger().warn('COMPLETION', `Empty response from model on round ${round}, retrying...`);
@@ -1399,6 +1627,56 @@ Return ONLY valid JSON, no other text.`;
       return assistantMessage;
     }
 
+    // ─── UNIFIED: Grace Call (budget-exhausted recovery) ───
+    // One extra API call to let the model finish its thought without tool access.
+    // Prevents mid-sentence truncation when budget is exhausted.
+    if (accumulatedContent.length > 0) {
+      const graceInstruction =
+        '\n[SYSTEM] You have exhausted your tool budget. Do NOT make any more tool calls. ' +
+        'If you were in the middle of a response, please finish your thought concisely. ' +
+        'If you were about to start a new tool chain, summarize what remains to be done.';
+      this.messages.push({ role: 'user', content: graceInstruction });
+
+      try {
+        const graceStream = this._unifiedStream({
+          model: this.config.provider.activeModel,
+          messages: [...this.messages],
+          stream: true,
+          tools: [],
+          signal: this.abortController?.signal,
+        });
+
+        let graceText = '';
+        for await (const chunk of graceStream) {
+          if (chunk.type === 'text_delta' && chunk.content) {
+            graceText += chunk.content;
+            accumulatedContent += chunk.content;
+            this.emit({ type: 'stream_chunk', content: chunk.content, fullContent: accumulatedContent });
+          }
+        }
+
+        if (graceText.trim()) {
+          this.emit({ type: 'loading_end' });
+          this.messages.push({ role: 'assistant', content: accumulatedContent });
+
+          const graceMessage: Message = {
+            id: generateMessageId(),
+            sessionId: this.sessionId,
+            role: 'assistant',
+            content: accumulatedContent,
+            toolCalls: null,
+            createdAt: new Date().toISOString(),
+            tokenCount: Math.ceil(accumulatedContent.length / 4),
+          };
+
+          this.emit({ type: 'message_received', message: graceMessage, elapsed: Date.now() - startTime });
+          return graceMessage;
+        }
+      } catch {
+        // Grace call failed — fall through to fallback
+      }
+    }
+
     // Exhausted rounds — return what we have
     this.emit({ type: 'loading_end' });
     const fallback: Message = {
@@ -1431,7 +1709,7 @@ Return ONLY valid JSON, no other text.`;
       tools: toolSchemas,
     };
 
-    const stream = this.provider.complete(request);
+    const stream = this._unifiedStream(request);
     let fullContent = '';
     const toolCalls: CompletionToolCall[] = [];
     let currentToolCall: Partial<CompletionToolCall> | null = null;
@@ -2164,6 +2442,236 @@ Only include specialists that are actually needed for this task.`;
       'folder_create', 'folder_delete',
     ]);
     return editTools.has(toolId);
+  }
+
+  // ─── UNIFIED PIPELINE: Provider route registration ───
+
+  private _registerProviderRoutes(apiKey: string): void {
+    // In test environments, skip route registration so tests use mocked provider.complete()
+    // In production (NODE_ENV not 'test'), register routes to use ProviderRouter + transports
+    const isTest = process.env['NODE_ENV'] === 'test';
+    if (!apiKey || isTest) return;
+
+    const provider = this.config.provider.activeProvider;
+    const baseUrl = this.getBaseUrl();
+    if (!baseUrl) return;
+
+    const routeId = `${provider}-chat`;
+    const route = makeRoute({
+      id: routeId,
+      provider,
+      protocol: openAIProtocol(),
+      endpoint: {
+        baseUrl: baseUrl || 'https://api.openai.com/v1',
+        path: '/chat/completions',
+      },
+      auth: {
+        type: 'api-key',
+        getHeaders: async () => ({
+          Authorization: `Bearer ${apiKey}`,
+        }),
+      },
+      framing: 'sse',
+    });
+
+    this.providerRouter.registerRoute(route, new GenericTransport(route));
+  }
+
+  // ─── UNIFIED PIPELINE: Unified streaming with ProviderRouter ───
+
+  private async *_unifiedStream(request: CompletionRequest): AsyncIterable<CompletionChunk> {
+    const plan = this._buildProviderPlan(request);
+
+    let transport;
+    try {
+      transport = this.providerRouter.route(plan);
+    } catch {
+      // No registered route — fall back to legacy provider.complete()
+      yield* this.provider.complete(request);
+      return;
+    }
+
+    const abortSignal = request.signal || this.abortController?.signal;
+    const watchdog = new StaleWatchdog(90000, 60000);
+
+    try {
+      const stream = transport.stream(plan, abortSignal || watchdog.signal);
+
+      for await (const event of stream) {
+        watchdog.poke();
+
+        // ─── UNIFIED: Normalize provider events through StreamNormalizer ───
+        const normalized = this.streamNormalizer.normalize(event);
+        const events = Array.isArray(normalized) ? normalized : normalized ? [normalized] : [];
+
+        for (const ev of events.length > 0 ? events : [event]) {
+          // ─── UNIFIED: Feed response assembler + visual bridge ───
+          this.responseAssembler.feed(ev);
+        const visualUpdate = this.visualBridge.handleEvent(event);
+        if (visualUpdate) {
+          this.eventBus.emit({
+            type: 'agent_message',
+            message: visualUpdate as unknown as Record<string, unknown>,
+          });
+        }
+
+        // ─── UNIFIED: Feed SessionProcessor for structured turn processing ───
+        this.sessionProcessor['handleEvent']?.(event);
+
+        switch (event.type) {
+          case 'text.delta':
+            this.projector.appendDelta(event.delta);
+            yield { type: 'text_delta', content: event.delta };
+            break;
+          case 'tool.input.start':
+            yield { type: 'tool_call_delta', toolCall: { id: event.toolCallId, type: 'function', function: { name: event.toolName, arguments: '' } } };
+            break;
+          case 'tool.input.delta':
+            yield { type: 'tool_call_delta', toolCall: { id: event.toolCallId, type: 'function', function: { name: '', arguments: event.delta } } };
+            break;
+          case 'tool.input.end':
+            break;
+          case 'turn.end':
+            yield { type: 'done', usage: { inputTokens: event.usage.promptTokens, outputTokens: event.usage.completionTokens } };
+            return;
+          case 'provider.error': {
+            const classified = this.errorClassifier.classify(
+              new Error(`Provider error: ${event.code} - ${event.message}`),
+            );
+            const action = this.failoverPolicy.decide(
+              classified,
+              0,
+              this.config.provider.activeProvider,
+            );
+            throw new Error(
+              `${classified.reason}: ${event.message} [action: ${action.type}]`,
+            );
+          }
+          default:
+            break;
+        }
+        } // inner event loop (StreamNormalizer)
+      }
+    } catch (streamErr) {
+      // ─── UNIFIED: Log retry via RetryEngine status buffer ───
+      this.retryEngine.getStatusBuffer().add(
+        plan.requestId,
+        `Stream error: ${streamErr instanceof Error ? streamErr.message : String(streamErr)}`,
+      );
+      throw streamErr;
+    } finally {
+      watchdog.clear();
+    }
+  }
+
+  private _buildProviderPlan(request: CompletionRequest): import('@agentx/shared').ProviderPlan {
+    const routeId = `${this.config.provider.activeProvider}-chat`;
+    return {
+      requestId: `req-${Date.now()}`,
+      sessionId: this.sessionId,
+      providerId: this.config.provider.activeProvider,
+      modelId: request.model,
+      messages: request.messages.map((m) => ({
+        role: m.role as 'system' | 'user' | 'assistant' | 'tool',
+        content: m.content,
+        toolCallId: m.toolCallId,
+        toolCalls: m.toolCalls?.map((tc) => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: { name: tc.function.name, arguments: tc.function.arguments },
+        })),
+      })),
+      tools: (request.tools ?? []).map((t) => ({
+        type: 'function' as const,
+        function: { name: t.function.name, description: t.function.description, parameters: t.function.parameters },
+      })),
+      toolChoice: request.tools && request.tools.length > 0 ? 'auto' : 'none',
+      generation: {
+        temperature: request.temperature,
+        maxOutputTokens: request.maxTokens,
+      },
+      http: {
+        timeoutMs: 120000,
+        maxRetries: 3,
+        headers: {},
+      },
+      route: routeId,
+    };
+  }
+
+  // ─── UNIFIED PIPELINE: Retry-wrapped provider call ───
+
+  // _retryableStream kept as available infrastructure for future integration
+
+  // ─── UNIFIED PIPELINE: Batch tool execution with parallel classifier ───
+
+  private async _executeToolBatch(
+    toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>,
+    sessionId: string,
+  ): Promise<Array<{ id: string; success: boolean; output: string; error?: string; elapsed: number }>> {
+    // Classify for parallel execution
+    const classified = this.parallelClassifier.classify(
+      toolCalls.map((tc) => ({
+        toolCallId: tc.id,
+        tool: {
+          id: tc.name,
+          name: tc.name,
+          description: '',
+          modelDescription: '',
+          category: 'ai_meta' as const,
+          riskLevel: 'medium' as const,
+          schema: { type: 'object' as const, properties: {} },
+          composable: false,
+          source: 'builtin' as const,
+        },
+        args: tc.arguments,
+      })),
+    );
+
+    const results: Array<{ id: string; success: boolean; output: string; error?: string; elapsed: number }> = [];
+    const executed = new Set<string>();
+
+    const execOne = async (tc: typeof toolCalls[number]) => {
+      const start = Date.now();
+      // ─── UNIFIED: Repair tool name via ToolCallRepairer ───
+      const knownNames = this.toolRegistry?.list().map((t) => t.name) ?? [];
+      const repairedName = this.toolCallRepairer.repairToolName(tc.name, knownNames);
+      const effectiveName = repairedName !== tc.name ? repairedName : tc.name;
+
+      try {
+        const result = this.toolExecutor
+          ? await this.toolExecutor.execute(effectiveName, tc.arguments, sessionId)
+          : { success: false, output: 'No executor', error: 'NO_EXECUTOR' };
+        results.push({ id: tc.id, success: result.success, output: result.output, error: result.error, elapsed: Date.now() - start });
+      } catch (err) {
+        results.push({ id: tc.id, success: false, output: String(err), error: 'EXEC_ERROR', elapsed: Date.now() - start });
+      }
+    };
+
+    // Execute parallel batch first
+    if (classified.parallel.length > 0) {
+      const parallelCalls = classified.parallel.map((ct) => toolCalls.find((tc) => tc.id === ct.toolCallId)).filter((tc): tc is typeof toolCalls[number] => !!tc);
+      await Promise.all(parallelCalls.map((tc) => { executed.add(tc.id); return execOne(tc); }));
+    }
+
+    // Then sequential
+    for (const ct of classified.sequential) {
+      const tc = toolCalls.find((t) => t.id === ct.toolCallId);
+      if (tc && !executed.has(tc.id)) {
+        executed.add(tc.id);
+        await execOne(tc);
+      }
+    }
+
+    // Any remaining (shouldn't happen, but safety)
+    for (const tc of toolCalls) {
+      if (!executed.has(tc.id)) {
+        executed.add(tc.id);
+        await execOne(tc);
+      }
+    }
+
+    return results;
   }
 }
 

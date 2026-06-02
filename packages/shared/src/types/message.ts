@@ -1,3 +1,5 @@
+import type { CompactionMarker } from './communication.js';
+
 export interface Message {
   id: string;
   sessionId: string;
@@ -8,6 +10,10 @@ export interface Message {
   tokenCost?: number;
   createdAt: string;
   elapsed?: number;
+  turnId?: string;
+  reasoning?: string;
+  metadata?: MessageMetadata;
+  compactionMarker?: CompactionMarker;
 }
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
@@ -17,6 +23,13 @@ export interface ToolCall {
   name: string;
   arguments: string;
   result?: string;
+}
+
+export interface MessageMetadata {
+  rawTurnId?: string;
+  channel?: string;
+  normalizationWarnings?: number;
+  providerRequestId?: string;
 }
 
 export type InputType =
