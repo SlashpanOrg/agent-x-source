@@ -30,7 +30,10 @@ export function FilesPanel() {
   const load = async () => {
     try {
       const res = await fetch('/api/files', { credentials: 'include' });
-      if (res.ok) setFiles(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        setFiles(Array.isArray(data) ? data : data.files ?? []);
+      }
     } catch { /* ignore */ }
   };
   useEffect(() => { load(); }, []);

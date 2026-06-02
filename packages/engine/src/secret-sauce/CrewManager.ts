@@ -1,6 +1,8 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Crew, CrewEmotion } from '@agentx/shared';
+import { encrypt, decrypt } from '@agentx/shared';
+import type { EncryptedData } from '@agentx/shared';
 import { getSecretSauceDir } from '../config/paths.js';
 
 /**
@@ -21,18 +23,50 @@ export class CrewManager {
   private crews: Crew[] = [];
   private activeCrewId: string = 'default';
   private secretSauceDir: string;
+  private dek: Buffer | null = null;
 
   constructor() {
     this.secretSauceDir = getSecretSauceDir();
     this.loadCrews();
   }
 
+  /**
+   * Set DEK for encrypting crew data at rest.
+   * Re-loads crews (decrypted) and re-saves encrypted when DEK is first set.
+   */
+  setDEK(dek: Buffer | null): void {
+    const hadDEK = this.dek !== null;
+    this.dek = dek;
+    if (dek && !hadDEK) {
+      // Reload crews now that we can decrypt
+      this.loadCrews();
+      // Re-save encrypted (migrates plaintext → encrypted)
+      this.save();
+    }
+  }
+
   private loadCrews(): void {
     const crewPath = join(this.secretSauceDir, 'crews.json');
     if (existsSync(crewPath)) {
       try {
-        const data = readFileSync(crewPath, 'utf-8');
-        const parsed = JSON.parse(data) as { crews: Array<Record<string, unknown>>; activeId: string };
+        const raw = readFileSync(crewPath, 'utf-8');
+        let data: string;
+
+        // Detect encrypted format
+        const rawParsed = JSON.parse(raw);
+        if (rawParsed.__enc === true) {
+          if (!this.dek) {
+            // Cannot decrypt without DEK — will reload after login injects DEK
+            this.crews = [BOOTSTRAP_CREW];
+            this.activeCrewId = 'default';
+            return;
+          }
+          data = decrypt(rawParsed as EncryptedData, this.dek);
+        } else {
+          data = raw;
+        }
+
+        const parsed = (typeof data === 'string' ? JSON.parse(data) : data) as { crews: Array<Record<string, unknown>>; activeId: string };
         // Migrate old crews: strip removed fields, keep name + systemPrompt + emotion
         this.crews = parsed.crews.map((p) => ({
           id: p['id'] as string,
@@ -49,7 +83,6 @@ export class CrewManager {
           this.crews = [BOOTSTRAP_CREW];
           this.activeCrewId = 'default';
         }
-        this.save();
       } catch {
         this.crews = [BOOTSTRAP_CREW];
         this.save();
@@ -63,10 +96,15 @@ export class CrewManager {
   private save(): void {
     mkdirSync(this.secretSauceDir, { recursive: true });
     const crewPath = join(this.secretSauceDir, 'crews.json');
-    writeFileSync(
-      crewPath,
-      JSON.stringify({ crews: this.crews, activeId: this.activeCrewId }, null, 2),
-    );
+    const payload = JSON.stringify({ crews: this.crews, activeId: this.activeCrewId }, null, 2);
+
+    if (this.dek) {
+      // Encrypt the entire crews file
+      const encrypted = encrypt(payload, this.dek);
+      writeFileSync(crewPath, JSON.stringify({ __enc: true, ...encrypted }));
+    } else {
+      writeFileSync(crewPath, payload);
+    }
   }
 
   getActive(): Crew {

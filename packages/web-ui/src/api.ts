@@ -10,7 +10,7 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   });
   if (res.status === 401) {
     // Redirect to login
-    window.location.hash = '#/login';
+    window.location.href = '/login';
     throw new Error('Unauthorized');
   }
   if (!res.ok) {
@@ -23,7 +23,7 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
 // ─── Auth ───
 export const auth = {
   check: () => request<{ hasRootUser: boolean }>('/auth/check'),
-  status: () => request<{ authenticated: boolean; username?: string }>('/auth/status'),
+  status: () => request<{ isAuthenticated: boolean; username?: string | null }>('/auth/status'),
   setup: (username: string, password: string) => request<{ ok: boolean }>('/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
   login: (username: string, password: string) => request<{ ok: boolean; username: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
@@ -43,11 +43,13 @@ export const health = {
 
 // ─── Providers ───
 export const providers = {
-  available: () => request<ProviderInfo[]>('/providers/available'),
-  configured: () => request<ConfiguredProvider[]>('/providers'),
-  validate: (provider: string, apiKey: string, baseUrl?: string) => request<{ valid: boolean; error?: string }>('/provider/validate', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl }) }),
-  configure: (provider: string, apiKey: string, baseUrl?: string) => request<{ ok: boolean }>('/provider/configure', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl }) }),
+  available: () => request<{ providers: ProviderInfo[] }>('/providers/available').then(r => r.providers),
+  configured: () => request<{ active: string; providers: ConfiguredProvider[] }>('/providers').then(r => r.providers),
+  active: () => request<{ active: string; providers: ConfiguredProvider[] }>('/providers').then(r => r.active),
+  validate: (provider: string, apiKey?: string, baseUrl?: string) => request<{ valid: boolean; error?: string }>('/provider/validate', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl }) }),
+  configure: (provider: string, apiKey?: string, baseUrl?: string) => request<{ ok: boolean }>('/provider/configure', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl }) }),
   models: (provider: string) => request<ModelInfo[]>('/provider/models?provider=' + provider),
+  switch: (provider: string) => request<{ ok: boolean; provider: string; model: string }>('/provider/switch', { method: 'POST', body: JSON.stringify({ provider }) }),
   createProfile: (providerId: string, label: string, apiKey: string, baseUrl?: string) => request<{ ok: boolean }>('/provider/profile', { method: 'POST', body: JSON.stringify({ providerId, label, apiKey, baseUrl }) }),
   switchProfile: (providerId: string, profileId: string) => request<{ ok: boolean }>('/provider/profile/switch', { method: 'POST', body: JSON.stringify({ providerId, profileId }) }),
 };
@@ -60,7 +62,7 @@ export const models = {
 
 // ─── Crews ───
 export const crews = {
-  list: () => request<Crew[]>('/crews'),
+  list: () => request<{ crews: Crew[]; activeId?: string }>('/crews').then(r => r.crews ?? []),
   current: () => request<Crew>('/crew/current'),
   switch: (id: string) => request<{ ok: boolean }>('/crew/switch', { method: 'POST', body: JSON.stringify({ id }) }),
   create: (data: CrewInput) => request<{ ok: boolean; crew: Crew }>('/crews', { method: 'POST', body: JSON.stringify(data) }),
@@ -70,13 +72,25 @@ export const crews = {
 
 // ─── Chat ───
 export const chat = {
-  send: (text: string) => request<{ ok: boolean; message: ChatMessage }>('/chat/message', { method: 'POST', body: JSON.stringify({ text }) }),
+  send: (text: string, attachments?: { name: string; content: string }[]) => request<{ ok: boolean; message: ChatMessage }>('/chat/message', { method: 'POST', body: JSON.stringify({ text, attachments }) }),
   cancel: () => request<{ ok: boolean }>('/chat/cancel', { method: 'POST' }),
   history: () => request<ChatMessage[]>('/chat/history'),
   clear: () => request<{ ok: boolean }>('/chat/clear', { method: 'POST' }),
+  queue: (text: string, attachments?: { name: string; content: string }[]) => request<{ ok: boolean; queueLength: number }>('/chat/queue', { method: 'POST', body: JSON.stringify({ text, attachments }) }),
+  getQueue: () => request<{ queue: Array<{ text: string }>; length: number }>('/chat/queue'),
+  clearQueue: () => request<{ ok: boolean }>('/chat/queue', { method: 'DELETE' }),
+  steer: (text: string, attachments?: { name: string; content: string }[]) => request<{ ok: boolean; message: ChatMessage }>('/chat/steer', { method: 'POST', body: JSON.stringify({ text, attachments }) }),
+  stopAndSend: (text: string, attachments?: { name: string; content: string }[]) => request<{ ok: boolean; message: ChatMessage }>('/chat/stop-and-send', { method: 'POST', body: JSON.stringify({ text, attachments }) }),
 };
 
 // ─── Sessions ───
+export interface Checkpoint {
+  id: string;
+  label: string;
+  createdAt: string;
+  messageCount: number;
+}
+
 export const sessions = {
   list: () => request<SessionInfo[]>('/sessions'),
   create: () => request<{ sessionId: string }>('/sessions', { method: 'POST' }),
@@ -84,11 +98,73 @@ export const sessions = {
   delete: (id: string) => request<{ ok: boolean }>(`/sessions/${id}`, { method: 'DELETE' }),
   restore: (id: string) => request<{ ok: boolean }>(`/sessions/${id}/restore`, { method: 'POST' }),
   context: (id: string) => request<SessionContext>(`/sessions/${id}/context`),
+  compact: (id: string) => request<{ ok: boolean; summary: string }>(`/sessions/${id}/compact`, { method: 'POST' }),
+  checkpoint: (id: string, label?: string) => request<{ checkpointId: string; label: string }>(`/sessions/${id}/checkpoint`, { method: 'POST', body: JSON.stringify({ label }) }),
+  checkpoints: (id: string) => request<{ checkpoints: Checkpoint[] }>(`/sessions/${id}/checkpoints`).then(r => r.checkpoints ?? []),
+  restoreCheckpoint: (id: string, checkpointId: string) => request<{ ok: boolean; label: string; messageCount: number }>(`/sessions/${id}/checkpoint/${checkpointId}/restore`, { method: 'POST' }),
+  deleteCheckpoint: (id: string, checkpointId: string) => request<{ ok: boolean }>(`/sessions/${id}/checkpoint/${checkpointId}`, { method: 'DELETE' }),
+  // Trigger a browser download of the full trajectory JSON
+  exportTrajectory: (id: string): void => {
+    const a = document.createElement('a');
+    a.href = `/api/sessions/${id}/export`;
+    a.download = `agentx-session-${id.slice(0, 8)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  },
+  // Cross-session search — uses server-side scan endpoint, falls back to client-side
+  search: async (query: string): Promise<Array<{ sessionId: string; sessionTitle: string; matches: Array<{ role: string; content: string; snippet: string }> }>> => {
+    const q = query.trim();
+    if (!q) return [];
+    try {
+      const r = await request<{ results: Array<{ sessionId: string; title?: string; snippet: string; matchCount: number }> }>(`/sessions/search?q=${encodeURIComponent(q)}`);
+      if (r && Array.isArray(r.results)) {
+        return r.results.map(x => ({
+          sessionId: x.sessionId,
+          sessionTitle: x.title ?? `Session ${x.sessionId.slice(0, 8)}`,
+          matches: [{ role: 'mixed', content: x.snippet, snippet: x.snippet }],
+        }));
+      }
+    } catch { /* fall back to client-side */ }
+    const list = await request<SessionInfo[]>('/sessions');
+    const needle = q.toLowerCase();
+    const results: Array<{ sessionId: string; sessionTitle: string; matches: Array<{ role: string; content: string; snippet: string }> }> = [];
+    for (const s of list) {
+      try {
+        const ctx = await request<SessionContext>(`/sessions/${s.id}/context`);
+        const text = (ctx as { content?: string }).content ?? '';
+        if (text.toLowerCase().includes(needle)) {
+          const lines = text.split('\n').filter(l => l.toLowerCase().includes(needle)).slice(0, 3);
+          results.push({
+            sessionId: s.id,
+            sessionTitle: s.title ?? `Session ${s.id.slice(0, 8)}`,
+            matches: lines.map(line => ({ role: 'mixed', content: line, snippet: line.slice(0, 200) })),
+          });
+        }
+      } catch { /* skip */ }
+    }
+    return results;
+  },
 };
 
 // ─── Permissions ───
 export const permissions = {
   respond: (choice: 'allow_once' | 'allow_always' | 'deny') => request<{ ok: boolean }>('/permission/respond', { method: 'POST', body: JSON.stringify({ choice }) }),
+};
+
+// ─── System ───
+export const system = {
+  cwd: () => request<{ cwd: string }>('/cwd'),
+};
+
+// ─── Session Settings ───
+export type AgentMode = 'agent' | 'ask' | 'plan';
+export type ApprovalType = 'default' | 'moderate' | 'auto';
+
+export const sessionSettings = {
+  get: () => request<{ mode: AgentMode; approval: ApprovalType }>('/session/settings'),
+  setMode: (mode: AgentMode) => request<{ ok: boolean; mode: AgentMode }>('/session/mode', { method: 'POST', body: JSON.stringify({ mode }) }),
+  setApproval: (approval: ApprovalType) => request<{ ok: boolean; approval: ApprovalType }>('/session/approval', { method: 'POST', body: JSON.stringify({ approval }) }),
 };
 
 // ─── Tools ───
@@ -97,13 +173,14 @@ export const tools = {
   categories: () => request<ToolCategory[]>('/tools/categories'),
   get: (id: string) => request<ToolInfo>(`/tools/${id}`),
   toggle: (id: string, enabled: boolean) => request<{ ok: boolean }>(`/tools/${id}`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
+  bulkToggle: (opts: { ids?: string[]; category?: string; enabled: boolean }) => request<{ ok: boolean; toggled: number }>('/tools/bulk-toggle', { method: 'POST', body: JSON.stringify(opts) }),
 };
 
 // ─── Plugins ───
 export const plugins = {
-  list: () => request<PluginInfo[]>('/plugins'),
-  available: () => request<PluginInfo[]>('/plugins/available'),
-  installed: () => request<PluginInfo[]>('/plugins/installed'),
+  list: () => request<{ plugins: PluginInfo[] }>('/plugins').then(r => r.plugins ?? []),
+  available: () => request<{ plugins: PluginInfo[] }>('/plugins/available').then(r => r.plugins ?? []),
+  installed: () => request<{ plugins: PluginInfo[] }>('/plugins/installed').then(r => r.plugins ?? []),
   install: (id: string) => request<{ ok: boolean }>(`/plugins/${id}/install`, { method: 'POST' }),
   uninstall: (id: string) => request<{ ok: boolean }>(`/plugins/${id}/uninstall`, { method: 'POST' }),
   toggle: (id: string) => request<{ ok: boolean }>(`/plugins/${id}/toggle`, { method: 'POST' }),
@@ -113,7 +190,7 @@ export const plugins = {
 
 // ─── MCP ───
 export const mcp = {
-  servers: () => request<MCPServer[]>('/mcp/servers'),
+  servers: () => request<{ servers: MCPServer[] }>('/mcp/servers').then(r => r.servers ?? []),
   add: (data: MCPServerInput) => request<{ ok: boolean }>('/mcp/servers', { method: 'POST', body: JSON.stringify(data) }),
   restart: (id: string) => request<{ ok: boolean }>(`/mcp/servers/${id}/restart`, { method: 'POST' }),
   status: (id: string) => request<MCPServerStatus>(`/mcp/servers/${id}/status`),
@@ -122,7 +199,7 @@ export const mcp = {
 
 // ─── RAG ───
 export const rag = {
-  status: () => request<{ enabled: boolean; chunkCount: number }>('/rag/status'),
+  status: () => request<{ enabled: boolean; indexedChunks: number }>('/rag/status').then(r => ({ enabled: r.enabled, chunkCount: r.indexedChunks ?? 0 })),
   index: (content: string, metadata?: Record<string, string>) => request<{ ok: boolean }>('/rag/index', { method: 'POST', body: JSON.stringify({ content, metadata }) }),
   search: (query: string, topK?: number) => request<RAGResult[]>('/rag/search', { method: 'POST', body: JSON.stringify({ query, topK }) }),
   clear: () => request<{ ok: boolean }>('/rag/clear', { method: 'POST' }),
@@ -154,35 +231,91 @@ export const bridges = {
 
 // ─── Scheduler ───
 export const scheduler = {
-  jobs: () => request<SchedulerJob[]>('/scheduler/jobs'),
+  jobs: () => request<{ jobs: SchedulerJob[] }>('/scheduler/jobs').then(r => r.jobs ?? []),
   create: (name: string, cron: string, instruction: string) => request<{ ok: boolean }>('/scheduler/jobs', { method: 'POST', body: JSON.stringify({ name, cron, instruction }) }),
   delete: (id: string) => request<{ ok: boolean }>(`/scheduler/jobs/${id}`, { method: 'DELETE' }),
+  run: (id: string) => request<{ ok: boolean }>(`/scheduler/jobs/${id}/run`, { method: 'POST' }),
   parseCron: (natural: string) => request<{ cron: string; description: string }>('/scheduler/parse-cron', { method: 'POST', body: JSON.stringify({ natural }) }),
+};
+
+// ─── Secret Sauce (Soul / Identity / Diary / Memories / Permission / Crew) ───
+export type SecretSauceFile = 'SOUL' | 'IDENTITY' | 'DIARY' | 'MEMORIES' | 'PERMISSION' | 'CREW';
+export const secretSauce = {
+  list: () => request<{ files: Array<{ file: SecretSauceFile; size: number; exists: boolean }> }>('/secret-sauce').then(r => r.files),
+  get: (file: SecretSauceFile) => request<{ content: string; exists: boolean }>(`/secret-sauce/${file}`),
+  save: (file: SecretSauceFile, content: string) => request<{ ok: boolean; size: number }>(`/secret-sauce/${file}`, { method: 'PUT', body: JSON.stringify({ content }) }),
+};
+
+// ─── Orchestrator ───
+export interface OrchestratorStep { id: string; description: string; status: 'pending' | 'executing' | 'done' | 'failed'; result?: string; dependsOn?: string[]; }
+export interface OrchestratorPlan { id: string; goal: string; steps: OrchestratorStep[]; status: 'created' | 'executing' | 'complete' | 'failed'; }
+export const orchestrator = {
+  createPlan: (goal: string) => request<{ plan: OrchestratorPlan }>('/orchestrator/plan', { method: 'POST', body: JSON.stringify({ goal }) }).then(r => r.plan),
+  execute: (planId: string) => request<{ plan: OrchestratorPlan }>(`/orchestrator/plan/${planId}/execute`, { method: 'POST' }).then(r => r.plan),
 };
 
 // ─── Todos ───
 export const todos = {
-  list: (sessionId?: string) => request<TodoItem[]>(`/todos${sessionId ? '?sessionId=' + sessionId : ''}`),
+  list: (sessionId?: string) => request<{ todos: TodoItem[] }>(`/todos${sessionId ? '?sessionId=' + sessionId : ''}`).then(r => r.todos ?? []),
   save: (items: TodoItem[], sessionId?: string) => request<{ ok: boolean }>('/todos', { method: 'POST', body: JSON.stringify({ items, sessionId }) }),
   update: (itemId: string, data: Partial<TodoItem>) => request<{ ok: boolean }>(`/todos/${itemId}`, { method: 'PUT', body: JSON.stringify(data) }),
 };
 
 // ─── SSE Stream Connection ───
-export function connectSSE(onEvent: (event: TelemetryEvent) => void): () => void {
-  const es = new EventSource(`${BASE}/chat/stream`, { withCredentials: true });
+export type ConnectionState = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
-  es.addEventListener('telemetry', (e) => {
-    try {
-      const data = JSON.parse(e.data) as TelemetryEvent;
-      onEvent(data);
-    } catch { /* ignore parse errors */ }
-  });
+export interface SSEHandlers {
+  onEvent: (event: TelemetryEvent) => void;
+  onState?: (state: ConnectionState, info?: { retryIn?: number; attempt?: number }) => void;
+}
 
-  es.onerror = () => {
-    // Reconnect handled automatically by EventSource
+export function connectSSE(
+  arg: ((event: TelemetryEvent) => void) | SSEHandlers,
+): () => void {
+  const handlers: SSEHandlers = typeof arg === 'function' ? { onEvent: arg } : arg;
+  let es: EventSource | null = null;
+  let closed = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryCount = 0;
+
+  function setState(state: ConnectionState, info?: { retryIn?: number; attempt?: number }) {
+    handlers.onState?.(state, info);
+  }
+
+  function connect() {
+    if (closed) return;
+    setState(retryCount === 0 ? 'connecting' : 'reconnecting', { attempt: retryCount });
+    es = new EventSource(`${BASE}/chat/stream`, { withCredentials: true });
+
+    es.addEventListener('telemetry', (e) => {
+      try {
+        retryCount = 0; // Reset on successful message
+        const data = JSON.parse(e.data) as TelemetryEvent;
+        handlers.onEvent(data);
+      } catch { /* ignore parse errors */ }
+    });
+
+    es.onopen = () => { retryCount = 0; setState('open'); };
+
+    es.onerror = () => {
+      es?.close();
+      if (!closed) {
+        retryCount++;
+        const delay = Math.min(3000 * Math.pow(2, retryCount - 1), 30000); // Exponential backoff, max 30s
+        setState('reconnecting', { retryIn: delay, attempt: retryCount });
+        retryTimer = setTimeout(connect, delay);
+      }
+    };
+  }
+
+  connect();
+
+  return () => {
+    closed = true;
+    setState('closed');
+    if (retryTimer) clearTimeout(retryTimer);
+    es?.close();
   };
-
-  return () => es.close();
 }
 
 // ─── Types ───
@@ -208,8 +341,10 @@ export interface ProviderSettings {
 export interface ProviderInfo {
   id: string;
   name: string;
-  description: string;
+  description?: string;
   type: 'cloud' | 'local';
+  requiresApiKey?: boolean;
+  defaultBaseUrl?: string;
   models?: ModelInfo[];
 }
 
@@ -223,7 +358,9 @@ export interface ConfiguredProvider {
 export interface ModelInfo {
   id: string;
   name: string;
+  providerId?: string;
   contextWindow?: number;
+  capabilities?: string[];
   pricing?: { input: number; output: number };
 }
 
@@ -336,6 +473,8 @@ export interface BridgeStatus {
   configured: boolean;
   connected: boolean;
   error?: string;
+  token?: string;
+  chatId?: string;
   [key: string]: unknown;
 }
 
@@ -354,8 +493,10 @@ export interface SchedulerJob {
   name: string;
   cron: string;
   instruction: string;
-  lastRun?: string;
-  nextRun?: string;
+  lastRun?: string | number;
+  nextRun?: string | number;
+  runCount?: number;
+  enabled?: boolean;
 }
 
 export interface TodoItem {
@@ -366,11 +507,15 @@ export interface TodoItem {
 
 export interface HealthStatus {
   status: string;
+  version: string;
   uptime: number;
   sessionCount: number;
   crewCount: number;
+  activeCrew: string | null;
   agentActive: boolean;
+  telegramConnected: boolean;
   memory: { rss: number; heapUsed: number };
+  config?: { provider?: string; model?: string; user?: string };
 }
 
 export interface TelemetryEvent {

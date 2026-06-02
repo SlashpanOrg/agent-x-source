@@ -51,6 +51,8 @@ import { UserCommandRegistry } from '../commands/UserCommandRegistry.js';
 import { PromptEngine } from '../prompt/PromptEngine.js';
 import { SmartSubAgent } from './SmartSubAgent.js';
 import type { IntentResult } from '../prompt/PromptEngine.js';
+import { DecisionEngine } from './DecisionEngine.js';
+import type { DecisionResult } from './DecisionEngine.js';
 import { AgentBus, getAgentBus } from './AgentBus.js';
 import { SpecialistRegistry } from './SpecialistRegistry.js';
 import type { SpecialistType } from './SpecialistRegistry.js';
@@ -78,6 +80,10 @@ export class Agent {
   private sessionId: string;
   private isProcessing = false;
   private abortController: AbortController | null = null;
+  private pendingInstruction: string | null = null;
+  private _turnStartTokens = 0;
+  private _turnStartCost = 0;
+  private _recentToolSignatures: string[] = [];
   private subAgents: SubAgentManager;
   private taskManager: TaskManager;
   private scheduler: Scheduler;
@@ -102,7 +108,9 @@ export class Agent {
   private userCommandRegistry: UserCommandRegistry | null = null;
   private recipeEngine: RecipeEngine | null = null;
   private promptEngine: PromptEngine;
+  private decisionEngine: DecisionEngine;
   private currentIntent: IntentResult | null = null;
+  private currentDecision: DecisionResult | null = null;
   private treeOfThoughts: TreeOfThoughts | null = null;
   private researchEngine: ResearchEngine | null = null;
   private lastRagResults: Array<{ content: string; score?: number; metadata?: Record<string, unknown> }> = [];
@@ -240,6 +248,9 @@ export class Agent {
 
     // Initialize prompt engine for token-efficient prompting
     this.promptEngine = new PromptEngine(this.getContextWindow());
+
+    // Initialize decision engine for message classification and routing
+    this.decisionEngine = new DecisionEngine();
 
     // Initialize agent mesh components
     this.agentBus = getAgentBus();
@@ -541,7 +552,7 @@ export class Agent {
         // Treat certain client/auth errors as non-retryable (tests depend on immediate failure
         // for things like 401 Unauthorized). If we detect these, rethrow immediately.
         const msg = error instanceof Error ? error.message : String(error);
-        if (/401|Unauthorized|404|not found|402|quota|billing|Invalid API/i.test(msg)) {
+        if (/401|Unauthorized|403|Forbidden|404|not found|402|429|quota|billing|Invalid API|suspended/i.test(msg)) {
           throw lastError;
         }
 
@@ -662,7 +673,7 @@ Return ONLY valid JSON, no other text.`;
     }
   }
 
-  async sendMessage(content: string): Promise<Message> {
+  async sendMessage(content: string, options?: { instruction?: string }): Promise<Message> {
     if (this.isProcessing) {
       throw new Error('Agent is already processing a message');
     }
@@ -670,8 +681,17 @@ Return ONLY valid JSON, no other text.`;
     this.isProcessing = true;
     this.abortController = new AbortController();
     const startTime = Date.now();
+    // Per-turn token snapshot for delta + cost emissions
+    const turnStartTokens = this.tokenTracker.tokensUsed;
+    const turnStartCost = this.tokenTracker.totalCost;
+    this._turnStartTokens = turnStartTokens;
+    this._turnStartCost = turnStartCost;
+    this._recentToolSignatures = [];
 
-    // Add user message
+    // Store the per-message instruction for injection during completion (not in history)
+    this.pendingInstruction = options?.instruction || null;
+
+    // Add user message (clean, without instruction)
     this.messages.push({ role: 'user', content });
 
     const userMessage: Message = {
@@ -686,22 +706,64 @@ Return ONLY valid JSON, no other text.`;
 
     this.emit({ type: 'message_sent', message: userMessage });
 
+    // ─── DECISION ENGINE: Classify message & determine execution path ───
+    const conversationLen = this.messages.filter(m => m.role === 'user').length;
+    this.currentDecision = this.decisionEngine.classify(content, conversationLen);
+    this.emit({
+      type: 'decision_made',
+      messageClass: this.currentDecision.messageClass,
+      executionPath: this.currentDecision.executionPath,
+      confidence: this.currentDecision.confidence,
+      reasoning: this.currentDecision.reasoning,
+    } as unknown as EngineEvent);
+
+    // ─── FAST REPLY PATH: Greetings, farewells, conversational ───
+    if (this.currentDecision.executionPath === 'fast_reply' && this.currentDecision.confidence >= 0.85) {
+      this.emit({ type: 'loading_start', stage: 'fast_reply' });
+      try {
+        const fastMessage = await this.runFastReply(content, startTime);
+        return fastMessage;
+      } catch (e) {
+        // If cancelled/aborted, return cancelled message directly
+        if ((e instanceof Error && e.name === 'AbortError') || !this.abortController) {
+          this.emit({ type: 'loading_end' });
+          const cancelledMessage: Message = {
+            id: generateMessageId(),
+            sessionId: this.sessionId,
+            role: 'assistant',
+            content: '⏹ Cancelled.',
+            toolCalls: null,
+            createdAt: new Date().toISOString(),
+            tokenCount: 0,
+          };
+          this.emit({ type: 'message_received', message: cancelledMessage, elapsed: Date.now() - startTime });
+          this.isProcessing = false;
+          this.abortController = null;
+          return cancelledMessage;
+        }
+        // Fall through to normal path if fast reply fails for other reasons
+        getLogger().warn('FAST_REPLY', 'Fast reply failed, falling through to standard path');
+      }
+    }
+
     // ─── SMART PROMPTING & RAG ───
     // Detect intent for dynamic tool selection and reasoning mode
     this.currentIntent = this.promptEngine.detectIntent(content);
     this.emit({ type: 'intent_detected', intent: this.currentIntent.intent, confidence: this.currentIntent.confidence });
 
-    // Auto-query RAG for relevant documents
+    // Auto-query RAG for relevant documents (skip for conversational messages)
     this.lastRagResults = [];
-    const rag = getRAGEngineInstance();
-    if (rag && rag.isEnabled) {
-      try {
-        const ragStart = Date.now();
-        const docs = await rag.search(content, 3);
-        this.lastRagResults = docs.map((d) => ({ content: d.content, score: d.score, metadata: d.metadata }));
-        this.emit({ type: 'rag_queried', resultCount: docs.length, elapsed: Date.now() - ragStart });
-      } catch (e) {
-        getLogger().warn('RAG_QUERY', e instanceof Error ? e.message : String(e));
+    if (!this.currentDecision.skipRag) {
+      const rag = getRAGEngineInstance();
+      if (rag && rag.isEnabled) {
+        try {
+          const ragStart = Date.now();
+          const docs = await rag.search(content, 3);
+          this.lastRagResults = docs.map((d) => ({ content: d.content, score: d.score, metadata: d.metadata }));
+          this.emit({ type: 'rag_queried', resultCount: docs.length, elapsed: Date.now() - ragStart });
+        } catch (e) {
+          getLogger().warn('RAG_QUERY', e instanceof Error ? e.message : String(e));
+        }
       }
     }
 
@@ -872,11 +934,98 @@ Return ONLY valid JSON, no other text.`;
   }
 
   /**
+   * Fast reply path for simple messages (greetings, farewells, conversational).
+   * Uses minimal system prompt, no tools, no RAG — saves significant tokens.
+   */
+  private async runFastReply(content: string, startTime: number): Promise<Message> {
+    // Build minimal prompt — just identity + user message
+    const sauceCtx = this.secretSauce.buildSystemContext(1000);
+    const identity = sauceCtx.soul || sauceCtx.crew || '';
+    const fastPrompt = this.decisionEngine.buildFastReplyPrompt(identity);
+
+    const callsign = this.config.user?.callsign;
+    const userNote = callsign ? `\nThe user's name is "${callsign}".` : '';
+
+    const fastMessages: CompletionMessage[] = [
+      { role: 'system', content: fastPrompt + userNote },
+      // Include last 2 messages for context (if any)
+      ...this.messages.slice(-3).filter(m => m.role !== 'system'),
+      { role: 'user', content },
+    ];
+
+    const request: CompletionRequest = {
+      model: this.config.provider.activeModel,
+      messages: fastMessages,
+      stream: true,
+      // No tools for fast reply
+      signal: this.abortController?.signal,
+    };
+
+    let fullContent = '';
+    const streamHandle = await this.retryWithBackoff(async () => {
+      const iter = this.provider.complete(request);
+      const it = iter[Symbol.asyncIterator]();
+      const first = await it.next();
+      return { it, first };
+    }, 'fast_reply');
+
+    if (!streamHandle.first.done && streamHandle.first.value) {
+      const chunk = streamHandle.first.value;
+      if (chunk.type === 'text_delta' && chunk.content) {
+        fullContent += chunk.content;
+        this.emit({ type: 'stream_chunk', content: chunk.content, fullContent });
+      } else if ((chunk as { type?: string }).type === 'reasoning_delta' && (chunk as { content?: string }).content) {
+        this.emit({ type: 'reasoning_delta', content: (chunk as { content: string }).content } as unknown as EngineEvent);
+      }
+    }
+
+    let next = await streamHandle.it.next();
+    while (!next.done) {
+      const chunk = next.value;
+      if (chunk.type === 'text_delta' && chunk.content) {
+        fullContent += chunk.content;
+        this.emit({ type: 'stream_chunk', content: chunk.content, fullContent });
+      } else if ((chunk as { type?: string }).type === 'reasoning_delta' && (chunk as { content?: string }).content) {
+        this.emit({ type: 'reasoning_delta', content: (chunk as { content: string }).content } as unknown as EngineEvent);
+      }
+      next = await streamHandle.it.next();
+    }
+
+    // Add to conversation history
+    this.messages.push({ role: 'assistant', content: fullContent });
+
+    const assistantMessage: Message = {
+      id: generateMessageId(),
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: fullContent,
+      toolCalls: null,
+      createdAt: new Date().toISOString(),
+      tokenCount: Math.ceil(fullContent.length / 4),
+    };
+
+    this.emit({ type: 'loading_end' });
+    this.emit({ type: 'message_received', message: assistantMessage, elapsed: Date.now() - startTime });
+
+    // Update token tracker
+    const tokensUsed = Math.ceil((fastPrompt.length + content.length + fullContent.length) / 4);
+    this.tokenTracker.addUsage(tokensUsed);
+    const turnTokens = this.tokenTracker.tokensUsed - (this._turnStartTokens ?? 0);
+    const costUsd = this.tokenTracker.totalCost - (this._turnStartCost ?? 0);
+    this.emit({ type: 'token_usage', totalTokens: this.tokenTracker.tokensUsed, contextWindow: this.getContextWindow(), turnTokens, costUsd } as unknown as EngineEvent);
+
+    // Note: isProcessing and abortController are cleaned up by sendMessage's finally block
+    return assistantMessage;
+  }
+
+  /**
    * Runs the model completion loop, handling tool calls iteratively.
    * Max 10 tool-call rounds to prevent infinite loops.
    */
   private async runCompletionLoop(startTime: number): Promise<Message> {
     const MAX_TOOL_ROUNDS = 10;
+    // Track accumulated content across ALL rounds for proper streaming to UI
+    let accumulatedContent = '';
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       // ─── SMART TOOL SELECTION ───
@@ -915,6 +1064,15 @@ Return ONLY valid JSON, no other text.`;
       // ─── BUILD MESSAGES WITH RAG + COMPACTION ───
       let requestMessages = [...this.messages];
 
+      // Inject per-message instruction as a system directive (not stored in history)
+      if (this.pendingInstruction) {
+        const userIdx = requestMessages.findLastIndex((m) => m.role === 'user');
+        if (userIdx >= 0) {
+          requestMessages.splice(userIdx, 0, { role: 'system', content: this.pendingInstruction });
+        }
+        this.pendingInstruction = null; // Clear after injection
+      }
+
       // Inject RAG results as temporary context
       if (this.lastRagResults.length > 0) {
         const ragCtx = this.promptEngine.buildRagContext(this.lastRagResults);
@@ -949,7 +1107,7 @@ Return ONLY valid JSON, no other text.`;
       this.emit({ type: 'loading_start', stage: round === 0 ? 'thinking' : 'tool_execution' });
 
       // Stream response with retry support
-      let fullContent = '';
+      let fullContent = '';  // Content for THIS round only
       const toolCalls: CompletionToolCall[] = [];
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let currentToolCall: any = null;
@@ -968,7 +1126,10 @@ Return ONLY valid JSON, no other text.`;
         const chunk: CompletionChunk = stream.first.value;
         if (chunk.type === 'text_delta' && chunk.content) {
           fullContent += chunk.content;
-          this.emit({ type: 'stream_chunk', content: chunk.content, fullContent });
+          accumulatedContent += chunk.content;
+          this.emit({ type: 'stream_chunk', content: chunk.content, fullContent: accumulatedContent });
+        } else if ((chunk as { type?: string }).type === 'reasoning_delta' && (chunk as { content?: string }).content) {
+          this.emit({ type: 'reasoning_delta', content: (chunk as { content: string }).content } as unknown as EngineEvent);
         } else if (chunk.type === 'tool_call_delta' && chunk.toolCall) {
           const tc = chunk.toolCall;
           if (tc.id) {
@@ -1001,11 +1162,14 @@ Return ONLY valid JSON, no other text.`;
         const chunk = next.value;
         if (chunk.type === 'text_delta' && chunk.content) {
           fullContent += chunk.content;
+          accumulatedContent += chunk.content;
           this.emit({
             type: 'stream_chunk',
             content: chunk.content,
-            fullContent,
+            fullContent: accumulatedContent,
           });
+        } else if ((chunk as { type?: string }).type === 'reasoning_delta' && (chunk as { content?: string }).content) {
+          this.emit({ type: 'reasoning_delta', content: (chunk as { content: string }).content } as unknown as EngineEvent);
         } else if (chunk.type === 'tool_call_delta' && chunk.toolCall) {
           // Accumulate tool call
           if (chunk.toolCall.id) {
@@ -1047,9 +1211,7 @@ Return ONLY valid JSON, no other text.`;
         toolCalls.push(currentToolCall as CompletionToolCall);
       }
 
-      this.emit({ type: 'loading_end' });
-
-      // If there are tool calls, execute them and loop
+      // If there are tool calls, execute them and loop (do NOT emit loading_end yet)
       if (toolCalls.length > 0) {
         // Add assistant message with tool calls to history
         this.messages.push({
@@ -1114,6 +1276,16 @@ Return ONLY valid JSON, no other text.`;
           // eslint-disable-next-line no-console
           console.debug('[Agent] executing tool', tc.function.name);
           const toolStartTime = Date.now();
+
+          // Doom-loop detection: same tool + args invoked 3+ times in a row
+          const sig = `${tc.function.name}|${tc.function.arguments.slice(0, 200)}`;
+          this._recentToolSignatures.push(sig);
+          if (this._recentToolSignatures.length > 6) this._recentToolSignatures.shift();
+          const lastThree = this._recentToolSignatures.slice(-3);
+          if (lastThree.length === 3 && lastThree.every((s) => s === sig)) {
+            this.emit({ type: 'doom_loop', tool: tc.function.name, count: lastThree.length } as unknown as EngineEvent);
+          }
+
           this.emit({
             type: 'tool_executing',
             tool: tc.function.name,
@@ -1128,9 +1300,15 @@ Return ONLY valid JSON, no other text.`;
             // Bad JSON from model
           }
 
-            const result = this.toolExecutor
-              ? await this.toolExecutor.execute(tc.function.name, args, this.sessionId)
-              : { success: false, output: 'No tool executor configured', error: 'NO_EXECUTOR' };
+            let result: ToolResult;
+            try {
+              result = this.toolExecutor
+                ? await this.toolExecutor.execute(tc.function.name, args, this.sessionId)
+                : { success: false, output: 'No tool executor configured', error: 'NO_EXECUTOR' };
+            } catch (toolErr) {
+              result = { success: false, output: `Tool execution failed: ${toolErr instanceof Error ? toolErr.message : String(toolErr)}`, error: 'TOOL_CRASH' };
+              getLogger().error('TOOL_EXEC', `Tool ${tc.function.name} crashed: ${toolErr}`);
+            }
 
           // Auto-commit after file edit operations
           if (this.gitAutoCommit && this.gitManager && this.isEditTool(tc.function.name) && result.success) {
@@ -1173,11 +1351,25 @@ Return ONLY valid JSON, no other text.`;
       }
 
       // No tool calls — this is the final assistant response
-      this.messages.push({ role: 'assistant', content: fullContent });
+      // Guard against empty response from model — retry once or return error
+      if (!fullContent.trim() && round < MAX_TOOL_ROUNDS - 1) {
+        getLogger().warn('COMPLETION', `Empty response from model on round ${round}, retrying...`);
+        continue;
+      }
+      if (!fullContent.trim()) {
+        fullContent = 'I apologize, I was unable to generate a response. Please try rephrasing your question.';
+        accumulatedContent += fullContent;
+        this.emit({ type: 'stream_chunk', content: fullContent, fullContent: accumulatedContent });
+      }
+
+      // Emit loading_end now that we have the final response
+      this.emit({ type: 'loading_end' });
+
+      this.messages.push({ role: 'assistant', content: accumulatedContent });
 
       const tokenCount = lastUsage
         ? lastUsage.inputTokens + lastUsage.outputTokens
-        : Math.ceil(fullContent.length / 4);
+        : Math.ceil(accumulatedContent.length / 4);
       if (lastUsage) {
         this.tokenTracker.addTokenUsage(lastUsage.inputTokens, lastUsage.outputTokens);
       } else {
@@ -1188,13 +1380,16 @@ Return ONLY valid JSON, no other text.`;
         id: generateMessageId(),
         sessionId: this.sessionId,
         role: 'assistant',
-        content: fullContent,
+        content: accumulatedContent,
         toolCalls: null,
         createdAt: new Date().toISOString(),
         tokenCount,
       };
 
       const elapsed = Date.now() - startTime;
+      const turnTokens = this.tokenTracker.tokensUsed - (this._turnStartTokens ?? 0);
+      const costUsd = this.tokenTracker.totalCost - (this._turnStartCost ?? 0);
+      this.emit({ type: 'token_usage', totalTokens: this.tokenTracker.tokensUsed, contextWindow: this.getContextWindow(), turnTokens, costUsd } as unknown as EngineEvent);
       this.emit({
         type: 'message_received',
         message: assistantMessage,
@@ -1205,6 +1400,7 @@ Return ONLY valid JSON, no other text.`;
     }
 
     // Exhausted rounds — return what we have
+    this.emit({ type: 'loading_end' });
     const fallback: Message = {
       id: generateMessageId(),
       sessionId: this.sessionId,

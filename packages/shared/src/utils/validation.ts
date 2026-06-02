@@ -6,6 +6,16 @@ export const providerIdSchema = z.enum([
   'google',
   'ollama',
   'lmstudio',
+  'moonshot',
+  'deepseek',
+  'groq',
+  'mistral',
+  'together',
+  'xai',
+  'fireworks',
+  'perplexity',
+  'azure',
+  'cohere',
 ]);
 
 export const permissionDecisionSchema = z.enum([

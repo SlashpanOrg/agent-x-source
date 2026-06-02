@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import TextField from '@mui/material/TextField';
@@ -7,24 +8,52 @@ import Alert from '@mui/material/Alert';
 import Stepper from '@mui/material/Stepper';
 import Step from '@mui/material/Step';
 import StepLabel from '@mui/material/StepLabel';
-import MenuItem from '@mui/material/MenuItem';
-import Select from '@mui/material/Select';
-import FormControl from '@mui/material/FormControl';
-import InputLabel from '@mui/material/InputLabel';
-import Chip from '@mui/material/Chip';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import BadgeIcon from '@mui/icons-material/Badge';
+import GroupsIcon from '@mui/icons-material/Groups';
 import { providers as provApi, models as modelsApi, crews, config, bridges } from '../api';
 import { useApp } from '../store/AppContext';
 import { colors } from '../theme';
 import type { ProviderInfo, ModelInfo } from '../api';
 
 const STEPS = ['Provider', 'API Key', 'Model', 'Callsign', 'Crew', 'Bridges', 'Complete'];
+const STORAGE_KEY = 'agentx_wizard_progress';
+
+interface WizardProgress {
+  step: number;
+  selectedProvider: string;
+  selectedModel: string;
+  callsign: string;
+  crewName: string;
+  crewPrompt: string;
+}
+
+function saveProgress(data: WizardProgress) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch { /* ignore */ }
+}
+
+function loadProgress(): WizardProgress | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) as WizardProgress : null;
+  } catch { return null; }
+}
+
+function clearProgress() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+}
 
 export function SetupWizard() {
-  const { setView, setConfig } = useApp();
+  const { setConfig } = useApp();
+  const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showBackWarning, setShowBackWarning] = useState(false);
 
   // Wizard state
   const [availableProviders, setAvailableProviders] = useState<ProviderInfo[]>([]);
@@ -37,28 +66,85 @@ export function SetupWizard() {
   const [crewName, setCrewName] = useState('Default Crew');
   const [crewPrompt, setCrewPrompt] = useState('You are a helpful AI assistant.');
   const [telegramToken, setTelegramToken] = useState('');
-  const [telegramChatId, setTelegramChatId] = useState('');
+
+  // Restore progress on mount
+  useEffect(() => {
+    const saved = loadProgress();
+    if (saved && saved.step >= 2) {
+      setStep(saved.step);
+      setSelectedProvider(saved.selectedProvider);
+      setSelectedModel(saved.selectedModel);
+      setCallsign(saved.callsign || '');
+      setCrewName(saved.crewName || 'Default Crew');
+      setCrewPrompt(saved.crewPrompt || 'You are a helpful AI assistant.');
+      // Re-fetch models for restored provider
+      if (saved.selectedProvider) {
+        provApi.models(saved.selectedProvider).then(setAvailableModels).catch(() => {});
+      }
+    }
+  }, []);
 
   // Load providers on mount
   useEffect(() => {
     provApi.available().then(setAvailableProviders).catch(() => {});
   }, []);
 
+  // Persist progress on step change (only non-sensitive data)
+  const persistProgress = useCallback(() => {
+    if (step >= 2) {
+      saveProgress({ step, selectedProvider, selectedModel, callsign, crewName, crewPrompt });
+    }
+  }, [step, selectedProvider, selectedModel, callsign, crewName, crewPrompt]);
+
+  useEffect(() => { persistProgress(); }, [persistProgress]);
+
   const next = () => { setError(''); setStep((s) => s + 1); };
-  const back = () => { setError(''); setStep((s) => s - 1); };
+
+  const back = () => {
+    setError('');
+    // If going back to step 0 or 1 from step 2+, warn about losing credentials
+    if (step >= 2 && step <= 1) {
+      // This won't trigger since step >= 2 means back goes to 1 at minimum
+    }
+    setStep((s) => s - 1);
+  };
+
+  const handleBackToCredentials = () => {
+    // From step 2+ going back to step 1 means re-entering API key
+    setShowBackWarning(true);
+  };
+
+  const confirmBackToCredentials = () => {
+    setShowBackWarning(false);
+    setApiKey('');
+    setBaseUrl('');
+    setAvailableModels([]);
+    setSelectedModel('');
+    clearProgress();
+    setStep(1);
+  };
+
+  const selectedProviderInfo = availableProviders.find(p => p.id === selectedProvider);
+  const isLocal = selectedProviderInfo?.type === 'local';
+  const isAzure = selectedProvider === 'azure';
 
   const handleProviderNext = () => {
     if (!selectedProvider) { setError('Select a provider'); return; }
+    // Pre-fill base URL for local providers
+    if (selectedProviderInfo?.type === 'local' && !baseUrl) {
+      setBaseUrl(selectedProviderInfo.defaultBaseUrl ?? '');
+    }
     next();
   };
 
   const handleApiKeyNext = async () => {
-    if (!apiKey) { setError('Enter your API key'); return; }
+    if (!isLocal && !apiKey) { setError('Enter your API key'); return; }
+    if (isAzure && !baseUrl) { setError('Azure requires a resource endpoint URL'); return; }
     setLoading(true);
     try {
-      const result = await provApi.validate(selectedProvider, apiKey, baseUrl || undefined);
+      const result = await provApi.validate(selectedProvider, apiKey || undefined, baseUrl || undefined);
       if (!result.valid) { setError(result.error ?? 'Invalid API key'); setLoading(false); return; }
-      await provApi.configure(selectedProvider, apiKey, baseUrl || undefined);
+      await provApi.configure(selectedProvider, apiKey || undefined, baseUrl || undefined);
       // Load models
       const modelList = await provApi.models(selectedProvider);
       setAvailableModels(modelList);
@@ -105,7 +191,7 @@ export function SetupWizard() {
     setLoading(true);
     try {
       if (telegramToken.trim()) {
-        await bridges.telegram.start(telegramToken, telegramChatId || undefined);
+        await bridges.telegram.start(telegramToken);
       }
       next();
     } catch (err) {
@@ -121,180 +207,331 @@ export function SetupWizard() {
       await config.update({ setupComplete: true, user: { callsign } });
       const cfg = await config.get();
       setConfig(cfg);
-      setView('docking');
+      clearProgress();
+      navigate('/');
     } catch {
-      setView('docking');
+      clearProgress();
+      navigate('/');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', pt: 6, px: 2, overflow: 'auto' }}>
-      <Typography variant="h2" sx={{ mb: 1 }}>SETUP WIZARD</Typography>
-      <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 4 }}>
-        Configure your Agent-X instance
-      </Typography>
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {/* Fixed Header */}
+      <Box sx={{ flexShrink: 0, textAlign: 'center', pt: 4, px: 2, pb: 2 }}>
+        <Typography variant="h2" sx={{ mb: 1 }}>SETUP WIZARD</Typography>
+        <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 3 }}>
+          Configure your Agent-X instance
+        </Typography>
 
-      <Stepper activeStep={step} alternativeLabel sx={{ width: '100%', maxWidth: 700, mb: 4 }}>
-        {STEPS.map((label) => (
-          <Step key={label}>
-            <StepLabel sx={{ '& .MuiStepLabel-label': { color: colors.text.dim, fontSize: '0.7rem', fontFamily: "'JetBrains Mono', monospace" } }}>
-              {label}
-            </StepLabel>
-          </Step>
-        ))}
-      </Stepper>
+        <Stepper activeStep={step} alternativeLabel sx={{ width: '100%', maxWidth: 700, mx: 'auto' }}>
+          {STEPS.map((label) => (
+            <Step key={label}>
+              <StepLabel sx={{ '& .MuiStepLabel-label': { color: colors.text.dim, fontSize: '0.7rem', fontFamily: "'JetBrains Mono', monospace" } }}>
+                {label}
+              </StepLabel>
+            </Step>
+          ))}
+        </Stepper>
+      </Box>
 
-      <Box sx={{ width: '100%', maxWidth: 480 }}>
-        {error && <Alert severity="error" sx={{ mb: 2, bgcolor: '#1a0000', border: `1px solid ${colors.accent.red}40` }}>{error}</Alert>}
+      {/* Scrollable Content */}
+      <Box sx={{ flex: 1, overflow: 'auto', display: 'flex', justifyContent: 'center', px: 2 }}>
+        <Box sx={{ width: '100%', maxWidth: (step === 0 || step === 2) ? 720 : 480 }}>
+          {error && <Alert severity="error" sx={{ mb: 2, bgcolor: '#1a0000', border: `1px solid ${colors.accent.red}40` }}>{error}</Alert>}
 
-        {/* Step 0: Choose Provider */}
-        {step === 0 && (
-          <Box>
-            <Typography variant="h6" sx={{ mb: 2 }}>Choose AI Provider</Typography>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-              {availableProviders.map((p) => (
-                <Box
-                  key={p.id}
-                  onClick={() => setSelectedProvider(p.id)}
-                  sx={{
-                    p: 2, border: `1px solid ${selectedProvider === p.id ? colors.accent.blue : colors.border.default}`,
-                    borderRadius: 1, cursor: 'pointer', transition: 'border-color 0.2s',
-                    '&:hover': { borderColor: colors.accent.blue },
-                  }}
-                >
-                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Box>
-                      <Typography variant="body1" sx={{ fontWeight: 600 }}>{p.name}</Typography>
-                      <Typography variant="caption" sx={{ color: colors.text.tertiary }}>{p.description}</Typography>
-                    </Box>
-                    <Chip size="small" label={p.type} sx={{ fontSize: '0.6rem', textTransform: 'uppercase' }} />
+          {/* Step 0: Choose Provider */}
+          {step === 0 && (
+            <Box>
+              <Typography variant="h6" sx={{ mb: 0.5, textAlign: 'center' }}>Choose AI Provider</Typography>
+              <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', color: colors.text.dim, mb: 2, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '1px' }}>
+                CLOUD
+              </Typography>
+              <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 1.5, mb: 2 }}>
+                {availableProviders.filter(p => p.type === 'cloud').map((p) => (
+                  <Box
+                    key={p.id}
+                    onClick={() => setSelectedProvider(p.id)}
+                    sx={{
+                      p: 1.5,
+                      border: `1px solid ${selectedProvider === p.id ? colors.accent.blue : colors.border.default}`,
+                      borderRadius: 1,
+                      cursor: 'pointer',
+                      textAlign: 'center',
+                      transition: 'all 0.2s ease',
+                      bgcolor: selectedProvider === p.id ? colors.accent.blue : 'transparent',
+                      boxShadow: selectedProvider === p.id ? `0 0 12px ${colors.accent.blue}40` : 'none',
+                      '&:hover': selectedProvider === p.id ? {} : { borderColor: colors.border.strong, bgcolor: colors.bg.tertiary },
+                    }}
+                  >
+                    <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8rem', color: selectedProvider === p.id ? '#000' : colors.text.primary }}>{p.name}</Typography>
                   </Box>
-                </Box>
-              ))}
+                ))}
+              </Box>
+              <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', color: colors.text.dim, mb: 1.5, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '1px' }}>
+                LOCAL
+              </Typography>
+              <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 1.5 }}>
+                {availableProviders.filter(p => p.type === 'local').map((p) => (
+                  <Box
+                    key={p.id}
+                    onClick={() => setSelectedProvider(p.id)}
+                    sx={{
+                      p: 1.5,
+                      border: `1px solid ${selectedProvider === p.id ? colors.accent.green : colors.border.default}`,
+                      borderRadius: 1,
+                      cursor: 'pointer',
+                      textAlign: 'center',
+                      transition: 'all 0.2s ease',
+                      bgcolor: selectedProvider === p.id ? colors.accent.green : 'transparent',
+                      boxShadow: selectedProvider === p.id ? `0 0 12px ${colors.accent.green}40` : 'none',
+                      '&:hover': selectedProvider === p.id ? {} : { borderColor: colors.border.strong, bgcolor: colors.bg.tertiary },
+                    }}
+                  >
+                    <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8rem', color: selectedProvider === p.id ? '#000' : colors.text.primary }}>{p.name}</Typography>
+                  </Box>
+                ))}
+              </Box>
               {availableProviders.length === 0 && (
-                <Typography variant="body2" sx={{ color: colors.text.dim }}>Loading providers...</Typography>
+                <Typography variant="body2" sx={{ color: colors.text.dim, textAlign: 'center', mt: 2 }}>Loading providers...</Typography>
               )}
             </Box>
-            <Box sx={{ mt: 3, display: 'flex', justifyContent: 'flex-end' }}>
-              <Button variant="contained" onClick={handleProviderNext} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>
-                Next
-              </Button>
-            </Box>
-          </Box>
-        )}
+          )}
 
-        {/* Step 1: API Key */}
-        {step === 1 && (
-          <Box>
-            <Typography variant="h6" sx={{ mb: 2 }}>Enter API Key</Typography>
-            <TextField label="API Key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} fullWidth type="password" sx={{ mb: 2 }} />
-            <TextField label="Base URL (optional)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} fullWidth placeholder="Leave blank for default" />
-            <Box sx={{ mt: 3, display: 'flex', justifyContent: 'space-between' }}>
-              <Button onClick={back} sx={{ color: colors.text.secondary }}>Back</Button>
-              <Button variant="contained" onClick={handleApiKeyNext} disabled={loading} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>
-                {loading ? 'Validating...' : 'Validate & Next'}
-              </Button>
+          {/* Step 1: API Key / Connection */}
+          {step === 1 && (
+            <Box>
+              <Typography variant="h6" sx={{ mb: 1 }}>
+                {isLocal ? 'Connection Settings' : isAzure ? 'Azure Configuration' : 'Enter API Key'}
+              </Typography>
+              <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 2 }}>
+                {isLocal
+                  ? `Configure your ${selectedProviderInfo?.name ?? 'local'} endpoint`
+                  : isAzure
+                    ? 'Enter your Azure resource endpoint and API key'
+                    : `Enter your ${selectedProviderInfo?.name ?? ''} API key`}
+              </Typography>
+              {!isLocal && (
+                <TextField label="API Key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} fullWidth type="password" sx={{ mb: 2 }} />
+              )}
+              {isLocal && (
+                <TextField label="API Key (optional)" value={apiKey} onChange={(e) => setApiKey(e.target.value)} fullWidth type="password" sx={{ mb: 2 }} placeholder="Leave blank if not required" />
+              )}
+              {(isLocal || isAzure) && (
+                <TextField
+                  label={isAzure ? 'Resource Endpoint URL' : 'Base URL'}
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                  fullWidth
+                  placeholder={selectedProviderInfo?.defaultBaseUrl ?? ''}
+                  required={isAzure}
+                />
+              )}
             </Box>
-          </Box>
-        )}
+          )}
 
-        {/* Step 2: Choose Model */}
-        {step === 2 && (
-          <Box>
-            <Typography variant="h6" sx={{ mb: 2 }}>Select Model</Typography>
-            <FormControl fullWidth>
-              <InputLabel>Model</InputLabel>
-              <Select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} label="Model">
+          {/* Step 2: Choose Model */}
+          {step === 2 && (
+            <Box>
+              <Typography variant="h6" sx={{ mb: 0.5 }}>Select Model</Typography>
+              <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 2 }}>
+                {availableModels.length} model{availableModels.length !== 1 ? 's' : ''} available from {selectedProviderInfo?.name ?? selectedProvider}
+              </Typography>
+              <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 1.5 }}>
                 {availableModels.map((m) => (
-                  <MenuItem key={m.id} value={m.id}>
-                    {m.name}{m.contextWindow ? ` (${Math.round(m.contextWindow / 1000)}k ctx)` : ''}
-                  </MenuItem>
+                  <Box
+                    key={m.id}
+                    onClick={() => setSelectedModel(m.id)}
+                    sx={{
+                      p: 1.5,
+                      border: `1px solid ${selectedModel === m.id ? colors.accent.blue : colors.border.default}`,
+                      borderRadius: 1,
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                      bgcolor: selectedModel === m.id ? colors.accent.blue : 'transparent',
+                      boxShadow: selectedModel === m.id ? `0 0 12px ${colors.accent.blue}40` : 'none',
+                      '&:hover': selectedModel === m.id ? {} : { borderColor: colors.border.strong, bgcolor: colors.bg.tertiary },
+                    }}
+                  >
+                    <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.78rem', color: selectedModel === m.id ? '#000' : colors.text.primary, mb: 0.5, wordBreak: 'break-word' }}>
+                      {m.name}
+                    </Typography>
+                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+                      {m.contextWindow && (
+                        <Typography variant="caption" sx={{ fontSize: '0.6rem', fontFamily: "'JetBrains Mono', monospace", color: selectedModel === m.id ? '#000000aa' : colors.text.dim }}>
+                          {m.contextWindow >= 1000000 ? `${(m.contextWindow / 1000000).toFixed(1)}M` : `${Math.round(m.contextWindow / 1000)}K`} ctx
+                        </Typography>
+                      )}
+                      {m.capabilities && m.capabilities.length > 0 && m.capabilities.filter(c => c !== 'text' && c !== 'streaming').map((cap) => (
+                        <Typography key={cap} variant="caption" sx={{ fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace", color: selectedModel === m.id ? '#000000aa' : colors.accent.cyan, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                          {cap}
+                        </Typography>
+                      ))}
+                    </Box>
+                  </Box>
                 ))}
-              </Select>
-            </FormControl>
-            <Box sx={{ mt: 3, display: 'flex', justifyContent: 'space-between' }}>
-              <Button onClick={back} sx={{ color: colors.text.secondary }}>Back</Button>
-              <Button variant="contained" onClick={handleModelNext} disabled={loading} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>
-                {loading ? 'Switching...' : 'Next'}
-              </Button>
+              </Box>
             </Box>
-          </Box>
-        )}
+          )}
 
-        {/* Step 3: Callsign */}
-        {step === 3 && (
-          <Box>
-            <Typography variant="h6" sx={{ mb: 1 }}>Your Callsign</Typography>
-            <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 2 }}>
-              How should Agent-X address you?
-            </Typography>
-            <TextField label="Callsign" value={callsign} onChange={(e) => setCallsign(e.target.value)} fullWidth placeholder="e.g. Commander" />
-            <Box sx={{ mt: 3, display: 'flex', justifyContent: 'space-between' }}>
-              <Button onClick={back} sx={{ color: colors.text.secondary }}>Back</Button>
-              <Button variant="contained" onClick={handleCallsignNext} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>Next</Button>
-            </Box>
-          </Box>
-        )}
+          {/* Step 3: Callsign */}
+          {step === 3 && (
+            <Box>
+              <Typography variant="h6" sx={{ mb: 1 }}>Your Callsign</Typography>
+              <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 2 }}>
+                How should Agent-X address you?
+              </Typography>
+              <TextField label="Callsign" value={callsign} onChange={(e) => setCallsign(e.target.value)} fullWidth placeholder="e.g. Commander" />
 
-        {/* Step 4: Crew */}
-        {step === 4 && (
-          <Box>
-            <Typography variant="h6" sx={{ mb: 1 }}>Create Default Crew</Typography>
-            <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 2 }}>
-              A crew defines the agent's personality and system prompt.
-            </Typography>
-            <TextField label="Crew Name" value={crewName} onChange={(e) => setCrewName(e.target.value)} fullWidth sx={{ mb: 2 }} />
-            <TextField label="System Prompt" value={crewPrompt} onChange={(e) => setCrewPrompt(e.target.value)} fullWidth multiline rows={4} />
-            <Box sx={{ mt: 3, display: 'flex', justifyContent: 'space-between' }}>
-              <Button onClick={back} sx={{ color: colors.text.secondary }}>Back</Button>
-              <Button variant="contained" onClick={handleCrewNext} disabled={loading} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>
-                {loading ? 'Creating...' : 'Next'}
-              </Button>
+              <Box sx={{ mt: 4, p: 2.5, border: `1px solid ${colors.border.default}`, borderRadius: 1, bgcolor: colors.bg.secondary }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1.5 }}>
+                  <BadgeIcon sx={{ fontSize: 20, color: colors.accent.blue }} />
+                  <Typography variant="body2" sx={{ fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '1px', fontSize: '0.75rem' }}>
+                    WHAT IS A CALLSIGN?
+                  </Typography>
+                </Box>
+                <Typography variant="body2" sx={{ color: colors.text.secondary, fontSize: '0.8rem', lineHeight: 1.6 }}>
+                  Your unique identity within Agent-X. The agent uses this to address you
+                  in conversations, logs, and notifications.
+                </Typography>
+                <Typography variant="caption" sx={{ display: 'block', mt: 1.5, color: colors.text.dim, fontFamily: "'JetBrains Mono', monospace", fontSize: '0.65rem' }}>
+                  Examples: Commander, Captain, Architect, Operator
+                </Typography>
+              </Box>
             </Box>
-          </Box>
-        )}
+          )}
 
-        {/* Step 5: Bridges (optional) */}
-        {step === 5 && (
-          <Box>
-            <Typography variant="h6" sx={{ mb: 1 }}>Telegram Bridge (Optional)</Typography>
-            <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 2 }}>
-              Connect a Telegram bot to chat with Agent-X on the go. Skip to finish setup without.
-            </Typography>
-            <TextField label="Bot Token" value={telegramToken} onChange={(e) => setTelegramToken(e.target.value)} fullWidth sx={{ mb: 2 }} />
-            <TextField label="Chat ID (optional)" value={telegramChatId} onChange={(e) => setTelegramChatId(e.target.value)} fullWidth />
-            <Box sx={{ mt: 3, display: 'flex', justifyContent: 'space-between' }}>
-              <Button onClick={back} sx={{ color: colors.text.secondary }}>Back</Button>
-              <Button variant="contained" onClick={handleBridgesNext} disabled={loading} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>
-                {loading ? 'Connecting...' : telegramToken ? 'Connect & Next' : 'Skip & Next'}
-              </Button>
-            </Box>
-          </Box>
-        )}
+          {/* Step 4: Crew */}
+          {step === 4 && (
+            <Box>
+              <Typography variant="h6" sx={{ mb: 1 }}>Create Default Crew</Typography>
+              <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 2 }}>
+                A crew defines the agent's personality and system prompt.
+              </Typography>
+              <TextField label="Crew Name" value={crewName} onChange={(e) => setCrewName(e.target.value)} fullWidth sx={{ mb: 2 }} />
+              <TextField label="System Prompt" value={crewPrompt} onChange={(e) => setCrewPrompt(e.target.value)} fullWidth multiline rows={4} />
 
-        {/* Step 6: Complete */}
-        {step === 6 && (
-          <Box sx={{ textAlign: 'center' }}>
-            <CheckCircleIcon sx={{ fontSize: 64, color: colors.accent.green, mb: 2 }} />
-            <Typography variant="h5" sx={{ mb: 1 }}>Setup Complete!</Typography>
-            <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 3 }}>
-              Your Agent-X instance is ready. Launch the console to start chatting.
-            </Typography>
-            <Box sx={{ textAlign: 'left', p: 2, border: `1px solid ${colors.border.default}`, borderRadius: 1, mb: 3, fontFamily: "'JetBrains Mono', monospace", fontSize: '0.75rem' }}>
-              <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Provider: {selectedProvider}</Typography>
-              <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Model: {selectedModel}</Typography>
-              <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Callsign: {callsign}</Typography>
-              <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Crew: {crewName}</Typography>
-              {telegramToken && <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Telegram: Connected</Typography>}
+              <Box sx={{ mt: 4, p: 2.5, border: `1px solid ${colors.border.default}`, borderRadius: 1, bgcolor: colors.bg.secondary }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1.5 }}>
+                  <GroupsIcon sx={{ fontSize: 20, color: colors.accent.purple }} />
+                  <Typography variant="body2" sx={{ fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '1px', fontSize: '0.75rem' }}>
+                    WHAT IS A CREW?
+                  </Typography>
+                </Box>
+                <Typography variant="body2" sx={{ color: colors.text.secondary, fontSize: '0.8rem', lineHeight: 1.6 }}>
+                  A crew shapes how the agent thinks and responds. The system prompt defines
+                  its expertise, tone, and boundaries. You can create multiple crews later.
+                </Typography>
+                <Typography variant="caption" sx={{ display: 'block', mt: 1.5, color: colors.text.dim, fontFamily: "'JetBrains Mono', monospace", fontSize: '0.65rem' }}>
+                  Think of it as a role: DevOps Engineer, Creative Writer, Research Analyst
+                </Typography>
+              </Box>
             </Box>
+          )}
+
+          {/* Step 5: Bridges (optional) */}
+          {step === 5 && (
+            <Box>
+              <Typography variant="h6" sx={{ mb: 1 }}>Telegram Bridge (Optional)</Typography>
+              <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 2 }}>
+                Connect a Telegram bot to chat with Agent-X on the go. Skip to finish setup without.
+              </Typography>
+              <TextField label="Bot Token" placeholder="e.g. 123456789:ABCdefGhIJKlmNOPqrs" value={telegramToken} onChange={(e) => setTelegramToken(e.target.value)} fullWidth />
+            </Box>
+          )}
+
+          {/* Step 6: Complete */}
+          {step === 6 && (
+            <Box sx={{ textAlign: 'center' }}>
+              <CheckCircleIcon sx={{ fontSize: 64, color: colors.accent.green, mb: 2 }} />
+              <Typography variant="h5" sx={{ mb: 1 }}>Setup Complete!</Typography>
+              <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 3 }}>
+                Your Agent-X instance is ready. Launch the console to start chatting.
+              </Typography>
+              <Box sx={{ textAlign: 'left', p: 2, border: `1px solid ${colors.border.default}`, borderRadius: 1, mb: 3, fontFamily: "'JetBrains Mono', monospace", fontSize: '0.75rem' }}>
+                <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Provider: {selectedProvider}</Typography>
+                <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Model: {selectedModel}</Typography>
+                <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Callsign: {callsign}</Typography>
+                <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Crew: {crewName}</Typography>
+                {telegramToken && <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Telegram: Connected</Typography>}
+              </Box>
+            </Box>
+          )}
+        </Box>
+      </Box>
+
+      {/* Fixed Bottom Navigation */}
+      <Box sx={{ flexShrink: 0, borderTop: `1px solid ${colors.border.default}`, px: 2, py: 2, display: 'flex', justifyContent: 'center' }}>
+        <Box sx={{ width: '100%', maxWidth: (step === 0 || step === 2) ? 720 : 480, display: 'flex', justifyContent: step === 0 ? 'flex-end' : step === 6 ? 'center' : 'space-between' }}>
+          {step === 1 && (
+            <Button onClick={back} sx={{ color: colors.text.secondary }}>Back</Button>
+          )}
+          {step === 2 && (
+            <Button onClick={handleBackToCredentials} sx={{ color: colors.text.secondary }}>Back</Button>
+          )}
+          {step > 2 && step < 6 && (
+            <Button onClick={back} sx={{ color: colors.text.secondary }}>Back</Button>
+          )}
+          {step === 0 && (
+            <Button variant="contained" onClick={handleProviderNext} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>
+              Next
+            </Button>
+          )}
+          {step === 1 && (
+            <Button variant="contained" onClick={handleApiKeyNext} disabled={loading} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>
+              {loading ? 'Validating...' : 'Validate & Next'}
+            </Button>
+          )}
+          {step === 2 && (
+            <Button variant="contained" onClick={handleModelNext} disabled={loading || !selectedModel} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>
+              {loading ? 'Switching...' : 'Next'}
+            </Button>
+          )}
+          {step === 3 && (
+            <Button variant="contained" onClick={handleCallsignNext} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>Next</Button>
+          )}
+          {step === 4 && (
+            <Button variant="contained" onClick={handleCrewNext} disabled={loading} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>
+              {loading ? 'Creating...' : 'Next'}
+            </Button>
+          )}
+          {step === 5 && (
+            <Button variant="contained" onClick={handleBridgesNext} disabled={loading} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>
+              {loading ? 'Connecting...' : telegramToken ? 'Connect & Next' : 'Skip & Next'}
+            </Button>
+          )}
+          {step === 6 && (
             <Button variant="contained" onClick={handleComplete} disabled={loading} sx={{ px: 5, py: 1.2, bgcolor: colors.text.primary, color: colors.bg.primary, fontWeight: 700 }}>
               {loading ? 'Finalizing...' : 'Launch Console'}
             </Button>
-          </Box>
-        )}
+          )}
+        </Box>
       </Box>
+
+      {/* Back Warning Dialog */}
+      <Dialog
+        open={showBackWarning}
+        onClose={() => setShowBackWarning(false)}
+        PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, borderRadius: 1, maxWidth: 400 } }}
+      >
+        <DialogTitle sx={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.85rem', fontWeight: 700, letterSpacing: '1px', pb: 1 }}>
+          RE-ENTER CREDENTIALS?
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ color: colors.text.secondary, fontSize: '0.8rem', lineHeight: 1.6 }}>
+            Going back will clear your API key and connection settings for security.
+            You will need to re-enter and validate them again.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setShowBackWarning(false)} sx={{ color: colors.text.dim }}>Cancel</Button>
+          <Button onClick={confirmBackToCredentials} variant="contained" sx={{ bgcolor: colors.accent.red, color: '#fff', '&:hover': { bgcolor: '#d63a33' } }}>
+            Clear & Go Back
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

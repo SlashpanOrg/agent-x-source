@@ -100,7 +100,9 @@ export type EngineEvent =
   | { type: 'decomposition_complete'; subResultCount: number; totalElapsed: number }
   | { type: 'decomposition_fallback'; task: string }
   | { type: 'reflection_complete'; result: Record<string, unknown> }
-  | { type: 'skill_generated'; skill: Record<string, unknown> };
+  | { type: 'skill_generated'; skill: Record<string, unknown> }
+  | { type: 'decision_made'; messageClass: string; executionPath: string; confidence: number; reasoning: string }
+  | { type: 'token_usage'; totalTokens: number; contextWindow: number };
 
 export interface FormattedResponse {
   content: string;
