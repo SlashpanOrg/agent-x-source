@@ -166,9 +166,17 @@ app.put('/api/config', (req, res) => {
     const merged = { ...existing, ...req.body };
     eng.configManager.save(merged);
     res.json({ ok: true });
-  } catch {
-    eng.configManager.save(req.body);
-    res.json({ ok: true });
+  } catch (err) {
+    // If load failed (e.g. DEK mismatch from different auth), save raw body as new config
+    try {
+      eng.configManager.save(req.body);
+      res.json({ ok: true });
+    } catch (saveErr) {
+      res.status(500).json({
+        ok: false,
+        error: 'Failed to save config. Auth and config DEK may be out of sync. Re-create root user or ensure auth.json is shared between host and container.',
+      });
+    }
   }
 });
 
@@ -818,7 +826,22 @@ app.get('/api/sessions/search', (req, res) => {
           createdAt: (s as unknown as { createdAt?: string }).createdAt,
           snippet,
           matchCount,
-        });
+});
+
+// Force-reload config from disk — used when TUI changes config while web-api is running
+app.post('/api/config/reload', (_req, res) => {
+  const eng = getEngine();
+  try {
+    eng.configManager.reload();
+    const config = eng.configManager.load();
+    res.json({ ok: true, setupComplete: config.setupComplete });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: `Failed to reload config: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+});
       }
     }
     results.sort((a, b) => b.matchCount - a.matchCount);

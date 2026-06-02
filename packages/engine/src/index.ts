@@ -89,6 +89,8 @@ export type { StorageAdapter, StorableSession, StorableMessage, StorableTokenLog
 
 // Phase 2: Plugin system
 export { DefaultPluginLoader, MCPBridge, ACPBridge, PluginRegistry, getBuiltinCatalog, getBuiltinPlugin, getMarketplaceExtensions, getMarketplaceExtension } from './plugin/index.js';
+export { PluginSystem } from './plugin/PluginSystem.js';
+export type { PluginLifecycle, PluginHooks, PluginHealth, PluginSystemConfig } from './plugin/PluginSystem.js';
 export type { MarketplaceExtension } from './plugin/index.js';
 export { RedisCacheRuntime } from './plugin/runtime/RedisRuntime.js';
 export { WebhookNotifierRuntime } from './plugin/runtime/WebhookNotifierRuntime.js';
@@ -142,3 +144,92 @@ export { TreeOfThoughts } from './reasoning/TreeOfThoughts.js';
 export type { ThoughtNode, TreeOfThoughtsOptions } from './reasoning/TreeOfThoughts.js';
 export { ResearchEngine } from './reasoning/ResearchEngine.js';
 export type { ResearchQuery, ResearchResult, ResearchEngineOptions } from './reasoning/ResearchEngine.js';
+
+// === UNIFIED IMPLEMENTATION: Communication Layer ===
+
+// Input Normalization
+export { InputNormalizer } from './communication/InputNormalizer.js';
+export { ToolArgsRepairer } from './communication/ToolArgsRepairer.js';
+export type { RepairRecord, RepairResult } from './communication/ToolArgsRepairer.js';
+export { AttachmentResolver } from './communication/AttachmentResolver.js';
+
+// Prompt System
+export { PromptComposer, CACHE_BOUNDARY_MARKER } from './communication/prompt/PromptComposer.js';
+export { PROVIDER_OVERLAYS, DEFAULT_PROVIDER_OVERLAY } from './communication/prompt/ProviderOverlays.js';
+export { PromptCache } from './communication/prompt/PromptCache.js';
+export type { CacheEntry } from './communication/prompt/PromptCache.js';
+
+// Provider Abstraction
+export { ProviderRouter } from './providers/ProviderRouter.js';
+export { makeRoute, openAIProtocol, anthropicProtocol } from './providers/routes/Route.js';
+export type { MakeRouteInput } from './providers/routes/Route.js';
+export { BaseTransport } from './providers/transports/BaseTransport.js';
+export { OpenAITransport } from './providers/transports/OpenAITransport.js';
+export { AnthropicTransport } from './providers/transports/AnthropicTransport.js';
+export { GenericTransport } from './providers/transports/GenericTransport.js';
+export { AuthProfileManager } from './providers/AuthProfileManager.js';
+
+// Request Preparation
+export { RequestPreparer } from './communication/RequestPreparer.js';
+export type { RequestPreparerConfig } from './communication/RequestPreparer.js';
+
+// Unified Streaming
+export { StreamNormalizer } from './communication/StreamNormalizer.js';
+export { EventBroadcaster } from './communication/EventBroadcaster.js';
+export type { BroadcastTarget } from './communication/EventBroadcaster.js';
+export { LiveProjector } from './communication/LiveProjector.js';
+
+// Tool Execution Enhancements
+export { ParallelClassifier } from './tools/ParallelClassifier.js';
+export type { ClassifiedTool, ParallelClassification } from './tools/ParallelClassifier.js';
+export { EnhancedToolExecutor } from './tools/EnhancedToolExecutor.js';
+export type { BatchToolCall, BatchToolResult } from './tools/EnhancedToolExecutor.js';
+export { shouldDisclose, getCoreTools, createBridgeTools, resolveBridgeToolCall } from './tools/ProgressiveDisclosure.js';
+export { ToolCallRepairer } from './tools/ToolCallRepairer.js';
+export type { RepairResult as ToolCallRepairResult } from './tools/ToolCallRepairer.js';
+export { DoomLoopDetector } from './tools/DoomLoopDetector.js';
+export type { DoomLoopState, DoomLoopResult } from './tools/DoomLoopDetector.js';
+
+// Agent Loop Components
+export { SessionProcessor } from './agent/SessionProcessor.js';
+export type { SessionProcessorContext, ProcessedTurn } from './agent/SessionProcessor.js';
+export { RunStateManager } from './agent/RunStateManager.js';
+export { CommandQueue } from './communication/CommandQueue.js';
+export type { QueuePriority, QueuedItem } from './communication/CommandQueue.js';
+
+// Retry, Failover, Watchdogs
+export { RetryEngine } from './communication/RetryEngine.js';
+export type { RetryEngineConfig } from './communication/RetryEngine.js';
+export { FailoverPolicy } from './communication/FailoverPolicy.js';
+export { ErrorClassifier } from './communication/ErrorClassifier.js';
+export { RetryStatusBuffer } from './communication/RetryStatusBuffer.js';
+export { IdleTimeoutBreaker } from './communication/IdleTimeoutBreaker.js';
+export { StaleWatchdog } from './communication/StaleWatchdog.js';
+
+// Context Management
+export { CompactionManager } from './communication/CompactionManager.js';
+export type { CompactionConfig, CompactionResult } from './communication/CompactionManager.js';
+export { CompactionSummarizer } from './communication/CompactionSummarizer.js';
+export { PostCompactionGuard } from './communication/PostCompactionGuard.js';
+
+// Streaming Projection & Persistence
+export { ResponseAssembler } from './communication/ResponseAssembler.js';
+export { ToolResultReinjector } from './communication/ToolResultReinjector.js';
+
+// Observability
+export { TelemetryEmitter } from './communication/telemetry/TelemetryEmitter.js';
+export type { TurnMetrics, TelemetryEmitterConfig } from './communication/telemetry/TelemetryEmitter.js';
+
+// === GATEWAY & CHANNEL PLUGINS ===
+export { Gateway, ChannelRegistry } from './gateway/index.js';
+export { TelegramChannelPlugin, WebSocketChannelPlugin } from './gateway/index.js';
+export type { ChannelPlugin, ChannelRegistryEntry, GatewayConfig } from './gateway/index.js';
+
+// === VISUALIZATION & ANIMATION ===
+export { StreamingMarkdownRenderer } from './communication/visuals/StreamingMarkdownRenderer.js';
+export { VisualEventBridge } from './communication/visuals/VisualEventBridge.js';
+export { VisualStateManager } from './communication/visuals/VisualStateManager.js';
+export type { VisualState, StreamingTextState, ToolCardMap } from './communication/visuals/VisualStateManager.js';
+export { ThemeEngine } from './communication/visuals/ThemeEngine.js';
+export { createChannelAdapter } from './communication/visuals/ChannelAdapter.js';
+export type { ChannelAdapter, ChannelRenderContext } from './communication/visuals/ChannelAdapter.js';

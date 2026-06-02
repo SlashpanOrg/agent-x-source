@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO: fix type drift with AgentOptions, CompletionChunk, StepStatus
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { getLogger } from '@agentx/shared';
@@ -379,7 +378,7 @@ export async function runCloudWorker(
   apiUrl: string,
   apiKey: string,
 ): Promise<void> {
-  logger.info('CLOUD_WORKER_START', { sessionId });
+  logger.info('CLOUD_WORKER_START', JSON.stringify({ sessionId }));
 
   try {
     // Run the prompt via the engine
@@ -387,9 +386,9 @@ export async function runCloudWorker(
     const { ConfigManager } = await import('../config/ConfigManager.js');
 
     const config = new ConfigManager().load();
-    const agent = new Agent({ config });
+    const agent = new Agent({ config, sessionId });
 
-    const result = await agent.processUserInput(prompt);
+    const result = await agent.sendMessage(prompt);
 
     // Report result back to cloud API
     const res = await fetch(`${apiUrl}/api/sessions/${sessionId}/complete`, {
@@ -399,19 +398,19 @@ export async function runCloudWorker(
         'X-API-Key': apiKey,
       },
       body: JSON.stringify({
-        result: result.output,
+        result: result.content,
         status: 'completed',
         completedAt: Date.now(),
       }),
     });
 
     if (!res.ok) {
-      logger.error('CLOUD_WORKER_REPORT_FAILED', { sessionId, status: res.statusText });
+      logger.error('CLOUD_WORKER_REPORT_FAILED', JSON.stringify({ sessionId, status: res.statusText }));
     }
 
-    logger.info('CLOUD_WORKER_COMPLETE', { sessionId });
+    logger.info('CLOUD_WORKER_COMPLETE', JSON.stringify({ sessionId }));
   } catch (e) {
-    logger.error('CLOUD_WORKER_ERROR', { sessionId, error: (e as Error).message });
+    logger.error('CLOUD_WORKER_ERROR', JSON.stringify({ sessionId, error: (e as Error).message }));
 
     // Report failure
     try {

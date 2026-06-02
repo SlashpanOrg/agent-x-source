@@ -6,7 +6,8 @@ services:
     tty: true
     volumes:
       - agentx-data:/data
-      - ${HOME}/.config/agentx:/root/.config/agentx:ro
+      - ${HOME}/.config/agentx:/root/.config/agentx
+      - ${HOME}/.local/share/agentx:/root/.local/share/agentx
     environment:
       - NODE_ENV=production
       - AGENTX_DATA_DIR=/data

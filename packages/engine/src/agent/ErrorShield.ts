@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO: fix type drift
 import { getLogger } from '@agentx/shared';
 
 export type ErrorCategory = 'internal' | 'input' | 'tool' | 'provider' | 'permission' | 'timeout' | 'unknown';
@@ -85,12 +84,12 @@ export class ErrorShield {
   }
 
   private emitSafeError(shielded: ShieldedError): void {
-    getLogger().warn('ERROR_SHIELD', {
+    getLogger().warn('ERROR_SHIELD', JSON.stringify({
       category: shielded.category,
       code: shielded.code,
       message: shielded.message,
       timestamp: shielded.timestamp,
-    });
+    }));
   }
 
   logError(error: unknown): void {

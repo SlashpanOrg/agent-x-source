@@ -1,42 +1,24 @@
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import {
+  getConfigDir as _getConfigDir,
+  getDataDir as _getDataDir,
+  getCacheDir as _getCacheDir,
+  getConfigPath as _getConfigPath,
+  getDbPath as _getDbPath,
+  getSecretSauceDir as _getSecretSauceDir,
+  getLogDir as _getLogDir,
+} from '@agentx/shared';
 
-const HOME = homedir();
+// Re-export shared paths for backward compatibility
+export const getConfigDir = _getConfigDir;
+export const getDataDir = _getDataDir;
+export const getCacheDir = _getCacheDir;
+export const getConfigPath = _getConfigPath;
+export const getDbPath = _getDbPath;
+export const getSecretSauceDir = _getSecretSauceDir;
+export const getLogDir = _getLogDir;
 
-export function getConfigDir(): string {
-  return process.env['XDG_CONFIG_HOME']
-    ? join(process.env['XDG_CONFIG_HOME'], 'agentx')
-    : join(HOME, '.config', 'agentx');
-}
-
-export function getDataDir(): string {
-  return process.env['XDG_DATA_HOME']
-    ? join(process.env['XDG_DATA_HOME'], 'agentx')
-    : join(HOME, '.local', 'share', 'agentx');
-}
-
-export function getCacheDir(): string {
-  return process.env['XDG_CACHE_HOME']
-    ? join(process.env['XDG_CACHE_HOME'], 'agentx')
-    : join(HOME, '.cache', 'agentx');
-}
-
-export function getConfigPath(): string {
-  return join(getConfigDir(), 'config.json');
-}
-
-export function getDbPath(): string {
-  return join(getDataDir(), 'db', 'agentx.db');
-}
-
-export function getSecretSauceDir(): string {
-  return join(getDataDir(), 'secret-sauce');
-}
-
-export function getLogDir(): string {
-  return join(getDataDir(), 'logs');
-}
-
+// Engine-specific paths (not in shared)
 export function getCompactionFile(): string {
   return join(getCacheDir(), 'content.txt');
 }

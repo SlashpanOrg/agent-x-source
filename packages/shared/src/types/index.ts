@@ -11,3 +11,5 @@ export * from './sandbox.js';
 export * from './plugin.js';
 export * from './telemetry.js';
 export * from './rag.js';
+export * from './communication.js';
+export * from './visualization.js';

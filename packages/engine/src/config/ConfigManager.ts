@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, copyFileSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { AgentXConfig, ProviderProfile } from '@agentx/shared';
@@ -11,6 +11,7 @@ export class ConfigManager {
   private backupPath: string;
   private config: AgentXConfig | null = null;
   private dek: Buffer | null = null;
+  private lastDiskMtime = 0;
 
   constructor(configPath?: string, dek?: Buffer) {
     this.configPath = configPath ?? getConfigPath();
@@ -59,16 +60,56 @@ export class ConfigManager {
    * Only returns true if setupComplete is explicitly set to true.
    */
   isSetupComplete(): boolean {
-    if (!this.isConfigured()) return false;
+    if (!this.isConfigured()) {
+      getLogger().warn('CONFIG', 'isSetupComplete: not configured (no config file or no DEK)');
+      return false;
+    }
     try {
       const config = this.load();
       return config.setupComplete === true;
-    } catch {
+    } catch (err) {
+      getLogger().warn('CONFIG', `isSetupComplete: decrypt failed — auth and config DEK mismatch. Different auth.json was used to create the root user than to encrypt the config. Ensure auth.json and config.enc.json are from the same host. Error: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
 
+  /**
+   * Re-read config from disk, ignoring in-memory cache.
+   * Call this when another process may have modified the config file.
+   */
+  reload(dek?: Buffer): AgentXConfig {
+    if (dek) this.dek = dek;
+    this.config = null;
+    this.lastDiskMtime = 0;
+    return this.load();
+  }
+
+  /**
+   * Returns the mtime of the config file on disk, or 0 if it doesn't exist.
+   */
+  private getDiskMtime(): number {
+    try {
+      const encryptedPath = this.getEncryptedPath();
+      if (existsSync(encryptedPath)) {
+        return statSync(encryptedPath).mtimeMs;
+      }
+      if (existsSync(this.configPath)) {
+        return statSync(this.configPath).mtimeMs;
+      }
+      return 0;
+    } catch {
+      return 0;
+    }
+  }
+
   load(): AgentXConfig {
+    // Auto-detect if config was modified on disk by another process
+    const currentDiskMtime = this.getDiskMtime();
+    if (this.config && currentDiskMtime > this.lastDiskMtime) {
+      this.config = null; // Invalidate cache — disk has newer version
+    }
+    this.lastDiskMtime = currentDiskMtime;
+
     if (this.config) return this.config;
 
     if (!this.isConfigured()) {
@@ -222,6 +263,7 @@ export class ConfigManager {
     }
 
     this.config = validated as AgentXConfig;
+    this.lastDiskMtime = Date.now(); // Track save time so own writes don't trigger reload
   }
 
   update(partial: Partial<AgentXConfig>): void {

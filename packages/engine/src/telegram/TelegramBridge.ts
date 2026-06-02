@@ -34,6 +34,12 @@ export class TelegramBridge {
   private messageHandler: ((text: string, chatId: number) => void) | null = null;
   private fileHandler: ((fileId: string, fileName: string, mimeType: string, caption: string | undefined, chatId: number) => void) | null = null;
 
+  // ─── Flood protection (3-strike breaker) ───
+  private floodStrikes = 0;
+  private readonly MAX_FLOOD_STRIKES = 3;
+  private lastMessageTime = 0;
+  private readonly FLOOD_WINDOW_MS = 1000; // 1 message per second max
+
   constructor(config: TelegramConfig) {
     this.config = config;
     this.eventBus = new AgentEventBus();
@@ -83,6 +89,8 @@ export class TelegramBridge {
     }
     this.botUsername = me.result.username;
     this.connected = true;
+    // Register as the globally active bridge for tool access from TUI/daemon
+    _setActiveTelegramBridge(this);
 
     // Use webhook mode if configured, otherwise long-polling
     if (this.config.webhookUrl) {
@@ -132,11 +140,19 @@ export class TelegramBridge {
   }
 
   /**
+   * Returns true if the bridge is actively running.
+   */
+  isRunning(): boolean {
+    return this.connected && this.polling;
+  }
+
+  /**
    * Stop the bot.
    */
   stop(): void {
     this.polling = false;
     this.connected = false;
+    _clearActiveTelegramBridge();
     if (this.pollTimeout) {
       clearTimeout(this.pollTimeout);
       this.pollTimeout = null;
@@ -195,6 +211,19 @@ export class TelegramBridge {
     const chatId = msg.chat?.id as number;
     const fromId = msg.from?.id as number | undefined;
     if (!chatId) return;
+
+    // ─── Flood protection: 3-strike breaker ───
+    const now = Date.now();
+    if (now - this.lastMessageTime < this.FLOOD_WINDOW_MS) {
+      this.floodStrikes++;
+      if (this.floodStrikes >= this.MAX_FLOOD_STRIKES) {
+        await this.sendMessage(chatId, '⚠️ Rate limit exceeded. Please wait before sending more messages.');
+        return;
+      }
+    } else {
+      this.floodStrikes = Math.max(0, this.floodStrikes - 1);
+    }
+    this.lastMessageTime = now;
 
     // Check if user is allowed
     if (this.config.allowedUserIds?.length) {
@@ -454,4 +483,20 @@ export class TelegramBridge {
     });
     return response.json();
   }
+}
+
+// ─── Global active bridge singleton (for tool access) ───
+
+let _activeBridge: TelegramBridge | null = null;
+
+function _setActiveTelegramBridge(bridge: TelegramBridge): void {
+  _activeBridge = bridge;
+}
+
+function _clearActiveTelegramBridge(): void {
+  _activeBridge = null;
+}
+
+export function getActiveTelegramBridge(): TelegramBridge | null {
+  return _activeBridge;
 }

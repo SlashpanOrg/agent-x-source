@@ -3,6 +3,8 @@ import type { Message, EngineEvent, AgentXConfig, ModelInfo, RemediationAction, 
 import { getLogger } from '@agentx/shared';
 import { Agent, CommandParser, createDefaultRegistry, ConfigManager, SessionStore, TelegramBridge, TelegramStore } from '@agentx/engine';
 import type { StorageAdapter } from '@agentx/engine';
+import { VisualStateManager } from '@agentx/engine';
+import type { VisualState } from '@agentx/engine';
 import { generateSessionId, generateMessageId } from '@agentx/shared';
 import { SessionManager } from '@agentx/engine';
 import { copyToClipboard } from '../utils/clipboard.js';
@@ -43,6 +45,7 @@ interface UseSessionReturn {
   activeTools: Array<{ tool: string; description: string; startTime: number }>;
   subAgents: Array<{ agentId: string; name: string; status: string; startTime: number; summary?: string; endTime?: number }>;
   currentPlan: Plan | null;
+  visualState: VisualState | null;
   planMode: boolean;
   toolCount: number;
   approvePlan: () => void;
@@ -121,6 +124,8 @@ export function useSession(
   const prevCostRef = useRef(0);
   const latestContentRef = useRef('');
   const streamingScheduledRef = useRef(false);
+  const visualStateManagerRef = useRef(new VisualStateManager());
+  const [visualState, setVisualState] = useState<VisualState | null>(null);
 
   // Keep model ref in sync
   useEffect(() => { currentModelRef.current = currentModel; }, [currentModel]);
@@ -180,6 +185,19 @@ export function useSession(
     }
 
     const unsubscribe = agent.events.on((event: EngineEvent) => {
+      // ─── UNIFIED: Feed visual state manager ───
+      if (event.type === 'agent_message' && event.message) {
+        visualStateManagerRef.current.applyUpdate(
+          event.message as unknown as import('@agentx/shared').VisualUpdate,
+        );
+        setVisualState({ ...visualStateManagerRef.current.getState() });
+      }
+      // Reset visual state on turn end
+      if (event.type === 'loading_end') {
+        visualStateManagerRef.current.reset();
+        setVisualState(null);
+      }
+
       switch (event.type) {
         case 'loading_start':
           setIsLoading(true);
@@ -993,6 +1011,7 @@ export function useSession(
     togglePlanStep,
     cancelPlan,
     togglePlanMode,
+    visualState,
     toolCount: agentRef.current?.toolCount ?? 0,
     watcherCount: agentRef.current?.watcherCount ?? 0,
     schedulerCount: agentRef.current?.schedulerCount ?? 0,

@@ -704,6 +704,33 @@ export async function startDaemon(): Promise<void> {
       await bridge.start();
       const tgStatus = bridge.getStatus();
       logger.info('DAEMON', `Telegram connected: @${tgStatus.botUsername}`);
+
+      // ─── Auto-reconnect every 5 minutes ───
+      const RECONNECT_INTERVAL = 5 * 60 * 1000;
+      const healthCheck = setInterval(async () => {
+        try {
+          if (bridge.isRunning()) {
+            // Already connected — skip
+            return;
+          }
+          logger.info('DAEMON', 'Telegram disconnected — attempting reconnect...');
+          bridge.stop(); // Clean up stale state
+          await bridge.start();
+          const status = bridge.getStatus();
+          logger.info('DAEMON', `Telegram reconnected: @${status.botUsername}`);
+        } catch (err) {
+          logger.error('DAEMON', `Telegram reconnect failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }, RECONNECT_INTERVAL);
+
+      // Clean up interval on shutdown
+      const cleanup = () => {
+        clearInterval(healthCheck);
+        bridge.stop().catch(() => {});
+      };
+      process.on('exit', cleanup);
+      process.on('SIGTERM', cleanup);
+      process.on('SIGINT', cleanup);
     } catch (err) {
       console.error(`Failed to start Telegram bridge: ${err instanceof Error ? err.message : String(err)}`);
       try { unlinkSync(pidPath); } catch { /* ignore */ }

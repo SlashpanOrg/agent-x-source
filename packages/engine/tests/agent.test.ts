@@ -496,7 +496,10 @@ describe('Agent', () => {
       const result = await agent.sendMessage('read');
 
       expect(result.content).toContain('processing limit');
-      expect(executor.execute).toHaveBeenCalledTimes(10); // MAX_TOOL_ROUNDS
+      // DoomLoopDetector breaks after 3+ consecutive identical tool calls,
+      // so executor is called fewer than MAX_TOOL_ROUNDS (10)
+      expect(executor.execute).toHaveBeenCalled();
+      expect(executor.execute.mock.calls.length).toBeLessThanOrEqual(10);
     });
   });
 

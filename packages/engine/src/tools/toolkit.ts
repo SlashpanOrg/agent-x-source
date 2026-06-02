@@ -483,12 +483,32 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   executor.registerHandler('python_rpc', pythonRpcHandler);
 
   // ═══ Telegram ═══
-  // Default handler — overridden by daemon when Telegram bridge is active
-  executor.registerHandler('telegram_send_file', async () => ({
-    success: false,
-    output: 'Telegram file sending is only available when running in daemon mode with Telegram bridge.',
-    error: 'NOT_AVAILABLE',
-  }));
+  // Uses global TelegramBridge instance if active (set by TUI or daemon on bridge creation)
+  // Falls back to NOT_AVAILABLE if no bridge is running
+  executor.registerHandler('telegram_send_file', async (args) => {
+    // Dynamic import to avoid circular dependency
+    const { getActiveTelegramBridge } = await import('../telegram/index.js');
+    const bridge = getActiveTelegramBridge();
+    if (!bridge || !bridge.isRunning()) {
+      return {
+        success: false,
+        output: 'Telegram is not active. Start it with /telegram start in TUI or daemon mode.',
+        error: 'NOT_AVAILABLE',
+      };
+    }
+    const filePath = args['path'] as string | undefined;
+    const chatId = args['chatId'] as string | undefined;
+    if (!filePath) {
+      return { success: false, output: 'No file path provided.', error: 'MISSING_ARG' };
+    }
+    try {
+      const targetChatId = chatId ? Number(chatId) : 0;
+      const result = await bridge.sendDocumentToChat(targetChatId, filePath);
+      return { success: result.ok, output: result.ok ? `File sent via Telegram` : (result.description ?? 'Failed to send file') };
+    } catch (err) {
+      return { success: false, output: `Telegram send failed: ${err instanceof Error ? err.message : String(err)}`, error: 'SEND_FAILED' };
+    }
+  });
 
   return { registry, executor };
 }
