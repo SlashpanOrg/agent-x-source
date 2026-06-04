@@ -1,6 +1,6 @@
 import type { Session, SessionStatus } from '@agentx/shared';
 import type { StorageAdapter } from '@agentx/shared';
-import { generateSessionId } from '@agentx/shared';
+import { generateSessionId, generateId } from '@agentx/shared';
 import { SessionStore } from './SessionStore.js';
 import { TokenTracker } from './TokenTracker.js';
 
@@ -153,6 +153,31 @@ export class SessionManager {
       return session;
     }
     return null;
+  }
+
+  saveCrewState(crewId: string, enabled: boolean, messageCount?: number): void {
+    if (!this.activeSession || this.usingStorageAdapter) return;
+    
+    this.getSessionStore().saveCrewState({
+      id: generateId(),
+      sessionId: this.activeSession.id,
+      crewId,
+      enabled,
+      lastActive: new Date().toISOString(),
+      messageCount: messageCount ?? 0,
+    });
+  }
+
+  getCrewStates(): Array<{ crewId: string; enabled: boolean; lastActive?: string; messageCount?: number }> {
+    if (!this.activeSession || this.usingStorageAdapter) return [];
+    
+    const rows = this.getSessionStore().getCrewStates(this.activeSession.id);
+    return rows.map((row) => ({
+      crewId: row['crew_id'] as string,
+      enabled: (row['enabled'] as number) === 1,
+      lastActive: row['last_active'] as string | undefined,
+      messageCount: row['message_count'] as number | undefined,
+    }));
   }
 
   listSessions(limit = 20): Session[] {

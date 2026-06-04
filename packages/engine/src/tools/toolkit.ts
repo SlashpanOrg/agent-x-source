@@ -240,6 +240,7 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'qr_generate', name: 'Generate QR Code', description: 'Generate a QR code image', modelDescription: 'Create a QR code PNG image from text/URL data.', category: 'media_image', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Output file path (.png)' }, data: { type: 'string', description: 'Data to encode in QR code' }, size: { type: 'number', description: 'QR code size in pixels (default: 256)' } }, required: ['file', 'data'] }, composable: true, source: 'builtin' },
 
   // ═══ TELEGRAM ═══
+  { id: 'telegram_send_message', name: 'Send Message via Telegram', description: 'Send a text message or progress update to the user on Telegram', modelDescription: 'Send a message to the user via Telegram. Use this to notify the user of progress, ask a quick question, or send a status update when the user is not actively watching the terminal or web UI. Only use if the user previously agreed to receive Telegram updates.', category: 'communication', riskLevel: 'low', schema: { type: 'object', properties: { message: { type: 'string', description: 'The message text to send to the user' } }, required: ['message'] }, composable: true, source: 'builtin' },
   { id: 'telegram_send_file', name: 'Send File via Telegram', description: 'Upload and send a file to the user via Telegram', modelDescription: 'Send/upload a file to the user via Telegram. Use this when the user asks you to share, send, or upload a file. The file must exist on disk.', category: 'communication', riskLevel: 'medium', schema: { type: 'object', properties: { path: { type: 'string', description: 'Path to the file to send' }, caption: { type: 'string', description: 'Optional caption/description for the file' } }, required: ['path'] }, composable: true, source: 'builtin' },
 
   // ═══ AGENT META-TOOLS ═══
@@ -485,6 +486,29 @@ export function createDefaultToolkit(scopePath: string): { registry: ToolRegistr
   // ═══ Telegram ═══
   // Uses global TelegramBridge instance if active (set by TUI or daemon on bridge creation)
   // Falls back to NOT_AVAILABLE if no bridge is running
+  executor.registerHandler('telegram_send_message', async (args) => {
+    const { getActiveTelegramBridge } = await import('../telegram/index.js');
+    const bridge = getActiveTelegramBridge();
+    if (!bridge || !bridge.isRunning()) {
+      return {
+        success: false,
+        output: 'Telegram is not active. Start it with /telegram start in TUI or daemon mode.',
+        error: 'NOT_AVAILABLE',
+      };
+    }
+    const message = args['message'] as string | undefined;
+    if (!message) {
+      return { success: false, output: 'No message provided.', error: 'MISSING_ARG' };
+    }
+    try {
+      // Bridge remembers the last active chat internally
+      await bridge.sendMessage(0, message);
+      return { success: true, output: 'Message sent via Telegram' };
+    } catch (err) {
+      return { success: false, output: `Telegram send failed: ${err instanceof Error ? err.message : String(err)}`, error: 'SEND_FAILED' };
+    }
+  });
+
   executor.registerHandler('telegram_send_file', async (args) => {
     // Dynamic import to avoid circular dependency
     const { getActiveTelegramBridge } = await import('../telegram/index.js');

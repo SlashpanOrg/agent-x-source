@@ -29,6 +29,7 @@ interface AppProps {
   maxBudget?: number;
   gitAutoCommit?: boolean;
   gitAware?: boolean;
+  daemonMode?: boolean;
 }
 
 export const App: FC<AppProps> = ({
@@ -39,10 +40,12 @@ export const App: FC<AppProps> = ({
   maxBudget,
   gitAutoCommit,
   gitAware,
+  daemonMode: externalDaemonMode,
 }) => {
   const [state, setState] = useState<AppState>('checking');
   const [config, setConfig] = useState<AgentXConfig | null>(null);
   const [activeCrew, setActiveCrew] = useState<Crew | null>(null);
+  const [crewList, setCrewList] = useState<Crew[]>([]);
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [sessionDEK, setSessionDEK] = useState<Buffer | null>(null);
@@ -185,6 +188,7 @@ export const App: FC<AppProps> = ({
           const pm = new CrewManager();
           pm.setDEK(session.dek);
           setActiveCrew(pm.getActive());
+          setCrewList(pm.list().filter((c) => !c.isDefault));
         }
         setState('crew');
       } catch (e) {
@@ -200,8 +204,15 @@ export const App: FC<AppProps> = ({
     process.stdout.write('\x1Bc');
     setConfig(newConfig);
     setActiveCrew(crew);
+    // Refresh crew list
+    try {
+      const pm = new CrewManager();
+      const session = authToken ? authManager.validateSession(authToken) : null;
+      if (session?.dek) pm.setDEK(session.dek);
+      setCrewList(pm.list().filter((c) => !c.isDefault));
+    } catch { /* ignore */ }
     setState('main');
-  }, []);
+  }, [authToken]);
 
   const handleSetupCancel = useCallback(() => {
     process.exit(0);
@@ -209,8 +220,15 @@ export const App: FC<AppProps> = ({
 
   const handleCrewSelect = useCallback((crew: Crew) => {
     setActiveCrew(crew);
+    // Refresh crew list
+    try {
+      const pm = new CrewManager();
+      const session = authToken ? authManager.validateSession(authToken) : null;
+      if (session?.dek) pm.setDEK(session.dek);
+      setCrewList(pm.list().filter((c) => !c.isDefault));
+    } catch { /* ignore */ }
     setState('main');
-  }, []);
+  }, [authToken]);
 
   const handleCrewSwitch = useCallback(() => {
     setState('crew');
@@ -268,6 +286,7 @@ export const App: FC<AppProps> = ({
       <WelcomeScreen
         config={config}
         crew={activeCrew}
+        crewList={crewList}
         restoreSessionId={restoreSessionId}
         recovered={recovered}
         onCrewSwitch={handleCrewSwitch}
@@ -282,6 +301,7 @@ export const App: FC<AppProps> = ({
         maxBudget={maxBudget}
         gitAutoCommit={gitAutoCommit}
         gitAware={gitAware}
+        daemonMode={externalDaemonMode}
       />
     );
   }

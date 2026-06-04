@@ -72,7 +72,12 @@ export class AgentOrchestrator {
           progress: this.calculateProgress(plan),
         });
 
-        const task = this.subAgents.spawn(step.instruction, step.tools, 120_000);
+        const task = this.subAgents.spawn(step.instruction, step.tools, 120_000, 10);
+        if (!task) {
+          step.status = 'failed';
+          step.result = 'Sub-agent limit reached';
+          continue;
+        }
         step.status = 'running';
 
         // Wait for this step's sub-agent to complete

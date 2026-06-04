@@ -11,6 +11,7 @@ import {
   RAGEngine,
   PluginRegistry,
   PostgresStorageAdapter,
+  Gateway,
   TelegramBridge,
   DiscordBridge,
   SlackBridge,
@@ -21,6 +22,7 @@ import {
   MCPBridge,
 } from '@agentx/engine';
 import type { AgentXConfig, ProviderId, TelemetryBus } from '@agentx/shared';
+import { unsubscribeAgent } from './ws.js';
 
 export interface EngineState {
   configManager: ConfigManager;
@@ -32,6 +34,7 @@ export interface EngineState {
   telemetry: TelemetryBus;
   rag: RAGEngine | null;
   pluginRegistry: PluginRegistry;
+  gateway: Gateway | null;
   telegramBridge: TelegramBridge | null;
   discordBridge: DiscordBridge | null;
   slackBridge: SlackBridge | null;
@@ -49,7 +52,7 @@ function safeLoadConfig(configManager: ConfigManager): void {
   try {
     configManager.load();
   } catch {
-    // not configured yet — that's fine
+    // not configured yet
   }
 }
 
@@ -67,14 +70,11 @@ export function getEngine(): EngineState {
 
   const mcpBridge = new MCPBridge();
 
-  // Check if PostgreSQL plugin is configured and should replace default SQLite storage
   const pgPlugin = pluginRegistry.getPlugin('postgresql');
   const pgConfig = pgPlugin?.config ?? {};
   let sessionManager: SessionManager;
   if (pgPlugin?.enabled && pgConfig['connectionString']) {
     try {
-      // Cast to any to avoid excess property checks against the upstream PostgresConfig
-      // type which may not include ``connectionString`` in some type definitions.
       const pgAdapter = new PostgresStorageAdapter({
         connectionString: pgConfig['connectionString'] as string,
         max: (pgConfig['poolSize'] as number) ?? 5,
@@ -121,6 +121,7 @@ export function getEngine(): EngineState {
     telemetry,
     rag,
     pluginRegistry,
+    gateway: null,
     telegramBridge: null,
     discordBridge: null,
     slackBridge: null,
@@ -135,11 +136,6 @@ export function getEngine(): EngineState {
   return state!;
 }
 
-/**
- * Set the Data Encryption Key on the engine.
- * This enables encrypted config read/write, encrypted session storage,
- * and encrypted crew/personality data.
- */
 export function setEngineDEK(dek: Buffer | null): void {
   if (state) {
     state.dek = dek;
@@ -179,10 +175,8 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
 
   let session;
   if (sessionId) {
-    // Re-use an existing session instead of creating a new one
     session = eng.sessionManager.restoreSession(sessionId);
     if (!session) {
-      // Fallback to creating a new session if the requested one doesn't exist
       session = eng.sessionManager.createSession(
         activeProvider,
         cfg.provider.activeModel,
@@ -209,44 +203,41 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
 
   eng.agent = agent;
 
-  // Bridge agent events → telemetry bus so SSE stream receives them
+  // Bridge agent events to telemetry bus
   agent.events.on((event) => {
     eng.telemetry.emit(event as any);
   });
 
-  // Start Telegram bridge if plugin is configured
-  // Skip if running in daemon mode — the daemon handles Telegram directly
+  // ─── Create Gateway for channel management ───
+  if (!eng.gateway) {
+    const gateway = new Gateway();
+    gateway.attachAgent(agent);
+    eng.gateway = gateway;
+  }
+
+  // Start Telegram bridge via Gateway (skip if daemon handles it)
   const tgPlugin = eng.pluginRegistry.getPlugin('telegram');
   const tgConfig = tgPlugin?.config ?? {};
   if (tgPlugin?.enabled && tgConfig['botToken'] && !eng.telegramBridge && !process.env['AGENTX_DAEMON_HANDLES_TG']) {
     try {
-      const bridge = new TelegramBridge({
-        botToken: tgConfig['botToken'] as string,
-      });
-      bridge.setMessageHandler((text: string, chatId: number) => {
-        agent.sendMessage(text).then((reply) => {
-          // agent.sendMessage returns a Message object; bridge.sendMessage expects a string
-          const out = (reply as unknown as { content?: string })?.content ?? String(reply);
-          bridge.sendMessage(chatId, out);
-        }).catch(() => {});
-      });
-      bridge.setCommandHandler(async (cmd: string, _args: string[], _chatId: number) => {
-        if (cmd === 'start' || cmd === 'help') {
-          return 'Agent-X Telegram bot connected. Send me a message and I\'ll forward it to your agent.';
+      const tgChannelPlugin = eng.gateway!.registerTelegram(tgConfig['botToken'] as string);
+      tgChannelPlugin.setAgent(agent);
+      eng.gateway!.startChannel('telegram').catch((e: unknown) => {
+        console.error('Failed to start Telegram channel', e);
+      }).then(() => {
+        if (eng.gateway) {
+          const bridge = eng.gateway.getTelegramBridge();
+          if (bridge) {
+            eng.telegramBridge = bridge;
+          }
         }
-        return null; // pass to message handler
-      });
-      bridge.start().then(() => {
-        eng.telegramBridge = bridge;
-      }).catch((e: unknown) => {
-        console.error('Failed to start Telegram bridge', e);
       });
     } catch (e) {
       console.error('Failed to start Telegram bridge', e);
     }
   }
 
-  // Start Discord bridge if plugin is configured
+  // Start Discord bridge if plugin is configured (direct bridge until Gateway migration)
   const dcPlugin = eng.pluginRegistry.getPlugin('discord');
   const dcConfig = dcPlugin?.config ?? {};
   if (dcPlugin?.enabled && dcConfig['botToken'] && !eng.discordBridge) {
@@ -346,7 +337,7 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
     }
   }
 
-  // Start Redis cache runtime if plugin is enabled
+  // Start Redis cache runtime
   if (!eng.redisRuntime) {
     const redisPlugin = eng.pluginRegistry.getPlugin('redis-cache');
     const redisConfig = redisPlugin?.config ?? {};
@@ -358,7 +349,7 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
     }
   }
 
-  // Start Webhook notifier if plugin is enabled
+  // Start Webhook notifier
   if (!eng.webhookRuntime) {
     const whPlugin = eng.pluginRegistry.getPlugin('webhook-notifier');
     const whConfig = whPlugin?.config ?? {};
@@ -368,7 +359,6 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
         events: whConfig['events'] as string[],
         secret: whConfig['secret'] as string,
       });
-      // Wire into agent event bus
       agent.events.on((event) => {
         const e = event as unknown as { type?: string; [key: string]: unknown };
         if (e.type && eng.webhookRuntime) {
@@ -378,7 +368,7 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
     }
   }
 
-  // Start SQLite browser if plugin is enabled
+  // Start SQLite browser
   if (!eng.sqliteBrowser) {
     const sqlPlugin = eng.pluginRegistry.getPlugin('sqlite-web');
     if (sqlPlugin?.enabled) {
@@ -388,7 +378,6 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
     }
   }
 
-  // Auto-start MCP servers (fire-and-forget)
   eng.mcpBridge.discover().then((manifests) => {
     for (const manifest of manifests) {
       eng.mcpBridge.load(manifest).catch((e) => {
@@ -426,9 +415,15 @@ export function getOrCreateAgent(config?: AgentXConfig): Agent {
 
 export function destroyAgent(): void {
   const eng = getEngine();
+  // Unsubscribe WebSocket event listener before destroying agent
+  unsubscribeAgent();
   if (eng.agent) {
     eng.agent.endSession();
     eng.agent = null;
+  }
+  if (eng.gateway) {
+    void eng.gateway.stopAll();
+    eng.gateway = null;
   }
   if (eng.telegramBridge) {
     eng.telegramBridge.stop();

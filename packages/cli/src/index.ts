@@ -8,7 +8,10 @@ import { existsSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
-import { isDaemonRunning, getDaemonStatus, stopDaemon } from './daemon.js';
+import { createInterface } from 'node:readline';
+import { isDaemonRunning, getDaemonStatus, stopDaemon, getDataDir } from './daemon.js';
+
+const TUI_ACTIVE_PATH = join(getDataDir(), 'tui-active.mark');
 
 async function isWebApiRunning(): Promise<boolean> {
   try {
@@ -740,11 +743,70 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // Ensure daemon is always running
+  if (!await isWebApiRunning()) {
+    console.log('  Starting daemon...');
+    await ensureWebApiRunning();
+    if (!await isWebApiRunning()) {
+      console.error('  ✗ Failed to start daemon. Cannot proceed.');
+      process.exit(1);
+    }
+    console.log('  ✓ Daemon started');
+  }
+
+  // Check if Web-UI is active and prompt to close it
+  try {
+    const res = await fetch('http://127.0.0.1:3333/api/webui-active', { method: 'GET' });
+    if (res.ok) {
+      const data = await res.json() as { active: boolean; pid?: number };
+      if (data.active && data.pid) {
+        process.stdout.write('\x1Bc');
+        console.log(`\n  ⚠️  Web-UI is currently active (PID ${data.pid}).`);
+        console.log(`\n  Running TUI and Web-UI simultaneously can cause confusion.`);
+        console.log(`  Choose an option:`);
+        console.log(`    [1] Close Web-UI and launch TUI`);
+        console.log(`    [2] Exit\n`);
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await new Promise<string>((resolve) => {
+          rl.question('  Enter choice (1/2): ', resolve);
+        });
+        rl.close();
+
+        if (answer === '1') {
+          console.log('\n  Closing Web-UI...');
+          try {
+            await fetch('http://127.0.0.1:3333/api/webui-active', { 
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' }
+            });
+            // Wait a moment for Web-UI to close
+            await new Promise((r) => setTimeout(r, 1000));
+            console.log('  ✓ Web-UI closed');
+          } catch (err) {
+            console.error(`  ⚠ Failed to close Web-UI: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else {
+          process.exit(0);
+        }
+      }
+    }
+  } catch { /* Web-UI check failed, continue */ }
+
+  // Create TUI active marker for Web-UI detection
+  try {
+    const dir = getDataDir();
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(TUI_ACTIVE_PATH, String(process.pid));
+  } catch { /* best-effort */ }
+
   // Clear terminal before launching TUI
   process.stdout.write('\x1Bc');
 
-  // Render the TUI
-  render(React.createElement(App, { sessionId, recovered, planMode, fallbackModel, maxBudget, gitAutoCommit, gitAware } as React.ComponentProps<typeof App>));
+  // Always connect to daemon via WebSocket
+  render(React.createElement(App, { sessionId, recovered, planMode, fallbackModel, maxBudget, gitAutoCommit, gitAware, daemonMode: true } as React.ComponentProps<typeof App>));
+
+  // Clean up TUI marker on exit
+  process.on('exit', () => { try { unlinkSync(TUI_ACTIVE_PATH); } catch { /* ignore */ } });
 }
 
 main().catch((err) => {

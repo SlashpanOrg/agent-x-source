@@ -52,7 +52,7 @@ export function adaptCommunication(
   result.overridden.push('clipboard_write');
 
   // ── Kept as-is ──
-  result.keptAsIs.push('notify_telegram', 'notify_slack', 'telegram_send_file');
+  result.keptAsIs.push('notify_telegram', 'notify_slack', 'telegram_send_file', 'telegram_send_message');
 
   return result;
 }

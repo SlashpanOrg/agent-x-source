@@ -4,6 +4,7 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import { Sidebar } from '../components/Sidebar';
 import { Footer } from '../components/Footer';
+import { GatewayStatusBar } from '../components/GatewayStatusBar';
 import { ChatPanel } from '../components/ChatPanel';
 import { ToolsPanel } from '../components/ToolsPanel';
 import { PluginsPanel } from '../components/PluginsPanel';
@@ -66,6 +67,9 @@ export function Console() {
             {activePanel === 'soul' && <SoulPanel />}
           </PanelErrorBoundary>
         </Box>
+      </Box>
+      <Box sx={{ borderTop: `1px solid ${colors.border.default}`, bgcolor: colors.bg.primary }}>
+        <GatewayStatusBar />
       </Box>
       <Footer />
     </Box>

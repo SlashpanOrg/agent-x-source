@@ -1,12 +1,11 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import * as fs from 'fs';
 import type { CommandDeps } from '../registerAllCommands';
-import { getConfigDir } from '@agentx/engine';
+import { getSecretSauceDir } from '@agentx/engine';
 
 export function openSecretSauceHandler(_deps: CommandDeps): () => Promise<void> {
   return async () => {
-    const secretSauceDir = path.join(getConfigDir(), 'secret-sauce');
+    const secretSauceDir = getSecretSauceDir();
 
     if (!fs.existsSync(secretSauceDir)) {
       fs.mkdirSync(secretSauceDir, { recursive: true });

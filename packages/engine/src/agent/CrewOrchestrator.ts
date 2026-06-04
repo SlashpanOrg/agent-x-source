@@ -46,10 +46,15 @@ export class CrewOrchestrator {
   private provider: ProviderInterface;
   private eventBus: AgentEventBus;
   private primaryMember: CrewMember | null = null;
+  private activeModel: string = '';
 
   constructor(provider: ProviderInterface, eventBus: AgentEventBus) {
     this.provider = provider;
     this.eventBus = eventBus;
+  }
+
+  setActiveModel(model: string): void {
+    this.activeModel = model;
   }
 
   /**
@@ -158,7 +163,7 @@ export class CrewOrchestrator {
 
       try {
         const completion = this.provider.complete({
-          model: '', // Uses active model
+          model: this.activeModel,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userMessage },

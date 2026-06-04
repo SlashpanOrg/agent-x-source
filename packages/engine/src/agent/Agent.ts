@@ -61,6 +61,7 @@ import { SkillGenerator } from './SkillGenerator.js';
 import { ReflectionLoop } from './ReflectionLoop.js';
 import { TreeOfThoughts } from '../reasoning/TreeOfThoughts.js';
 import { ResearchEngine } from '../reasoning/ResearchEngine.js';
+import { CrewOrchestrator } from './CrewOrchestrator.js';
 
 // ─── UNIFIED PIPELINE IMPORTS (Phase 1-11 integration) ───
 import { InputNormalizer } from '../communication/InputNormalizer.js';
@@ -87,7 +88,7 @@ import { RunStateManager } from '../agent/RunStateManager.js';
 import { StreamNormalizer } from '../communication/StreamNormalizer.js';
 import { ResponseAssembler } from '../communication/ResponseAssembler.js';
 import { IdleTimeoutBreaker } from '../communication/IdleTimeoutBreaker.js';
-import { Gateway } from '../gateway/Gateway.js';
+
 import { PluginSystem } from '../plugin/PluginSystem.js';
 
 export interface AgentOptions {
@@ -98,6 +99,7 @@ export interface AgentOptions {
   toolRegistry?: ToolRegistry;
   gitAutoCommit?: boolean;
   gitAware?: boolean;
+  eventBus?: AgentEventBus;
 }
 
 export class Agent {
@@ -174,8 +176,18 @@ export class Agent {
   private streamNormalizer: StreamNormalizer = null!;
   private responseAssembler: ResponseAssembler = null!;
   private idleBreaker: IdleTimeoutBreaker = null!;
-  private gateway: Gateway = null!;
   private pluginSystem: PluginSystem = null!;
+  private _telegramConnected = false;
+  private _telegramChatId: number | null = null;
+  private crewOrchestrator: CrewOrchestrator | null = null;
+  private maxSubAgents = 5;
+  private enabledCrewSessionIds: Set<string> = new Set();
+
+  setTelegramConnected(connected: boolean, chatId?: number | null): void {
+    this._telegramConnected = connected;
+    this._telegramChatId = chatId ?? this._telegramChatId;
+    this.rebuildSystemPrompt();
+  }
 
   /**
    * Respond to a pending clarification request.
@@ -189,9 +201,10 @@ export class Agent {
   constructor(options: AgentOptions) {
     this.config = options.config;
     this.sessionId = options.sessionId;
-    this.eventBus = new AgentEventBus();
+    this.eventBus = options.eventBus ?? new AgentEventBus();
     this.tokenTracker = new TokenTracker(this.getContextWindow());
     this.subAgents = new SubAgentManager(this.eventBus);
+    this.subAgents.setParentAgent(this);
     setSubAgentManagerInstance(this.subAgents);
     this.taskManager = new TaskManager(this.eventBus);
     setTaskManagerInstance(this.taskManager);
@@ -349,6 +362,10 @@ export class Agent {
       this.getBaseUrl(),
     );
 
+    this.crewOrchestrator = new CrewOrchestrator(this.provider, this.eventBus);
+    this.crewOrchestrator.setActiveModel(options.config.provider.activeModel);
+    this.maxSubAgents = options.config.maxSubAgents ?? 5;
+
     // Initialize prompt engine for token-efficient prompting
     this.promptEngine = new PromptEngine(this.getContextWindow());
 
@@ -394,8 +411,6 @@ export class Agent {
     this.streamNormalizer = new StreamNormalizer();
     this.responseAssembler = new ResponseAssembler();
     this.idleBreaker = new IdleTimeoutBreaker();
-    this.gateway = new Gateway();
-    this.gateway.attachAgent(this as unknown as Agent);
     this.pluginSystem = new PluginSystem({ autoEnable: true });
     this.pluginSystem.startHealthChecks();
 
@@ -510,8 +525,6 @@ export class Agent {
       `- Convert relative: "half an hour" = 1800s, "2 hours" = 7200s, "every day" = 1440 min`,
       `- IMPORTANT: If user says a specific clock time, ALWAYS use at_time (not delay_seconds). This avoids calculation errors.`,
       `- Confirm in plain language after setting: "Done! I'll ping you at 5:04 PM."`,
-      `[/SCHEDULING]`,
-      ``,
       `[/SCHEDULING]`,
       ``,
       `[OUTPUT_FORMAT]`,
@@ -672,7 +685,7 @@ export class Agent {
    * Spawn a sub-agent to handle a delegated task.
    */
   spawnSubAgent(instruction: string, tools: string[], timeout?: number) {
-    return this.subAgents.spawn(instruction, tools, timeout);
+    return this.subAgents.spawn(instruction, tools, timeout, this.maxSubAgents);
   }
 
   get planModeEnabled(): boolean {
@@ -940,6 +953,40 @@ Return ONLY valid JSON, no other text.`;
     };
 
     this.emit({ type: 'message_sent', message: userMessage });
+
+    // ─── @MENTION ROUTING: Check if user is addressing a specific crew member ───
+    const mentionedCrewId = this.detectAtMention(cleanContent);
+    if (mentionedCrewId && this.crewOrchestrator) {
+      const members = this.crewOrchestrator.getMembers();
+      const mentionedMember = members.find((m) => m.crew.id === mentionedCrewId);
+      if (mentionedMember) {
+        this.emit({ type: 'loading_start', stage: 'crew_routing' });
+        try {
+          const result = await this.crewOrchestrator.processMessage(cleanContent, this.secretSauce.crew.getSystemPrompt());
+          const responseContent = result.synthesized ?? result.responses.map((r) => `**${r.member}:** ${r.content}`).join('\n\n');
+          const assistantMessage: Message = {
+            id: generateMessageId(),
+            sessionId: this.sessionId,
+            role: 'assistant',
+            content: responseContent,
+            toolCalls: null,
+            createdAt: new Date().toISOString(),
+            tokenCount: 0,
+          };
+          this.messages.push({ role: 'assistant', content: responseContent });
+          this.emit({ type: 'message_received', message: assistantMessage, elapsed: Date.now() - startTime });
+          this.emit({ type: 'loading_end' });
+          this.isProcessing = false;
+          this.abortController = null;
+          this.runStateMgr.release(this.sessionId);
+          this.commandQueue.release(this.sessionId);
+          return assistantMessage;
+        } catch (err) {
+          getLogger().warn('CREW_ROUTING', `Failed to route to crew ${mentionedCrewId}: ${err instanceof Error ? err.message : String(err)}`);
+          // Fall through to normal processing
+        }
+      }
+    }
 
     // ─── DECISION ENGINE: Classify message & determine execution path ───
     const conversationLen = this.messages.filter(m => m.role === 'user').length;
@@ -1503,6 +1550,34 @@ Return ONLY valid JSON, no other text.`;
       `- Confirmations: "Done: [what]". Errors: "Failed: [why] — [fix]".`,
       `- Technical output, code, configs: unlimited length. Be thorough.`,
       `[/TOOLS]`,
+      ``,
+      `[CHANNEL_FOCUS]`,
+      `Messages can come from TUI, Web-UI, or Telegram. The active "focus" channel receives responses.`,
+      `Focus automatically switches to whichever channel the user last sent a message from.`,
+      ``,
+      `Telegram connection status: ${this._telegramConnected ? 'CONNECTED' : 'NOT CONNECTED'}`,
+      this._telegramConnected
+        ? `You can send Telegram updates using the telegram_send_message tool.`
+        : `Telegram is not running. Suggest the user run /telegram start <token> to set it up.`,
+      ``,
+      `When starting a long-running task (multi-step, many files, background work):`,
+      `1. ASK the user ONCE: "Would you like progress updates on Telegram?" (do NOT ask again in subsequent turns)`,
+      `2. If they say yes, send concise progress updates using the telegram_send_message tool.`,
+      `3. Keep updates brief: "Step X of Y done" / "File Z created" / "Build passed".`,
+      `[/CHANNEL_FOCUS]`,
+      ``,
+      `[MULTI_CREW]`,
+      (() => {
+        const members = this.crewOrchestrator?.getMembers() ?? [];
+        const enabledMembers = members.filter((m) => this.enabledCrewSessionIds.has(m.crew.id));
+        if (enabledMembers.length === 0) return 'No additional crew members enabled in this session.';
+        const desc = enabledMembers.map((m) => {
+          const exp = m.expertise.length > 0 ? m.expertise.join(', ') : 'general';
+          return `- **${m.crew.name}** (${m.crew.id}): ${exp}`;
+        }).join('\n');
+        return `You are Agent-X, the master orchestrator. The following crew members are available in this session:\n\n${desc}\n\n**Group Chat Rules:**\n- Users can @mention a specific crew member to get their expertise\n- If no crew is mentioned, you (Agent-X) respond as the primary assistant\n- You can delegate to crew members when their expertise is relevant\n- Crew members respond with their unique personalities and knowledge\n- Maintain context across the conversation - all participants see the full history`;
+      })(),
+      `[/MULTI_CREW]`,
     ].join('\n');
 
     const prompt = `${sauceContext.full}\n\n${toolAwareness}`;
@@ -2155,7 +2230,7 @@ Only include specialists that are actually needed for this task.`;
         }
 
         // ─── UNIFIED: Feed SessionProcessor for structured turn processing ───
-        this.sessionProcessor['handleEvent']?.(event);
+        this.sessionProcessor.processEvent(event);
 
         switch (event.type) {
           case 'text.delta':
@@ -2241,6 +2316,51 @@ Only include specialists that are actually needed for this task.`;
   // ─── UNIFIED PIPELINE: Retry-wrapped provider call ───
 
   // _retryableStream kept as available infrastructure for future integration
+
+  // ─── CREW ORCHESTRATION ───
+
+  addCrewMember(crew: import('@agentx/shared').Crew): void {
+    if (!this.crewOrchestrator) return;
+    this.crewOrchestrator.addMember(crew);
+    this.rebuildSystemPrompt();
+  }
+
+  removeCrewMember(crewId: string): void {
+    if (!this.crewOrchestrator) return;
+    this.crewOrchestrator.removeMember(crewId);
+    this.rebuildSystemPrompt();
+  }
+
+  getCrewMembers(): Array<{ crew: import('@agentx/shared').Crew; expertise: string[]; active: boolean }> {
+    if (!this.crewOrchestrator) return [];
+    return this.crewOrchestrator.getMembers();
+  }
+
+  setCrewEnabled(crewId: string, enabled: boolean): void {
+    if (enabled) {
+      this.enabledCrewSessionIds.add(crewId);
+    } else {
+      this.enabledCrewSessionIds.delete(crewId);
+    }
+    this.rebuildSystemPrompt();
+  }
+
+  getMaxSubAgents(): number {
+    return this.maxSubAgents;
+  }
+
+  setMaxSubAgents(limit: number): void {
+    this.maxSubAgents = Math.max(1, Math.min(20, limit));
+  }
+
+  private detectAtMention(content: string): string | null {
+    const match = content.match(/@(\w+)/);
+    if (!match) return null;
+    const mentioned = match[1]!.toLowerCase();
+    const members = this.getCrewMembers();
+    const found = members.find((m) => m.crew.name.toLowerCase() === mentioned || m.crew.id.toLowerCase() === mentioned);
+    return found?.crew.id ?? null;
+  }
 
 }
 

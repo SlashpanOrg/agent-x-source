@@ -26,6 +26,7 @@ import type { PluginRegistry, PostgresStorageAdapter, TelegramBridge, MCPBridge,
 interface WelcomeScreenProps {
   config: AgentXConfig;
   crew: Crew;
+  crewList?: Crew[];
   restoreSessionId?: string;
   recovered?: boolean;
   onCrewSwitch?: () => void;
@@ -40,9 +41,10 @@ interface WelcomeScreenProps {
   maxBudget?: number;
   gitAutoCommit?: boolean;
   gitAware?: boolean;
+  daemonMode?: boolean;
 }
 
-export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSessionId, recovered, onCrewSwitch, pluginRegistry, onPluginChanged, storageAdapter, telegramBridge, initialPlanMode, fallbackModel, mcpBridge, acpBridge, maxBudget, gitAutoCommit, gitAware }) => {
+export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, crewList = [], restoreSessionId, recovered, onCrewSwitch, pluginRegistry, onPluginChanged, storageAdapter, telegramBridge, initialPlanMode, fallbackModel, mcpBridge, acpBridge, maxBudget, gitAutoCommit, gitAware, daemonMode }) => {
   const [showPluginHub, setShowPluginHub] = useState(false);
   const [slashFilter, setSlashFilter] = useState<string | null>(null);
 
@@ -100,7 +102,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSes
     totalCost,
     isIndexing,
     indexingProgress,
-  } = useSession(config, crew, restoreSessionId, onCrewSwitch, storageAdapter, telegramBridge, initialPlanMode, fallbackModel, maxBudget, gitAutoCommit, gitAware);
+  } = useSession(config, crew, restoreSessionId, onCrewSwitch, storageAdapter, telegramBridge, initialPlanMode, fallbackModel, maxBudget, gitAutoCommit, gitAware, daemonMode);
 
   // Placeholders for planned features not yet in UseSessionReturn
   const watcherCount = 0;
@@ -339,6 +341,7 @@ export const WelcomeScreen: FC<WelcomeScreenProps> = ({ config, crew, restoreSes
               disabled={isLoading || (!!error && errorActions.length > 0)}
               placeholder="Type a message... (/ for commands)"
               completions={commandNames}
+              crewCompletions={crewList.map((c) => ({ name: c.name, id: c.id, expertise: c.expertise }))}
               onSlashDetected={(v) => setSlashFilter(v)}
               onSlashCleared={() => setSlashFilter(null)}
             />

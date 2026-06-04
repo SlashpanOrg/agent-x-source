@@ -14,6 +14,7 @@ export interface AgentXConfig {
   user?: UserConfig;
   setupComplete?: boolean; // true after Mission Control wizard finishes
   rag?: RAGConfig;
+  maxSubAgents?: number; // Maximum number of concurrent sub-agents (default: 5, max: 20)
 }
 
 export interface ProviderSettings {

@@ -16,6 +16,7 @@ import StarIcon from '@mui/icons-material/Star';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import AddIcon from '@mui/icons-material/Add';
+import Switch from '@mui/material/Switch';
 import { crews as crewsApi, type Crew } from '../api';
 import { colors } from '../theme';
 
@@ -88,6 +89,13 @@ export function CrewsPanel() {
     finally { setBusy(false); }
   };
 
+  const handleToggle = async (id: string, enabled: boolean) => {
+    setBusy(true);
+    try { await crewsApi.toggle(id, enabled); await load(); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Toggle failed'); }
+    finally { setBusy(false); }
+  };
+
   const openEdit = (c: Crew) => {
     setForm({ id: c.id, name: c.name, systemPrompt: c.systemPrompt, tone: c.tone ?? 'professional' });
     setDialogOpen(true);
@@ -132,7 +140,14 @@ export function CrewsPanel() {
                 }} variant="outlined" />
               )}
               <Typography sx={{ fontSize: '0.85rem', fontWeight: 600, mb: 0.25 }}>{c.name}</Typography>
-              {c.tone && <Chip size="small" label={c.tone} sx={{ height: 16, fontSize: '0.5rem', mb: 0.75 }} />}
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                {c.tone && <Chip size="small" label={c.tone} sx={{ height: 16, fontSize: '0.5rem', mb: 0.75 }} />}
+                <Chip size="small" label={c.enabled !== false ? 'enabled' : 'disabled'}
+                  sx={{ height: 16, fontSize: '0.5rem', mb: 0.75,
+                    color: c.enabled !== false ? colors.accent.green : colors.text.dim,
+                    borderColor: c.enabled !== false ? colors.accent.green + '60' : colors.border.default,
+                  }} variant="outlined" />
+              </Box>
               <Typography sx={{
                 fontSize: '0.65rem', color: colors.text.tertiary, mb: 1.25,
                 display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
@@ -149,6 +164,11 @@ export function CrewsPanel() {
                   </Button>
                 )}
                 <Box sx={{ flex: 1 }} />
+                <Tooltip title={c.enabled !== false ? 'Disable' : 'Enable'}>
+                  <Switch size="small" checked={c.enabled !== false} disabled={busy}
+                    onChange={() => handleToggle(c.id, c.enabled === false)}
+                    sx={{ '& .MuiSwitch-thumb': { bgcolor: c.enabled !== false ? colors.accent.green : colors.text.dim } }} />
+                </Tooltip>
                 <Tooltip title="Edit">
                   <IconButton size="small" onClick={() => openEdit(c)} sx={{ color: colors.text.dim }}>
                     <EditIcon sx={{ fontSize: 14 }} />
