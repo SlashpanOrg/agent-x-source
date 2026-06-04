@@ -15,12 +15,12 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import BadgeIcon from '@mui/icons-material/Badge';
-import { providers as provApi, models as modelsApi, config, bridges } from '../api';
+import { providers as provApi, models as modelsApi, config } from '../api';
 import { useApp } from '../store/AppContext';
 import { colors } from '../theme';
 import type { ProviderInfo, ModelInfo } from '../api';
 
-const STEPS = ['Provider', 'API Key', 'Model', 'Callsign', 'Bridges', 'Complete'];
+const STEPS = ['Provider', 'API Key', 'Model', 'Callsign', 'Complete'];
 const STORAGE_KEY = 'agentx_wizard_progress';
 
 interface WizardProgress {
@@ -61,7 +61,6 @@ export function SetupWizard() {
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [callsign, setCallsign] = useState('');
-  const [telegramToken, setTelegramToken] = useState('');
 
   // Restore progress on mount
   useEffect(() => {
@@ -174,22 +173,7 @@ export function SetupWizard() {
   };
 
   const handleCallsignNext = () => {
-    if (!callsign.trim()) { setError('Enter a callsign'); return; }
     next();
-  };
-
-  const handleBridgesNext = async () => {
-    setLoading(true);
-    try {
-      if (telegramToken.trim()) {
-        await bridges.telegram.start(telegramToken);
-      }
-      next();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Bridge setup failed');
-    } finally {
-      setLoading(false);
-    }
   };
 
   const handleComplete = async () => {
@@ -414,19 +398,8 @@ export function SetupWizard() {
             </Box>
           )}
 
-          {/* Step 4: Bridges (optional) */}
+          {/* Step 4: Complete */}
           {step === 4 && (
-            <Box>
-              <Typography variant="h6" sx={{ mb: 1 }}>Telegram Bridge (Optional)</Typography>
-              <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 2 }}>
-                Connect a Telegram bot to chat with Agent-X on the go. Skip to finish setup without.
-              </Typography>
-              <TextField label="Bot Token" placeholder="e.g. 123456789:ABCdefGhIJKlmNOPqrs" value={telegramToken} onChange={(e) => setTelegramToken(e.target.value)} fullWidth />
-            </Box>
-          )}
-
-          {/* Step 5: Complete */}
-          {step === 5 && (
             <Box sx={{ textAlign: 'center' }}>
               <CheckCircleIcon sx={{ fontSize: 64, color: colors.accent.green, mb: 2 }} />
               <Typography variant="h5" sx={{ mb: 1 }}>Setup Complete!</Typography>
@@ -436,8 +409,7 @@ export function SetupWizard() {
               <Box sx={{ textAlign: 'left', p: 2, border: `1px solid ${colors.border.default}`, borderRadius: 1, mb: 3, fontFamily: "'JetBrains Mono', monospace", fontSize: '0.75rem' }}>
                 <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Provider: {selectedProvider}</Typography>
                 <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Model: {selectedModel}</Typography>
-                <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Callsign: {callsign}</Typography>
-                {telegramToken && <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Telegram: Connected</Typography>}
+                <Typography variant="caption" sx={{ display: 'block', color: colors.text.dim }}>Callsign: {callsign || '(not set)'}</Typography>
               </Box>
             </Box>
           )}
@@ -453,7 +425,7 @@ export function SetupWizard() {
           {step === 2 && (
             <Button onClick={handleBackToCredentials} sx={{ color: colors.text.secondary }}>Back</Button>
           )}
-          {step > 2 && step < 5 && (
+          {step === 3 && (
             <Button onClick={back} sx={{ color: colors.text.secondary }}>Back</Button>
           )}
           {step === 0 && (
@@ -472,14 +444,11 @@ export function SetupWizard() {
             </Button>
           )}
           {step === 3 && (
-            <Button variant="contained" onClick={handleCallsignNext} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>Next</Button>
-          )}
-          {step === 4 && (
-            <Button variant="contained" onClick={handleBridgesNext} disabled={loading} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>
-              {loading ? 'Connecting...' : telegramToken ? 'Connect & Next' : 'Skip & Next'}
+            <Button variant="contained" onClick={handleCallsignNext} sx={{ bgcolor: colors.text.primary, color: colors.bg.primary }}>
+              {callsign.trim() ? 'Next' : 'Skip & Next'}
             </Button>
           )}
-          {step === 5 && (
+          {step === 4 && (
             <Button variant="contained" onClick={handleComplete} disabled={loading} sx={{ px: 5, py: 1.2, bgcolor: colors.text.primary, color: colors.bg.primary, fontWeight: 700 }}>
               {loading ? 'Finalizing...' : 'Launch Console'}
             </Button>

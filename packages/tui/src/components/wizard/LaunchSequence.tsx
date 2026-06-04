@@ -4,27 +4,26 @@ import { COLORS } from '../../theme/colors.js';
 
 interface LaunchSequenceProps {
   crewName?: string;
-  telegramConfigured: boolean;
+  callsign?: string;
   onComplete: () => void;
 }
 
 const SYSTEMS = [
   { label: 'Neural Core', status: 'ONLINE' },
-  { label: 'Crew Member', status: 'LOADED' },
+  { label: 'Identity', status: 'REGISTERED' },
 ];
 
 export const LaunchSequence: FC<LaunchSequenceProps> = ({
   crewName,
-  telegramConfigured,
+  callsign,
   onComplete,
 }) => {
   const [visibleSystems, setVisibleSystems] = useState(0);
   const [countdown, setCountdown] = useState<number | null>(null);
 
-  const systems = [
-    ...SYSTEMS,
-    { label: 'Comms Array', status: telegramConfigured ? 'LINKED' : 'SKIPPED' },
-  ];
+  const systems = callsign
+    ? [...SYSTEMS]
+    : [SYSTEMS[0]!];
 
   useEffect(() => {
     // Show systems one at a time

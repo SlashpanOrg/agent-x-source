@@ -18,7 +18,7 @@ import {
   type AgentXConfig,
   getLogger,
 } from '@agentx/shared';
-import { ConfigManager, ProviderFactory, TelegramStore } from '@agentx/engine';
+import { ConfigManager, ProviderFactory } from '@agentx/engine';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -29,8 +29,7 @@ type MissionStep =
   | 'stage1_validating'
   | 'stage1_models'
   | 'transition_1'
-  | 'stage3_telegram'
-  | 'transition_3'
+  | 'stage2_callsign'
   | 'launch_sequence';
 
 interface MissionControlProps {
@@ -63,9 +62,8 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel, 
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // Stage 3 state
-  const [telegramToken, setTelegramToken] = useState('');
-  const [telegramConfigured, setTelegramConfigured] = useState(false);
+  // Stage 2 state
+  const [callsign, setCallsign] = useState('');
 
   // ─── Stage 1: Validation Effect ─────────────────────────────────────
 
@@ -166,54 +164,12 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel, 
 
   // No crew creation in setup — crews are optional, created via /crew command or Web-UI
 
-  const handleTelegramSubmit = useCallback(() => {
-    const token = telegramToken.trim();
-    if (!token) {
-      // Skip
-      setTelegramConfigured(false);
-      setStep('transition_3');
-      return;
-    }
-    // Basic format validation
-    if (!token.includes(':')) {
-      setError('Token format: 123456789:ABC-xyz...');
-      return;
-    }
-    setError(null);
-    const store = new TelegramStore();
-    store.save({ botToken: token });
-    setTelegramConfigured(true);
+  const handleCallsignSubmit = useCallback(() => {
+    setStep('launch_sequence');
+  }, []);
 
-    // Send a welcome message to the user's Telegram chat
-    (async () => {
-      try {
-        const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ limit: 1, offset: -1 }),
-          signal: AbortSignal.timeout(5000),
-        });
-        const data = await res.json() as { ok: boolean; result: Array<{ message?: { chat: { id: number } } }> };
-        if (data.ok && data.result.length > 0) {
-          const chatId = data.result[0]?.message?.chat?.id;
-          if (chatId) {
-            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ chat_id: chatId, text: '🚀 Comms link established. I\'m online and ready for action, Commander.' }),
-              signal: AbortSignal.timeout(5000),
-            });
-          }
-        }
-      } catch { /* non-critical — don't block setup */ }
-    })();
-
-    setStep('transition_3');
-  }, [telegramToken]);
-
-  const handleTelegramSkip = useCallback(() => {
-    setTelegramConfigured(false);
-    setStep('transition_3');
+  const handleCallsignSkip = useCallback(() => {
+    setStep('launch_sequence');
   }, []);
 
   const handleLaunchComplete = useCallback(() => {
@@ -244,7 +200,7 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel, 
       case 'stage1_models':
         setStep('stage1_credentials');
         break;
-      case 'stage3_telegram':
+      case 'stage2_callsign':
         break;
       default:
         break;
@@ -254,14 +210,14 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel, 
       && !step.startsWith('transition') && step !== 'launch_sequence' && step !== 'stage1_validating',
   });
 
-  // ─── Tab handler for skipping telegram ────────────────────────────────
+  // ─── Tab handler for skipping callsign ────────────────────────────────
 
   useInput((input) => {
-    if (input === '\t' && step === 'stage3_telegram') {
+    if (input === '\t' && step === 'stage2_callsign') {
       if (TRACE) console.log(`[TRACE] MissionControl TAB pressed at step=${step} ts=${Date.now()}`);
-      handleTelegramSkip();
+      handleCallsignSkip();
     }
-  }, { isActive: step === 'stage3_telegram' });
+  }, { isActive: step === 'stage2_callsign' });
 
   // ─── Render Logic ─────────────────────────────────────────────────────
 
@@ -278,17 +234,7 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel, 
   if (step === 'transition_1') {
     return (
       <StageCard stageNumber={1} stageLabel="NEURAL CORE" currentStage={1}>
-        <BootTransition label="NEURAL CORE — ONLINE" onComplete={() => setStep('stage3_telegram')} />
-      </StageCard>
-    );
-  }
-  if (step === 'transition_3') {
-    return (
-      <StageCard stageNumber={3} stageLabel="COMMS ARRAY" currentStage={3}>
-        <BootTransition
-          label={telegramConfigured ? 'COMMS ARRAY — LINKED' : 'COMMS ARRAY — SKIPPED'}
-          onComplete={() => setStep('launch_sequence')}
-        />
+        <BootTransition label="NEURAL CORE — ONLINE" onComplete={() => setStep('stage2_callsign')} />
       </StageCard>
     );
   }
@@ -296,8 +242,8 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel, 
   // Launch sequence
   if (step === 'launch_sequence') {
     return (
-      <StageCard showProgress={false} currentStage={4}>
-        <LaunchSequence telegramConfigured={telegramConfigured} onComplete={handleLaunchComplete} />
+      <StageCard showProgress={false} currentStage={3}>
+        <LaunchSequence callsign={callsign} onComplete={handleLaunchComplete} />
       </StageCard>
     );
   }
@@ -423,37 +369,26 @@ export const MissionControl: FC<MissionControlProps> = ({ onComplete, onCancel, 
     );
   }
 
-  // ─── Stage 3: Comms Array ──────────────────────────────────────────────
+  // ─── Stage 2: Callsign ────────────────────────────────────────────────
 
-  if (step === 'stage3_telegram') {
+  if (step === 'stage2_callsign') {
     return (
-      <StageCard stageNumber={3} stageLabel="COMMS ARRAY" currentStage={3}>
+      <StageCard stageNumber={2} stageLabel="IDENTITY" currentStage={2}>
         <Box marginBottom={1}>
-          <Text color={COLORS.text}>📡 Connect a communication channel</Text>
+          <Text color={COLORS.text}>🪪 Your Callsign</Text>
         </Box>
         <Box marginBottom={1}>
           <Text color={COLORS.textDim}>
-            Telegram lets you talk to Agent-X from your phone — anywhere, anytime.
+            How should Agent-X address you? Optional — can be set later.
           </Text>
         </Box>
-        <Box flexDirection="column" marginBottom={1} paddingX={1} borderStyle="single" borderColor={COLORS.border}>
-          <Text color={COLORS.text}>1. Open <Text color={COLORS.accent}>@BotFather</Text> on Telegram</Text>
-          <Text color={COLORS.text}>2. Send /newbot and follow prompts</Text>
-          <Text color={COLORS.text}>3. Paste the bot token below</Text>
-        </Box>
-        {error && (
-          <Box marginBottom={1}>
-            <Text color={COLORS.error}>⚠ {error}</Text>
-          </Box>
-        )}
         <Box>
           <Text color={COLORS.primary}>❯ </Text>
           <TextInput
-            value={telegramToken}
-            onChange={(v) => { setTelegramToken(v); setError(null); }}
-            placeholder="123456789:ABC-DEFghIjkl..."
-            mask="*"
-            onSubmit={handleTelegramSubmit}
+            value={callsign}
+            onChange={(v) => { setCallsign(v); setError(null); }}
+            placeholder="e.g. Commander"
+            onSubmit={handleCallsignSubmit}
           />
         </Box>
         <Box marginTop={1}>

@@ -336,16 +336,14 @@ export async function startDaemon(): Promise<void> {
   if (!telegramConfig?.botToken && !discordConfig?.botToken && !slackConfig?.botToken && !emailConfig?.['smtpHost']) {
     console.log('✦ Agent-X daemon started.');
     console.log('');
-    console.log('  Telegram not connected.');
-    console.log('  Discord not connected.');
-    console.log('  Slack not connected.');
-    console.log('  To connect, run: agentx start --token <your-bot-token>');
+    console.log('  No bridges configured.');
     console.log('');
-  console.log(`  Web-UI: http://localhost:${DAEMON_PORT}`);
+    console.log(`  Web-UI: http://localhost:${DAEMON_PORT}`);
+    console.log('  Configure bridges later via Web-UI (Channels) or TUI (/telegram start)');
   } else {
     if (!telegramConfig?.botToken) {
       console.log('  Telegram not connected.');
-      console.log('  To connect, run: agentx start --token <your-bot-token>');
+      console.log('  Configure later via Web-UI (Channels) or TUI (/telegram start)');
     }
     if (!discordConfig?.botToken) {
       console.log('  Discord not connected.');
@@ -386,7 +384,7 @@ export async function startDaemon(): Promise<void> {
   const gateway = new Gateway();
   gateway.attachAgent(agent);
 
-  // Register and start Telegram channel plugin
+  // Register and start Telegram channel plugin (optional — skip gracefully if token absent or connection fails)
   if (telegramConfig?.botToken) {
     const tgPlugin = gateway.registerTelegram(telegramConfig.botToken);
     tgPlugin.setAgent(agent);
@@ -441,9 +439,9 @@ export async function startDaemon(): Promise<void> {
         });
       }
     } catch (err) {
-      console.error(`Failed to start Telegram bridge: ${err instanceof Error ? err.message : String(err)}`);
-      try { unlinkSync(pidPath); } catch { /* ignore */ }
-      process.exit(1);
+      console.error(`⚠ Failed to start Telegram bridge: ${err instanceof Error ? err.message : String(err)}`);
+      logger.warn('DAEMON', 'Telegram bridge failed to start — continuing without Telegram. '
+        + 'Configure it later via TUI (/telegram start) or Web-UI (Channels panel).');
     }
   }
 
