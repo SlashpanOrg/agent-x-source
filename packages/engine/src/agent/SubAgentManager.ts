@@ -7,6 +7,7 @@ import type { ProviderInterface } from '../providers/ProviderInterface.js';
 import { generateId } from '@agentx/shared';
 import type { Agent } from './Agent.js';
 import { SmartSubAgent } from './SmartSubAgent.js';
+import { SubAgentCache } from './SubAgentCache.js';
 
 export interface SubAgentTask {
   id: string;
@@ -36,6 +37,8 @@ export class SubAgentManager {
   private sandboxEnabled = false;
   private tempDirs: Set<string> = new Set();
   private parentAgent: Agent | null = null;
+  private cache: SubAgentCache = new SubAgentCache();
+  private systemPromptHash: string = '';
 
   constructor(eventBus: AgentEventBus) {
     this.eventBus = eventBus;
@@ -48,6 +51,14 @@ export class SubAgentManager {
     this.parentAgent = agent;
   }
 
+  setCache(cache: SubAgentCache): void {
+    this.cache = cache;
+  }
+
+  getCache(): SubAgentCache {
+    return this.cache;
+  }
+
   /**
    * Attach a provider and config so sub-agents can make real LLM calls.
    */
@@ -55,6 +66,17 @@ export class SubAgentManager {
     this.provider = provider;
     this.config = config;
     this.systemPrompt = systemPrompt;
+    this.systemPromptHash = this.hashSystemPrompt(systemPrompt);
+  }
+
+  private hashSystemPrompt(prompt: string): string {
+    let hash = 0;
+    for (let i = 0; i < prompt.length; i++) {
+      const chr = prompt.charCodeAt(i);
+      hash = ((hash << 5) - hash) + chr;
+      hash |= 0;
+    }
+    return hash.toString(36);
   }
 
   enableSandbox(enabled: boolean): void {
@@ -78,6 +100,25 @@ export class SubAgentManager {
    * Spawn a sub-agent that will actually execute an LLM completion in the background.
    */
   spawn(instruction: string, tools: string[] = [], timeout = 60_000, maxConcurrent = 5): SubAgentTask | null {
+    // Check cache for a matching result
+    const cacheKey = this.cache.deriveKey(instruction, tools, this.systemPromptHash);
+    const cached = this.cache.get(cacheKey);
+    if (cached) {
+      const task: SubAgentTask = {
+        id: generateId(),
+        instruction,
+        tools,
+        timeout,
+        status: 'completed',
+        result: cached.result,
+        startTime: Date.now() - (cached.resourceUsage.cpuTime ?? 0),
+        endTime: Date.now(),
+        resourceUsage: { ...cached.resourceUsage },
+      };
+      this.agents.set(task.id, task);
+      return task;
+    }
+
     // Enforce concurrent sub-agent limit
     const runningCount = Array.from(this.agents.values()).filter((a) => a.status === 'running' || a.status === 'pending').length;
     if (runningCount >= maxConcurrent) {
@@ -245,6 +286,9 @@ export class SubAgentManager {
       task.endTime = Date.now();
       const elapsed = task.endTime - (task.startTime ?? task.endTime);
       if (task.workDir) this.cleanupWorkDir(task.workDir);
+      // Store in cache
+      const cacheKey = this.cache.deriveKey(task.instruction, task.tools, this.systemPromptHash);
+      this.cache.set(cacheKey, result, task.resourceUsage ?? {});
       this.eventBus.emit({
         type: 'agent_complete',
         agentId,

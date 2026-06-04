@@ -308,13 +308,6 @@ export class EventBridge {
         });
         break;
 
-      case 'context_compacted':
-        this.emitAll(this.compactionHandlers, {
-          type: 'complete',
-          saved: event.saved,
-        });
-        break;
-
       case 'watch_event':
         this.emitAll(this.watchEventHandlers, {
           event: event.event,
@@ -409,7 +402,6 @@ export class EventBridge {
       case 'rag_queried':
       case 'decision_made':
       case 'reflection_complete':
-      case 'skill_generated':
       case 'decomposition_start':
       case 'decomposition_ready':
       case 'decomposition_complete':

@@ -24,6 +24,7 @@ export { ResponseFormatter } from './agent/ResponseFormatter.js';
 export type { FormattedSegment } from './agent/ResponseFormatter.js';
 export { SubAgentManager } from './agent/SubAgentManager.js';
 export type { SubAgentTask } from './agent/SubAgentManager.js';
+export { SubAgentCache } from './agent/SubAgentCache.js';
 export { SmartSubAgent } from './agent/SmartSubAgent.js';
 export type { SmartSubAgentOptions, SmartSubAgentResult } from './agent/SmartSubAgent.js';
 export { DecisionEngine } from './agent/DecisionEngine.js';

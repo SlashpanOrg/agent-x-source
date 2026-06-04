@@ -10,6 +10,15 @@ export type CrewEmotion =
   | 'sad'
   | 'sarcastic';
 
+export type CollaborationProtocol = 'standard' | 'parallel' | 'sequential' | 'debate' | 'handoff';
+
+export interface CrewResourceQuota {
+  maxTokensPerTurn?: number;
+  maxTokensPerSession?: number;
+  maxCpuTimeMs?: number;
+  maxMemoryBytes?: number;
+}
+
 export interface Crew {
   id: string;
   name: string;
@@ -23,6 +32,8 @@ export interface Crew {
     enabled?: string[];
     disabled?: string[];
   };
+  protocol?: CollaborationProtocol;
+  quotas?: CrewResourceQuota;
   createdAt: string;
   updatedAt: string;
 }
@@ -40,6 +51,8 @@ export interface CrewCreateInput {
     enabled?: string[];
     disabled?: string[];
   };
+  protocol?: CollaborationProtocol;
+  quotas?: CrewResourceQuota;
 }
 
 export interface SessionCrewState {

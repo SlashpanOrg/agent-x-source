@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Crew, CrewEmotion, CrewCreateInput } from '@agentx/shared';
+import type { Crew, CrewEmotion, CrewCreateInput, CollaborationProtocol, CrewResourceQuota } from '@agentx/shared';
 import { encrypt, decrypt, getLogger } from '@agentx/shared';
 import type { EncryptedData } from '@agentx/shared';
 import { getSecretSauceDir } from '../config/paths.js';
@@ -160,6 +160,8 @@ export class CrewManager {
       expertise: input.expertise,
       traits: input.traits,
       toolPreferences: input.toolPreferences,
+      protocol: input.protocol,
+      quotas: input.quotas,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -178,7 +180,7 @@ export class CrewManager {
     return true;
   }
 
-  update(id: string, updates: { name?: string; systemPrompt?: string; emotion?: CrewEmotion; expertise?: string[]; traits?: string[]; toolPreferences?: { enabled?: string[]; disabled?: string[] } }): Crew | null {
+  update(id: string, updates: { name?: string; systemPrompt?: string; emotion?: CrewEmotion; expertise?: string[]; traits?: string[]; toolPreferences?: { enabled?: string[]; disabled?: string[] }; protocol?: CollaborationProtocol; quotas?: CrewResourceQuota }): Crew | null {
     const idx = this.crews.findIndex((p) => p.id === id);
     if (idx < 0) return null;
     const crew = this.crews[idx]!;
@@ -188,6 +190,8 @@ export class CrewManager {
     if (updates.expertise !== undefined) crew.expertise = updates.expertise;
     if (updates.traits !== undefined) crew.traits = updates.traits;
     if (updates.toolPreferences !== undefined) crew.toolPreferences = updates.toolPreferences;
+    if (updates.protocol !== undefined) crew.protocol = updates.protocol;
+    if (updates.quotas !== undefined) crew.quotas = updates.quotas;
     crew.updatedAt = new Date().toISOString();
     this.crews[idx] = crew;
     this.save();
