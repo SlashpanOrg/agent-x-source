@@ -34,6 +34,7 @@ function GuestGuard({ children }: { children: React.ReactNode }) {
     );
   }
   if (authState === 'authenticated') return <Navigate to="/" replace />;
+  // needs-setup is allowed — user just created root and must complete wizard
   return <>{children}</>;
 }
 

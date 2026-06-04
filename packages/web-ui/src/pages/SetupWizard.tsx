@@ -49,7 +49,7 @@ function clearProgress() {
 }
 
 export function SetupWizard() {
-  const { setConfig } = useApp();
+  const { setConfig, setAuthState } = useApp();
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [error, setError] = useState('');
@@ -223,6 +223,7 @@ export function SetupWizard() {
       }
       const cfg = await config.get();
       setConfig(cfg);
+      setAuthState('authenticated');
       clearProgress();
       navigate('/');
     } catch (err) {

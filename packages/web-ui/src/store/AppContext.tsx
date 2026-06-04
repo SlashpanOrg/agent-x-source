@@ -16,6 +16,7 @@ interface AppState {
   // Actions
   setView: (v: AppView) => void;
   setAuthenticated: (v: boolean, username?: string) => void;
+  setAuthState: (s: AuthState) => void;
   setConfig: (c: AgentXConfig) => void;
   pushEvent: (e: TelemetryEvent) => void;
   refreshHealth: () => Promise<void>;
@@ -52,6 +53,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setAuth(v);
     if (u) setUsername(u);
     setAuthState(v ? 'authenticated' : 'unauthenticated');
+  }, []);
+
+  const setAuthStateDirect = useCallback((s: AuthState) => {
+    setAuthState(s);
+    if (s === 'authenticated' || s === 'needs-setup') setAuth(true);
+    if (s === 'unauthenticated' || s === 'no-root-user') setAuth(false);
   }, []);
 
   const setConfig = useCallback((c: AgentXConfig) => { setAppConfig(c); }, []);
@@ -118,7 +125,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const state: AppState = {
     view, authState, authenticated, username, config: appConfig, serverOnline, events, healthData,
-    setView, setAuthenticated, setConfig, pushEvent, refreshHealth, initialize,
+    setView, setAuthenticated, setAuthState: setAuthStateDirect, setConfig, pushEvent, refreshHealth, initialize,
   };
 
   return <AppContext.Provider value={state}>{children}</AppContext.Provider>;
