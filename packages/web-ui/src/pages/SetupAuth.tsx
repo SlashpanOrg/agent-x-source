@@ -29,7 +29,7 @@ function getPasswordStrength(pw: string): { score: number; label: string; color:
 }
 
 export function SetupAuth() {
-  const { setAuthenticated } = useApp();
+  const { setAuthState } = useApp();
   const navigate = useNavigate();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -59,7 +59,7 @@ export function SetupAuth() {
     setLoading(true);
     try {
       await auth.setup(username, password);
-      setAuthenticated(true, username);
+      setAuthState('needs-setup');
       navigate('/setup/wizard');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Setup failed');
