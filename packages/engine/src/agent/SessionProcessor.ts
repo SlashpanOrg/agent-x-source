@@ -1,9 +1,6 @@
 import type {
   AgentXStreamEvent,
-  UsageInfo,
-  FinalAssistantMessage,
   NormalizedToolCall,
-  Message,
 } from '@agentx/shared';
 import { ToolCallStatus } from '@agentx/shared';
 import type { EventBus } from '@agentx/shared';
@@ -22,18 +19,10 @@ export interface SessionProcessorContext {
   ) => boolean;
 }
 
-export interface ProcessedTurn {
-  messages: Message[];
-  assistantMessage: FinalAssistantMessage;
-  toolCalls: NormalizedToolCall[];
-  usage: UsageInfo;
-}
-
 export class SessionProcessor {
   private pendingToolCalls: Map<string, NormalizedToolCall> = new Map();
   private accumulatedText = '';
   private accumulatedReasoning = '';
-  private currentMessageId = '';
 
   private ctx: SessionProcessorContext;
 
@@ -41,28 +30,7 @@ export class SessionProcessor {
     this.ctx = ctx;
   }
 
-  async process(
-    events: AsyncIterable<AgentXStreamEvent>,
-    turnId: string,
-  ): Promise<ProcessedTurn> {
-    this.reset();
-
-    for await (const event of events) {
-      void this.handleEvent(event);
-    }
-
-    const assistantMessage = this.buildAssistantMessage();
-    const toolCalls = Array.from(this.pendingToolCalls.values());
-
-    return {
-      messages: this.buildMessages(turnId, assistantMessage),
-      assistantMessage,
-      toolCalls,
-      usage: assistantMessage.usage,
-    };
-  }
-
-  private handleEvent(event: AgentXStreamEvent): void {
+  processEvent(event: AgentXStreamEvent): void {
     switch (event.type) {
       case 'turn.start':
         this.ctx.eventBus.emit({
@@ -72,7 +40,6 @@ export class SessionProcessor {
         break;
 
       case 'text.start':
-        this.currentMessageId = event.messageId;
         break;
 
       case 'text.delta': {
@@ -250,54 +217,5 @@ export class SessionProcessor {
         });
         break;
     }
-  }
-
-  private buildAssistantMessage(): FinalAssistantMessage {
-    return {
-      messageId: this.currentMessageId || `msg-${Date.now()}`,
-      text: this.ctx.projector.getProjectedBuffer() || this.accumulatedText,
-      reasoning: this.accumulatedReasoning || undefined,
-      toolCalls: Array.from(this.pendingToolCalls.values()),
-      usage: {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-      },
-      stopReason: 'end_turn',
-    };
-  }
-
-  private buildMessages(
-    turnId: string,
-    assistant: FinalAssistantMessage,
-  ): Message[] {
-    const messages: Message[] = [];
-
-    messages.push({
-      id: `${turnId}-assistant`,
-      sessionId: this.ctx.sessionId,
-      role: 'assistant',
-      content: assistant.text,
-      toolCalls: assistant.toolCalls.map((tc) => ({
-        id: tc.id,
-        name: tc.name,
-        arguments: JSON.stringify(tc.arguments),
-        result: tc.result,
-      })),
-      tokenCount: assistant.usage.totalTokens ?? 0,
-      createdAt: new Date().toISOString(),
-      reasoning: assistant.reasoning,
-      turnId,
-    });
-
-    return messages;
-  }
-
-  private reset(): void {
-    this.pendingToolCalls.clear();
-    this.accumulatedText = '';
-    this.accumulatedReasoning = '';
-    this.currentMessageId = '';
-    this.ctx.projector.reset();
   }
 }

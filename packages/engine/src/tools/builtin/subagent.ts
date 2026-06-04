@@ -38,6 +38,9 @@ export async function subAgentSpawn(
   }
 
   const task = manager.spawn(instruction, tools, timeout);
+  if (!task) {
+    return { success: false, output: 'Sub-agent limit reached. Wait for existing sub-agents to complete.', error: 'LIMIT_REACHED' };
+  }
   return {
     success: true,
     output: `Sub-agent spawned (ID: ${task.id}). It will process the task in the background: "${instruction.slice(0, 100)}"`,

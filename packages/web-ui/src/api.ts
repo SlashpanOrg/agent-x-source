@@ -50,7 +50,7 @@ export const providers = {
   configure: (provider: string, apiKey?: string, baseUrl?: string) => request<{ ok: boolean }>('/provider/configure', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl }) }),
   models: (provider: string) => request<ModelInfo[]>('/provider/models?provider=' + provider),
   switch: (provider: string) => request<{ ok: boolean; provider: string; model: string }>('/provider/switch', { method: 'POST', body: JSON.stringify({ provider }) }),
-  createProfile: (providerId: string, label: string, apiKey: string, baseUrl?: string) => request<{ ok: boolean }>('/provider/profile', { method: 'POST', body: JSON.stringify({ providerId, label, apiKey, baseUrl }) }),
+  createProfile: (provider: string, label: string, apiKey: string, baseUrl?: string) => request<{ ok: boolean }>('/provider/profile', { method: 'POST', body: JSON.stringify({ provider, profileId: label, label, apiKey, baseUrl }) }),
   switchProfile: (providerId: string, profileId: string) => request<{ ok: boolean }>('/provider/profile/switch', { method: 'POST', body: JSON.stringify({ providerId, profileId }) }),
 };
 
@@ -68,6 +68,7 @@ export const crews = {
   create: (data: CrewInput) => request<{ ok: boolean; crew: Crew }>('/crews', { method: 'POST', body: JSON.stringify(data) }),
   update: (id: string, data: Partial<CrewInput>) => request<{ ok: boolean }>(`/crews/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   delete: (id: string) => request<{ ok: boolean }>(`/crews/${id}`, { method: 'DELETE' }),
+  toggle: (id: string, enabled: boolean) => request<{ ok: boolean }>('/crew/toggle', { method: 'POST', body: JSON.stringify({ crewId: id, enabled }) }),
 };
 
 // ─── Chat ───
@@ -96,7 +97,7 @@ export const sessions = {
   create: () => request<{ sessionId: string }>('/sessions', { method: 'POST' }),
   get: (id: string) => request<SessionInfo>(`/sessions/${id}`),
   delete: (id: string) => request<{ ok: boolean }>(`/sessions/${id}`, { method: 'DELETE' }),
-  restore: (id: string) => request<{ ok: boolean }>(`/sessions/${id}/restore`, { method: 'POST' }),
+  restore: (id: string) => request<{ session: SessionInfo; messages: ChatMessage[]; crewStates?: Array<{ crewId: string; enabled: boolean }> }>(`/sessions/${id}/restore`, { method: 'POST' }),
   context: (id: string) => request<SessionContext>(`/sessions/${id}/context`),
   compact: (id: string) => request<{ ok: boolean; summary: string }>(`/sessions/${id}/compact`, { method: 'POST' }),
   checkpoint: (id: string, label?: string) => request<{ checkpointId: string; label: string }>(`/sessions/${id}/checkpoint`, { method: 'POST', body: JSON.stringify({ label }) }),
@@ -235,7 +236,7 @@ export const scheduler = {
   create: (name: string, cron: string, instruction: string) => request<{ ok: boolean }>('/scheduler/jobs', { method: 'POST', body: JSON.stringify({ name, cron, instruction }) }),
   delete: (id: string) => request<{ ok: boolean }>(`/scheduler/jobs/${id}`, { method: 'DELETE' }),
   run: (id: string) => request<{ ok: boolean }>(`/scheduler/jobs/${id}/run`, { method: 'POST' }),
-  parseCron: (natural: string) => request<{ cron: string; description: string }>('/scheduler/parse-cron', { method: 'POST', body: JSON.stringify({ natural }) }),
+  parseCron: (text: string) => request<{ cron: string; original: string }>('/scheduler/parse-cron', { method: 'POST', body: JSON.stringify({ text }) }),
 };
 
 // ─── Secret Sauce (Soul / Identity / Diary / Memories / Permission / Crew) ───
@@ -257,7 +258,7 @@ export const orchestrator = {
 // ─── Todos ───
 export const todos = {
   list: (sessionId?: string) => request<{ todos: TodoItem[] }>(`/todos${sessionId ? '?sessionId=' + sessionId : ''}`).then(r => r.todos ?? []),
-  save: (items: TodoItem[], sessionId?: string) => request<{ ok: boolean }>('/todos', { method: 'POST', body: JSON.stringify({ items, sessionId }) }),
+  save: (todos: TodoItem[], sessionId?: string) => request<{ ok: boolean }>('/todos', { method: 'POST', body: JSON.stringify({ todos, sessionId }) }),
   update: (itemId: string, data: Partial<TodoItem>) => request<{ ok: boolean }>(`/todos/${itemId}`, { method: 'PUT', body: JSON.stringify(data) }),
 };
 
@@ -370,6 +371,8 @@ export interface Crew {
   systemPrompt: string;
   tone?: string;
   isDefault?: boolean;
+  enabled?: boolean;
+  expertise?: string[];
 }
 
 export interface CrewInput {
@@ -522,3 +525,48 @@ export interface TelemetryEvent {
   type: string;
   [key: string]: unknown;
 }
+
+// ─── Gateway / Focus ───
+export interface GatewayStatus {
+  active: boolean;
+  focus?: string | null;
+  channels?: string[];
+  channelStats?: Record<string, unknown>;
+}
+
+export interface FocusStatus {
+  focus: string | null;
+  channels: string[];
+  activeChannels: string[];
+}
+
+export interface TuiActiveStatus {
+  active: boolean;
+  pid?: number;
+}
+
+export const gateway = {
+  status: () => request<GatewayStatus>('/gateway/status'),
+  focus: () => request<FocusStatus>('/gateway/focus'),
+  setFocus: (channel: string) => request<{ ok: boolean; focus: string }>('/gateway/focus', { method: 'POST', body: JSON.stringify({ channel }) }),
+};
+
+export const tuiActive = {
+  check: () => request<TuiActiveStatus>('/tui-active'),
+};
+
+// ─── Web-UI Active ───
+export interface WebuiActiveStatus {
+  active: boolean;
+  pid?: number;
+  timestamp?: number;
+}
+
+export const webuiActive = {
+  check: () => request<WebuiActiveStatus>('/webui-active'),
+  register: (pid?: number) => request<{ ok: boolean }>('/webui-active', { 
+    method: 'POST', 
+    body: JSON.stringify({ pid: pid ?? Date.now() }) 
+  }),
+  unregister: () => request<{ ok: boolean }>('/webui-active', { method: 'DELETE' }),
+};

@@ -66,7 +66,14 @@ interface UseSessionReturn {
   pendingDiff: { tool: string; filePath: string; diff: string } | null;
   isIndexing: boolean;
   indexingProgress: { indexed: number; total: number } | null;
+  focusChannel: string | null;
+  setFocusChannel: (channel: string) => void;
+  setCrewEnabled: (crewId: string, enabled: boolean) => void;
 }
+
+const DAEMON_PORT = parseInt(process.env['AGENTX_PORT'] ?? '3333', 10);
+const DAEMON_WS_URL = `ws://127.0.0.1:${DAEMON_PORT}/ws`;
+const DAEMON_API = `http://127.0.0.1:${DAEMON_PORT}`;
 
 export function useSession(
   config: AgentXConfig,
@@ -80,6 +87,7 @@ export function useSession(
   maxBudget?: number,
   gitAutoCommit?: boolean,
   gitAware?: boolean,
+  externalDaemonMode?: boolean,
 ): UseSessionReturn {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streamingContent, setStreamingContent] = useState('');
@@ -107,8 +115,11 @@ export function useSession(
   const [_pendingStepId, setPendingStepId] = useState<string | null>(null);
   const [isIndexing, setIsIndexing] = useState(false);
   const [indexingProgress, setIndexingProgress] = useState<{ indexed: number; total: number } | null>(null);
+  const [focusChannel, setFocusChannelState] = useState<string | null>(null);
+  const [daemonMode, setDaemonMode] = useState(false);
 
   const agentRef = useRef<Agent | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
   const configRef = useRef<AgentXConfig>(config);
   const sessionStoreRef = useRef<SessionStore | SessionManager>(
     storageAdapter ? new SessionManager({ storageAdapter }) : new SessionStore(),
@@ -126,9 +137,29 @@ export function useSession(
   const streamingScheduledRef = useRef(false);
   const visualStateManagerRef = useRef(new VisualStateManager());
   const [visualState, setVisualState] = useState<VisualState | null>(null);
+  const sendWsRef = useRef<(data: Record<string, unknown>) => void>(() => {});
 
   // Keep model ref in sync
   useEffect(() => { currentModelRef.current = currentModel; }, [currentModel]);
+
+  // Check daemon focus status periodically
+  useEffect(() => {
+    let cancelled = false;
+    async function pollDaemonFocus() {
+      try {
+        const res = await fetch(`${DAEMON_API}/api/gateway/focus`, { signal: AbortSignal.timeout(2000) });
+        if (!cancelled && res.ok) {
+          const data = await res.json() as { focus?: string };
+          if (data.focus) setFocusChannelState(data.focus);
+        }
+      } catch {
+        // daemon not running
+      }
+    }
+    pollDaemonFocus();
+    const interval = setInterval(pollDaemonFocus, 10000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   // Update budget ref
   useEffect(() => { maxBudgetRef.current = maxBudget ?? 0; }, [maxBudget]);
@@ -143,179 +174,123 @@ export function useSession(
     }
   }, [externalTelegramBridge]);
 
-  useEffect(() => {
-    const agent = new Agent({
-      config,
-      sessionId,
-      gitAutoCommit,
-      gitAware,
-    });
+  function handleEngineEvent(event: EngineEvent): void {
+    if (event.type === 'agent_message' && event.message) {
+      visualStateManagerRef.current.applyUpdate(
+        event.message as unknown as import('@agentx/shared').VisualUpdate,
+      );
+      setVisualState({ ...visualStateManagerRef.current.getState() });
+    }
+    if (event.type === 'loading_end') {
+      visualStateManagerRef.current.reset();
+      setVisualState(null);
+    }
 
-    // Create session using SessionManager or SessionStore
-    try {
-      if (sessionStoreRef.current instanceof SessionManager) {
-        const sm = sessionStoreRef.current as SessionManager;
-        sm.createSession(
-          config.provider.activeProvider,
-          config.provider.activeModel,
-          undefined,
-          process.cwd(),
-        );
-      } else {
-        const ss = sessionStoreRef.current as SessionStore;
-        ss.createSession({
-          id: sessionId,
-          title: 'New Session',
-          status: 'active',
-          provider: config.provider.activeProvider,
-          model: config.provider.activeModel,
-          scopePath: process.cwd(),
-          tokenAvailable: agent.tokens.tokensTotal,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+    switch (event.type) {
+      case 'loading_start':
+        setIsLoading(true);
+        setStreamingContent('');
+        break;
+      case 'loading_end':
+        setIsLoading(false);
+        break;
+      case 'stream_chunk':
+        latestContentRef.current = event.fullContent;
+        if (!streamingScheduledRef.current) {
+          streamingScheduledRef.current = true;
+          setTimeout(() => {
+            streamingScheduledRef.current = false;
+            setStreamingContent(latestContentRef.current);
+          }, 16);
+        }
+        break;
+      case 'message_sent':
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === event.message.id)) return prev;
+          return [...prev, { ...event.message, tokenCost: 0 }];
         });
-      }
-    } catch {
-      // Session may already exist (e.g. hot reload)
-    }
-
-    // Attach external telegram bridge if available
-    if (telegramBridgeRef.current) {
-      telegramBridgeRef.current.attach(agent);
-    }
-
-    const unsubscribe = agent.events.on((event: EngineEvent) => {
-      // ─── UNIFIED: Feed visual state manager ───
-      if (event.type === 'agent_message' && event.message) {
-        visualStateManagerRef.current.applyUpdate(
-          event.message as unknown as import('@agentx/shared').VisualUpdate,
-        );
-        setVisualState({ ...visualStateManagerRef.current.getState() });
-      }
-      // Reset visual state on turn end
-      if (event.type === 'loading_end') {
-        visualStateManagerRef.current.reset();
-        setVisualState(null);
-      }
-
-      switch (event.type) {
-        case 'loading_start':
-          setIsLoading(true);
-          setStreamingContent('');
-          break;
-        case 'loading_end':
-          setIsLoading(false);
-          break;
-        case 'stream_chunk':
-          // Smooth streaming: throttle UI updates to ~60fps (16ms) to avoid jank
-          latestContentRef.current = event.fullContent;
-          if (!streamingScheduledRef.current) {
-            streamingScheduledRef.current = true;
-            setTimeout(() => {
-              streamingScheduledRef.current = false;
-              setStreamingContent(latestContentRef.current);
-            }, 16);
-          }
-          break;
-        case 'message_sent':
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === event.message.id)) return prev;
-            return [...prev, { ...event.message, tokenCost: 0 }];
-          });
-          persistMessage(event.message);
-          break;
-        case 'message_received': {
-          const currentCost = agent.tokens.totalCost;
-          const msgCost = currentCost - prevCostRef.current;
-          prevCostRef.current = currentCost;
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === event.message.id)) return prev;
-            return [...prev, { ...event.message, elapsed: event.elapsed, tokenCost: msgCost }];
-          });
-          // Clear both the ref AND state to prevent race condition with setTimeout in stream_chunk
-          latestContentRef.current = '';
-          setStreamingContent('');
+        persistMessage(event.message);
+        break;
+      case 'message_received': {
+        const agent = agentRef.current;
+        const currentCost = agent?.tokens?.totalCost ?? 0;
+        const msgCost = currentCost - prevCostRef.current;
+        prevCostRef.current = currentCost;
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === event.message.id)) return prev;
+          return [...prev, { ...event.message, elapsed: event.elapsed, tokenCost: msgCost }];
+        });
+        latestContentRef.current = '';
+        setStreamingContent('');
+        if (agent?.tokens) {
           setTokensUsed(agent.tokens.tokensUsed);
           setTokensTotal(agent.tokens.tokensTotal);
-          persistMessage(event.message);
-          // Budget check
-          if (maxBudgetRef.current > 0 && agent.tokens.totalCost >= maxBudgetRef.current) {
-            agent.cancel();
-            setError(`💰 Budget limit reached: $${maxBudgetRef.current.toFixed(2)}. Use --max-budget to increase.`);
-            setErrorActions([{ type: 'dismiss', label: 'OK' }]);
-            budgetWarningShownRef.current = false;
-          } else if (maxBudgetRef.current > 0 && agent.tokens.totalCost >= maxBudgetRef.current * 0.8 && !budgetWarningShownRef.current) {
-            budgetWarningShownRef.current = true;
-            setError(`⚠️ Budget warning: $${(agent.tokens.totalCost).toFixed(4)} spent (80% of $${maxBudgetRef.current.toFixed(2)} limit)`);
-            setErrorActions([{ type: 'dismiss', label: 'Dismiss' }]);
-          }
-          break;
         }
-        case 'command_action':
-          if (event.action === 'list_models') {
-            setModelPickerModels(event.models);
-            setCurrentModel(event.currentModel);
-          } else if (event.action === 'model_switched') {
-            setCurrentModel(event.modelId);
-            setTokensTotal(event.contextWindow);
-          }
-          break;
-        case 'error':
-          setError(event.message);
-          setErrorActions(event.actions ?? []);
-          // Clear stale tool state so ghost timers don't persist into the next message
-          setActiveTools([]);
-          setPermissionRequest(null);
-          break;
-        case 'permission_required':
-          setPermissionRequest({
-            tool: event.tool,
-            path: event.path,
-            riskLevel: event.riskLevel,
-          });
-          break;
-        case 'tool_executing':
-          setActiveTools((prev) => [...prev, { id: `${event.tool}-${Date.now()}-${Math.random()}`, tool: event.tool, description: event.description, startTime: event.startTime }]);
-          break;
-        case 'tool_complete': {
-          // Remove only the FIRST matching entry so concurrent calls to the same tool
-          // (e.g. multiple file_write) are removed one at a time, not all at once.
-          let removed = false;
-          setActiveTools((prev) => prev.filter((t) => {
-            if (!removed && t.tool === event.tool) { removed = true; return false; }
-            return true;
-          }));
-          setPendingDiff(null);
-          setMessages((prev) => [...prev, {
-            id: generateMessageId(),
-            sessionId,
-            role: 'tool',
-            content: event.result.success
-              ? event.result.output
-              : `✗ ${event.result.error ?? event.result.output}`,
-            toolCalls: null,
-            tokenCount: 0,
-            createdAt: new Date().toISOString(),
-            elapsed: event.elapsed,
-          }]);
-          break;
+        persistMessage(event.message);
+        if (maxBudgetRef.current > 0 && (agent?.tokens?.totalCost ?? 0) >= maxBudgetRef.current) {
+          agent?.cancel();
+          setError(`💰 Budget limit reached: $${maxBudgetRef.current.toFixed(2)}. Use --max-budget to increase.`);
+          setErrorActions([{ type: 'dismiss', label: 'OK' }]);
+          budgetWarningShownRef.current = false;
+        } else if (maxBudgetRef.current > 0 && (agent?.tokens?.totalCost ?? 0) >= maxBudgetRef.current * 0.8 && !budgetWarningShownRef.current) {
+          budgetWarningShownRef.current = true;
+          setError(`⚠️ Budget warning: $${(agent?.tokens?.totalCost ?? 0).toFixed(4)} spent (80% of $${maxBudgetRef.current.toFixed(2)} limit)`);
+          setErrorActions([{ type: 'dismiss', label: 'Dismiss' }]);
         }
-        case 'diff_preview':
-          setPendingDiff({ tool: event.tool, filePath: event.filePath, diff: event.diff });
-          break;
-        case 'reasoning_start':
-          setIsReasoning(true);
-          setReasoningText('');
-          break;
-        case 'reasoning_glimpse':
-          setReasoningText(event.text);
-          break;
-        case 'reasoning_complete':
-          setIsReasoning(false);
-          break;
-        case 'todo_update':
-          setTodoItems(event.items);
-          break;
+        break;
+      }
+      case 'command_action':
+        if (event.action === 'list_models') {
+          setModelPickerModels(event.models);
+          setCurrentModel(event.currentModel);
+        } else if (event.action === 'model_switched') {
+          setCurrentModel(event.modelId);
+          setTokensTotal(event.contextWindow);
+        }
+        break;
+      case 'error':
+        setError(event.message);
+        setErrorActions(event.actions ?? []);
+        setActiveTools([]);
+        setPermissionRequest(null);
+        break;
+      case 'permission_required':
+        setPermissionRequest({ tool: event.tool, path: event.path, riskLevel: event.riskLevel });
+        break;
+      case 'tool_executing':
+        setActiveTools((prev) => [...prev, { id: `${event.tool}-${Date.now()}-${Math.random()}`, tool: event.tool, description: event.description, startTime: event.startTime }]);
+        break;
+      case 'tool_complete': {
+        let removed = false;
+        setActiveTools((prev) => prev.filter((t) => {
+          if (!removed && t.tool === event.tool) { removed = true; return false; }
+          return true;
+        }));
+        setPendingDiff(null);
+        setMessages((prev) => [...prev, {
+          id: generateMessageId(),
+          sessionId, role: 'tool',
+          content: event.result.success ? event.result.output : `✗ ${event.result.error ?? event.result.output}`,
+          toolCalls: null, tokenCount: 0, createdAt: new Date().toISOString(), elapsed: event.elapsed,
+        }]);
+        break;
+      }
+      case 'diff_preview':
+        setPendingDiff({ tool: event.tool, filePath: event.filePath, diff: event.diff });
+        break;
+      case 'reasoning_start':
+        setIsReasoning(true);
+        setReasoningText('');
+        break;
+      case 'reasoning_glimpse':
+        setReasoningText(event.text);
+        break;
+      case 'reasoning_complete':
+        setIsReasoning(false);
+        break;
+      case 'todo_update':
+        setTodoItems(event.items);
+        break;
       case 'agent_spawned':
         setSubAgents((prev) => [...prev, { agentId: event.agentId, name: event.task, status: 'running', startTime: event.startTime }]);
         break;
@@ -328,162 +303,221 @@ export function useSession(
             ? { ...a, status: 'complete', summary: event.summary, elapsed: event.elapsed, endTime: Date.now() }
             : a
         ));
-        // Auto-remove completed agents after 30 seconds
         setTimeout(() => {
           setSubAgents((prev) => prev.filter((a) => a.agentId !== event.agentId));
         }, 30000);
         break;
-        case 'plan_generated':
-          setIsLoading(false);
-          setCurrentPlan(event.plan);
-          break;
-        case 'plan_approved':
-          setCurrentPlan(null);
-          setIsLoading(true);
-          break;
-        case 'plan_rejected':
-        case 'plan_cancelled':
-          setCurrentPlan(null);
-          setIsLoading(false);
-          break;
-        case 'plan_step_complete':
-          setCurrentPlan((prev) => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              steps: prev.steps.map((s) =>
-                s.id === event.stepId ? { ...s, status: 'done' as const } : s
-              ),
-            };
-          });
-          setAwaitingStepApproval(false);
-          break;
-        case 'plan_step_failed':
-          setCurrentPlan((prev) => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              steps: prev.steps.map((s) =>
-                s.id === event.stepId ? { ...s, status: 'failed' as const } : s
-              ),
-            };
-          });
-          setAwaitingStepApproval(false);
-          break;
-        case 'plan_step_pending':
-          setCurrentPlan((prev) => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              steps: prev.steps.map((s) =>
-                s.id === event.stepId ? { ...s, status: 'awaiting_approval' as const } : s
-              ),
-            };
-          });
-          setAwaitingStepApproval(true);
-          setPendingStepId(event.stepId);
-          break;
-        case 'plan_step_skipped':
-          setCurrentPlan((prev) => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              steps: prev.steps.map((s) =>
-                s.id === event.stepId ? { ...s, status: 'skipped' as const } : s
-              ),
-            };
-          });
-          setAwaitingStepApproval(false);
-          break;
-        case 'plan_mode_entered':
-          setPlanModeState(true);
-          break;
-        case 'plan_mode_exited':
-          setPlanModeState(false);
-          setCurrentPlan(null);
-          break;
-        case 'indexing_start':
-          setIsIndexing(true);
-          setIndexingProgress({ indexed: 0, total: event.totalFiles });
-          break;
-        case 'indexing_progress':
-          setIndexingProgress({ indexed: event.indexed, total: event.total });
-          break;
-        case 'indexing_complete':
-          setIsIndexing(false);
-          setIndexingProgress(null);
-          break;
-        case 'steer_message':
-          setMessages((prev) => [...prev, {
-            id: `sys-steer-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            sessionId,
-            role: 'assistant' as const,
-            content: `📢 ${event.instruction}`,
-            toolCalls: null,
-            createdAt: new Date().toISOString(),
-            tokenCount: 0,
-          }]);
-          break;
+      case 'plan_generated':
+        setIsLoading(false);
+        setCurrentPlan(event.plan);
+        break;
+      case 'plan_approved':
+        setCurrentPlan(null);
+        setIsLoading(true);
+        break;
+      case 'plan_rejected':
+      case 'plan_cancelled':
+        setCurrentPlan(null);
+        setIsLoading(false);
+        break;
+      case 'plan_step_complete':
+        setCurrentPlan((prev) => prev ? { ...prev, steps: prev.steps.map((s) => s.id === event.stepId ? { ...s, status: 'done' as const } : s) } : prev);
+        setAwaitingStepApproval(false);
+        break;
+      case 'plan_step_failed':
+        setCurrentPlan((prev) => prev ? { ...prev, steps: prev.steps.map((s) => s.id === event.stepId ? { ...s, status: 'failed' as const } : s) } : prev);
+        setAwaitingStepApproval(false);
+        break;
+      case 'plan_step_pending':
+        setCurrentPlan((prev) => prev ? { ...prev, steps: prev.steps.map((s) => s.id === event.stepId ? { ...s, status: 'awaiting_approval' as const } : s) } : prev);
+        setAwaitingStepApproval(true);
+        setPendingStepId(event.stepId);
+        break;
+      case 'plan_step_skipped':
+        setCurrentPlan((prev) => prev ? { ...prev, steps: prev.steps.map((s) => s.id === event.stepId ? { ...s, status: 'skipped' as const } : s) } : prev);
+        setAwaitingStepApproval(false);
+        break;
+      case 'plan_mode_entered':
+        setPlanModeState(true);
+        break;
+      case 'plan_mode_exited':
+        setPlanModeState(false);
+        setCurrentPlan(null);
+        break;
+      case 'indexing_start':
+        setIsIndexing(true);
+        setIndexingProgress({ indexed: 0, total: event.totalFiles });
+        break;
+      case 'indexing_progress':
+        setIndexingProgress({ indexed: event.indexed, total: event.total });
+        break;
+      case 'indexing_complete':
+        setIsIndexing(false);
+        setIndexingProgress(null);
+        break;
+      case 'steer_message':
+        setMessages((prev) => [...prev, {
+          id: `sys-steer-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          sessionId, role: 'assistant' as const,
+          content: `📢 ${event.instruction}`,
+          toolCalls: null, createdAt: new Date().toISOString(), tokenCount: 0,
+        }]);
+        break;
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+
+    async function detectDaemonAndInit() {
+      let daemonRunning = externalDaemonMode ?? false;
+      if (!externalDaemonMode) {
+        try {
+          const res = await fetch(`${DAEMON_API}/api/health`, { signal: AbortSignal.timeout(1500) });
+          daemonRunning = res.ok;
+        } catch {
+          daemonRunning = false;
+        }
       }
-    });
 
-    agentRef.current = agent;
-    configRef.current = config;
-    setTokensTotal(agent.tokens.tokensTotal);
+      if (cancelled) return;
 
-    // Apply initial plan mode if set via --plan flag
-    if (initialPlanMode) {
-      agent.setPlanMode(true);
-    }
+      if (daemonRunning) {
+        setDaemonMode(true);
+        const socket = new WebSocket(DAEMON_WS_URL);
+        wsRef.current = socket;
 
-    // Apply fallback model if set via --fallback-model flag
-    if (fallbackModel) {
-      agent.setFallbackModel(fallbackModel);
-    }
+        socket.onopen = () => {
+          if (cancelled) return;
+          setMessages((prev) => {
+            if (prev.length > 0) return prev;
+            return [{
+              id: `sys-daemon-${Date.now()}`,
+              sessionId, role: 'assistant' as const,
+              content: '🔄 Connected to daemon. Messages shared with daemon agent.',
+              toolCalls: null, createdAt: new Date().toISOString(), tokenCount: 0,
+            }];
+          });
+        };
 
-    // Restore messages if resuming a session
-    if (restoreSessionId) {
+        socket.onmessage = (event) => {
+          if (cancelled) return;
+          try {
+            const data = JSON.parse(event.data) as Record<string, unknown>;
+            if (data.type === 'engine_event') {
+              handleEngineEvent(data as unknown as EngineEvent);
+            }
+          } catch { /* ignore */ }
+        };
+
+        socket.onclose = () => {
+          if (cancelled) return;
+          setDaemonMode(false);
+        };
+
+        sendWsRef.current = (data: Record<string, unknown>) => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify(data));
+          }
+        };
+        return;
+      }
+
+      // No daemon — create local agent
+      const agent = new Agent({ config, sessionId, gitAutoCommit, gitAware });
+      agentRef.current = agent;
+
       try {
         if (sessionStoreRef.current instanceof SessionManager) {
-          const sm = sessionStoreRef.current as SessionManager;
-          sm.restoreSession(restoreSessionId);
-        }
-        // Restore messages from store
-        const rows = sessionStoreRef.current instanceof SessionManager
-          ? []
-          : (sessionStoreRef.current as SessionStore).getMessages(restoreSessionId);
-        const restored: Message[] = rows
-          .filter((r) => r['role'] === 'user' || r['role'] === 'assistant')
-          .map((r) => ({
-            id: r['id'] as string,
-            sessionId: r['session_id'] as string,
-            role: r['role'] as 'user' | 'assistant',
-            content: r['content'] as string,
-            toolCalls: null,
-            createdAt: r['created_at'] as string,
-            tokenCount: (r['token_count'] as number) ?? 0,
-          }));
-        if (restored.length > 0) {
-          setMessages(restored);
-          for (const msg of restored) {
-            agent.addToHistory({ role: msg.role as 'user' | 'assistant', content: msg.content });
+          (sessionStoreRef.current as SessionManager).createSession(
+            config.provider.activeProvider,
+            config.provider.activeModel,
+            undefined,
+            process.cwd(),
+          );
+          
+          // Initialize crew states - save all enabled crews
+          const enabledCrews = agent.getCrewMembers().filter(m => m.crew.enabled);
+          for (const member of enabledCrews) {
+            (sessionStoreRef.current as SessionManager).saveCrewState(member.crew.id, true, 0);
           }
+        } else {
+          (sessionStoreRef.current as SessionStore).createSession({
+            id: sessionId, title: 'New Session', status: 'active',
+            provider: config.provider.activeProvider,
+            model: config.provider.activeModel,
+            scopePath: process.cwd(),
+            tokenAvailable: agent.tokens.tokensTotal,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
         }
-      } catch {
-        // Silent failure on restore
+      } catch { /* already exists */ }
+
+      if (telegramBridgeRef.current) {
+        telegramBridgeRef.current.attach(agent);
+      }
+
+      unsubscribe = agent.events.on((event: EngineEvent) => {
+        handleEngineEvent(event);
+      });
+
+      configRef.current = config;
+      setTokensTotal(agent.tokens.tokensTotal);
+
+      if (initialPlanMode) agent.setPlanMode(true);
+      if (fallbackModel) agent.setFallbackModel(fallbackModel);
+
+      if (restoreSessionId) {
+        try {
+          if (sessionStoreRef.current instanceof SessionManager) {
+            (sessionStoreRef.current as SessionManager).restoreSession(restoreSessionId);
+            
+            // Restore crew states
+            const crewStates = (sessionStoreRef.current as SessionManager).getCrewStates();
+            for (const state of crewStates) {
+              agent.setCrewEnabled(state.crewId, state.enabled);
+            }
+          }
+          const rows = sessionStoreRef.current instanceof SessionManager
+            ? []
+            : (sessionStoreRef.current as SessionStore).getMessages(restoreSessionId);
+          const restored: Message[] = rows
+            .filter((r: Record<string, unknown>) => r['role'] === 'user' || r['role'] === 'assistant')
+            .map((r: Record<string, unknown>) => ({
+              id: r['id'] as string, sessionId: r['session_id'] as string,
+              role: r['role'] as 'user' | 'assistant', content: r['content'] as string,
+              toolCalls: null, createdAt: r['created_at'] as string, tokenCount: (r['token_count'] as number) ?? 0,
+            }));
+          if (restored.length > 0) {
+            setMessages(restored);
+            for (const msg of restored) {
+              agent.addToHistory({ role: msg.role as 'user' | 'assistant', content: msg.content });
+            }
+          }
+        } catch { /* silent */ }
       }
     }
 
+    detectDaemonAndInit().catch(() => {});
+
     return () => {
-      unsubscribe();
+      cancelled = true;
+      if (unsubscribe) unsubscribe();
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
       if (agentRef.current) {
         agentRef.current.endSession();
+        agentRef.current = null;
       }
       if (telegramBridgeRef.current) {
         telegramBridgeRef.current.stop();
       }
     };
-  }, [config, sessionId]);
+  }, [config, sessionId, externalDaemonMode]);
 
   function persistMessage(message: Message) {
     try {
@@ -506,11 +540,11 @@ export function useSession(
   }
 
   const sendMessage = useCallback((content: string) => {
-    if (!agentRef.current) return;
-
     const parser = commandParserRef.current;
     const registry = commandRegistryRef.current;
+    const isDaemon = daemonMode;
 
+    // Handle commands locally in both modes
     if (parser.isCommand(content)) {
       const parsed = parser.parse(content);
       const command = parsed.command ? registry.get(parsed.command) : undefined;
@@ -782,6 +816,57 @@ export function useSession(
                 tokenCount: 0,
               }]);
             }
+          } else if (result.action === 'focus') {
+            if (result.output && ['tui', 'web', 'telegram'].includes(result.output)) {
+              setFocusChannelState(result.output);
+              fetch(`${DAEMON_API}/api/gateway/focus`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channel: result.output }),
+              }).catch(() => {});
+              setMessages((prev) => [...prev, {
+                id: `sys-focus-${Date.now()}`,
+                sessionId,
+                role: 'assistant' as const,
+                content: `🎯 Focus set to: ${result.output}`,
+                toolCalls: null,
+                createdAt: new Date().toISOString(),
+                tokenCount: 0,
+              }]);
+            } else {
+              setMessages((prev) => [...prev, {
+                id: `sys-focus-${Date.now()}`,
+                sessionId,
+                role: 'assistant' as const,
+                content: `🎯 Current focus channel: ${focusChannel ?? 'none'}\n\nUse /focus <channel> to switch.\nAvailable: tui, web, telegram`,
+                toolCalls: null,
+                createdAt: new Date().toISOString(),
+                tokenCount: 0,
+              }]);
+            }
+          } else if (result.action === 'telegram_updates') {
+            const enable = result.output === 'on' || result.output === 'yes' || result.output === 'true';
+            if (enable && telegramBridgeRef.current) {
+              setMessages((prev) => [...prev, {
+                id: `sys-tgup-${Date.now()}`,
+                sessionId,
+                role: 'assistant' as const,
+                content: '📡 Telegram updates enabled. I will send progress updates to Telegram.',
+                toolCalls: null,
+                createdAt: new Date().toISOString(),
+                tokenCount: 0,
+              }]);
+            } else {
+              setMessages((prev) => [...prev, {
+                id: `sys-tgup-${Date.now()}`,
+                sessionId,
+                role: 'assistant' as const,
+                content: '📡 Telegram updates disabled.',
+                toolCalls: null,
+                createdAt: new Date().toISOString(),
+                tokenCount: 0,
+              }]);
+            }
           } else if (result.action === 'research' && result.output) {
             const question = String(result.output);
             if (agentRef.current) {
@@ -793,18 +878,25 @@ export function useSession(
       }
     }
 
-    if (agentRef.current.processing) return;
+    if (!isDaemon && agentRef.current?.processing) return;
     setError(null);
     setErrorActions([]);
     lastUserMessageRef.current = content;
-    void agentRef.current.sendMessage(content).catch(() => {});
-  }, [sessionId]);
+
+    if (isDaemon) {
+      sendWsRef.current({ type: 'chat_message', text: content });
+    } else {
+      void agentRef.current?.sendMessage(content).catch(() => {});
+    }
+  }, [sessionId, daemonMode]);
 
   const cancelProcessing = useCallback(() => {
-    if (agentRef.current?.processing) {
-      agentRef.current.cancel();
+    if (daemonMode) {
+      sendWsRef.current({ type: 'cancel' });
+    } else {
+      agentRef.current?.cancel();
     }
-  }, []);
+  }, [daemonMode]);
 
   const selectModel = useCallback((model: ModelInfo) => {
     if (!agentRef.current) return;
@@ -916,24 +1008,30 @@ export function useSession(
   }));
 
   const respondToPermission = useCallback((choice: 'allow_once' | 'allow_always' | 'deny') => {
-    if (agentRef.current) {
+    if (daemonMode) {
+      sendWsRef.current({ type: 'permission_respond', choice });
+    } else if (agentRef.current) {
       agentRef.current.respondToPermission(choice);
     }
     setPermissionRequest(null);
-  }, []);
+  }, [daemonMode]);
 
   const approvePlan = useCallback(() => {
-    if (agentRef.current) {
+    if (daemonMode) {
+      sendWsRef.current({ type: 'chat_message', text: '/plan approve' });
+    } else if (agentRef.current) {
       agentRef.current.respondToPlan(true);
     }
-  }, []);
+  }, [daemonMode]);
 
   const rejectPlan = useCallback(() => {
-    if (agentRef.current) {
+    if (daemonMode) {
+      sendWsRef.current({ type: 'chat_message', text: '/plan reject' });
+    } else if (agentRef.current) {
       agentRef.current.respondToPlan(false);
     }
     setCurrentPlan(null);
-  }, []);
+  }, [daemonMode]);
 
   const togglePlanStep = useCallback((stepId: string) => {
     setCurrentPlan((prev) => {
@@ -950,41 +1048,76 @@ export function useSession(
   }, []);
 
   const approveStep = useCallback((stepId: string) => {
-    if (agentRef.current) {
+    if (daemonMode) {
+      sendWsRef.current({ type: 'chat_message', text: `/step approve ${stepId}` });
+    } else if (agentRef.current) {
       agentRef.current.respondToStep(stepId, true);
     }
     setAwaitingStepApproval(false);
     setPendingStepId(null);
-  }, []);
+  }, [daemonMode]);
 
   const skipStep = useCallback((stepId: string) => {
-    if (agentRef.current) {
+    if (daemonMode) {
+      sendWsRef.current({ type: 'chat_message', text: `/step skip ${stepId}` });
+    } else if (agentRef.current) {
       agentRef.current.respondToStep(stepId, false);
     }
     setAwaitingStepApproval(false);
     setPendingStepId(null);
-  }, []);
+  }, [daemonMode]);
 
   const modifyStep = useCallback((stepId: string, description: string) => {
-    if (agentRef.current) {
+    if (daemonMode) {
+      sendWsRef.current({ type: 'chat_message', text: `/step modify ${stepId} ${description}` });
+    } else if (agentRef.current) {
       agentRef.current.respondToStep(stepId, true, description);
     }
     setAwaitingStepApproval(false);
     setPendingStepId(null);
-  }, []);
+  }, [daemonMode]);
 
   const cancelPlan = useCallback(() => {
-    if (agentRef.current) {
+    if (daemonMode) {
+      sendWsRef.current({ type: 'cancel' });
+    } else if (agentRef.current) {
       agentRef.current.respondToPlan(false);
     }
     setCurrentPlan(null);
-  }, []);
+  }, [daemonMode]);
 
   const togglePlanMode = useCallback(() => {
-    if (agentRef.current) {
+    if (daemonMode) {
+      sendWsRef.current({ type: 'chat_message', text: '/plan' });
+    } else if (agentRef.current) {
       agentRef.current.setPlanMode(!agentRef.current.planModeEnabled);
     }
+  }, [daemonMode]);
+
+  const setFocusChannel = useCallback((channel: string) => {
+    setFocusChannelState(channel);
+    // Update daemon focus if running
+    fetch(`${DAEMON_API}/api/gateway/focus`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel }),
+    }).catch(() => {});
   }, []);
+
+  const setCrewEnabled = useCallback((crewId: string, enabled: boolean) => {
+    if (daemonMode) {
+      // In daemon mode, send to web-api
+      fetch(`${DAEMON_API}/api/crew/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ crewId, enabled }),
+      }).catch(() => {});
+    } else if (agentRef.current && sessionStoreRef.current instanceof SessionManager) {
+      // In local mode, update agent and save to session store
+      agentRef.current.setCrewEnabled(crewId, enabled);
+      (sessionStoreRef.current as SessionManager).saveCrewState(crewId, enabled);
+    }
+  }, [daemonMode]);
 
   return {
     messages,
@@ -1037,5 +1170,8 @@ export function useSession(
     totalCost: agentRef.current?.tokens.totalCost ?? 0,
     isIndexing,
     indexingProgress,
+    focusChannel,
+    setFocusChannel,
+    setCrewEnabled,
   };
 }

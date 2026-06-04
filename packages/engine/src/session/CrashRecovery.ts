@@ -10,6 +10,8 @@ interface CrashState {
   messageCount: number;
   lastUserMessage?: string;
   error?: string;
+  crewId?: string | null;
+  enabledCrews?: Array<{ crewId: string; enabled: boolean }>;
 }
 
 /**

@@ -4,11 +4,17 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
+import WarningIcon from '@mui/icons-material/Warning';
 import RocketLaunchIcon from '@mui/icons-material/RocketLaunch';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { useApp } from '../store/AppContext';
 import { colors } from '../theme';
 import { Footer } from '../components/Footer';
+import { tuiActive, webuiActive } from '../api';
 import type { HealthStatus } from '../api';
 
 function buildTerminalLines(h: HealthStatus | null): Array<{ type: 'banner' | 'blank' | 'info' | 'success' | 'dim' | 'heading'; text: string }> {
@@ -57,6 +63,28 @@ export function DockingStation() {
   const [checking, setChecking] = useState(true);
   const [visibleLines, setVisibleLines] = useState(0);
   const [lines, setLines] = useState<ReturnType<typeof buildTerminalLines>>([]);
+  const [tuiConflict, setTuiConflict] = useState<{ pid: number } | null>(null);
+
+  // Register Web-UI as active and keep it refreshed
+  useEffect(() => {
+    let intervalId: ReturnType<typeof setInterval>;
+    
+    const register = async () => {
+      try {
+        await webuiActive.register();
+      } catch { /* ignore */ }
+    };
+
+    register();
+    // Refresh every 20 seconds to keep the marker alive
+    intervalId = setInterval(register, 20000);
+
+    // Unregister on unmount
+    return () => {
+      clearInterval(intervalId);
+      webuiActive.unregister().catch(() => {});
+    };
+  }, []);
 
   const recheckServer = useCallback(async () => {
     setChecking(true);
@@ -73,6 +101,27 @@ export function DockingStation() {
     setVisibleLines(0); // restart animation
   }, [healthData]);
 
+  // Check for TUI conflict before launching
+  const handleLaunch = useCallback(async () => {
+    try {
+      const status = await tuiActive.check();
+      if (status.active && status.pid) {
+        setTuiConflict({ pid: status.pid });
+        return;
+      }
+    } catch { /* ignore */ }
+    navigate('/console/chat');
+  }, [navigate]);
+
+  const handleTuiConflictProceed = () => {
+    setTuiConflict(null);
+    navigate('/console/chat');
+  };
+
+  const handleTuiConflictDismiss = () => {
+    setTuiConflict(null);
+  };
+
   // Typewriter animation
   useEffect(() => {
     if (visibleLines >= lines.length) return;
@@ -83,8 +132,6 @@ export function DockingStation() {
     const timeout = setTimeout(() => setVisibleLines((v) => v + 1), delay);
     return () => clearTimeout(timeout);
   }, [visibleLines, lines]);
-
-  const handleLaunch = () => { navigate('/console/chat'); };
   const version = healthData?.version || '0.1.0';
 
   return (
@@ -231,6 +278,30 @@ export function DockingStation() {
         </Box>
       </Box>
       </Box>
+
+      {/* TUI conflict dialog */}
+      <Dialog open={Boolean(tuiConflict)} onClose={handleTuiConflictDismiss} maxWidth="xs">
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, fontFamily: "'JetBrains Mono', monospace", fontSize: '0.85rem' }}>
+          <WarningIcon sx={{ color: '#FFA726' }} />
+          TUI is active
+        </DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.75rem', color: colors.text.secondary }}>
+            The Terminal UI (TUI) is currently running (PID {tuiConflict?.pid}). Running both TUI and Web-UI simultaneously can cause confusion with channel focus.
+          </Typography>
+          <Typography sx={{ mt: 1.5, fontFamily: "'JetBrains Mono', monospace", fontSize: '0.75rem', color: colors.text.secondary }}>
+            Close the TUI first, or proceed anyway.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleTuiConflictDismiss} sx={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.7rem', color: colors.text.dim }}>
+            Cancel
+          </Button>
+          <Button onClick={handleTuiConflictProceed} variant="contained" sx={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.7rem', bgcolor: '#FFA726', color: '#000', '&:hover': { bgcolor: '#FFB74D' } }}>
+            Proceed Anyway
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Footer />
     </Box>

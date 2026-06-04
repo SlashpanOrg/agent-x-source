@@ -39,6 +39,7 @@ function appendContextFile(sessionId: string, role: string, content: string): vo
 
 let wss: WebSocketServer | null = null;
 let subscribedAgent: unknown | null = null;
+let unsubscribeFromAgent: (() => void) | null = null;
 
 export function setupWebSocket(server: Server): void {
   wss = new WebSocketServer({ server, path: '/ws' });
@@ -115,11 +116,21 @@ function broadcast(data: Record<string, unknown>): void {
   });
 }
 
+export function unsubscribeAgent(): void {
+  if (unsubscribeFromAgent) {
+    unsubscribeFromAgent();
+    unsubscribeFromAgent = null;
+  }
+  subscribedAgent = null;
+}
+
 export function subscribeToAgent(agent: { events: { on: (handler: (event: Record<string, unknown>) => void) => () => void } }): void {
+  // Unsubscribe from previous agent to prevent memory leak
+  unsubscribeAgent();
   if (subscribedAgent === agent) return;
   subscribedAgent = agent;
 
-  agent.events.on((event: Record<string, unknown>) => {
+  unsubscribeFromAgent = agent.events.on((event: Record<string, unknown>) => {
     const evType = (event as { type?: string }).type ?? 'unknown';
     broadcast({
       type: 'engine_event',

@@ -29,7 +29,9 @@ import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import DownloadIcon from '@mui/icons-material/Download';
 import FlagIcon from '@mui/icons-material/Flag';
+import GroupIcon from '@mui/icons-material/Group';
 import { sessions, type ConnectionState, type Checkpoint } from '../api';
+import type { Crew } from '../api';
 import { colors } from '../theme';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -253,6 +255,111 @@ export function SlashCommandMenu({
           {cmd.example && (
             <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim, fontFamily: "'JetBrains Mono', monospace", fontStyle: 'italic' }}>
               {cmd.example}
+            </Typography>
+          )}
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3b. CrewMentionMenu — @-mention autocomplete for crew members
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function CrewMentionMenu({
+  query,
+  crewList,
+  onSelect,
+  onClose,
+}: {
+  query: string;
+  crewList: Crew[];
+  onSelect: (crew: Crew) => void;
+  onClose: () => void;
+}) {
+  const filtered = useMemo(() => {
+    const q = query.toLowerCase();
+    return crewList.filter(c => c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q));
+  }, [query, crewList]);
+
+  const [active, setActive] = useState(0);
+
+  useEffect(() => {
+    setActive(0);
+  }, [query]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (filtered.length === 0) return;
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActive(i => Math.min(filtered.length - 1, i + 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActive(i => Math.max(0, i - 1));
+      } else if (e.key === 'Tab' || e.key === 'Enter') {
+        const crew = filtered[active];
+        if (crew) {
+          e.preventDefault();
+          onSelect(crew);
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [filtered, active, onSelect, onClose]);
+
+  if (filtered.length === 0) return null;
+
+  return (
+    <Box
+      sx={{
+        position: 'absolute',
+        bottom: 'calc(100% + 6px)',
+        left: 0,
+        right: 0,
+        bgcolor: colors.bg.secondary,
+        border: `1px solid ${colors.accent.blue}40`,
+        borderRadius: '10px',
+        boxShadow: `0 8px 24px rgba(0,0,0,0.4)`,
+        maxHeight: 280,
+        overflowY: 'auto',
+        zIndex: 100,
+        py: 0.5,
+        animation: 'agentx-fadeIn 0.15s ease-out',
+      }}
+    >
+      <Box sx={{ px: 1.25, py: 0.5, borderBottom: `1px solid ${colors.border.subtle}`, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+        <GroupIcon sx={{ fontSize: 13, color: colors.accent.blue }} />
+        <Typography sx={{ fontSize: '0.5rem', fontFamily: "'JetBrains Mono', monospace", color: colors.text.dim, letterSpacing: '1px' }}>
+          CREW MEMBERS
+        </Typography>
+        <Box sx={{ flex: 1 }} />
+        <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>↑↓ navigate · ⏎/⭾ select · esc close</Typography>
+      </Box>
+      {filtered.map((crew, i) => (
+        <Box
+          key={crew.id}
+          onClick={() => onSelect(crew)}
+          onMouseEnter={() => setActive(i)}
+          sx={{
+            px: 1.25, py: 0.6,
+            display: 'flex', alignItems: 'center', gap: 0.75,
+            cursor: 'pointer',
+            bgcolor: i === active ? colors.accent.blue + '15' : 'transparent',
+            borderLeft: i === active ? `2px solid ${colors.accent.blue}` : '2px solid transparent',
+          }}
+        >
+          <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: colors.text.primary, fontFamily: "'JetBrains Mono', monospace" }}>
+            @{crew.name}
+          </Typography>
+          {crew.expertise && crew.expertise.length > 0 && (
+            <Typography sx={{ fontSize: '0.6rem', color: colors.text.dim, flex: 1 }}>
+              {crew.expertise.join(', ')}
             </Typography>
           )}
         </Box>

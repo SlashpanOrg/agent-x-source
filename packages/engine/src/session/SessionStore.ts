@@ -95,6 +95,19 @@ CREATE TABLE IF NOT EXISTS crews (
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS session_crew_states (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    crew_id     TEXT NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    last_active TEXT,
+    message_count INTEGER DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id) REFERENCES sessions(id),
+    UNIQUE(session_id, crew_id)
+);
+
 CREATE TABLE IF NOT EXISTS tool_registry (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -143,6 +156,7 @@ export class SessionStore {
   private memMessages: Map<string, Array<Record<string, unknown>>> = new Map();
   private memTokenLogs: Map<string, Array<Record<string, unknown>>> = new Map();
   private memPermissions: Map<string, Array<Record<string, unknown>>> = new Map();
+  private memCrewStates: Map<string, Record<string, unknown>> = new Map();
   private dek: Buffer | null = null;
 
   constructor(dbPath?: string) {
@@ -553,15 +567,76 @@ export class SessionStore {
     return stmt.all(sessionId) as Array<Record<string, unknown>>;
   }
 
+  saveCrewState(state: {
+    id: string;
+    sessionId: string;
+    crewId: string;
+    enabled: boolean;
+    lastActive?: string;
+    messageCount?: number;
+  }): void {
+    if (this.memMode) {
+      // Memory mode: store in a simple map
+      const key = `${state.sessionId}:${state.crewId}`;
+      if (!this.memCrewStates) this.memCrewStates = new Map();
+      this.memCrewStates.set(key, {
+        id: state.id,
+        session_id: state.sessionId,
+        crew_id: state.crewId,
+        enabled: state.enabled ? 1 : 0,
+        last_active: state.lastActive ?? null,
+        message_count: state.messageCount ?? 0,
+      });
+      return;
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO session_crew_states (id, session_id, crew_id, enabled, last_active, message_count, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    `);
+    stmt.run(
+      state.id,
+      state.sessionId,
+      state.crewId,
+      state.enabled ? 1 : 0,
+      state.lastActive ?? null,
+      state.messageCount ?? 0,
+    );
+  }
+
+  getCrewStates(sessionId: string): Array<Record<string, unknown>> {
+    if (this.memMode) {
+      if (!this.memCrewStates) return [];
+      const results: Array<Record<string, unknown>> = [];
+      for (const [key, value] of this.memCrewStates.entries()) {
+        if (key.startsWith(`${sessionId}:`)) {
+          results.push(value);
+        }
+      }
+      return results;
+    }
+
+    const stmt = this.db.prepare('SELECT * FROM session_crew_states WHERE session_id = ? ORDER BY created_at ASC');
+    return stmt.all(sessionId) as Array<Record<string, unknown>>;
+  }
+
   deleteSession(sessionId: string): void {
     if (this.memMode) {
       this.memSessions.delete(sessionId);
       this.memMessages.delete(sessionId);
       this.memTokenLogs.delete(sessionId);
       this.memPermissions.delete(sessionId);
+      if (this.memCrewStates) {
+        for (const key of this.memCrewStates.keys()) {
+          if (key.startsWith(`${sessionId}:`)) {
+            this.memCrewStates.delete(key);
+          }
+        }
+      }
       return;
     }
 
+    this.db.prepare('DELETE FROM session_crew_states WHERE session_id = ?').run(sessionId);
     this.db.prepare('DELETE FROM tool_executions WHERE session_id = ?').run(sessionId);
     this.db.prepare('DELETE FROM token_logs WHERE session_id = ?').run(sessionId);
     this.db.prepare('DELETE FROM permissions WHERE session_id = ?').run(sessionId);
@@ -576,8 +651,10 @@ export class SessionStore {
       this.memMessages.clear();
       this.memTokenLogs.clear();
       this.memPermissions.clear();
+      if (this.memCrewStates) this.memCrewStates.clear();
       return;
     }
+    this.db.exec('DELETE FROM session_crew_states');
     this.db.exec('DELETE FROM tool_executions');
     this.db.exec('DELETE FROM token_logs');
     this.db.exec('DELETE FROM permissions');

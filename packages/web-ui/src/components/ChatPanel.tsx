@@ -57,6 +57,7 @@ import {
   TurnTokenBadge,
   StreamingCursor,
   SLASH_COMMANDS,
+  CrewMentionMenu,
   type SlashCommand,
   type PaletteAction,
 } from './ChatEnhancements';
@@ -248,6 +249,26 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     return line;
   }, [input]);
   useEffect(() => { setShowSlash(slashQuery.length > 0); }, [slashQuery]);
+
+  // @-mention detection
+  const [showCrewMention, setShowCrewMention] = useState(false);
+  const mentionQuery = useMemo(() => {
+    const lastAt = input.lastIndexOf('@');
+    if (lastAt === -1) return '';
+    const pre = lastAt === 0 ? ' ' : input[lastAt - 1];
+    if (pre !== ' ' && pre !== '\n') return '';
+    const after = input.slice(lastAt + 1);
+    if (after.includes(' ')) return '';
+    return after;
+  }, [input]);
+  useEffect(() => { setShowCrewMention(mentionQuery.length > 0 && crewList.length > 0); }, [mentionQuery, crewList]);
+
+  const handleMentionSelect = useCallback((crew: Crew) => {
+    const lastAt = input.lastIndexOf('@');
+    if (lastAt === -1) return;
+    setInput(input.slice(0, lastAt) + `@${crew.name} `);
+    setShowCrewMention(false);
+  }, [input]);
 
   // Smart auto-scroll state
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -1194,11 +1215,19 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
               <SlashCommandMenu
                 query={slashQuery}
                 onSelect={(cmd: SlashCommand) => {
-                  // Replace the slash text in input with the chosen command + a trailing space if it takes args
                   setInput(cmd.example ? cmd.name + ' ' : cmd.name);
                   setShowSlash(false);
                 }}
                 onClose={() => setShowSlash(false)}
+              />
+            )}
+            {/* @-mention crew autocomplete */}
+            {showCrewMention && (
+              <CrewMentionMenu
+                query={mentionQuery}
+                crewList={crewList}
+                onSelect={(crew: Crew) => handleMentionSelect(crew)}
+                onClose={() => setShowCrewMention(false)}
               />
             )}
             {/* Input row */}

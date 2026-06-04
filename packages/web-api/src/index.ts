@@ -13,7 +13,7 @@ import { authMiddleware, createAuthRouter } from './auth.js';
 import { ProviderFactory, DiscordBridge, DiscordStore, SlackBridge, SlackStore, EmailBridge, Agent } from '@agentx/engine';
 import type { ProviderId, AgentXConfig, CompletionRequest } from '@agentx/shared';
 
-const PORT = Number(process.env['PORT']) || 3333;
+const PORT = Number(process.env['AGENTX_PORT'] || process.env['PORT']) || 3333;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const UI_DIST = join(__dirname, '..', '..', 'web-ui', 'dist');
 
@@ -135,6 +135,10 @@ app.get('/api/health', (_req, res) => {
     activeCrew,
     agentActive,
     telegramConnected,
+    gateway: eng?.gateway ? {
+      focus: eng.gateway.focus.getFocus(),
+      channels: eng.gateway.registry.listChannels(),
+    } : null,
   });
 });
 
@@ -460,6 +464,27 @@ app.post('/api/session/approval', (req, res) => {
   res.json({ ok: true, approval });
 });
 
+// ───── Agent State Sync (for Web-UI reconnect) ─────
+app.get('/api/agent/state', (_req, res) => {
+  const eng = getEngine();
+  const agent = eng.agent;
+  if (!agent) {
+    res.json({ active: false, session: null, crew: null, model: null, processing: false });
+    return;
+  }
+  const session = eng.sessionManager.getActiveSession();
+  const crewStates = eng.sessionManager.getCrewStates();
+  res.json({
+    active: true,
+    session: session ? { id: session.id, title: session.title, status: session.status } : null,
+    crew: { activeId: eng.crewManager.getActiveId(), crewStates },
+    model: { provider: session?.providerId, model: session?.modelId },
+    processing: (agent as unknown as { isProcessing?: boolean }).isProcessing ?? false,
+    planMode: (agent as unknown as { planMode?: boolean }).planMode ?? false,
+    sessionSettings,
+  });
+});
+
 // ───── Crews ─────
 app.get('/api/crews', (_req, res) => {
   const eng = getEngine();
@@ -486,6 +511,27 @@ app.post('/api/crew/switch', (req, res) => {
     res.json({ ok: true, crew: switched });
   } catch (e: unknown) {
     res.status(400).json({ error: e instanceof Error ? e.message : 'switch-failed' });
+  }
+});
+
+app.post('/api/crew/toggle', (req, res) => {
+  try {
+    const { crewId, enabled } = req.body as { crewId: string; enabled: boolean };
+    const eng = getEngine();
+    
+    // Update agent
+    if (eng.agent) {
+      eng.agent.setCrewEnabled(crewId, enabled);
+    }
+    
+    // Save to session store
+    if (eng.sessionManager) {
+      eng.sessionManager.saveCrewState(crewId, enabled);
+    }
+    
+    res.json({ ok: true, crewId, enabled });
+  } catch (e: unknown) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'toggle-failed' });
   }
 });
 
@@ -848,6 +894,14 @@ app.get('/api/sessions/search', (req, res) => {
           createdAt: (s as unknown as { createdAt?: string }).createdAt,
           snippet,
           matchCount,
+        });
+      }
+    }
+    results.sort((a, b) => b.matchCount - a.matchCount);
+    res.json({ results: results.slice(0, 50) });
+  } catch (e: unknown) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'search-failed' });
+  }
 });
 
 // Force-reload config from disk — used when TUI changes config while web-api is running
@@ -862,14 +916,6 @@ app.post('/api/config/reload', (_req, res) => {
       ok: false,
       error: `Failed to reload config: ${err instanceof Error ? err.message : String(err)}`,
     });
-  }
-});
-      }
-    }
-    results.sort((a, b) => b.matchCount - a.matchCount);
-    res.json({ results: results.slice(0, 50) });
-  } catch (e: unknown) {
-    res.status(500).json({ error: e instanceof Error ? e.message : 'search-failed' });
   }
 });
 
@@ -958,6 +1004,14 @@ app.post('/api/sessions/:id/restore', (req, res) => {
     const session = eng.sessionManager.restoreSession(req.params['id']!);
     if (!session) { res.status(404).json({ error: 'not-found' }); return; }
     createAgent(undefined, req.params['id']!);
+    // Restore crew states from session store
+    const crewStates = eng.sessionManager.getCrewStates();
+    for (const state of crewStates) {
+      const agent = (eng as unknown as { agent?: { setCrewEnabled?: (id: string, enabled: boolean) => boolean } }).agent;
+      if (agent?.setCrewEnabled) {
+        agent.setCrewEnabled(state.crewId, state.enabled);
+      }
+    }
     // Read messages from conversation.json (where ws.ts persists them)
     const convPath = join(getSessionDir(req.params['id']!), 'conversation.json');
     let messages: Array<Record<string, unknown>> = [];
@@ -966,7 +1020,7 @@ app.post('/api/sessions/:id/restore', (req, res) => {
     } catch {
       messages = [];
     }
-    res.json({ session, messages });
+    res.json({ session, messages, crewStates });
   } catch (e: unknown) {
     res.status(500).json({ error: e instanceof Error ? e.message : 'restore-failed' });
   }
@@ -1211,6 +1265,108 @@ app.get('/api/telegram/status', (_req, res) => {
   const plugin = eng.pluginRegistry.getPlugin('telegram');
   const configured = !!plugin?.enabled && !!plugin?.config?.['botToken'];
   res.json({ configured, botToken: configured ? '***configured***' : null });
+});
+
+// ───── TUI Active Check ─────
+const TUI_ACTIVE_PATH = join(DATA_DIR, 'tui-active.mark');
+
+app.get('/api/tui-active', (_req, res) => {
+  if (existsSync(TUI_ACTIVE_PATH)) {
+    try {
+      const pid = parseInt(readFileSync(TUI_ACTIVE_PATH, 'utf-8').trim(), 10);
+      // Verify process is still alive
+      try { process.kill(pid, 0); } catch { unlinkSync(TUI_ACTIVE_PATH); res.json({ active: false }); return; }
+      res.json({ active: true, pid });
+    } catch {
+      res.json({ active: false });
+    }
+  } else {
+    res.json({ active: false });
+  }
+});
+
+// ───── Web-UI Active Check ─────
+const WEBUI_ACTIVE_PATH = join(DATA_DIR, 'webui-active.mark');
+
+app.get('/api/webui-active', (_req, res) => {
+  if (existsSync(WEBUI_ACTIVE_PATH)) {
+    try {
+      const data = JSON.parse(readFileSync(WEBUI_ACTIVE_PATH, 'utf-8'));
+      const { pid, timestamp } = data;
+      // Check if marker is recent (within last 30 seconds)
+      const age = Date.now() - timestamp;
+      if (age > 30000) {
+        unlinkSync(WEBUI_ACTIVE_PATH);
+        res.json({ active: false });
+        return;
+      }
+      res.json({ active: true, pid, timestamp });
+    } catch {
+      res.json({ active: false });
+    }
+  } else {
+    res.json({ active: false });
+  }
+});
+
+app.post('/api/webui-active', (req, res) => {
+  try {
+    const pid = req.body?.pid ?? process.pid;
+    writeFileSync(WEBUI_ACTIVE_PATH, JSON.stringify({ pid, timestamp: Date.now() }));
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.delete('/api/webui-active', (_req, res) => {
+  try {
+    if (existsSync(WEBUI_ACTIVE_PATH)) {
+      unlinkSync(WEBUI_ACTIVE_PATH);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ───── Gateway / Focus ─────
+app.get('/api/gateway/status', (_req, res) => {
+  const eng = getEngine();
+  if (!eng.gateway) {
+    res.json({ active: false });
+    return;
+  }
+  res.json({
+    active: true,
+    focus: eng.gateway.focus.getFocus(),
+    channels: eng.gateway.registry.listChannels(),
+    channelStats: eng.gateway.registry.getAllStats(),
+  });
+});
+
+app.post('/api/gateway/focus', (req, res) => {
+  const eng = getEngine();
+  const { channel } = req.body as { channel: string };
+  if (!eng.gateway) {
+    res.status(400).json({ error: 'Gateway not active' });
+    return;
+  }
+  eng.gateway.focus.setFocus(channel);
+  res.json({ ok: true, focus: channel });
+});
+
+app.get('/api/gateway/focus', (_req, res) => {
+  const eng = getEngine();
+  if (!eng.gateway) {
+    res.json({ focus: null });
+    return;
+  }
+  res.json({
+    focus: eng.gateway.focus.getFocus(),
+    channels: eng.gateway.focus.getAllChannels(),
+    activeChannels: eng.gateway.focus.getActiveChannels(),
+  });
 });
 
 // ───── Discord Bridge ─────

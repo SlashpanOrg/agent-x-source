@@ -105,6 +105,7 @@ const {
     configure: vi.fn(),
     cancelAll: vi.fn(),
     spawn: vi.fn(),
+    setParentAgent: vi.fn(),
   });
 
   const createTaskMgr = () => ({
@@ -143,35 +144,35 @@ vi.mock('../src/providers/index.js', () => ({
 }));
 
 vi.mock('../src/EventBus.js', () => ({
-  AgentEventBus: vi.fn(() => mockEventBus),
+  AgentEventBus: class { constructor() { return mockEventBus; } },
 }));
 
 vi.mock('../src/session/TokenTracker.js', () => ({
-  TokenTracker: vi.fn(() => mockTokenTracker),
+  TokenTracker: class { constructor() { return mockTokenTracker; } },
 }));
 
 vi.mock('../src/agent/SubAgentManager.js', () => ({
-  SubAgentManager: vi.fn(() => mockSubAgentMgr),
+  SubAgentManager: class { constructor() { return mockSubAgentMgr; } },
 }));
 
 vi.mock('../src/agent/TaskManager.js', () => ({
-  TaskManager: vi.fn(() => mockTaskMgr),
+  TaskManager: class { constructor() { return mockTaskMgr; } },
 }));
 
 vi.mock('../src/scheduler/Scheduler.js', () => ({
-  Scheduler: vi.fn(() => mockScheduler),
+  Scheduler: class { constructor() { return mockScheduler; } },
 }));
 
 vi.mock('../src/agent/ErrorShield.js', () => ({
-  ErrorShield: vi.fn(() => mockErrorShield),
+  ErrorShield: class { constructor() { return mockErrorShield; } },
 }));
 
 vi.mock('../src/secret-sauce/index.js', () => ({
-  SecretSauceManager: vi.fn(() => mockSecretSauceMgr),
+  SecretSauceManager: class { constructor() { return mockSecretSauceMgr; } },
 }));
 
 vi.mock('../src/secret-sauce/MemoryExtractor.js', () => ({
-  MemoryExtractor: vi.fn(() => mockMemoryExtractor),
+  MemoryExtractor: class { constructor() { return mockMemoryExtractor; } },
 }));
 
 vi.mock('../src/tools/builtin/subagent.js', () => ({
@@ -796,7 +797,7 @@ describe('Agent', () => {
       const agent = createTestAgent();
       agent.spawnSubAgent('do something', ['shell_exec'], 30_000);
 
-      expect(mockSubAgentMgr.spawn).toHaveBeenCalledWith('do something', ['shell_exec'], 30_000);
+      expect(mockSubAgentMgr.spawn).toHaveBeenCalledWith('do something', ['shell_exec'], 30_000, 5);
     });
   });
 });

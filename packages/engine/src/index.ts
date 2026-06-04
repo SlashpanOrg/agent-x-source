@@ -24,6 +24,7 @@ export { ResponseFormatter } from './agent/ResponseFormatter.js';
 export type { FormattedSegment } from './agent/ResponseFormatter.js';
 export { SubAgentManager } from './agent/SubAgentManager.js';
 export type { SubAgentTask } from './agent/SubAgentManager.js';
+export { SubAgentCache } from './agent/SubAgentCache.js';
 export { SmartSubAgent } from './agent/SmartSubAgent.js';
 export type { SmartSubAgentOptions, SmartSubAgentResult } from './agent/SmartSubAgent.js';
 export { DecisionEngine } from './agent/DecisionEngine.js';
@@ -192,7 +193,7 @@ export type { DoomLoopState, DoomLoopResult } from './tools/DoomLoopDetector.js'
 
 // Agent Loop Components
 export { SessionProcessor } from './agent/SessionProcessor.js';
-export type { SessionProcessorContext, ProcessedTurn } from './agent/SessionProcessor.js';
+export type { SessionProcessorContext } from './agent/SessionProcessor.js';
 export { RunStateManager } from './agent/RunStateManager.js';
 export { CommandQueue } from './communication/CommandQueue.js';
 export type { QueuePriority, QueuedItem } from './communication/CommandQueue.js';
@@ -221,9 +222,9 @@ export { TelemetryEmitter } from './communication/telemetry/TelemetryEmitter.js'
 export type { TurnMetrics, TelemetryEmitterConfig } from './communication/telemetry/TelemetryEmitter.js';
 
 // === GATEWAY & CHANNEL PLUGINS ===
-export { Gateway, ChannelRegistry } from './gateway/index.js';
+export { Gateway, ChannelRegistry, FocusManager } from './gateway/index.js';
 export { TelegramChannelPlugin, WebSocketChannelPlugin } from './gateway/index.js';
-export type { ChannelPlugin, ChannelRegistryEntry, GatewayConfig } from './gateway/index.js';
+export type { ChannelPlugin, ChannelRegistryEntry, GatewayConfig, FocusState, FocusChangeEvent, FocusListener, ChannelMessage, ChannelAttachment, GatewayResponse } from './gateway/index.js';
 
 // === VISUALIZATION & ANIMATION ===
 export { StreamingMarkdownRenderer } from './communication/visuals/StreamingMarkdownRenderer.js';

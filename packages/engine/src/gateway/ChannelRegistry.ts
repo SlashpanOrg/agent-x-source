@@ -10,7 +10,14 @@ export class ChannelRegistry {
     this.agentRef = agent;
   }
 
+  getAgent(): Agent | null {
+    return this.agentRef;
+  }
+
   register(plugin: ChannelPlugin): void {
+    if (this.channels.has(plugin.id)) {
+      return;
+    }
     this.channels.set(plugin.id, {
       plugin,
       enabled: false,
@@ -64,7 +71,6 @@ export class ChannelRegistry {
         return JSON.stringify(formatted);
       }
 
-      // No agent — return raw parsed text
       entry.stats.messagesSent++;
       const formatted = await entry.plugin.handleOutgoing(parsed.text, {
         userId: parsed.userId,
@@ -97,6 +103,10 @@ export class ChannelRegistry {
     return this.channels.get(channelId);
   }
 
+  getPlugin<T extends ChannelPlugin>(channelId: string): T | undefined {
+    return this.channels.get(channelId)?.plugin as T | undefined;
+  }
+
   listChannels(): Array<{ id: string; name: string; enabled: boolean; description: string }> {
     return Array.from(this.channels.entries()).map(([id, entry]) => ({
       id,
@@ -106,7 +116,25 @@ export class ChannelRegistry {
     }));
   }
 
+  listEnabled(): Array<{ id: string; name: string; description: string }> {
+    return Array.from(this.channels.entries())
+      .filter(([, entry]) => entry.enabled)
+      .map(([id, entry]) => ({
+        id,
+        name: entry.plugin.name,
+        description: entry.plugin.description,
+      }));
+  }
+
   getStats(channelId: string): ChannelRegistryEntry['stats'] | undefined {
     return this.channels.get(channelId)?.stats;
+  }
+
+  getAllStats(): Record<string, ChannelRegistryEntry['stats']> {
+    const result: Record<string, ChannelRegistryEntry['stats']> = {};
+    for (const [id, entry] of this.channels) {
+      result[id] = { ...entry.stats };
+    }
+    return result;
   }
 }

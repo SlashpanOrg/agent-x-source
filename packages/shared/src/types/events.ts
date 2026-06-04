@@ -79,7 +79,6 @@ export type EngineEvent =
   | { type: 'intent_detected'; intent: string; confidence: number }
   | { type: 'rag_queried'; resultCount: number; elapsed: number }
   | { type: 'subagent_event'; subagentId: string; parentEvent: EngineEvent }
-  | { type: 'context_compacted'; saved: number; summary: string }
   | { type: 'discord_connected'; code: string; message: string; recoverable: boolean }
   | { type: 'discord_message'; code: string; message: string; recoverable: boolean }
   | { type: 'discord_error'; code: string; message: string; recoverable: boolean }
@@ -100,9 +99,9 @@ export type EngineEvent =
   | { type: 'decomposition_complete'; subResultCount: number; totalElapsed: number }
   | { type: 'decomposition_fallback'; task: string }
   | { type: 'reflection_complete'; result: Record<string, unknown> }
-  | { type: 'skill_generated'; skill: Record<string, unknown> }
   | { type: 'decision_made'; messageClass: string; executionPath: string; confidence: number; reasoning: string }
-  | { type: 'token_usage'; totalTokens: number; contextWindow: number };
+  | { type: 'token_usage'; totalTokens: number; contextWindow: number }
+  | { type: 'reasoning_delta'; content: string };
 
 export interface FormattedResponse {
   content: string;

@@ -1,20 +1,17 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Crew, CrewEmotion } from '@agentx/shared';
+import type { Crew, CrewEmotion, CrewCreateInput, CollaborationProtocol, CrewResourceQuota } from '@agentx/shared';
 import { encrypt, decrypt, getLogger } from '@agentx/shared';
 import type { EncryptedData } from '@agentx/shared';
 import { getSecretSauceDir } from '../config/paths.js';
 
-/**
- * No default crews — user creates their own.
- * A minimal "Default" crew is auto-created only if none exist,
- * with a generic prompt so the app can function.
- */
 const BOOTSTRAP_CREW: Crew = {
   id: 'default',
   name: 'Default',
   systemPrompt: 'You are a highly capable AI assistant. Be direct, concise, and helpful.',
   isDefault: true,
+  enabled: true,
+  expertise: ['general'],
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
@@ -30,17 +27,11 @@ export class CrewManager {
     this.loadCrews();
   }
 
-  /**
-   * Set DEK for encrypting crew data at rest.
-   * Re-loads crews (decrypted) and re-saves encrypted when DEK is first set.
-   */
   setDEK(dek: Buffer | null): void {
     const hadDEK = this.dek !== null;
     this.dek = dek;
     if (dek && !hadDEK) {
-      // Reload crews now that we can decrypt
       this.loadCrews();
-      // Re-save encrypted (migrates plaintext → encrypted)
       this.save();
     }
   }
@@ -52,11 +43,9 @@ export class CrewManager {
         const raw = readFileSync(crewPath, 'utf-8');
         let data: string;
 
-        // Detect encrypted format
         const rawParsed = JSON.parse(raw);
         if (rawParsed.__enc === true) {
           if (!this.dek) {
-            // Cannot decrypt without DEK — will reload after login injects DEK
             getLogger().warn('CREW_MGR', 'Encrypted crews.json found but no DEK set. Showing bootstrap crew only. Call setDEK() to unlock.');
             this.crews = [BOOTSTRAP_CREW];
             this.activeCrewId = 'default';
@@ -68,18 +57,20 @@ export class CrewManager {
         }
 
         const parsed = (typeof data === 'string' ? JSON.parse(data) : data) as { crews: Array<Record<string, unknown>>; activeId: string };
-        // Migrate old crews: strip removed fields, keep name + systemPrompt + emotion
         this.crews = parsed.crews.map((p) => ({
           id: p['id'] as string,
           name: p['name'] as string,
           systemPrompt: (p['systemPrompt'] as string) ?? '',
           emotion: (p['emotion'] as CrewEmotion | undefined),
           isDefault: (p['isDefault'] as boolean) ?? false,
+          enabled: (p['enabled'] as boolean) ?? true,
+          expertise: (p['expertise'] as string[] | undefined),
+          traits: (p['traits'] as string[] | undefined),
+          toolPreferences: (p['toolPreferences'] as { enabled?: string[]; disabled?: string[] } | undefined),
           createdAt: (p['createdAt'] as string) ?? new Date().toISOString(),
           updatedAt: (p['updatedAt'] as string) ?? new Date().toISOString(),
         }));
         this.activeCrewId = parsed.activeId;
-        // Ensure at least one crew exists
         if (this.crews.length === 0) {
           this.crews = [BOOTSTRAP_CREW];
           this.activeCrewId = 'default';
@@ -100,7 +91,6 @@ export class CrewManager {
     const payload = JSON.stringify({ crews: this.crews, activeId: this.activeCrewId }, null, 2);
 
     if (this.dek) {
-      // Encrypt the entire crews file
       const encrypted = encrypt(payload, this.dek);
       writeFileSync(crewPath, JSON.stringify({ __enc: true, ...encrypted }));
     } else {
@@ -120,6 +110,10 @@ export class CrewManager {
     return [...this.crews];
   }
 
+  listEnabled(): Crew[] {
+    return this.crews.filter((c) => c.enabled);
+  }
+
   get(id: string): Crew | undefined {
     return this.crews.find((p) => p.id === id);
   }
@@ -132,13 +126,42 @@ export class CrewManager {
     return crew;
   }
 
-  create(input: { id: string; name: string; systemPrompt: string; emotion?: CrewEmotion; isDefault?: boolean }): Crew {
+  enable(id: string): boolean {
+    const crew = this.crews.find((p) => p.id === id);
+    if (!crew) return false;
+    crew.enabled = true;
+    crew.updatedAt = new Date().toISOString();
+    this.save();
+    return true;
+  }
+
+  disable(id: string): boolean {
+    const crew = this.crews.find((p) => p.id === id);
+    if (!crew) return false;
+    if (crew.isDefault) return false;
+    crew.enabled = false;
+    crew.updatedAt = new Date().toISOString();
+    if (this.activeCrewId === id) {
+      const fallback = this.crews.find((c) => c.enabled && c.id !== id);
+      if (fallback) this.activeCrewId = fallback.id;
+    }
+    this.save();
+    return true;
+  }
+
+  create(input: CrewCreateInput): Crew {
     const crew: Crew = {
       id: input.id,
       name: input.name,
       systemPrompt: input.systemPrompt,
       emotion: input.emotion,
       isDefault: input.isDefault ?? false,
+      enabled: input.enabled ?? true,
+      expertise: input.expertise,
+      traits: input.traits,
+      toolPreferences: input.toolPreferences,
+      protocol: input.protocol,
+      quotas: input.quotas,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -157,13 +180,18 @@ export class CrewManager {
     return true;
   }
 
-  update(id: string, updates: { name?: string; systemPrompt?: string; emotion?: CrewEmotion }): Crew | null {
+  update(id: string, updates: { name?: string; systemPrompt?: string; emotion?: CrewEmotion; expertise?: string[]; traits?: string[]; toolPreferences?: { enabled?: string[]; disabled?: string[] }; protocol?: CollaborationProtocol; quotas?: CrewResourceQuota }): Crew | null {
     const idx = this.crews.findIndex((p) => p.id === id);
     if (idx < 0) return null;
     const crew = this.crews[idx]!;
     if (updates.name !== undefined) crew.name = updates.name;
     if (updates.systemPrompt !== undefined) crew.systemPrompt = updates.systemPrompt;
     if (updates.emotion !== undefined) crew.emotion = updates.emotion;
+    if (updates.expertise !== undefined) crew.expertise = updates.expertise;
+    if (updates.traits !== undefined) crew.traits = updates.traits;
+    if (updates.toolPreferences !== undefined) crew.toolPreferences = updates.toolPreferences;
+    if (updates.protocol !== undefined) crew.protocol = updates.protocol;
+    if (updates.quotas !== undefined) crew.quotas = updates.quotas;
     crew.updatedAt = new Date().toISOString();
     this.crews[idx] = crew;
     this.save();
@@ -173,5 +201,26 @@ export class CrewManager {
   getSystemPrompt(): string {
     const crew = this.getActive();
     return crew.systemPrompt;
+  }
+
+  getMultiCrewSystemPrompt(): string {
+    const enabledCrews = this.listEnabled();
+    if (enabledCrews.length === 0) return '';
+    
+    const crewDescriptions = enabledCrews.map((c) => {
+      const expertise = c.expertise?.join(', ') || 'general';
+      return `- **${c.name}** (${c.id}): ${expertise}`;
+    }).join('\n');
+
+    return `You are Agent-X, the master orchestrator. The following crew members are available in this session:
+
+${crewDescriptions}
+
+**Group Chat Rules:**
+- Users can @mention a specific crew member to get their expertise
+- If no crew is mentioned, you (Agent-X) respond as the primary assistant
+- You can delegate to crew members when their expertise is relevant
+- Crew members respond with their unique personalities and knowledge
+- Maintain context across the conversation - all participants see the full history`;
   }
 }

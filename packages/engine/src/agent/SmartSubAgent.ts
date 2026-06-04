@@ -86,13 +86,14 @@ export class SmartSubAgent {
         }
       }
 
-      // Create sub-agent with custom system prompt
+      // Create sub-agent with custom system prompt, wiring event bus for forwarding
       const subAgent = new Agent({
         config: this.config,
         sessionId: this.sessionId,
         systemPrompt: this.buildSubAgentPrompt(),
         toolRegistry,
         toolExecutor,
+        eventBus: subEventBus,
       });
 
       // Forward events to parent (for UI visibility)

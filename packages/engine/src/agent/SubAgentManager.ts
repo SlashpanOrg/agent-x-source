@@ -5,6 +5,9 @@ import type { EngineEvent, CompletionMessage, AgentXConfig } from '@agentx/share
 import type { AgentEventBus } from '../EventBus.js';
 import type { ProviderInterface } from '../providers/ProviderInterface.js';
 import { generateId } from '@agentx/shared';
+import type { Agent } from './Agent.js';
+import { SmartSubAgent } from './SmartSubAgent.js';
+import { SubAgentCache } from './SubAgentCache.js';
 
 export interface SubAgentTask {
   id: string;
@@ -17,6 +20,12 @@ export interface SubAgentTask {
   endTime?: number;
   abortController?: AbortController;
   workDir?: string;
+  // Resource monitoring
+  resourceUsage?: {
+    cpuTime?: number; // milliseconds
+    memoryPeak?: number; // bytes
+    tokenUsage?: { input: number; output: number };
+  };
 }
 
 export class SubAgentManager {
@@ -27,9 +36,27 @@ export class SubAgentManager {
   private systemPrompt: string = '';
   private sandboxEnabled = false;
   private tempDirs: Set<string> = new Set();
+  private parentAgent: Agent | null = null;
+  private cache: SubAgentCache = new SubAgentCache();
+  private systemPromptHash: string = '';
 
   constructor(eventBus: AgentEventBus) {
     this.eventBus = eventBus;
+  }
+
+  /**
+   * Set the parent agent for SmartSubAgent usage.
+   */
+  setParentAgent(agent: Agent): void {
+    this.parentAgent = agent;
+  }
+
+  setCache(cache: SubAgentCache): void {
+    this.cache = cache;
+  }
+
+  getCache(): SubAgentCache {
+    return this.cache;
   }
 
   /**
@@ -39,6 +66,17 @@ export class SubAgentManager {
     this.provider = provider;
     this.config = config;
     this.systemPrompt = systemPrompt;
+    this.systemPromptHash = this.hashSystemPrompt(systemPrompt);
+  }
+
+  private hashSystemPrompt(prompt: string): string {
+    let hash = 0;
+    for (let i = 0; i < prompt.length; i++) {
+      const chr = prompt.charCodeAt(i);
+      hash = ((hash << 5) - hash) + chr;
+      hash |= 0;
+    }
+    return hash.toString(36);
   }
 
   enableSandbox(enabled: boolean): void {
@@ -61,7 +99,42 @@ export class SubAgentManager {
   /**
    * Spawn a sub-agent that will actually execute an LLM completion in the background.
    */
-  spawn(instruction: string, tools: string[] = [], timeout = 60_000): SubAgentTask {
+  spawn(instruction: string, tools: string[] = [], timeout = 60_000, maxConcurrent = 5): SubAgentTask | null {
+    // Check cache for a matching result
+    const cacheKey = this.cache.deriveKey(instruction, tools, this.systemPromptHash);
+    const cached = this.cache.get(cacheKey);
+    if (cached) {
+      const task: SubAgentTask = {
+        id: generateId(),
+        instruction,
+        tools,
+        timeout,
+        status: 'completed',
+        result: cached.result,
+        startTime: Date.now() - (cached.resourceUsage.cpuTime ?? 0),
+        endTime: Date.now(),
+        resourceUsage: { ...cached.resourceUsage },
+      };
+      this.agents.set(task.id, task);
+      return task;
+    }
+
+    // Enforce concurrent sub-agent limit
+    const runningCount = Array.from(this.agents.values()).filter((a) => a.status === 'running' || a.status === 'pending').length;
+    if (runningCount >= maxConcurrent) {
+      const task: SubAgentTask = {
+        id: generateId(),
+        instruction,
+        tools,
+        timeout,
+        status: 'failed',
+        startTime: Date.now(),
+        endTime: Date.now(),
+      };
+      this.fail(task.id, `Sub-agent limit reached (${runningCount}/${maxConcurrent}). Wait for existing sub-agents to complete.`);
+      return null;
+    }
+
     const workDir = this.createWorkDir();
     const task: SubAgentTask = {
       id: generateId(),
@@ -88,16 +161,13 @@ export class SubAgentManager {
   }
 
   /**
-   * Execute a sub-agent task — runs a real LLM completion.
+   * Execute a sub-agent task — uses SmartSubAgent if tools are specified, otherwise raw LLM call.
    */
   private async execute(task: SubAgentTask): Promise<void> {
-    if (!this.provider || !this.config) {
-      this.fail(task.id, 'SubAgent not configured — no provider attached');
-      return;
-    }
-
     task.status = 'running';
     task.startTime = Date.now();
+    const startMemory = process.memoryUsage().heapUsed;
+    
     this.eventBus.emit({
       type: 'agent_progress',
       agentId: task.id,
@@ -105,42 +175,91 @@ export class SubAgentManager {
     } as EngineEvent);
 
     try {
-      const messages: CompletionMessage[] = [];
-      let systemContent = this.systemPrompt;
-      if (task.workDir) {
-        systemContent += `\n\nYou are running in an isolated workspace at: ${task.workDir}\nAll file operations are scoped to this directory.`;
-      }
-      if (systemContent) {
-        messages.push({ role: 'system', content: systemContent });
-      }
-      messages.push({ role: 'user', content: task.instruction });
+      // Use SmartSubAgent if tools are specified and parent agent is available
+      if (task.tools.length > 0 && this.parentAgent) {
+        const smartAgent = new SmartSubAgent({
+          parentAgent: this.parentAgent,
+          instruction: task.instruction,
+          tools: task.tools,
+          timeout: task.timeout,
+          sessionId: task.id,
+        });
 
-      const request = {
-        messages,
-        model: this.config.provider.activeModel,
-        stream: true,
-        maxTokens: 4096,
-      };
+        // Set up timeout
+        const timeoutId = setTimeout(() => {
+          task.abortController?.abort();
+        }, task.timeout);
 
-      // Set up timeout
-      const timeoutId = setTimeout(() => {
-        task.abortController?.abort();
-      }, task.timeout);
+        const result = await smartAgent.execute();
+        clearTimeout(timeoutId);
 
-      let result = '';
-      const stream = this.provider.complete(request);
-      for await (const chunk of stream) {
-        if (task.abortController?.signal.aborted) break;
-        if (chunk.type === 'text_delta' && chunk.content) {
-          result += chunk.content;
+        // Track resource usage
+        const endMemory = process.memoryUsage().heapUsed;
+        task.resourceUsage = {
+          cpuTime: result.elapsed,
+          memoryPeak: Math.max(startMemory, endMemory),
+          tokenUsage: result.tokenUsage,
+        };
+
+        if (task.abortController?.signal.aborted && task.status === 'running') {
+          this.fail(task.id, 'Timed out');
+        } else if (result.success) {
+          this.complete(task.id, result.output);
+        } else {
+          this.fail(task.id, result.output);
         }
-      }
-      clearTimeout(timeoutId);
-
-      if (task.abortController?.signal.aborted && task.status === 'running') {
-        this.fail(task.id, 'Timed out');
       } else {
-        this.complete(task.id, result);
+        // Fallback to raw LLM call (no tools)
+        if (!this.provider || !this.config) {
+          this.fail(task.id, 'SubAgent not configured — no provider attached');
+          return;
+        }
+
+        const messages: CompletionMessage[] = [];
+        let systemContent = this.systemPrompt;
+        if (task.workDir) {
+          systemContent += `\n\nYou are running in an isolated workspace at: ${task.workDir}\nAll file operations are scoped to this directory.`;
+        }
+        if (systemContent) {
+          messages.push({ role: 'system', content: systemContent });
+        }
+        messages.push({ role: 'user', content: task.instruction });
+
+        const request = {
+          messages,
+          model: this.config.provider.activeModel,
+          stream: true,
+          maxTokens: 4096,
+        };
+
+        // Set up timeout
+        const timeoutId = setTimeout(() => {
+          task.abortController?.abort();
+        }, task.timeout);
+
+        let result = '';
+        const stream = this.provider.complete(request);
+        for await (const chunk of stream) {
+          if (task.abortController?.signal.aborted) break;
+          if (chunk.type === 'text_delta' && chunk.content) {
+            result += chunk.content;
+          }
+        }
+        clearTimeout(timeoutId);
+
+        // Track resource usage
+        const endMemory = process.memoryUsage().heapUsed;
+        const elapsed = Date.now() - (task.startTime ?? Date.now());
+        task.resourceUsage = {
+          cpuTime: elapsed,
+          memoryPeak: Math.max(startMemory, endMemory),
+        };
+
+        if (task.abortController?.signal.aborted && task.status === 'running') {
+          this.fail(task.id, 'Timed out');
+        } else {
+          this.complete(task.id, result);
+        }
       }
     } catch (error) {
       this.fail(task.id, error instanceof Error ? error.message : 'Sub-agent execution failed');
@@ -150,8 +269,13 @@ export class SubAgentManager {
   /**
    * Run multiple sub-agents in parallel and wait for all to complete.
    */
-  spawnParallel(tasks: Array<{ instruction: string; tools?: string[] }>): SubAgentTask[] {
-    return tasks.map((t) => this.spawn(t.instruction, t.tools ?? []));
+  spawnParallel(tasks: Array<{ instruction: string; tools?: string[] }>, maxConcurrent = 5): SubAgentTask[] {
+    const spawned: SubAgentTask[] = [];
+    for (const t of tasks) {
+      const task = this.spawn(t.instruction, t.tools ?? [], 60_000, maxConcurrent);
+      if (task) spawned.push(task);
+    }
+    return spawned;
   }
 
   complete(agentId: string, result: string): void {
@@ -162,6 +286,9 @@ export class SubAgentManager {
       task.endTime = Date.now();
       const elapsed = task.endTime - (task.startTime ?? task.endTime);
       if (task.workDir) this.cleanupWorkDir(task.workDir);
+      // Store in cache
+      const cacheKey = this.cache.deriveKey(task.instruction, task.tools, this.systemPromptHash);
+      this.cache.set(cacheKey, result, task.resourceUsage ?? {});
       this.eventBus.emit({
         type: 'agent_complete',
         agentId,
