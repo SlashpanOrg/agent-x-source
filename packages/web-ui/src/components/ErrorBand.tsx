@@ -137,16 +137,14 @@ export function ErrorBandProvider({ children }: { children: ReactNode }) {
                   height: 20,
                   p: 0,
                   ml: 0.5,
-                  color: '#883333',
-                  fontSize: '0.55rem',
+                  color: '#ff6666',
+                  fontSize: '0.65rem',
                   flexShrink: 0,
                   lineHeight: 1,
-                  fontFamily: "'JetBrains Mono', monospace",
-                  opacity: 0.5,
-                  '&:hover': { opacity: 1, color: '#aa5555', bgcolor: 'transparent' },
+                  '&:hover': { color: '#ff8888', bgcolor: 'transparent' },
                 }}
               >
-                ⎘
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               </Button>
             </Tooltip>
             <Button

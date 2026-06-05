@@ -9,6 +9,7 @@ import FormControl from '@mui/material/FormControl';
 import InputLabel from '@mui/material/InputLabel';
 import Divider from '@mui/material/Divider';
 import Alert from '@mui/material/Alert';
+import CircularProgress from '@mui/material/CircularProgress';
 import IconButton from '@mui/material/IconButton';
 import Chip from '@mui/material/Chip';
 import Dialog from '@mui/material/Dialog';
@@ -47,6 +48,7 @@ export function SettingsPanel() {
   const [newProfile, setNewProfile] = useState<{ label: string; providerId: string; apiKey: string; baseUrl: string }>({ label: '', providerId: '', apiKey: '', baseUrl: '' });
   const [profileModels, setProfileModels] = useState<Record<string, ModelInfo[]>>({});
   const [selectedModels, setSelectedModels] = useState<Record<string, string>>({});
+  const [loadingProviders, setLoadingProviders] = useState<Set<string>>(new Set());
 
   // Crew CRUD state
   const [showCrewDialog, setShowCrewDialog] = useState(false);
@@ -55,7 +57,7 @@ export function SettingsPanel() {
 
   useEffect(() => {
     config.get().then(setCfg).catch(() => {});
-    provApi.available().then(setAvailableProviders).catch(() => {});
+    provApi.available().then((p) => setAvailableProviders(p.filter(Boolean))).catch(() => {});
     crews.list().then(setCrewList).catch(() => {});
   }, []);
 
@@ -84,10 +86,12 @@ export function SettingsPanel() {
   // Load models for a provider
   const loadModels = useCallback(async (providerId: string) => {
     if (profileModels[providerId]) return;
+    setLoadingProviders((prev) => new Set(prev).add(providerId));
     try {
       const m = await provApi.models(providerId);
       setProfileModels((prev) => ({ ...prev, [providerId]: m }));
     } catch { /* ignore */ }
+    setLoadingProviders((prev) => { const next = new Set(prev); next.delete(providerId); return next; });
   }, [profileModels]);
 
   // Load models for all configured providers
@@ -264,6 +268,12 @@ export function SettingsPanel() {
               {/* Model selector for this profile */}
               <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
                 <FormControl size="small" sx={{ flex: 1 }}>
+                  {loadingProviders.has(profile.providerId) && provModels.length === 0 ? (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, px: 1, height: 30 }}>
+                      <CircularProgress size={12} />
+                      <Typography sx={{ fontSize: '0.6rem', color: colors.text.dim }}>Loading models...</Typography>
+                    </Box>
+                  ) : (
                   <Select
                     displayEmpty
                     value={selectedModels[profile.id] ?? ''}
@@ -273,6 +283,7 @@ export function SettingsPanel() {
                     <MenuItem value="" disabled><em>Select model</em></MenuItem>
                     {provModels.filter(Boolean).map((m) => <MenuItem key={m.id} value={m.id} sx={{ fontSize: '0.7rem' }}>{m.name || m.id}</MenuItem>)}
                   </Select>
+                  )}
                 </FormControl>
               </Box>
             </Box>
