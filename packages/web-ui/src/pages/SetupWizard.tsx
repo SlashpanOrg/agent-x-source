@@ -4,7 +4,6 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import TextField from '@mui/material/TextField';
 import Button from '@mui/material/Button';
-import Alert from '@mui/material/Alert';
 import Stepper from '@mui/material/Stepper';
 import Step from '@mui/material/Step';
 import StepLabel from '@mui/material/StepLabel';
@@ -199,21 +198,6 @@ export function SetupWizard() {
 
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', bgcolor: '#000' }}>
-      {/* Error banner */}
-      {error ? (
-        <Box sx={{ p: 2, bgcolor: '#1a0000', borderBottom: '1px solid #330000', textAlign: 'center' }}>
-          <Typography color="error" variant="body2">{error}</Typography>
-          <Button size="small" sx={{ mt: 1, color: colors.text.tertiary }} onClick={() => { setError(''); setLoading(true); provApi.available().then(setAvailableProviders).finally(() => setLoading(false)); }}>
-            Retry
-          </Button>
-        </Box>
-      ) : null}
-      {/* Loading indicator */}
-      {loading && !error ? (
-        <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <CircularProgress size={32} sx={{ color: '#fff' }} />
-        </Box>
-      ) : null}
       {/* Fixed Header */}
       <Box sx={{ flexShrink: 0, textAlign: 'center', pt: 4, px: 2, pb: 2 }}>
         <Typography variant="h2" sx={{ mb: 1 }}>SETUP WIZARD</Typography>
@@ -234,8 +218,21 @@ export function SetupWizard() {
 
       {/* Scrollable Content */}
       <Box sx={{ flex: 1, overflow: 'auto', display: 'flex', justifyContent: 'center', px: 2 }}>
-        <Box sx={{ width: '100%', maxWidth: (step === 0 || step === 2) ? 720 : 480 }}>
-          {error && <Alert severity="error" sx={{ mb: 2, bgcolor: '#1a0000', border: `1px solid ${colors.accent.red}40` }}>{error}</Alert>}
+        <Box sx={{ position: 'relative', width: '100%', maxWidth: (step === 0 || step === 2) ? 720 : 480 }}>
+          {/* Error banner — absolute position within content, doesn't push header/stepper */}
+          {error && (
+            <Box sx={{
+              position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10,
+              p: 2, bgcolor: '#1a0000', borderBottom: '1px solid #330000', textAlign: 'center',
+              borderRadius: '4px',
+            }}>
+              <Typography color="error" variant="body2" sx={{ fontSize: '0.8rem', mb: 0.5 }}>{error}</Typography>
+              <Button size="small" sx={{ color: colors.text.tertiary, fontSize: '0.7rem' }} onClick={() => setError('')}>
+                Dismiss
+              </Button>
+            </Box>
+          )}
+          <Box sx={{ pt: error ? 12 : 0 }}>
 
           {/* Step 0: Choose Provider */}
           {step === 0 && (
@@ -414,6 +411,7 @@ export function SetupWizard() {
             </Box>
           )}
         </Box>
+        </Box>
       </Box>
 
       {/* Fixed Bottom Navigation */}
@@ -478,6 +476,18 @@ export function SetupWizard() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Modal loader overlay — doesn't disrupt wizard layout */}
+      {loading && (
+        <Box sx={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          bgcolor: 'rgba(0,0,0,0.55)',
+          backdropFilter: 'blur(2px)',
+        }}>
+          <CircularProgress size={40} sx={{ color: '#fff' }} />
+        </Box>
+      )}
     </Box>
   );
 }
