@@ -106,9 +106,9 @@ export function Login() {
         {/* ASCII Logo */}
         <Box sx={{ textAlign: 'center', mb: 4 }}>
           <Box sx={{
-            fontFamily: "'JetBrains Mono', monospace", fontSize: '0.5rem', lineHeight: 1.1,
-            color: colors.accent.blue, whiteSpace: 'pre', letterSpacing: '-0.5px',
-            textShadow: `0 0 10px ${colors.accent.blue}40`,
+            fontFamily: "'JetBrains Mono', monospace", fontSize: '0.5rem', lineHeight: 1,
+            color: '#ffffff', whiteSpace: 'pre', letterSpacing: '-0.5px',
+            textShadow: `0 0 10px rgba(255,255,255,0.1)`,
             mb: 2,
           }}>
 {` █████╗  ██████╗ ███████╗███╗   ██╗████████╗    ██╗  ██╗

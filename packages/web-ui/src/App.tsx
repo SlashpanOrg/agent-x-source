@@ -37,8 +37,9 @@ function GuestGuard({ children }: { children: React.ReactNode }) {
       </Box>
     );
   }
+  if (authState === 'no-root-user') return <Navigate to="/setup" replace />;
+  if (authState === 'needs-setup') return <Navigate to="/setup/wizard" replace />;
   if (authState === 'authenticated') return <Navigate to="/" replace />;
-  // needs-setup is allowed — user just created root and must complete wizard
   return <>{children}</>;
 }
 
