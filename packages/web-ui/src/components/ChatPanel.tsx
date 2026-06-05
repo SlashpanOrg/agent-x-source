@@ -332,7 +332,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     fetch('/api/providers', { credentials: 'include' })
       .then(r => r.json())
       .then((data: { active?: string; providers?: Array<{ id: string; configured: boolean }> }) => {
-        if (data.providers) setProviderList(data.providers.map(p => ({ id: p.id, configured: true })));
+        if (data.providers) setProviderList(data.providers.filter(Boolean).map(p => ({ id: p.id, configured: true })));
         if (data.active && !currentProvider) setCurrentProvider(data.active);
       })
       .catch(() => {});

@@ -61,6 +61,7 @@ export function SetupWizard() {
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [callsign, setCallsign] = useState('');
+  const [modelsLoading, setModelsLoading] = useState(false);
 
   // Restore progress on mount
   useEffect(() => {
@@ -72,11 +73,12 @@ export function SetupWizard() {
       setCallsign(saved.callsign || '');
       // Re-fetch models for restored provider
       if (saved.selectedProvider) {
-        provApi.models(saved.selectedProvider).then(setAvailableModels).catch(() => {});
+        setModelsLoading(true);
+        provApi.models(saved.selectedProvider).then((m) => { setAvailableModels(m); setModelsLoading(false); }).catch(() => { setModelsLoading(false); });
       }
     }
     // Ensure providers are loaded
-    provApi.available().then(setAvailableProviders).catch(() => {
+    provApi.available().then((p) => setAvailableProviders(p.filter(Boolean))).catch(() => {
       showError('Failed to load providers. Check if the server is running.');
     });
   }, []);
@@ -85,7 +87,7 @@ export function SetupWizard() {
   useEffect(() => {
     if (availableProviders.length === 0 && !loading) {
       setLoading(true);
-      provApi.available().then((p) => { setAvailableProviders(p); setLoading(false); }).catch(() => {
+      provApi.available().then((p) => { setAvailableProviders(p.filter(Boolean)); setLoading(false); }).catch(() => {
         showError('Cannot reach the server. Make sure Agent-X daemon is running.');
         setLoading(false);
       });
@@ -318,6 +320,12 @@ export function SetupWizard() {
               <Typography variant="body2" sx={{ color: colors.text.tertiary, mb: 2 }}>
                 {availableModels.length} model{availableModels.length !== 1 ? 's' : ''} available from {selectedProviderInfo?.name ?? selectedProvider}
               </Typography>
+              {modelsLoading ? (
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, py: 4 }}>
+                  <CircularProgress size={16} />
+                  <Typography variant="body2" sx={{ color: colors.text.dim }}>Loading models...</Typography>
+                </Box>
+              ) : (
               <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 1.5 }}>
                 {availableModels.filter(Boolean).map((m) => (
                   <Box
@@ -352,6 +360,7 @@ export function SetupWizard() {
                   </Box>
                 ))}
               </Box>
+            )}
             </Box>
           )}
 
