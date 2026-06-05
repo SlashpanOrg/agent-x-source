@@ -5,6 +5,7 @@ import TelegramIcon from '@mui/icons-material/Telegram';
 import ComputerIcon from '@mui/icons-material/Computer';
 import PublicIcon from '@mui/icons-material/Public';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
+import { colors } from '../theme';
 import { gateway } from '../api';
 
 const FOCUS_CHANNELS = [
@@ -59,7 +60,7 @@ export function GatewayStatusBar() {
         <Chip
           icon={
             <TelegramIcon
-              sx={{ fontSize: 14, color: telegramConnected ? '#26A269' : '#888' }}
+              sx={{ fontSize: 14, color: telegramConnected ? colors.accent.green : colors.text.tertiary }}
             />
           }
           label={telegramConnected ? 'TG' : 'TG'}
@@ -67,7 +68,7 @@ export function GatewayStatusBar() {
           variant="outlined"
           sx={{
             height: 22,
-            borderColor: telegramConnected ? '#26A269' : '#555',
+            borderColor: telegramConnected ? colors.accent.green : colors.text.dim,
             '& .MuiChip-label': { fontSize: 10, px: 0.5 },
           }}
         />
@@ -91,7 +92,7 @@ export function GatewayStatusBar() {
         anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
         transformOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       >
-        <Typography variant="caption" sx={{ px: 2, py: 0.5, display: 'block', color: '#aaa' }}>
+        <Typography variant="caption" sx={{ px: 2, py: 0.5, display: 'block', color: colors.text.secondary }}>
           Switch focus channel
         </Typography>
         {FOCUS_CHANNELS.map((ch) => {
@@ -99,7 +100,7 @@ export function GatewayStatusBar() {
           return (
             <MenuItem key={ch.id} onClick={() => handleFocusSelect(ch.id)} selected={focus === ch.id}>
               <ListItemIcon sx={{ minWidth: 28 }}>
-                <Icon sx={{ fontSize: 16, color: focus === ch.id ? '#4FC3F7' : '#888' }} />
+                <Icon sx={{ fontSize: 16, color: focus === ch.id ? '#4FC3F7' : colors.text.tertiary }} />
               </ListItemIcon>
               <ListItemText primary={ch.label} primaryTypographyProps={{ fontSize: 12 }} />
               {focus === ch.id && <CircleIcon sx={{ fontSize: 8, color: '#4FC3F7', ml: 1 }} />}

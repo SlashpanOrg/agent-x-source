@@ -11,8 +11,8 @@ const themeOptions: ThemeOptions = {
     success: { main: '#3fb950' },
     info: { main: '#58a6ff' },
     background: { default: '#000000', paper: '#0a0a0a' },
-    text: { primary: '#ffffff', secondary: '#aaaaaa', disabled: '#555555' },
-    divider: '#1a1a1a',
+    text: { primary: '#ffffff', secondary: '#aaaaaa', disabled: '#656565' },
+    divider: '#2a2a2a',
   },
   typography: {
     fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
@@ -24,9 +24,9 @@ const themeOptions: ThemeOptions = {
     h5: { fontSize: '0.9rem', fontWeight: 600 },
     h6: { fontSize: '0.82rem', fontWeight: 500 },
     body1: { fontSize: '0.875rem', lineHeight: 1.6 },
-    body2: { fontSize: '0.8125rem', lineHeight: 1.5, color: '#888888' },
-    caption: { fontSize: '0.72rem', color: '#555555' },
-    overline: { fontFamily: "'JetBrains Mono', monospace", fontSize: '0.75rem', letterSpacing: '3px', textTransform: 'uppercase' as const, color: '#555555' },
+    body2: { fontSize: '0.8125rem', lineHeight: 1.5, color: '#8b8b8b' },
+    caption: { fontSize: '0.72rem', color: '#656565' },
+    overline: { fontFamily: "'JetBrains Mono', monospace", fontSize: '0.75rem', letterSpacing: '3px', textTransform: 'uppercase' as const, color: '#656565' },
   },
   shape: { borderRadius: 8 },
   components: {
@@ -37,8 +37,8 @@ const themeOptions: ThemeOptions = {
         '::selection': { background: '#fff', color: '#000' },
         '::-webkit-scrollbar': { width: '6px', height: '6px' },
         '::-webkit-scrollbar-track': { background: 'transparent' },
-        '::-webkit-scrollbar-thumb': { background: '#333', borderRadius: '3px' },
-        '::-webkit-scrollbar-thumb:hover': { background: '#555' },
+        '::-webkit-scrollbar-thumb': { background: '#3a3a3a', borderRadius: '3px' },
+        '::-webkit-scrollbar-thumb:hover': { background: '#656565' },
       },
     },
     MuiButton: {
@@ -49,7 +49,7 @@ const themeOptions: ThemeOptions = {
     },
     MuiTooltip: {
       styleOverrides: {
-        tooltip: { backgroundColor: '#1a1a1a', border: '1px solid #2a2a2a', fontSize: '0.72rem', fontFamily: "'JetBrains Mono', monospace" },
+        tooltip: { backgroundColor: '#242424', border: '1px solid #3a3a3a', fontSize: '0.72rem', fontFamily: "'JetBrains Mono', monospace" },
       },
     },
     MuiTextField: {
@@ -57,8 +57,8 @@ const themeOptions: ThemeOptions = {
       styleOverrides: {
         root: {
           '& .MuiOutlinedInput-root': {
-            '& fieldset': { borderColor: '#2a2a2a' },
-            '&:hover fieldset': { borderColor: '#444' },
+            '& fieldset': { borderColor: '#3a3a3a' },
+            '&:hover fieldset': { borderColor: '#4a4a4a' },
             '&.Mui-focused fieldset': { borderColor: '#58a6ff' },
           },
         },
@@ -74,8 +74,8 @@ export const theme = createTheme(themeOptions);
 
 // Exported color tokens for direct use
 export const colors = {
-  bg: { primary: '#000000', secondary: '#0a0a0a', tertiary: '#111111', elevated: '#111111', surface: '#0a0a0a', hover: '#1a1a1a' },
-  border: { subtle: '#111111', default: '#1a1a1a', strong: '#333333', accent: '#444444' },
-  text: { primary: '#ffffff', secondary: '#aaaaaa', tertiary: '#888888', dim: '#555555', muted: '#666666' },
+  bg: { primary: '#000000', secondary: '#0a0a0a', tertiary: '#1a1a1a', elevated: '#1a1a1a', surface: '#0a0a0a', hover: '#242424' },
+  border: { subtle: '#202020', default: '#2a2a2a', strong: '#3a3a3a', accent: '#484848' },
+  text: { primary: '#ffffff', secondary: '#aaaaaa', tertiary: '#8b8b8b', dim: '#656565', muted: '#757575' },
   accent: { blue: '#58a6ff', green: '#3fb950', orange: '#d29922', red: '#f85149', purple: '#bc8cff', cyan: '#39d353' },
 } as const;

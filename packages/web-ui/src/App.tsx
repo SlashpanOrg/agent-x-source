@@ -30,6 +30,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
 function GuestGuard({ children }: { children: React.ReactNode }) {
   const { authState } = useApp();
+  const loc = useLocation();
   if (authState === 'loading') {
     return (
       <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -37,7 +38,10 @@ function GuestGuard({ children }: { children: React.ReactNode }) {
       </Box>
     );
   }
-  if (authState === 'no-root-user') return <Navigate to="/setup" replace />;
+  if (authState === 'no-root-user') {
+    if (loc.pathname !== '/setup') return <Navigate to="/setup" replace />;
+    return <>{children}</>;
+  }
   if (authState === 'needs-setup') return <Navigate to="/setup/wizard" replace />;
   if (authState === 'authenticated') return <Navigate to="/" replace />;
   return <>{children}</>;

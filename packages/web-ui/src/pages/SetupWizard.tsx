@@ -203,7 +203,7 @@ export function SetupWizard() {
       {error ? (
         <Box sx={{ p: 2, bgcolor: '#1a0000', borderBottom: '1px solid #330000', textAlign: 'center' }}>
           <Typography color="error" variant="body2">{error}</Typography>
-          <Button size="small" sx={{ mt: 1, color: '#888' }} onClick={() => { setError(''); setLoading(true); provApi.available().then(setAvailableProviders).finally(() => setLoading(false)); }}>
+          <Button size="small" sx={{ mt: 1, color: colors.text.tertiary }} onClick={() => { setError(''); setLoading(true); provApi.available().then(setAvailableProviders).finally(() => setLoading(false)); }}>
             Retry
           </Button>
         </Box>

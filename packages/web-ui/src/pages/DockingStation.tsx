@@ -168,9 +168,9 @@ export function DockingStation() {
             display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1,
             borderBottom: `1px solid ${colors.border.default}`,
           }}>
-            <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: '#333' }} />
-            <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: '#444' }} />
-            <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: '#555' }} />
+            <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: colors.border.strong }} />
+            <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: colors.border.accent }} />
+            <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: colors.text.dim }} />
             <Typography sx={{ ml: 1, fontFamily: "'JetBrains Mono', monospace", fontSize: '0.55rem', color: colors.text.dim }}>
               agentx — mission-control
             </Typography>
