@@ -112,7 +112,7 @@ export const crews = {
   update: (id: string, data: Partial<CrewInput>) => request<{ ok: boolean }>(`/crews/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   delete: (id: string) => request<{ ok: boolean }>(`/crews/${id}`, { method: 'DELETE' }),
   toggle: (id: string, enabled: boolean) => request<{ ok: boolean }>('/crew/toggle', { method: 'POST', body: JSON.stringify({ crewId: id, enabled }) }),
-  generateMetadata: (systemPrompt: string) => request<{ expertise: string[]; traits: string[] }>('/crew/generate-metadata', { method: 'POST', body: JSON.stringify({ systemPrompt }) }),
+  generateMetadata: (systemPrompt: string, title?: string) => request<{ expertise: string[]; traits: string[]; revisedPrompt: string }>('/crew/generate-metadata', { method: 'POST', body: JSON.stringify({ systemPrompt, title }) }),
 };
 
 // ─── Chat ───

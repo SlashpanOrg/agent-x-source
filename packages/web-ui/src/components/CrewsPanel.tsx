@@ -28,7 +28,7 @@ import PaletteIcon from '@mui/icons-material/Palette';
 import GavelIcon from '@mui/icons-material/Gavel';
 import VerifiedUserIcon from '@mui/icons-material/VerifiedUser';
 import CloseIcon from '@mui/icons-material/Close';
-import SmartToyIcon from '@mui/icons-material/SmartToy';
+import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import SchoolIcon from '@mui/icons-material/School';
 import FavoriteIcon from '@mui/icons-material/Favorite';
 import HomeIcon from '@mui/icons-material/Home';
@@ -355,6 +355,7 @@ export function CrewsPanel() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [generatingMeta, setGeneratingMeta] = useState(false);
+  const [regenerating, setRegenerating] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importCategory, setImportCategory] = useState(0);
@@ -400,12 +401,35 @@ export function CrewsPanel() {
     if (!form.systemPrompt.trim()) return;
     setGeneratingMeta(true);
     try {
-      const meta = await crewsApi.generateMetadata(form.systemPrompt);
-      setForm((prev) => ({ ...prev, expertise: meta.expertise, traits: meta.traits }));
+      const meta = await crewsApi.generateMetadata(form.systemPrompt, form.title || undefined);
+      setForm((prev) => ({
+        ...prev,
+        expertise: meta.expertise,
+        traits: meta.traits,
+        systemPrompt: meta.revisedPrompt || prev.systemPrompt,
+      }));
     } catch {
       setError('Failed to generate skills. You can add them manually.');
     } finally {
       setGeneratingMeta(false);
+    }
+  };
+
+  const handleRegenerateCrew = async (e: React.MouseEvent, c: Crew) => {
+    e.stopPropagation();
+    if (!c.systemPrompt) return;
+    setRegenerating(c.id);
+    try {
+      const meta = await crewsApi.generateMetadata(c.systemPrompt, c.title || undefined);
+      await crewsApi.update(c.id, { expertise: meta.expertise, traits: meta.traits, systemPrompt: meta.revisedPrompt || c.systemPrompt });
+      await load();
+      if (detailCrew?.id === c.id) {
+        setDetailCrew({ ...c, expertise: meta.expertise, traits: meta.traits, systemPrompt: meta.revisedPrompt || c.systemPrompt });
+      }
+    } catch {
+      setError('Regeneration failed. Check your model quota or API key.');
+    } finally {
+      setRegenerating(null);
     }
   };
 
@@ -577,6 +601,13 @@ export function CrewsPanel() {
                         onChange={(e) => { e.stopPropagation(); handleToggle(c.id, !isEnabled); }}
                         onClick={(e) => e.stopPropagation()}
                         sx={{ '& .MuiSwitch-thumb': { bgcolor: isEnabled ? colors.accent.green : colors.text.dim } }} />
+                      <Tooltip title="AI Regenerate skills &amp; traits">
+                        <IconButton size="small" disabled={regenerating === c.id}
+                          onClick={(e) => handleRegenerateCrew(e, c)}
+                          sx={{ color: colors.text.dim, '&:hover': { color: colors.accent.purple } }}>
+                          {regenerating === c.id ? <CircularProgress size={14} /> : <AutoAwesomeIcon sx={{ fontSize: 16 }} />}
+                        </IconButton>
+                      </Tooltip>
                       <Tooltip title="Edit">
                         <IconButton size="small" onClick={(e) => { e.stopPropagation(); openEdit(c); }}
                           sx={{ color: colors.text.dim, '&:hover': { color: colors.accent.blue } }}>
@@ -738,9 +769,9 @@ export function CrewsPanel() {
                 Defines personality and behavior. Be specific about domain and skills.
               </Typography>
               <Button size="small" onClick={handleGenerateMetadata} disabled={generatingMeta || !form.systemPrompt.trim()}
-                startIcon={generatingMeta ? <CircularProgress size={12} /> : <SmartToyIcon sx={{ fontSize: 13 }} />}
-                sx={{ fontSize: '0.55rem', textTransform: 'none', color: colors.accent.cyan, minWidth: 'auto' }}>
-                {generatingMeta ? 'Analyzing...' : 'Auto-tag'}
+                startIcon={generatingMeta ? <CircularProgress size={12} /> : <AutoAwesomeIcon sx={{ fontSize: 13 }} />}
+                sx={{ fontSize: '0.55rem', textTransform: 'none', color: colors.accent.purple, minWidth: 'auto' }}>
+                {generatingMeta ? 'Analyzing...' : 'Auto-generate'}
               </Button>
             </Box>
           </Box>
