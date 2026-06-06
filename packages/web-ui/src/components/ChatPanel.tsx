@@ -142,6 +142,15 @@ interface ChatPanelProps {
   sessionId?: string;
 }
 
+interface MentionToken {
+  id: string;
+  type: 'crew' | 'agent';
+  name: string;
+  title?: string;
+  callsign: string;
+  color: string;
+}
+
 export function ChatPanel({ sessionId }: ChatPanelProps) {
   const navigate = useNavigate();
   const [view, setView] = useState<ChatView>(sessionId ? 'chat' : 'sessions');
@@ -214,7 +223,6 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
   // Crew state (fixed per session)
   const [crewList, setCrewList] = useState<Crew[]>([]);
-  const [activeCrew, setActiveCrew] = useState('');
 
   // Agent mode & approval
   const [agentMode, setAgentMode] = useState<AgentMode>('ask');
@@ -232,9 +240,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   // Send action menu (stop & send / queue / steer)
   const [sendMenuAnchor, setSendMenuAnchor] = useState<null | HTMLElement>(null);
 
-  // Crew selection dialog for new sessions
-  const [showCrewPicker, setShowCrewPicker] = useState(false);
-
+  // New session dialog
   // ─── Enhancements: connection health, palette, slash, search, checkpoints ───
   const [connState, setConnState] = useState<ConnectionState>('connecting');
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
@@ -252,23 +258,38 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
   // @-mention detection
   const [showCrewMention, setShowCrewMention] = useState(false);
+  const [mentionTokens, setMentionTokens] = useState<MentionToken[]>([]);
   const mentionQuery = useMemo(() => {
     const lastAt = input.lastIndexOf('@');
-    if (lastAt === -1) return '';
+    if (lastAt === -1) return null;
     const pre = lastAt === 0 ? ' ' : input[lastAt - 1];
     if (pre !== ' ' && pre !== '\n') return '';
     const after = input.slice(lastAt + 1);
     if (after.includes(' ')) return '';
     return after;
   }, [input]);
-  useEffect(() => { setShowCrewMention(mentionQuery.length > 0 && crewList.length > 0); }, [mentionQuery, crewList]);
+  useEffect(() => { setShowCrewMention(mentionQuery !== null); }, [mentionQuery]);
 
   const handleMentionSelect = useCallback((crew: Crew) => {
     const lastAt = input.lastIndexOf('@');
     if (lastAt === -1) return;
-    setInput(input.slice(0, lastAt) + `@${crew.name} `);
+    const color = getWebCrewColor(crew.callsign);
+    setMentionTokens(prev => [...prev, { id: crypto.randomUUID(), type: 'crew', name: crew.name, title: crew.title, callsign: crew.callsign, color }]);
+    setInput(input.slice(0, lastAt));
     setShowCrewMention(false);
   }, [input]);
+
+  const handleMentionSelectAgent = useCallback(() => {
+    const lastAt = input.lastIndexOf('@');
+    if (lastAt === -1) return;
+    setMentionTokens(prev => [...prev, { id: crypto.randomUUID(), type: 'agent', name: 'Agent-X', title: 'Your AI Wingman', callsign: 'agentx', color: colors.accent.blue }]);
+    setInput(input.slice(0, lastAt));
+    setShowCrewMention(false);
+  }, [input]);
+
+  const handleRemoveMention = useCallback((id: string) => {
+    setMentionTokens(prev => prev.filter(t => t.id !== id));
+  }, []);
 
   // Smart auto-scroll state
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -325,7 +346,6 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
           .catch(() => {});
       });
     crews.list().then((list) => { setCrewList(list); }).catch(() => {});
-    crews.current().then((c) => { setActiveCrew(c?.name || c?.id || ''); }).catch(() => {});
     system.cwd().then((r) => { setCwd(r.cwd || ''); }).catch(() => {});
     sessionSettings.get().then((s) => { setAgentMode(s.mode); setApprovalType(s.approval); }).catch(() => {});
     // Load configured providers (also gets active provider as fallback)
@@ -577,23 +597,30 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if ((!text && attachments.length === 0) || streaming) return;
+    if ((!text && mentionTokens.length === 0 && attachments.length === 0) || streaming) return;
+    // Build full message with mentions
+    const mentionsText = mentionTokens.length > 0 
+      ? mentionTokens.map(t => `@${t.callsign}`).join(' ') + ' '
+      : '';
+    const fullText = mentionsText + text;
     // Intercept slash commands first
-    if (text.startsWith('/')) {
-      const handled = await runSlashCommand(text);
+    if (fullText.startsWith('/')) {
+      const handled = await runSlashCommand(fullText);
       if (handled) {
         setInput('');
+        setMentionTokens([]);
         return;
       }
     }
-    if (!currentProvider || !currentModel) return; // Guard
+    if (!currentProvider || !currentModel) return;
     setInput('');
+    setMentionTokens([]);
     setStreaming(true);
 
     const userMsg: UIMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: text,
+      content: fullText,
       streaming: false,
       attachments: attachments.map((a) => ({ name: a.name })),
     };
@@ -608,7 +635,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     setAttachments([]);
 
     try {
-      const result = await chat.send(text, fileRefs);
+      const result = await chat.send(fullText, fileRefs);
       // Fallback: if SSE didn't deliver the response (e.g., first message before agent existed),
       // display the response from the API call directly.
       // The API only resolves after agent.sendMessage() completes, so SSE should have
@@ -870,8 +897,13 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
+      if (showCrewMention) return;
       e.preventDefault();
       handleSend();
+    }
+    if (e.key === 'Backspace' && !input && mentionTokens.length > 0 && !showCrewMention) {
+      e.preventDefault();
+      setMentionTokens(prev => prev.slice(0, -1));
     }
   };
 
@@ -911,21 +943,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     } catch { /* ignore */ }
   };
 
-  const handleNewSession = async (selectedCrew?: string) => {
+  const handleNewSession = async () => {
     try {
-      // If multiple crews and no selection yet, show picker
-      if (!selectedCrew && crewList.length > 1) {
-        setShowCrewPicker(true);
-        return;
-      }
-      setShowCrewPicker(false);
-
-      // Switch crew if specified
-      if (selectedCrew) {
-        await crews.switch(selectedCrew).catch(() => {});
-        setActiveCrew(crewList.find(c => (c.id || c.name) === selectedCrew)?.name || selectedCrew);
-      }
-
       const result = await sessions.create();
       setMessages([]);
       setCurrentSessionTitle(null);
@@ -944,42 +963,6 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
   // Token percentage
   const tokenPercent = tokenTotal > 0 ? Math.min((tokenUsed / tokenTotal) * 100, 100) : 0;
-
-  // ─── Crew picker dialog ───
-  if (showCrewPicker) {
-    return (
-      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', bgcolor: colors.bg.primary, alignItems: 'center', justifyContent: 'center' }}>
-        <Box sx={{ maxWidth: 320, width: '100%', p: 3 }}>
-          <Typography sx={{ fontSize: '0.9rem', fontWeight: 600, color: colors.text.primary, mb: 0.5, textAlign: 'center' }}>
-            Select Crew
-          </Typography>
-          <Typography sx={{ fontSize: '0.65rem', color: colors.text.dim, mb: 2, textAlign: 'center' }}>
-            Choose which crew to assign for this session
-          </Typography>
-          <List disablePadding>
-            {crewList.map((c) => (
-              <ListItemButton
-                key={c.id || c.name}
-                onClick={() => handleNewSession(c.id || c.name)}
-                sx={{ borderRadius: 1, mb: 0.75, border: `1px solid ${colors.border.default}`, px: 2, py: 1.5, '&:hover': { bgcolor: colors.bg.tertiary, borderColor: colors.accent.purple + '40' } }}
-              >
-                <ListItemText
-                  primary={c.title ? `${c.name} — ${c.title}` : c.name}
-                  secondary={c.systemPrompt?.slice(0, 60) + (c.systemPrompt?.length > 60 ? '...' : '')}
-                  primaryTypographyProps={{ fontSize: '0.8rem', fontWeight: 500, color: colors.accent.purple }}
-                  secondaryTypographyProps={{ fontSize: '0.55rem', color: colors.text.dim, mt: 0.25 }}
-                />
-              </ListItemButton>
-            ))}
-          </List>
-          <Button size="small" onClick={() => { setShowCrewPicker(false); handleNewSession('default'); }}
-            sx={{ mt: 1, color: colors.text.dim, fontSize: '0.6rem', textTransform: 'none', width: '100%' }}>
-            Skip (use Default)
-          </Button>
-        </Box>
-      </Box>
-    );
-  }
 
   // ─── Sessions list view (NO chat input here) ───
   if (view === 'sessions') {
@@ -1202,11 +1185,32 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
             {/* @-mention crew autocomplete */}
             {showCrewMention && (
               <CrewMentionMenu
-                query={mentionQuery}
+                query={mentionQuery ?? ''}
                 crewList={crewList}
                 onSelect={(crew: Crew) => handleMentionSelect(crew)}
                 onClose={() => setShowCrewMention(false)}
+                onSelectAgent={handleMentionSelectAgent}
               />
+            )}
+            {/* Mention tokens as colored chips */}
+            {mentionTokens.length > 0 && (
+              <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', px: 1.25, pt: 0.5, pb: 0 }}>
+                {mentionTokens.map((token) => (
+                  <Chip
+                    key={token.id}
+                    size="small"
+                    label={`@${token.callsign}`}
+                    onDelete={() => handleRemoveMention(token.id)}
+                    icon={token.type === 'agent' ? <SmartToyIcon sx={{ fontSize: '10px !important', color: `${token.color} !important` }} /> : undefined}
+                    sx={{
+                      height: 22, fontSize: '0.6rem', fontFamily: "'JetBrains Mono', monospace",
+                      bgcolor: token.color + '20', color: token.color,
+                      border: `1px solid ${token.color}40`,
+                      '& .MuiChip-deleteIcon': { color: token.color, fontSize: 14, '&:hover': { color: colors.accent.red } },
+                    }}
+                  />
+                ))}
+              </Box>
             )}
             {/* Input row */}
             <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 0.5, px: 1.25, py: 0.5 }}>
@@ -1498,7 +1502,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
             CREW
           </Typography>
           <Typography sx={{ fontSize: '0.6rem', color: colors.accent.purple, fontWeight: 500 }}>
-            {activeCrew || 'Default'}
+            Agent-X
           </Typography>
           {crewList.length > 1 && (
             <Typography sx={{ fontSize: '0.45rem', color: colors.text.dim, mt: 0.25 }}>

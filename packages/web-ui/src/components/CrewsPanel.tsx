@@ -21,7 +21,7 @@ import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import SearchIcon from '@mui/icons-material/Search';
-import FileDownloadIcon from '@mui/icons-material/FileDownload';
+import HubIcon from '@mui/icons-material/Hub';
 import CodeIcon from '@mui/icons-material/Code';
 import StorageIcon from '@mui/icons-material/Storage';
 import PaletteIcon from '@mui/icons-material/Palette';
@@ -359,6 +359,7 @@ export function CrewsPanel() {
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importCategory, setImportCategory] = useState(0);
   const [importLoading, setImportLoading] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -377,11 +378,10 @@ export function CrewsPanel() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Permanently delete this crew?')) return;
     setBusy(true);
     try { await crewsApi.delete(id); setDetailCrew(null); await load(); }
     catch (e) { setError(e instanceof Error ? e.message : 'Delete failed'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setDeleteConfirmId(null); }
   };
 
   const openCreate = () => {
@@ -467,9 +467,9 @@ export function CrewsPanel() {
             </Box>
           </Box>
           <Box sx={{ display: 'flex', gap: 1 }}>
-            <Button size="small" variant="outlined" startIcon={<FileDownloadIcon />} onClick={() => { setImportDialogOpen(true); setImportCategory(0); }}
+            <Button size="small" variant="outlined" startIcon={<HubIcon />} onClick={() => { setImportDialogOpen(true); setImportCategory(0); }}
               sx={{ borderColor: colors.accent.blue + '50', color: colors.accent.blue, textTransform: 'none', fontSize: '0.7rem', px: 1.5 }}>
-              Import
+              Crew Hub
             </Button>
             <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={openCreate}
               sx={{ bgcolor: colors.accent.purple, fontSize: '0.7rem', textTransform: 'none', px: 1.5, py: 0.5, '&:hover': { bgcolor: '#9b4fd1' } }}>
@@ -500,12 +500,12 @@ export function CrewsPanel() {
             <GroupsIcon sx={{ fontSize: 48, color: colors.text.dim, mb: 2 }} />
             <Typography sx={{ fontSize: '0.85rem', color: colors.text.secondary, mb: 1 }}>No crews yet</Typography>
             <Typography sx={{ fontSize: '0.7rem', color: colors.text.dim, mb: 2.5 }}>
-              Create your first crew member or import from the prebuilt library
+              Create your first crew member or discover from the Crew Hub
             </Typography>
             <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center' }}>
-              <Button size="small" variant="outlined" startIcon={<FileDownloadIcon />} onClick={() => { setImportDialogOpen(true); setImportCategory(0); }}
+              <Button size="small" variant="outlined" startIcon={<HubIcon />} onClick={() => { setImportDialogOpen(true); setImportCategory(0); }}
                 sx={{ borderColor: colors.accent.blue + '50', color: colors.accent.blue, textTransform: 'none', fontSize: '0.7rem' }}>
-                Import Crew
+                Crew Hub
               </Button>
               <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={openCreate}
                 sx={{ bgcolor: colors.accent.purple, textTransform: 'none', fontSize: '0.7rem' }}>
@@ -584,7 +584,7 @@ export function CrewsPanel() {
                         </IconButton>
                       </Tooltip>
                       <Tooltip title="Delete">
-                        <IconButton size="small" onClick={(e) => { e.stopPropagation(); handleDelete(c.id); }}
+                        <IconButton size="small" onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(c.id); }}
                           sx={{ color: colors.text.dim, '&:hover': { color: colors.accent.red } }}>
                           <DeleteIcon sx={{ fontSize: 16 }} />
                         </IconButton>
@@ -673,7 +673,7 @@ export function CrewsPanel() {
                     Edit
                   </Button>
                   <Button size="small" variant="outlined" startIcon={<DeleteIcon sx={{ fontSize: 14 }} />}
-                    onClick={() => handleDelete(detailCrew.id)}
+                    onClick={() => setDeleteConfirmId(detailCrew.id)}
                     sx={{ borderColor: colors.accent.red + '50', color: colors.accent.red, textTransform: 'none', fontSize: '0.7rem' }}>
                     Delete
                   </Button>
@@ -782,11 +782,15 @@ export function CrewsPanel() {
         </DialogActions>
       </Dialog>
 
-      {/* Import Prebuilt Crews Modal */}
+      {/* Crew Hub Modal */}
       <Dialog open={importDialogOpen} onClose={() => setImportDialogOpen(false)}
-        PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, borderRadius: 2, maxWidth: 700, width: '100%', maxHeight: '85vh' } }}>
+        maxWidth="lg" fullWidth
+        PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, borderRadius: 2, maxHeight: '85vh' } }}>
         <DialogTitle sx={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.85rem', fontWeight: 700, letterSpacing: '1px', pb: 0.5, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          Import Prebuilt Crew
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <HubIcon sx={{ color: colors.accent.purple, fontSize: 18 }} />
+            Crew Hub
+          </Box>
           <IconButton size="small" onClick={() => setImportDialogOpen(false)}><CloseIcon sx={{ fontSize: 18 }} /></IconButton>
         </DialogTitle>
         <DialogContent sx={{ pt: '8px !important' }}>
@@ -797,9 +801,10 @@ export function CrewsPanel() {
               <Tab key={cat.id} label={cat.label} icon={cat.icon} iconPosition="start" />
             ))}
           </Tabs>
-          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 1.5 }}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 1.5 }}>
             {PREBUILT_CATEGORIES[importCategory]?.crews.map((pc) => {
               const alreadyImported = crews.some((c) => c.callsign === pc.callsign);
+              const existingCrew = crews.find((c) => c.callsign === pc.callsign);
               return (
                 <Box key={pc.callsign} sx={{ p: 1.75, borderRadius: 1.5, border: `1px solid ${colors.border.default}`, bgcolor: colors.bg.tertiary }}>
                   <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', mb: 0.75 }}>
@@ -818,9 +823,11 @@ export function CrewsPanel() {
                     ))}
                   </Box>
                   {alreadyImported ? (
-                    <Typography sx={{ fontSize: '0.6rem', color: colors.accent.green, textAlign: 'center', py: 0.5 }}>
-                      Already imported
-                    </Typography>
+                    <Button size="small" variant="outlined" fullWidth
+                      onClick={() => existingCrew && handleDelete(existingCrew.id)}
+                      sx={{ fontSize: '0.6rem', textTransform: 'none', borderColor: colors.accent.red + '50', color: colors.accent.red, mt: 0.5 }}>
+                      Remove
+                    </Button>
                   ) : (
                     <Button size="small" variant="outlined" fullWidth
                       onClick={() => handleImportCrew(pc)} disabled={importLoading === pc.callsign}
@@ -834,6 +841,30 @@ export function CrewsPanel() {
             })}
           </Box>
         </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={!!deleteConfirmId} onClose={() => setDeleteConfirmId(null)}
+        PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, borderRadius: 2, maxWidth: 400, width: '100%' } }}>
+        <DialogTitle sx={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.85rem', fontWeight: 700, letterSpacing: '1px', pb: 1 }}>
+          Delete Crew
+        </DialogTitle>
+        <DialogContent sx={{ pt: '8px !important' }}>
+          <Typography sx={{ fontSize: '0.75rem', color: colors.text.secondary, lineHeight: 1.6 }}>
+            {(() => {
+              const c = crews.find((x) => x.id === deleteConfirmId);
+              return c ? <>Are you sure you want to delete <strong>{c.name}</strong>{c.title ? ` (${c.title})` : ''}? This action cannot be undone.</> : 'Are you sure you want to delete this crew?';
+            })()}
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button onClick={() => setDeleteConfirmId(null)} sx={{ color: colors.text.dim, textTransform: 'none', fontSize: '0.75rem' }}>Cancel</Button>
+          <Button onClick={() => deleteConfirmId && handleDelete(deleteConfirmId)} variant="contained" disabled={busy}
+            sx={{ bgcolor: colors.accent.red, color: '#fff', textTransform: 'none', fontSize: '0.75rem', px: 2.5, '&:hover': { bgcolor: '#d63a33' } }}>
+            {busy ? <CircularProgress size={14} sx={{ mr: 1 }} /> : null}
+            Delete
+          </Button>
+        </DialogActions>
       </Dialog>
     </Box>
   );
