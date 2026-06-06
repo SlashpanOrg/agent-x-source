@@ -264,7 +264,7 @@ export function SlashCommandMenu({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3b. CrewMentionMenu — @-mention autocomplete for crew members
+// 3b. CrewMentionMenu — @-mention autocomplete for crew members + agentx
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function CrewMentionMenu({
@@ -272,16 +272,21 @@ export function CrewMentionMenu({
   crewList,
   onSelect,
   onClose,
+  onSelectAgent,
 }: {
   query: string;
   crewList: Crew[];
   onSelect: (crew: Crew) => void;
   onClose: () => void;
+  onSelectAgent?: () => void;
 }) {
-  const filtered = useMemo(() => {
-    const q = query.toLowerCase();
-    return crewList.filter(c => c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q));
-  }, [query, crewList]);
+  const q = query.toLowerCase();
+  const filteredCrews = query === '' 
+    ? crewList 
+    : crewList.filter(c => c.name.toLowerCase().includes(q) || c.callsign.toLowerCase().includes(q));
+  
+  const showAgentX = query === '' || 'agent-x'.includes(q) || 'agentx'.includes(q);
+  const totalItems = (showAgentX ? 1 : 0) + filteredCrews.length;
 
   const [active, setActive] = useState(0);
 
@@ -291,18 +296,25 @@ export function CrewMentionMenu({
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (filtered.length === 0) return;
+      if (totalItems === 0) return;
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setActive(i => Math.min(filtered.length - 1, i + 1));
+        setActive(i => Math.min(totalItems - 1, i + 1));
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         setActive(i => Math.max(0, i - 1));
       } else if (e.key === 'Tab' || e.key === 'Enter') {
-        const crew = filtered[active];
-        if (crew) {
+        // active 0 = agentx (if showing), others = crew
+        if (showAgentX && active === 0) {
           e.preventDefault();
-          onSelect(crew);
+          onSelectAgent?.();
+        } else {
+          const crewIdx = showAgentX ? active - 1 : active;
+          const crew = filteredCrews[crewIdx];
+          if (crew) {
+            e.preventDefault();
+            onSelect(crew);
+          }
         }
       } else if (e.key === 'Escape') {
         e.preventDefault();
@@ -311,9 +323,9 @@ export function CrewMentionMenu({
     };
     window.addEventListener('keydown', handler, true);
     return () => window.removeEventListener('keydown', handler, true);
-  }, [filtered, active, onSelect, onClose]);
+  }, [totalItems, active, showAgentX, filteredCrews, onSelect, onClose, onSelectAgent]);
 
-  if (filtered.length === 0) return null;
+  if (totalItems === 0) return null;
 
   return (
     <Box
@@ -336,34 +348,67 @@ export function CrewMentionMenu({
       <Box sx={{ px: 1.25, py: 0.5, borderBottom: `1px solid ${colors.border.subtle}`, display: 'flex', alignItems: 'center', gap: 0.5 }}>
         <GroupIcon sx={{ fontSize: 13, color: colors.accent.blue }} />
         <Typography sx={{ fontSize: '0.5rem', fontFamily: "'JetBrains Mono', monospace", color: colors.text.dim, letterSpacing: '1px' }}>
-          CREW MEMBERS
+          MENTIONS
         </Typography>
         <Box sx={{ flex: 1 }} />
-        <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>↑↓ navigate · ⏎/⭾ select · esc close</Typography>
+        <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>↑↓ · ⏎ select · esc</Typography>
       </Box>
-      {filtered.map((crew, i) => (
+      {showAgentX && (
         <Box
-          key={crew.id}
-          onClick={() => onSelect(crew)}
-          onMouseEnter={() => setActive(i)}
+          onClick={() => onSelectAgent?.()}
+          onMouseEnter={() => setActive(0)}
           sx={{
             px: 1.25, py: 0.6,
             display: 'flex', alignItems: 'center', gap: 0.75,
             cursor: 'pointer',
-            bgcolor: i === active ? colors.accent.blue + '15' : 'transparent',
-            borderLeft: i === active ? `2px solid ${colors.accent.blue}` : '2px solid transparent',
+            bgcolor: active === 0 ? colors.accent.blue + '15' : 'transparent',
+            borderLeft: active === 0 ? `2px solid ${colors.accent.blue}` : '2px solid transparent',
           }}
         >
-          <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: colors.text.primary, fontFamily: "'JetBrains Mono', monospace" }}>
-            @{crew.name}
-          </Typography>
-          {crew.expertise && crew.expertise.length > 0 && (
-            <Typography sx={{ fontSize: '0.6rem', color: colors.text.dim, flex: 1 }}>
-              {crew.expertise.join(', ')}
+          <SmartToyIcon sx={{ fontSize: 14, color: colors.accent.blue }} />
+          <Box>
+            <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: colors.accent.blue, fontFamily: "'JetBrains Mono', monospace" }}>
+              @agentx
             </Typography>
-          )}
+            <Typography sx={{ fontSize: '0.55rem', color: colors.text.dim }}>
+              Agent-X — Your AI Wingman
+            </Typography>
+          </Box>
         </Box>
-      ))}
+      )}
+      {filteredCrews.map((crew, i) => {
+        const idx = showAgentX ? i + 1 : i;
+        return (
+        <Box
+          key={crew.id}
+          onClick={() => onSelect(crew)}
+          onMouseEnter={() => setActive(idx)}
+          sx={{
+            px: 1.25, py: 0.6,
+            display: 'flex', alignItems: 'center', gap: 0.75,
+            cursor: 'pointer',
+            bgcolor: idx === active ? colors.accent.blue + '15' : 'transparent',
+            borderLeft: idx === active ? `2px solid ${colors.accent.blue}` : '2px solid transparent',
+          }}
+        >
+          <Box sx={{ flex: 1 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: colors.text.primary, fontFamily: "'JetBrains Mono', monospace" }}>
+                @{crew.callsign}
+              </Typography>
+              {crew.title && (
+                <Typography sx={{ fontSize: '0.55rem', color: colors.text.dim }}>
+                  — {crew.title}
+                </Typography>
+              )}
+            </Box>
+            <Typography sx={{ fontSize: '0.6rem', color: colors.text.secondary }}>
+              {crew.name}
+            </Typography>
+          </Box>
+        </Box>
+      );
+      })}
     </Box>
   );
 }

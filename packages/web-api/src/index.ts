@@ -519,6 +519,13 @@ app.post('/api/crew/toggle', (req, res) => {
     const { crewId, enabled } = req.body as { crewId: string; enabled: boolean };
     const eng = getEngine();
     
+    // Update crew in CrewManager
+    if (enabled) {
+      eng.crewManager.enable(crewId);
+    } else {
+      eng.crewManager.disable(crewId);
+    }
+    
     // Update agent
     if (eng.agent) {
       eng.agent.setCrewEnabled(crewId, enabled);

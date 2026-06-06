@@ -168,10 +168,13 @@ export class CrewManager {
   }
 
   delete(id: string): boolean {
-    if (id === this.activeCrewId) return false;
     const idx = this.crews.findIndex((p) => p.id === id);
     if (idx < 0) return false;
     this.crews.splice(idx, 1);
+    if (this.activeCrewId === id) {
+      const fallback = this.crews.find((c) => c.enabled);
+      this.activeCrewId = fallback?.id ?? null;
+    }
     this.save();
     return true;
   }
