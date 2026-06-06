@@ -566,7 +566,7 @@ app.delete('/api/crews/:id', (req, res) => {
 
 app.post('/api/crew/generate-metadata', async (req, res) => {
   try {
-    const { systemPrompt } = req.body as { systemPrompt: string };
+    const { systemPrompt, title } = req.body as { systemPrompt: string; title?: string };
     if (!systemPrompt) { res.status(400).json({ error: 'systemPrompt required' }); return; }
 
     const eng = getEngine();
@@ -575,19 +575,26 @@ app.post('/api/crew/generate-metadata', async (req, res) => {
     const providerCfg = cfg.provider.providers[providerId];
     const apiKey = providerCfg?.apiKey || providerCfg?.profiles?.[providerCfg?.activeProfile ?? '']?.apiKey;
 
-    if (!apiKey) { res.json({ expertise: [], traits: [] }); return; }
+    if (!apiKey) { res.json({ expertise: [], traits: [], revisedPrompt: '' }); return; }
 
     const { ProviderFactory } = await import('@agentx/engine');
     const provider = ProviderFactory.create(providerId as any, apiKey, providerCfg?.baseUrl);
 
-    const genPrompt = `Analyze this AI agent's system prompt and extract:
-1. expertise: 3-6 specific technical/domain skills (e.g. "React", "API Design", "Security Auditing")
-2. traits: 3-5 personality/behavioral traits (e.g. "concise", "practical", "pragmatic")
+    const titleContext = title ? `\nRole/Title: ${title}` : '';
+
+    const genPrompt = `Analyze this AI crew member's role and system prompt.${titleContext}
 
 System prompt:
-"${systemPrompt}"
+"""
+${systemPrompt}
+"""
 
-Return ONLY valid JSON: {"expertise":["skill1","skill2"],"traits":["trait1","trait2"]}`;
+Return ONLY valid JSON with:
+- "revisedPrompt": an improved, more structured version of the system prompt (keep the core persona but make it clearer, more specific, and better organized)
+- "expertise": 4-8 specific technical/domain skills (e.g. "React", "API Design", "Security Auditing")
+- "traits": 3-6 personality/behavioral traits (e.g. "concise", "practical", "pragmatic", "analytical")
+
+Format: {"revisedPrompt":"...", "expertise":["skill1","skill2"], "traits":["trait1","trait2"]}`;
 
     const chunks: string[] = [];
     const modelId = cfg.provider.activeModel || 'gpt-4o-mini';
@@ -595,7 +602,7 @@ Return ONLY valid JSON: {"expertise":["skill1","skill2"],"traits":["trait1","tra
       messages: [{ role: 'user', content: genPrompt }],
       model: modelId,
       stream: true,
-      maxTokens: 200,
+      maxTokens: 500,
       temperature: 0.3,
     })) {
       if (chunk.type === 'text_delta' && chunk.content) chunks.push(chunk.content);
@@ -603,15 +610,16 @@ Return ONLY valid JSON: {"expertise":["skill1","skill2"],"traits":["trait1","tra
 
     const text = chunks.join('');
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) { res.json({ expertise: [], traits: [] }); return; }
+    if (!jsonMatch) { res.json({ expertise: [], traits: [], revisedPrompt: '' }); return; }
 
     const parsed = JSON.parse(jsonMatch[0]);
     res.json({
+      revisedPrompt: typeof parsed.revisedPrompt === 'string' ? parsed.revisedPrompt : '',
       expertise: Array.isArray(parsed.expertise) ? parsed.expertise.slice(0, 8) : [],
       traits: Array.isArray(parsed.traits) ? parsed.traits.slice(0, 8) : [],
     });
   } catch (e: unknown) {
-    res.json({ expertise: [], traits: [] });
+    res.json({ expertise: [], traits: [], revisedPrompt: '' });
   }
 });
 
