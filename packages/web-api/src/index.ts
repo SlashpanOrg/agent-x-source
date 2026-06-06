@@ -486,9 +486,7 @@ app.get('/api/agent/state', (_req, res) => {
 // ───── Crews ─────
 app.get('/api/crews', (_req, res) => {
   const eng = getEngine();
-  const crews = eng.crewManager.list();
-  const activeId = eng.crewManager.getActiveId();
-  res.json({ crews, activeId });
+  res.json({ crews: eng.crewManager.list() });
 });
 
 

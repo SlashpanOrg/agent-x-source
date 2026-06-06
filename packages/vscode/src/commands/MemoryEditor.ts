@@ -54,14 +54,12 @@ export class MemoryEditor {
 
     const globalMemories = this.secretSauce.memories.getGlobalMemories(100);
     const crewMemories = this.secretSauce.memories.getCrewMemories(100);
-    const activeCrew = this.secretSauce.crew.getActive()!;
-
     this.panel.webview.postMessage({
       type: 'memories-loaded',
       globalMemories,
       crewMemories,
-      crewName: activeCrew.name,
-      crewId: activeCrew.id,
+      crewName: 'Default',
+      crewId: 'default',
     });
   }
 
@@ -121,8 +119,7 @@ export class MemoryEditor {
     if (scope === 'global') {
       filePath = join(sauceDir, 'global', 'memories.json');
     } else {
-      const crewId = this.secretSauce!.crew.getActiveId()!;
-      filePath = join(sauceDir, 'crews', crewId, 'memories.json');
+      filePath = join(sauceDir, 'crews', 'default', 'memories.json');
     }
 
     if (!existsSync(filePath)) return;
@@ -144,7 +141,7 @@ export class MemoryEditor {
 
     const exportData = {
       exportedAt: new Date().toISOString(),
-      crewName: this.secretSauce.crew.getActive()!.name,
+      crewName: 'Default',
       global: globalMemories,
       crew: crewMemories,
       total: globalMemories.length + crewMemories.length,

@@ -100,7 +100,7 @@ export const CrewSelect: React.FC<CrewSelectProps> = ({
   });
 
   const handleSelect = (crew: Crew) => {
-    pm.switch(crew.id);
+    /* switch removed */ void crew.id;
     onSelect(crew);
   };
 
@@ -116,7 +116,7 @@ export const CrewSelect: React.FC<CrewSelectProps> = ({
         emotion: newTone,
         isDefault: false,
       });
-      pm.switch(crew.id);
+      /* switch removed */ void crew.id;
       onSelect(crew);
     } catch (e: unknown) {
       setNewError(e instanceof Error ? e.message : 'Creation failed');
@@ -143,7 +143,7 @@ export const CrewSelect: React.FC<CrewSelectProps> = ({
         emotion: editTone,
       });
       if (updated) {
-        pm.switch(updated.id);
+        /* switch removed */ void updated.id;
         onSelect(updated);
       }
     } catch (e: unknown) {

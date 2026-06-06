@@ -375,7 +375,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const scope = item.scope ?? 'crew';
       const filePath = scope === 'global'
         ? join(sauceDir, 'global', 'memories.json')
-        : join(sauceDir, 'crews', item.scope === 'global' ? '' : (engineLifecycle.getEngine()?.getAgent()?.sauce.crew.getActiveId() ?? 'default'), 'memories.json');
+        : join(sauceDir, 'crews', item.scope === 'global' ? '' : 'default', 'memories.json');
       if (existsSync(filePath)) {
         try {
           const entries = JSON.parse(readFileSync(filePath, 'utf-8')) as import('./providers/MemoryTreeProvider').MemoryEntry[];
@@ -425,7 +425,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const crewMemories = agent.sauce.memories.getCrewMemories(100);
       const exportData = {
         exportedAt: new Date().toISOString(),
-        crewName: agent.sauce.crew.getActive()!.name,
+        crewName: 'Default',
         global: globalMemories,
         crew: crewMemories,
         total: globalMemories.length + crewMemories.length,
