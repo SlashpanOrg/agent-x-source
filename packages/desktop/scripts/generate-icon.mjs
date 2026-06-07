@@ -10,29 +10,62 @@ const buildDir = join(root, 'build');
 const iconPath = join(buildDir, 'icon.png');
 const trayPaths = [join(buildDir, 'Tray.png'), join(buildDir, 'TrayWin.png')];
 
-// Check sources in priority order: local build dir (committed in git) > release/assets (outside repo) > fallback
-const sources = [
+const assetsDir = join(root, '..', '..', '..', 'release', 'assets');
+
+// App icon: use agent_x_logo.png with black background composited
+const iconSources = [
   join(buildDir, 'icon.png'),
-  join(root, '..', '..', '..', 'release', 'assets', 'agent_x_logo.png'),
+  join(assetsDir, 'agent_x_logo_bg.png'),
+  join(assetsDir, 'agent_x_logo.png'),
 ];
 
-const src = sources.find(existsSync);
+// Tray icons: use agent_x_tray_logo.png (transparent for menu bar)
+const traySources = [
+  join(buildDir, 'Tray.png'),
+  join(assetsDir, 'agent_x_tray_logo.png'),
+  join(assetsDir, 'agent_x_logo.png'),
+];
 
-if (src) {
-  if (src !== iconPath) {
-    copyFileSync(src, iconPath);
+const iconSrc = iconSources.find(existsSync);
+const traySrc = traySources.find(existsSync);
+
+if (iconSrc) {
+  if (iconSrc !== iconPath) {
+    copyFileSync(iconSrc, iconPath);
   }
-  console.log(`Icon: ${iconPath} (from ${src})`);
+  console.log(`App icon: ${iconPath} (from ${iconSrc})`);
+} else {
+  console.log('No app icon found, generating fallback...');
+  generateFallbackIcon();
+}
 
+// Tray icons use transparent version
+if (traySrc) {
   for (const dest of trayPaths) {
-    if (!existsSync(dest)) {
-      copyFileSync(src, dest);
-      console.log(`Tray icon: ${dest}`);
+    copyFileSync(traySrc, dest);
+    console.log(`Tray icon: ${dest} (from ${traySrc})`);
+  }
+} else if (!existsSync(trayPaths[0])) {
+  // Fallback: use the app icon if no tray-specific source
+  if (iconSrc) {
+    for (const dest of trayPaths) {
+      copyFileSync(iconSrc, dest);
+      console.log(`Tray icon (fallback): ${dest}`);
     }
   }
-} else {
-  console.log('No logo found, generating fallback icon...');
-  generateFallbackIcon();
+}
+
+// On macOS, generate proper .icns with black background
+if (process.platform === 'darwin') {
+  const { execSync } = await import('node:child_process');
+  const icnsScript = join(__dirname, 'generate-icns.py');
+  if (existsSync(icnsScript)) {
+    try {
+      execSync(`python3 ${icnsScript}`, { stdio: 'inherit' });
+    } catch (e) {
+      console.log('generate-icns.py failed, electron-builder will use PNG:', e.message);
+    }
+  }
 }
 
 function generateFallbackIcon() {

@@ -62,9 +62,44 @@ function getAuthPath(): string {
 export class AuthManager {
   private authPath: string;
   private sessions: Map<string, AuthSession> = new Map();
+  private sessionsPath: string;
 
   constructor() {
     this.authPath = getAuthPath();
+    this.sessionsPath = join(getAuthDir(), 'sessions.json');
+    this.loadSessions();
+  }
+
+  private loadSessions(): void {
+    try {
+      if (existsSync(this.sessionsPath)) {
+        const raw = JSON.parse(readFileSync(this.sessionsPath, 'utf-8')) as Array<{ token: string; username: string; createdAt: string; lastActiveAt: string }>;
+        for (const s of raw) {
+          const createdAt = new Date(s.createdAt);
+          if (Date.now() - createdAt.getTime() < AUTH_SESSION_TTL_MS) {
+            this.sessions.set(s.token, {
+              token: s.token,
+              username: s.username,
+              createdAt,
+              lastActiveAt: new Date(s.lastActiveAt),
+              dek: Buffer.alloc(0), // DEK never persisted — must re-login for encrypted data
+            });
+          }
+        }
+      }
+    } catch { /* sessions file missing or corrupted — start fresh */ }
+  }
+
+  private saveSessions(): void {
+    try {
+      const serialized = Array.from(this.sessions.entries())
+        .filter(([, s]) => s.dek.length > 0) // only persist sessions with a DEK (fully logged in)
+        .map(([, s]) => ({ token: s.token, username: s.username, createdAt: s.createdAt.toISOString(), lastActiveAt: s.lastActiveAt.toISOString() }));
+      const tmpPath = this.sessionsPath + '.tmp.' + Date.now();
+      writeFileSync(tmpPath, JSON.stringify(serialized, null, 2), 'utf-8');
+      writeFileSync(this.sessionsPath, JSON.stringify(serialized, null, 2), 'utf-8');
+      try { unlinkSync(tmpPath); } catch { /* ignore */ }
+    } catch { /* best effort */ }
   }
 
   /**
@@ -180,6 +215,7 @@ export class AuthManager {
     };
 
     this.sessions.set(token, session);
+    this.saveSessions();
     return token;
   }
 
@@ -208,9 +244,9 @@ export class AuthManager {
   logout(token: string): void {
     const session = this.sessions.get(token);
     if (session) {
-      // Overwrite DEK buffer with zeros before deletion
       session.dek.fill(0);
       this.sessions.delete(token);
+      this.saveSessions();
     }
   }
 

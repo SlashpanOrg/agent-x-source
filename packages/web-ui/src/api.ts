@@ -200,6 +200,7 @@ export const permissions = {
 // ─── System ───
 export const system = {
   cwd: () => request<{ cwd: string }>('/cwd'),
+  setCwd: (path: string) => request<{ cwd: string }>('/cwd', { method: 'POST', body: JSON.stringify({ path }) }),
 };
 
 // ─── Session Settings ───
