@@ -1,210 +1,180 @@
-import { app, BrowserWindow, Tray, Menu, Notification, globalShortcut, ipcMain, nativeImage } from 'electron';
+import { app, BrowserWindow, Tray, Menu, Notification, globalShortcut, ipcMain, dialog, nativeImage } from 'electron';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { autoUpdater } from 'electron-updater';
+import type { Server } from 'http';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+let server: Server | null = null;
+const PORT = 3333;
 
 const isDev = process.env['NODE_ENV'] === 'development' || !app.isPackaged;
 
-function getCliPath(): string {
-  if (isDev) {
-    return join(__dirname, '..', '..', 'cli', 'dist', 'index.js');
+const gotSingleLock = app.requestSingleInstanceLock();
+if (!gotSingleLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
+function getWebApiPath(): string {
+  if (isDev) return join(__dirname, '..', '..', 'web-api', 'dist', 'index.js');
+  return join(process.resourcesPath, 'web-api', 'index.js');
+}
+
+function getWebUiDir(): string {
+  if (isDev) return join(__dirname, '..', '..', 'web-ui', 'dist');
+  return join(process.resourcesPath, 'web-ui');
+}
+
+async function startServer(): Promise<void> {
+  const apiPath = getWebApiPath();
+  const uiDir = getWebUiDir();
+
+  if (!existsSync(apiPath)) {
+    throw new Error(`Web-API not found at ${apiPath}`);
   }
-  const p = join(process.resourcesPath, 'cli', 'index.js');
-  if (!existsSync(p)) {
-    throw new Error(`CLI not found at ${p}. Run 'pnpm build' first.`);
+
+  // Set UI dir before importing the server module
+  process.env['AGENTX_UI_DIR'] = uiDir;
+  process.env['PORT'] = String(PORT);
+  process.env['NODE_ENV'] = 'production';
+
+  // Dynamically import the ESM web-api bundle — it creates an Express server and listens
+  const mod = await import(apiPath);
+  // The server is created internally and listens on PORT. Capture it for cleanup.
+  // The module exports may vary; we just need it to start listening.
+  if (mod.server) server = mod.server as Server;
+}
+
+async function stopServer(): Promise<void> {
+  if (server) {
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = null;
   }
-  return p;
 }
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 750,
-    minWidth: 600,
-    minHeight: 400,
-    title: 'Agent-X',
-    show: false,
+    width: 1200, height: 800, minWidth: 800, minHeight: 500,
+    title: 'Agent-X', show: false, backgroundColor: '#0d1117',
+    titleBarStyle: 'default',
     webPreferences: {
-      preload: join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      preload: join(__dirname, 'preload.js'),
     },
   });
 
-  mainWindow.loadURL(`file://${join(__dirname, '..', 'renderer', 'index.html')}`);
+  mainWindow.loadURL(`http://localhost:${PORT}`);
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
-    if (isDev) {
-      mainWindow?.webContents.openDevTools({ mode: 'bottom' });
-    }
+    if (isDev) mainWindow?.webContents.openDevTools({ mode: 'bottom' });
   });
 
   mainWindow.on('close', (e) => {
-    if (!isQuitting) {
-      e.preventDefault();
-      mainWindow?.hide();
-    }
+    if (!isQuitting) { e.preventDefault(); mainWindow?.hide(); }
   });
 }
 
 function createTray(): void {
-  const trayIconPath = join(__dirname, '..', 'build', process.platform === 'darwin' ? 'Tray.png' : 'TrayWin.png');
-  const icon = existsSync(trayIconPath)
-    ? nativeImage.createFromPath(trayIconPath).resize({ width: 16, height: 16 })
-    : nativeImage.createEmpty();
+  let icon: Electron.NativeImage;
+  const candidates = [
+    join(__dirname, '..', 'build', process.platform === 'darwin' ? 'Tray.png' : 'TrayWin.png'),
+    join(__dirname, '..', 'build', 'icon.png'),
+    join(process.resourcesPath, 'build', 'icon.png'),
+  ];
+  const found = candidates.find(p => existsSync(p));
+  if (found) {
+    icon = nativeImage.createFromPath(found).resize({ width: 16, height: 16 });
+  } else {
+    // Create a simple 16x16 fallback icon programmatically
+    icon = nativeImage.createEmpty();
+  }
   tray = new Tray(icon);
-
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: 'Show Agent-X',
-      click: () => {
-        mainWindow?.show();
-        mainWindow?.focus();
-      },
-    },
+  tray.setToolTip('Agent-X — Starting...');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open Agent-X', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
     { type: 'separator' },
-    {
-      label: 'Quit',
-      click: () => {
-        isQuitting = true;
-        app.quit();
-      },
-    },
-  ]);
-
-  tray.setToolTip('Agent-X');
-  tray.setContextMenu(contextMenu);
-
+    { label: 'Quit Agent-X', click: () => { isQuitting = true; app.quit(); } },
+  ]));
   tray.on('click', () => {
-    if (mainWindow?.isVisible()) {
-      mainWindow.hide();
-    } else {
-      mainWindow?.show();
-      mainWindow?.focus();
-    }
+    if (mainWindow?.isVisible()) mainWindow.hide();
+    else { mainWindow?.show(); mainWindow?.focus(); }
   });
-
-  setTimeout(() => {
-    if (mainWindow) {
-      new Notification({
-        title: 'Agent-X',
-        body: 'Running in the background. Click the tray icon to open.',
-      }).show();
-    }
-  }, 10000);
 }
 
 function registerHotkey(): void {
-  const registered = globalShortcut.register('Alt+A', () => {
-    if (mainWindow?.isVisible()) {
-      mainWindow.hide();
-    } else {
-      mainWindow?.show();
-      mainWindow?.focus();
-    }
+  const ok = globalShortcut.register('Alt+A', () => {
+    if (mainWindow?.isVisible()) mainWindow.hide();
+    else { mainWindow?.show(); mainWindow?.focus(); }
   });
-
-  if (!registered) {
-    console.warn('Failed to register global hotkey Alt+A');
-  }
+  if (!ok) console.warn('Failed to register global hotkey Alt+A');
 }
+
+ipcMain.on('window:minimize', () => mainWindow?.minimize());
+ipcMain.on('window:maximize', () => {
+  if (mainWindow?.isMaximized()) mainWindow.unmaximize();
+  else mainWindow?.maximize();
+});
+ipcMain.on('window:close', () => mainWindow?.close());
+ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized() ?? false);
+ipcMain.handle('dialog:openFolder', async () => {
+  if (!mainWindow) return null;
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory'],
+    title: 'Choose a project folder',
+  });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+});
 
 function setupAutoUpdater(): void {
   if (isDev) return;
-
   autoUpdater.logger = console;
   autoUpdater.checkForUpdatesAndNotify();
-
   autoUpdater.on('update-available', () => {
-    if (mainWindow) {
-      new Notification({
-        title: 'Update Available',
-        body: 'Downloading Agent-X update...',
-      }).show();
-    }
+    if (mainWindow) new Notification({ title: 'Update Available', body: 'Downloading update...' }).show();
   });
-
   autoUpdater.on('update-downloaded', () => {
-    if (mainWindow) {
-      new Notification({
-        title: 'Update Ready',
-        body: 'Restart Agent-X to apply the update.',
-      }).show();
-    }
+    if (mainWindow) new Notification({ title: 'Update Ready', body: 'Restart to apply.' }).show();
   });
 }
 
-// PTY terminal
-import type { IPty } from 'node-pty';
-
-let ptyProcess: IPty | null = null;
-
-ipcMain.on('pty:write', (_e, data: string) => {
-  ptyProcess?.write(data);
-});
-
-ipcMain.on('pty:resize', (_e, { cols, rows }: { cols: number; rows: number }) => {
-  try { ptyProcess?.resize(cols, rows); } catch { /* ignore */ }
-});
-
-ipcMain.handle('pty:spawn', async () => {
+app.whenReady().then(async () => {
   try {
-    const { spawn } = await import('node-pty');
-    const cliPath = getCliPath();
-    const shell = process.platform === 'win32' ? 'cmd.exe' : 'node';
-    const args = process.platform === 'win32' ? [] : [cliPath];
-
-    ptyProcess = spawn(shell, args, {
-      name: 'xterm-256color',
-      cols: 100,
-      rows: 30,
-      cwd: process.cwd(),
-      env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '3' },
-    });
-
-    ptyProcess.onData((data: string) => {
-      mainWindow?.webContents.send('pty:data', data);
-    });
-
-    ptyProcess.onExit(({ exitCode, signal }) => {
-      mainWindow?.webContents.send('pty:exit', { exitCode, signal });
-      ptyProcess = null;
-    });
-
-    return { ok: true };
-  } catch (e) {
-    console.error('PTY spawn failed:', e);
-    return { ok: false, error: (e as Error).message };
-  }
-});
-
-app.whenReady().then(() => {
-  createWindow();
-  createTray();
-  registerHotkey();
-  setupAutoUpdater();
-});
-
-app.on('will-quit', () => {
-  globalShortcut.unregisterAll();
-});
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+    // Show tray icon immediately so user knows daemon is starting
+    createTray();
+    await startServer();
+    tray?.setToolTip(`Agent-X — Running on port ${PORT}`);
+    createWindow();
+    registerHotkey();
+    setupAutoUpdater();
+    // Notify user daemon is running in background
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isVisible()) {
+        new Notification({ title: 'Agent-X', body: 'Running in the background. Click the tray icon to open.' }).show();
+      }
+    }, 2000);
+  } catch (err) {
+    console.error('Failed to start:', err);
     app.quit();
   }
 });
 
+app.on('will-quit', () => { globalShortcut.unregisterAll(); stopServer(); });
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  } else {
-    mainWindow?.show();
-  }
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  else mainWindow?.show();
 });
+app.on('before-quit', () => { isQuitting = true; });

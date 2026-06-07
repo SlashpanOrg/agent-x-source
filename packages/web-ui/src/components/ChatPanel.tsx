@@ -61,6 +61,7 @@ import {
   type PaletteAction,
 } from './ChatEnhancements';
 import { MentionInput } from './MentionInput';
+import { FolderPickerModal } from './FolderPickerModal';
 
 // ─── CSS Keyframes (injected once) ───
 const styleId = 'agentx-chat-keyframes';
@@ -155,7 +156,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
-  const [permissionPrompt, setPermissionPrompt] = useState<string | null>(null);
+  const [permissionPrompt, setPermissionPrompt] = useState<{ tool: string; path: string; riskLevel: string } | null>(null);
   const [toolEnablePrompt, setToolEnablePrompt] = useState<{ toolId: string; toolName: string } | null>(null);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -268,6 +269,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [checkpointsOpen, setCheckpointsOpen] = useState(false);
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+  const [folderPickerCallback, setFolderPickerCallback] = useState<((path: string) => void) | null>(null);
   const [showSlash, setShowSlash] = useState(false);
   const slashQuery = useMemo(() => {
     if (!input.startsWith('/')) return '';
@@ -555,7 +558,11 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
           }
 
           case 'permission_required':
-            setPermissionPrompt((ev.tool as string) + ': ' + ((ev.path as string) ?? ''));
+            setPermissionPrompt({
+              tool: (ev.tool as string) ?? 'unknown',
+              path: (ev.path as string) ?? '',
+              riskLevel: (ev.riskLevel as string) ?? 'medium',
+            });
             return prev;
 
           case 'error': {
@@ -1006,7 +1013,18 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   };
 
   const handleNewSession = async () => {
-    // Don't create a session yet — navigate to empty chat, session created on first message
+    const desktopApi = (window as any).agentx;
+    if (desktopApi?.openFolder) {
+      const folder = await desktopApi.openFolder();
+      if (!folder) return;
+      startNewSession(folder);
+    } else {
+      setFolderPickerCallback(() => (path: string) => startNewSession(path));
+      setFolderPickerOpen(true);
+    }
+  };
+
+  const startNewSession = async (folder: string) => {
     setMessages([]);
     setCurrentSessionTitle(null);
     setCurrentSessionId(null);
@@ -1017,6 +1035,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     setTodoItems([]);
     setShowJumpPill(false);
     setUnreadCount(0);
+    setCwd(folder);
+    try { await system.setCwd(folder); } catch { /* ignore */ }
     setView('chat');
     navigate('/console/chat');
   };
@@ -1726,6 +1746,26 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
           {currentSessionId && (
             <Box sx={{ mt: 1, pt: 0.75, borderTop: `1px solid ${colors.border.subtle}` }}>
+              <Typography sx={{ fontSize: '0.45rem', color: colors.text.dim, letterSpacing: '0.5px' }}>SCOPE</Typography>
+              <Typography sx={{ fontSize: '0.5rem', fontFamily: "'JetBrains Mono', monospace", color: colors.text.secondary, mt: 0.25, wordBreak: 'break-all', cursor: 'pointer', '&:hover': { color: colors.accent.blue } }}
+                onClick={async () => {
+                  const desktopApi = (window as any).agentx;
+                  if (desktopApi?.openFolder) {
+                    const folder = await desktopApi.openFolder();
+                    if (folder) system.setCwd(folder).then(r => setCwd(r.cwd)).catch(() => {});
+                  } else {
+                    setFolderPickerCallback(() => (path: string) => {
+                      system.setCwd(path).then(r => setCwd(r.cwd)).catch(() => {});
+                    });
+                    setFolderPickerOpen(true);
+                  }
+                }}>
+                {cwd.split('/').slice(-3).join('/') || cwd}
+              </Typography>
+            </Box>
+          )}
+          {currentSessionId && (
+            <Box sx={{ mt: 0.5, pt: 0.5, borderTop: `1px solid ${colors.border.subtle}` }}>
               <Typography sx={{ fontSize: '0.45rem', color: colors.text.dim, letterSpacing: '0.5px' }}>SESSION</Typography>
               <Typography sx={{ fontSize: '0.5rem', fontFamily: "'JetBrains Mono', monospace", color: colors.text.secondary, mt: 0.25, wordBreak: 'break-all' }}>
                 {currentSessionId}
@@ -1794,6 +1834,15 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
             setTokenOutput(outputEst);
           } catch { /* ignore */ }
         }}
+      />
+      <FolderPickerModal
+        open={folderPickerOpen}
+        onSelect={(path) => {
+          setFolderPickerOpen(false);
+          folderPickerCallback?.(path);
+          setFolderPickerCallback(null);
+        }}
+        onCancel={() => { setFolderPickerOpen(false); setFolderPickerCallback(null); }}
       />
     </Box>
   );
@@ -2178,7 +2227,7 @@ function InlineTodoList({ items }: { items: TodoItem[] }) {
 
 // ─── Permission Banner ───
 
-function PermissionBanner({ prompt, onRespond }: { prompt: string; onRespond: () => void }) {
+function PermissionBanner({ prompt, onRespond }: { prompt: { tool: string; path: string; riskLevel: string }; onRespond: () => void }) {
   const handleRespond = async (choice: 'allow_once' | 'allow_always' | 'deny') => {
     try {
       await fetch('/api/permission/respond', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ choice }) });
@@ -2186,10 +2235,37 @@ function PermissionBanner({ prompt, onRespond }: { prompt: string; onRespond: ()
     onRespond();
   };
 
+  const isCritical = prompt.riskLevel === 'critical';
+  const isHigh = prompt.riskLevel === 'high';
+  const borderColor = isCritical ? colors.accent.red + '50' : isHigh ? colors.accent.orange + '40' : colors.accent.orange + '30';
+  const bgColor = isCritical ? colors.accent.red + '08' : isHigh ? colors.accent.orange + '08' : colors.accent.orange + '05';
+  const titleColor = isCritical ? colors.accent.red : isHigh ? colors.accent.orange : colors.accent.orange;
+
   return (
-    <Box sx={{ p: 1.5, mb: 2, borderRadius: 1, border: `1px solid ${colors.accent.orange}30`, bgcolor: colors.accent.orange + '05', animation: 'agentx-fadeIn 0.3s ease-out' }}>
-      <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: colors.accent.orange, mb: 0.5 }}>Permission Required</Typography>
-      <Typography sx={{ fontSize: '0.6rem', mb: 1, color: colors.text.secondary }}>{prompt}</Typography>
+    <Box sx={{ p: 1.5, mb: 2, borderRadius: 1, border: `1px solid ${borderColor}`, bgcolor: bgColor, animation: 'agentx-fadeIn 0.3s ease-out' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.5 }}>
+        <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: titleColor }}>
+          {isCritical ? '⚠ Critical Permission Required' : isHigh ? '⚡ High-Risk Permission' : 'Permission Required'}
+        </Typography>
+        <Chip size="small" label={prompt.riskLevel.toUpperCase()} sx={{
+          fontSize: '0.45rem', height: 15, fontWeight: 600,
+          bgcolor: isCritical ? colors.accent.red + '20' : isHigh ? colors.accent.orange + '20' : colors.accent.blue + '15',
+          color: isCritical ? colors.accent.red : isHigh ? colors.accent.orange : colors.accent.blue,
+        }} />
+      </Box>
+      <Typography sx={{ fontSize: '0.6rem', mb: 0.25, color: colors.text.primary, fontFamily: "'JetBrains Mono', monospace" }}>
+        {prompt.tool}
+      </Typography>
+      {prompt.path && (
+        <Typography sx={{ fontSize: '0.55rem', mb: 1, color: colors.text.dim, wordBreak: 'break-all' }}>
+          {prompt.path}
+        </Typography>
+      )}
+      {isCritical && (
+        <Typography sx={{ fontSize: '0.5rem', mb: 1, color: colors.accent.red, fontStyle: 'italic' }}>
+          This operation could permanently affect your system. Review carefully before allowing.
+        </Typography>
+      )}
       <Box sx={{ display: 'flex', gap: 0.75 }}>
         <Chip size="small" label="Allow Once" onClick={() => handleRespond('allow_once')} sx={{ cursor: 'pointer', height: 20, fontSize: '0.5rem', bgcolor: colors.accent.green + '12', color: colors.accent.green, '&:hover': { bgcolor: colors.accent.green + '25' } }} />
         <Chip size="small" label="Always" onClick={() => handleRespond('allow_always')} sx={{ cursor: 'pointer', height: 20, fontSize: '0.5rem', bgcolor: colors.accent.blue + '12', color: colors.accent.blue, '&:hover': { bgcolor: colors.accent.blue + '25' } }} />

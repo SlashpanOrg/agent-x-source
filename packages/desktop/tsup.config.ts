@@ -8,6 +8,6 @@ export default defineConfig({
   format: 'cjs',
   clean: true,
   outExtension: () => ({ js: '.js' }),
-  external: ['electron', 'electron-updater', 'node-pty'],
+  external: ['electron', 'electron-updater'],
   platform: 'node',
 });

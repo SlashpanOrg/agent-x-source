@@ -2,7 +2,7 @@ import express from 'express';
 import type { Express } from 'express';
 import multer from 'multer';
 import { createServer } from 'node:http';
-import { join, dirname, basename } from 'node:path';
+import { join, dirname, basename, resolve } from 'node:path';
 import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, createReadStream, renameSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +15,7 @@ import type { ProviderId, AgentXConfig, CompletionRequest } from '@agentx/shared
 
 const PORT = Number(process.env['AGENTX_PORT'] || process.env['PORT']) || 3333;
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const UI_DIST = join(__dirname, '..', '..', 'web-ui', 'dist');
+const UI_DIST = process.env['AGENTX_UI_DIR'] || join(__dirname, '..', '..', 'web-ui', 'dist');
 
 
 
@@ -459,7 +459,45 @@ app.get('/api/models', async (_req, res) => {
 });
 
 app.get('/api/cwd', (_req, res) => {
-  res.json({ cwd: process.cwd() });
+  const eng = getEngine();
+  const scopePath = eng.sessionManager.getActiveSession()?.scopePath || process.cwd();
+  res.json({ cwd: scopePath });
+});
+
+app.post('/api/cwd', (req, res) => {
+  try {
+    const { path } = req.body as { path: string };
+    if (!path || typeof path !== 'string') { res.status(400).json({ error: 'path-required' }); return; }
+    const eng = getEngine();
+    const sess = eng.sessionManager.getActiveSession();
+    if (!sess) { res.status(400).json({ error: 'no-session' }); return; }
+    const resolved = resolve(path);
+    eng.sessionManager.updateSession({ scopePath: resolved });
+    // Also update the tool executor scope if the engine exposes it
+    const executor = (eng as any).toolExecutor;
+    if (executor?.setScopePath) executor.setScopePath(resolved);
+    res.json({ cwd: resolved });
+  } catch (e: unknown) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'scope-update-failed' });
+  }
+});
+
+// Folder picker: list directories at a path
+app.get('/api/filesystem/dirs', (req, res) => {
+  try {
+    const requestedPath = (req.query['path'] as string) || homedir();
+    const absPath = resolve(requestedPath);
+    const entries = readdirSync(absPath, { withFileTypes: true });
+    const dirs = entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+      .map(e => ({ name: e.name, path: join(absPath, e.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const parent = dirname(absPath);
+    const hasParent = absPath !== parent && absPath !== '/';
+    res.json({ current: absPath, parent: hasParent ? parent : null, dirs });
+  } catch {
+    res.status(500).json({ error: 'dir-read-failed' });
+  }
 });
 
 // ───── Session Mode & Approval ─────

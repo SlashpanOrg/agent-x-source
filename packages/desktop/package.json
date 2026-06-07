@@ -1,18 +1,20 @@
 {
   "name": "@agentx/desktop",
-  "version": "0.1.0",
+  "version": "0.6.8",
   "private": true,
-  "description": "Agent-X - AI-powered terminal agent",
+  "description": "Agent-X — Your AI Wingman (Desktop)",
   "author": "SlashpanOrg <hello@slashpan.com>",
   "main": "./dist/main.js",
   "scripts": {
-    "build": "node scripts/generate-icon.mjs && tsup && node scripts/copy-xterm.mjs",
-    "dev": "tsx src/main.ts",
+    "prebuild": "node ../../scripts/sync-version.mjs",
+    "build": "tsup",
+    "build:deps": "pnpm --filter @agentx/web-api run build && pnpm --filter @agentx/web-ui run build",
+    "dev": "tsup && electron dist/main.js",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist renderer/xterm",
+    "clean": "rm -rf dist",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "dist:mac": "electron-builder --mac",
+    "dist:mac": "npm run build && electron-builder --mac",
     "dist:linux": "electron-builder --linux",
     "dist:win": "electron-builder --win"
   },
@@ -28,20 +30,36 @@
     "nodeGypRebuild": false,
     "files": [
       "dist/**/*",
-      "renderer/**/*",
       "package.json"
     ],
     "extraResources": [
       {
-        "from": "../cli/dist",
-        "to": "cli",
-        "filter": ["**/*"]
+        "from": "../web-api/dist",
+        "to": "web-api",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../web-ui/dist",
+        "to": "web-ui",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build",
+        "to": "build",
+        "filter": [
+          "*.png",
+          "*.plist"
+        ]
       }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": ["dmg", "zip"],
-      "icon": "build/icon.png",
+      "icon": "build/icon.icns",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "hardenedRuntime": true,
@@ -49,11 +67,17 @@
       "notarize": false
     },
     "win": {
-      "target": ["nsis", "portable"],
+      "target": [
+        "nsis",
+        "portable"
+      ],
       "icon": "build/icon.png"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "build/icon.png",
       "category": "Development"
     },
@@ -69,11 +93,7 @@
     }
   },
   "dependencies": {
-    "electron-updater": "^6.0.0",
-    "node-pty": "^1.0.0",
-    "xterm": "^5.3.0",
-    "xterm-addon-fit": "^0.8.0",
-    "xterm-addon-web-links": "^0.9.0"
+    "electron-updater": "^6.0.0"
   },
   "devDependencies": {
     "electron": "^33.0.0",

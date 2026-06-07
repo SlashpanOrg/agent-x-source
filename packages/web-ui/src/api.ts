@@ -200,6 +200,8 @@ export const permissions = {
 // ─── System ───
 export const system = {
   cwd: () => request<{ cwd: string }>('/cwd'),
+  setCwd: (path: string) => request<{ cwd: string }>('/cwd', { method: 'POST', body: JSON.stringify({ path }) }),
+  dirs: (path?: string) => request<{ current: string; parent: string | null; dirs: Array<{ name: string; path: string }> }>(`/filesystem/dirs${path ? `?path=${encodeURIComponent(path)}` : ''}`),
 };
 
 // ─── Session Settings ───
