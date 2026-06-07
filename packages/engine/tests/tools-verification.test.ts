@@ -87,6 +87,7 @@ describe('Git tools', () => {
 
   it('gitBranch — lists and creates branches', async () => {
     const { gitInit, gitConfig, gitAdd, gitCommit, gitBranch, gitCheckout } = await import('../src/tools/builtin/git.js');
+    const { execSync } = await import('node:child_process');
     await gitInit({}, ctx());
     await gitConfig({ key: 'user.email', value: 'test@test.com' }, ctx());
     await gitConfig({ key: 'user.name', value: 'Test' }, ctx());
@@ -97,8 +98,9 @@ describe('Git tools', () => {
     expect(listResult.success).toBe(true);
     const createResult = await gitBranch({ name: 'feature' }, ctx());
     expect(createResult.success).toBe(true);
-    // Must checkout to main before deleting feature
-    await gitCheckout({ target: 'main' }, ctx());
+    // gitBranch creates + checks out the new branch, so we're now on 'feature'.
+    // Switch back to default (main/master) before deleting feature.
+    await gitCheckout({ target: '-' }, ctx()); // '-' means previous branch
     const deleteResult = await gitBranch({ name: 'feature', delete: true }, ctx());
     expect(deleteResult.success).toBe(true);
   });
@@ -112,7 +114,8 @@ describe('Git tools', () => {
     await gitAdd({ files: '.' }, ctx());
     await gitCommit({ message: 'init' }, ctx());
     await gitBranch({ name: 'feature' }, ctx());
-    const checkoutResult = await gitCheckout({ target: 'main' }, ctx());
+    // 'git checkout -' goes back to the previous branch
+    const checkoutResult = await gitCheckout({ target: '-' }, ctx());
     expect(checkoutResult.success).toBe(true);
   });
 
