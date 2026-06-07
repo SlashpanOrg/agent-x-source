@@ -482,6 +482,24 @@ app.post('/api/cwd', (req, res) => {
   }
 });
 
+// Folder picker: list directories at a path
+app.get('/api/filesystem/dirs', (req, res) => {
+  try {
+    const requestedPath = (req.query['path'] as string) || homedir();
+    const absPath = resolve(requestedPath);
+    const entries = readdirSync(absPath, { withFileTypes: true });
+    const dirs = entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+      .map(e => ({ name: e.name, path: join(absPath, e.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const parent = dirname(absPath);
+    const hasParent = absPath !== parent && absPath !== '/';
+    res.json({ current: absPath, parent: hasParent ? parent : null, dirs });
+  } catch {
+    res.status(500).json({ error: 'dir-read-failed' });
+  }
+});
+
 // ───── Session Mode & Approval ─────
 // Agent mode: 'agent' (full), 'ask' (answer only), 'plan' (plan only)
 // Approval: 'default' (deny-first), 'moderate' (tools allowed), 'auto' (full access)

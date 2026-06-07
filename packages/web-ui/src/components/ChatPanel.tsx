@@ -61,6 +61,7 @@ import {
   type PaletteAction,
 } from './ChatEnhancements';
 import { MentionInput } from './MentionInput';
+import { FolderPickerModal } from './FolderPickerModal';
 
 // ─── CSS Keyframes (injected once) ───
 const styleId = 'agentx-chat-keyframes';
@@ -268,6 +269,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [checkpointsOpen, setCheckpointsOpen] = useState(false);
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+  const [folderPickerCallback, setFolderPickerCallback] = useState<((path: string) => void) | null>(null);
   const [showSlash, setShowSlash] = useState(false);
   const slashQuery = useMemo(() => {
     if (!input.startsWith('/')) return '';
@@ -1011,14 +1014,17 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
   const handleNewSession = async () => {
     const desktopApi = (window as any).agentx;
-    let folder: string | null = null;
     if (desktopApi?.openFolder) {
-      folder = await desktopApi.openFolder();
-      if (!folder) return; // user cancelled
-    } else {
-      folder = prompt('Choose a project folder to start with:', cwd || '');
+      const folder = await desktopApi.openFolder();
       if (!folder) return;
+      startNewSession(folder);
+    } else {
+      setFolderPickerCallback(() => (path: string) => startNewSession(path));
+      setFolderPickerOpen(true);
     }
+  };
+
+  const startNewSession = async (folder: string) => {
     setMessages([]);
     setCurrentSessionTitle(null);
     setCurrentSessionId(null);
@@ -1748,8 +1754,10 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
                     const folder = await desktopApi.openFolder();
                     if (folder) system.setCwd(folder).then(r => setCwd(r.cwd)).catch(() => {});
                   } else {
-                    const newPath = prompt('Set scope directory:', cwd);
-                    if (newPath) system.setCwd(newPath).then(r => setCwd(r.cwd)).catch(() => {});
+                    setFolderPickerCallback(() => (path: string) => {
+                      system.setCwd(path).then(r => setCwd(r.cwd)).catch(() => {});
+                    });
+                    setFolderPickerOpen(true);
                   }
                 }}>
                 {cwd.split('/').slice(-3).join('/') || cwd}
@@ -1826,6 +1834,15 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
             setTokenOutput(outputEst);
           } catch { /* ignore */ }
         }}
+      />
+      <FolderPickerModal
+        open={folderPickerOpen}
+        onSelect={(path) => {
+          setFolderPickerOpen(false);
+          folderPickerCallback?.(path);
+          setFolderPickerCallback(null);
+        }}
+        onCancel={() => { setFolderPickerOpen(false); setFolderPickerCallback(null); }}
       />
     </Box>
   );
