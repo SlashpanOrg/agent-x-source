@@ -83,7 +83,8 @@
       "category": "Development"
     },
     "deb": {
-      "packageName": "agentx"
+      "packageName": "agentx",
+      "artifactName": "agentx_${version}_${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
