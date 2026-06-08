@@ -80,10 +80,10 @@
         "deb"
       ],
       "icon": "build/icon.png",
-      "category": "Development",
-      "deb": {
-        "packageName": "agentx"
-      }
+      "category": "Development"
+    },
+    "deb": {
+      "packageName": "agentx"
     },
     "nsis": {
       "oneClick": false,
