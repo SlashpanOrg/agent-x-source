@@ -284,7 +284,7 @@ jobs:
       - name: Install VS 2022 C++ Build Tools
         shell: pwsh
         run: |
-          choco install visualstudio2022buildtools -y --package-parameters "--add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows10SDK.20348 --passive --wait"
+          choco install visualstudio2022buildtools -y --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
 
       - run: pnpm install --frozen-lockfile || pnpm install
         env:

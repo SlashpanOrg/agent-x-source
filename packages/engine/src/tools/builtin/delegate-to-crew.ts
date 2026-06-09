@@ -1,4 +1,4 @@
-import type { ToolResult } from '../ToolExecutor.js';
+import type { ToolResult } from '@agentx/shared';
 
 let crewDelegator: ((crewName: string, taskDescription: string) => Promise<string>) | null = null;
 
