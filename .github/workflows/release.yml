@@ -281,6 +281,8 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      - uses: ilammy/msvc-dev-cmd@v1
+
       - run: pnpm install --frozen-lockfile || pnpm install
 
       - run: pnpm --filter @agentx/shared --filter @agentx/engine --filter @agentx/tui --filter @agentx/web-api --filter @agentx/cli run build
