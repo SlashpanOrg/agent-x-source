@@ -1,6 +1,7 @@
 import type { CommandInterface, CommandContext, CommandResult } from '../CommandInterface.js';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { getConfigDir } from '@agentx/shared';
 
 export const themeCommand: CommandInterface = {
   name: 'theme',
@@ -19,9 +20,7 @@ export const themeCommand: CommandInterface = {
 
     if (sub === 'save') {
       const current = getCurrentThemeName();
-      const configDir = process.env['XDG_CONFIG_HOME']
-        ? join(process.env['XDG_CONFIG_HOME'], 'agentx')
-        : join(process.env['HOME'] || '', '.config', 'agentx');
+      const configDir = getConfigDir();
       const themeFile = join(configDir, 'theme.json');
       mkdirSync(configDir, { recursive: true });
       writeFileSync(themeFile, JSON.stringify({ theme: current }, null, 2), 'utf-8');
@@ -30,9 +29,7 @@ export const themeCommand: CommandInterface = {
     }
 
     if (sub === 'reload') {
-      const configDir = process.env['XDG_CONFIG_HOME']
-        ? join(process.env['XDG_CONFIG_HOME'], 'agentx')
-        : join(process.env['HOME'] || '', '.config', 'agentx');
+      const configDir = getConfigDir();
       const themeFile = join(configDir, 'theme.json');
       if (existsSync(themeFile)) {
         try {

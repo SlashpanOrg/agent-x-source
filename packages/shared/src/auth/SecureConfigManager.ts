@@ -21,7 +21,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { homedir } from 'node:os';
+import { getConfigDir } from '../platform.js';
 import type { AgentXConfig } from '../types/index.js';
 import { encrypt, decrypt } from '../crypto.js';
 import type { EncryptedData } from '../crypto.js';
@@ -30,13 +30,6 @@ export interface SecureConfigFile {
   version: number;
   encrypted: EncryptedData;
   checksum: string;
-}
-
-function getConfigDir(): string {
-  const configHome = process.env['XDG_CONFIG_HOME'];
-  return configHome
-    ? join(configHome, 'agentx')
-    : join(homedir(), '.config', 'agentx');
 }
 
 function getConfigPath(): string {

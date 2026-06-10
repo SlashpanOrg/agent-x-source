@@ -1,5 +1,5 @@
 import { execSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 export default async function afterPack(context) {
@@ -7,6 +7,14 @@ export default async function afterPack(context) {
 
   const appPath = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
   if (!existsSync(appPath)) return;
+
+  // Ensure web-api resources have a package.json with "type": "module" so that
+  // Electron's Node.js runtime can load the ESM web-api bundle correctly.
+  const webApiDir = join(appPath, 'Contents', 'Resources', 'web-api');
+  if (existsSync(webApiDir)) {
+    writeFileSync(join(webApiDir, 'package.json'), JSON.stringify({ type: 'module' }), 'utf-8');
+    console.log('afterPack: created web-api/package.json (type: module)');
+  }
 
   // If developer credentials are available (CSC_LINK is set), electron-builder
   // handles signing automatically with the Developer ID certificate.

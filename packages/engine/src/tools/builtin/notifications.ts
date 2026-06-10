@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
+import { IS_WINDOWS, IS_MACOS, IS_LINUX } from '../platform.js';
 
 export async function notifyDesktop(args: Record<string, unknown>): Promise<ToolResult> {
   const title = args['title'] as string;
@@ -10,12 +11,12 @@ export async function notifyDesktop(args: Record<string, unknown>): Promise<Tool
   }
 
   try {
-    if (process.platform === 'darwin') {
+    if (IS_MACOS) {
       const script = `display notification "${message.replace(/"/g, '\\"')}" with title "${title.replace(/"/g, '\\"')}"`;
       execSync(`osascript -e '${script}'`, { timeout: 5000 });
-    } else if (process.platform === 'linux') {
+    } else if (IS_LINUX) {
       execSync(`notify-send "${title.replace(/"/g, '\\"')}" "${message.replace(/"/g, '\\"')}"`, { timeout: 5000 });
-    } else if (process.platform === 'win32') {
+    } else if (IS_WINDOWS) {
       execSync(`msg * "${title}: ${message}"`, { timeout: 5000 });
     } else {
       return { success: true, output: `[${title}] ${message}` };
@@ -91,9 +92,9 @@ export async function notifySlack(args: Record<string, unknown>, _context: ToolE
 export async function clipboardRead(): Promise<ToolResult> {
   try {
     let text: string;
-    if (process.platform === 'darwin') {
+    if (IS_MACOS) {
       text = execSync('pbpaste', { encoding: 'utf-8', timeout: 5000 });
-    } else if (process.platform === 'win32') {
+    } else if (IS_WINDOWS) {
       text = execSync('powershell -command "Get-Clipboard"', { encoding: 'utf-8', timeout: 5000 });
     } else {
       text = execSync('xclip -o -selection clipboard 2>/dev/null || xsel -b 2>/dev/null', { encoding: 'utf-8', timeout: 5000 });
@@ -112,9 +113,9 @@ export async function clipboardWrite(args: Record<string, unknown>): Promise<Too
   }
 
   try {
-    if (process.platform === 'darwin') {
+    if (IS_MACOS) {
       execSync(`echo ${JSON.stringify(text)} | pbcopy`, { encoding: 'utf-8', timeout: 5000 });
-    } else if (process.platform === 'win32') {
+    } else if (IS_WINDOWS) {
       execSync(`powershell -command "Set-Clipboard -Value '${text.replace(/'/g, "''")}'"`, { encoding: 'utf-8', timeout: 5000 });
     } else {
       execSync(`echo ${JSON.stringify(text)} | xclip -selection clipboard 2>/dev/null || echo ${JSON.stringify(text)} | xsel -b`, { encoding: 'utf-8', timeout: 5000 });

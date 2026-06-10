@@ -666,7 +666,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       if (newId) {
         setCurrentSessionId(newId);
         skipRestoreRef.current = true;
-        navigate(`/console/chat/${newId}`, { replace: true });
+        navigate(`/console/chat/${newId}`);
         return newId;
       }
     } catch { /* ignore */ }
@@ -1102,14 +1102,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   };
 
   const handleNewSession = async () => {
-    const desktopApi = (window as any).agentx;
-    if (desktopApi?.openFolder) {
-      pendingFolderActionRef.current = 'newSession';
-      setFolderConsentOpen(true);
-    } else {
-      setFolderPickerCallback(() => (path: string) => startNewSession(path));
-      setFolderPickerOpen(true);
-    }
+    pendingFolderActionRef.current = 'newSession';
+    setFolderConsentOpen(true);
   };
 
   const startNewSession = async (folder: string) => {
@@ -1126,7 +1120,11 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     setCwd(folder);
     try { await system.setCwd(folder); } catch { /* ignore */ }
     setView('chat');
-    navigate('/console/chat');
+    if (location.pathname === '/console/chat') {
+      navigate('/console/chat', { replace: true });
+    } else {
+      navigate('/console/chat');
+    }
   };
 
   const handleDeleteSession = async (id: string) => {
@@ -1140,16 +1138,17 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     if (!action) return;
 
     setFolderPickerLoading(true);
-    const desktopApi = (window as any).agentx;
-    const folder = await desktopApi.openFolder();
+    await new Promise(r => setTimeout(r, 400));
     setFolderPickerLoading(false);
-    if (!folder) return;
 
     if (action === 'newSession') {
-      startNewSession(folder);
+      setFolderPickerCallback(() => (path: string) => startNewSession(path));
     } else {
-      system.setCwd(folder).then(r => setCwd(r.cwd)).catch(() => {});
+      setFolderPickerCallback(() => (path: string) => {
+        system.setCwd(path).then(r => setCwd(r.cwd)).catch(() => {});
+      });
     }
+    setFolderPickerOpen(true);
   };
 
   // Token percentage
@@ -1959,16 +1958,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
               <Typography sx={{ fontSize: '0.45rem', color: colors.text.dim, letterSpacing: '0.5px' }}>SCOPE</Typography>
               <Typography sx={{ fontSize: '0.5rem', fontFamily: "'JetBrains Mono', monospace", color: colors.text.secondary, mt: 0.25, wordBreak: 'break-all', cursor: 'pointer', '&:hover': { color: colors.accent.blue } }}
                 onClick={async () => {
-                  const desktopApi = (window as any).agentx;
-                  if (desktopApi?.openFolder) {
-                    pendingFolderActionRef.current = 'changeCwd';
-                    setFolderConsentOpen(true);
-                  } else {
-                    setFolderPickerCallback(() => (path: string) => {
-                      system.setCwd(path).then(r => setCwd(r.cwd)).catch(() => {});
-                    });
-                    setFolderPickerOpen(true);
-                  }
+                  pendingFolderActionRef.current = 'changeCwd';
+                  setFolderConsentOpen(true);
                 }}>
                 {cwd.split('/').slice(-3).join('/') || cwd}
               </Typography>

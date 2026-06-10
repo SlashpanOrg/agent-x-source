@@ -4,9 +4,8 @@ import multer from 'multer';
 import { createServer } from 'node:http';
 import { join, dirname, basename, resolve } from 'node:path';
 import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, createReadStream, renameSync, unlinkSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { generateId, VERSION } from '@agentx/shared';
+import { generateId, VERSION, getDataDir, getConfigDir, getCacheDir, getHomeDir } from '@agentx/shared';
 import { getEngine, createAgent, destroyAgent, clearEngine, getOrCreateAgent } from './engine.js';
 import { setupWebSocket, ensureSubscribed } from './ws.js';
 import { authMiddleware, createAuthRouter } from './auth.js';
@@ -19,10 +18,7 @@ const UI_DIST = process.env['AGENTX_UI_DIR'] || join(__dirname, '..', '..', 'web
 
 
 
-const HOME = homedir();
-const DATA_DIR = process.env['XDG_DATA_HOME']
-  ? join(process.env['XDG_DATA_HOME'], 'agentx')
-  : join(HOME, '.local', 'share', 'agentx');
+const DATA_DIR = getDataDir();
 const SESSIONS_DIR = join(DATA_DIR, 'sessions');
 
 function getSessionDir(sessionId: string): string {
@@ -485,7 +481,7 @@ app.post('/api/cwd', (req, res) => {
 // Folder picker: list directories at a path
 app.get('/api/filesystem/dirs', (req, res) => {
   try {
-    const requestedPath = (req.query['path'] as string) || homedir();
+    const requestedPath = (req.query['path'] as string) || getHomeDir();
     const absPath = resolve(requestedPath);
     const entries = readdirSync(absPath, { withFileTypes: true });
     const dirs = entries
@@ -2537,16 +2533,9 @@ app.post('/api/reset', (_req, res) => {
   try {
     destroyAgent();
 
-    const HOME = homedir();
-    const configDir = process.env['XDG_CONFIG_HOME']
-      ? join(process.env['XDG_CONFIG_HOME'], 'agentx')
-      : join(HOME, '.config', 'agentx');
-    const dataDir = process.env['XDG_DATA_HOME']
-      ? join(process.env['XDG_DATA_HOME'], 'agentx')
-      : join(HOME, '.local', 'share', 'agentx');
-    const cacheDir = process.env['XDG_CACHE_HOME']
-      ? join(process.env['XDG_CACHE_HOME'], 'agentx')
-      : join(HOME, '.cache', 'agentx');
+    const configDir = getConfigDir();
+    const dataDir = getDataDir();
+    const cacheDir = getCacheDir();
 
     // Delete everything on disk
     const dirs = [configDir, dataDir, cacheDir];

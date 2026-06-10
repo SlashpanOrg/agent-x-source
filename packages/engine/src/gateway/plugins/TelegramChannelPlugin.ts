@@ -1,6 +1,6 @@
 import type { ChannelPlugin } from '../types.js';
 import type { FocusState, FocusManager } from '../FocusManager.js';
-import type { VisualUpdate } from '@agentx/shared';
+import { getDataDir, type VisualUpdate } from '@agentx/shared';
 import { TelegramBridge } from '../../telegram/TelegramBridge.js';
 import type { TelegramConfig } from '../../telegram/TelegramBridge.js';
 import type { Agent } from '../../agent/Agent.js';
@@ -9,7 +9,6 @@ import { ConfigManager } from '../../config/ConfigManager.js';
 import { ProviderFactory } from '../../providers/index.js';
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 
 export class TelegramChannelPlugin implements ChannelPlugin {
   readonly id = 'telegram';
@@ -31,7 +30,7 @@ export class TelegramChannelPlugin implements ChannelPlugin {
   constructor(config: TelegramConfig) {
     this.bridge = new TelegramBridge(config);
     this.filesDir = process.env['AGENTX_FILES_DIR']
-      ?? join(homedir(), '.local', 'share', 'agentx', 'files');
+      ?? join(getDataDir(), 'files');
   }
 
   setAgent(agent: Agent): void {

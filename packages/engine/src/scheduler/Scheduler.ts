@@ -1,9 +1,8 @@
 import type { EngineEvent } from '@agentx/shared';
-import { generateId } from '@agentx/shared';
+import { generateId, getDataDir } from '@agentx/shared';
 import type { AgentEventBus } from '../EventBus.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 
 export interface ScheduledJob {
   id: string;
@@ -107,9 +106,7 @@ export class Scheduler {
 
   constructor(eventBus: AgentEventBus) {
     this.eventBus = eventBus;
-    const dataDir = process.env['XDG_DATA_HOME']
-      ? join(process.env['XDG_DATA_HOME'], 'agentx')
-      : join(homedir(), '.local', 'share', 'agentx');
+    const dataDir = getDataDir();
     mkdirSync(dataDir, { recursive: true });
     this.persistPath = join(dataDir, 'scheduler.json');
     this.restore();

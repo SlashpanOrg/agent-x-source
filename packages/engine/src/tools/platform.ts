@@ -1,11 +1,7 @@
 import { execSync } from 'node:child_process';
-import { platform } from 'node:os';
+import { IS_WINDOWS, IS_MACOS } from '@agentx/shared';
 
-const currentPlatform = platform();
-
-export const IS_WINDOWS = currentPlatform === 'win32';
-export const IS_MACOS = currentPlatform === 'darwin';
-export const IS_LINUX = currentPlatform === 'linux';
+export { IS_WINDOWS, IS_MACOS, IS_LINUX } from '@agentx/shared';
 
 export function getShell(): string[] {
   if (IS_WINDOWS) {

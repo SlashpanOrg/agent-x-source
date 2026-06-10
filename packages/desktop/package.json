@@ -43,6 +43,13 @@
         ]
       },
       {
+        "from": "../web-api/node_modules/better-sqlite3",
+        "to": "web-api/node_modules/better-sqlite3",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
         "from": "../web-ui/dist",
         "to": "web-ui",
         "filter": [

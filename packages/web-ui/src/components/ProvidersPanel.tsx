@@ -15,14 +15,11 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import Alert from '@mui/material/Alert';
 import CircularProgress from '@mui/material/CircularProgress';
-import Radio from '@mui/material/Radio';
-import RadioGroup from '@mui/material/RadioGroup';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
 import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
-import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import { config, providers as provApi, models as modelsApi, type AgentXConfig, type ProviderInfo, type ModelInfo } from '../api';
 import { colors } from '../theme';
 
@@ -91,21 +88,37 @@ export function ProvidersPanel() {
       }
     });
     setProfiles(extracted);
-    setActiveProfileId(cfg.provider.providers?.[cfg.provider.activeProvider]?.activeProfile ?? extracted[0]?.id ?? null);
-    const models: Record<string, string> = {};
-    extracted.forEach((p) => { models[p.id] = cfg.provider.activeModel ?? ''; });
-    setSelectedModels(models);
+    const newActiveId = cfg.provider.providers?.[cfg.provider.activeProvider]?.activeProfile ?? extracted[0]?.id ?? null;
+    setActiveProfileId(newActiveId);
+    setSelectedModels((prev) => {
+      const models: Record<string, string> = {};
+      extracted.forEach((p) => {
+        models[p.id] = prev[p.id] || (p.id === newActiveId ? (cfg.provider.activeModel ?? '') : '');
+      });
+      return models;
+    });
   }, [cfg, providerName]);
 
   const handleAddProfile = async () => {
-    if (!newProfile.providerId || !newProfile.label || !newProfile.apiKey) return;
+    if (!newProfile.providerId || !newProfile.label) return;
+    const sel = availableProviders.find(p => p.id === newProfile.providerId);
+    if (sel?.type !== 'local' && !newProfile.apiKey) return;
     setSaving(true);
     try {
-      await provApi.createProfile(newProfile.providerId, newProfile.label, newProfile.apiKey, newProfile.baseUrl || undefined);
+      const result = await provApi.createProfile(newProfile.providerId, newProfile.label, newProfile.apiKey, newProfile.baseUrl || undefined, false);
       const updated = await config.get();
       setCfg(updated);
       setShowAddDialog(false);
       setNewProfile({ label: '', providerId: '', apiKey: '', baseUrl: '' });
+      // Prompt for model selection on the new profile
+      openModelPicker({
+        id: result.profileId,
+        label: newProfile.label,
+        providerId: result.provider,
+        providerName: providerName(result.provider),
+        apiKey: newProfile.apiKey,
+        baseUrl: newProfile.baseUrl || undefined,
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to add profile');
     } finally {
@@ -180,13 +193,16 @@ export function ProvidersPanel() {
     setSwitching(pickingProfile.id);
     setError('');
     try {
-      // First switch profile, then set the model
-      await provApi.switchProfile(pickingProfile.providerId, pickingProfile.id);
+      // First switch profile if not already active, then set the model
+      if (pickingProfile.id !== activeProfileId) {
+        await provApi.switchProfile(pickingProfile.providerId, pickingProfile.id);
+      }
       await modelsApi.switch(pickerSelectedModel);
+      // Track the last model for this profile
+      setSelectedModels(prev => ({ ...prev, [pickingProfile.id]: pickerSelectedModel }));
       const updated = await config.get();
       setCfg(updated);
       setActiveProfileId(pickingProfile.id);
-      setSelectedModels(prev => ({ ...prev, [pickingProfile.id]: pickerSelectedModel }));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Switch failed');
     } finally {
@@ -282,7 +298,7 @@ export function ProvidersPanel() {
                                 {profile.label}
                               </Typography>
                               {isActive && (
-                                <Chip size="small" icon={<CheckCircleIcon sx={{ fontSize: '12px !important', color: `${colors.accent.green} !important` }} />}
+                                <Chip size="small"
                                   label="Active" sx={{ height: 22, fontSize: '0.55rem', color: colors.accent.green, borderColor: colors.accent.green + '40' }} variant="outlined" />
                               )}
                               <IconButton size="small" onClick={() => startLabelEdit(profile)}
@@ -302,40 +318,28 @@ export function ProvidersPanel() {
                       </IconButton>
                     </Box>
 
-                    {isActive ? (
-                      <Box sx={{ mt: 1 }}>
-                        <Typography sx={{ fontSize: '0.6rem', color: colors.text.dim, fontFamily: "'JetBrains Mono', monospace", mb: 1 }}>
-                          Model: {selectedModels[profile.id] || '—'}
-                        </Typography>
-                        <Button
-                          fullWidth size="small" variant="outlined"
-                          onClick={() => openModelPicker(profile)}
-                          sx={{
-                            fontSize: '0.65rem', textTransform: 'none',
-                            borderColor: colors.accent.blue + '50', color: colors.accent.blue,
-                            '&:hover': { borderColor: colors.accent.blue, bgcolor: colors.accent.blue + '10' },
-                          }}
-                        >
-                          Switch Model
-                        </Button>
-                      </Box>
-                    ) : (
-                      <Box sx={{ mt: 1 }}>
-                        <Button
-                          fullWidth size="small" variant="outlined"
-                          onClick={() => openModelPicker(profile)}
-                          disabled={switching === profile.id}
-                          sx={{
-                            fontSize: '0.65rem', textTransform: 'none',
-                            borderColor: colors.accent.blue + '50', color: colors.accent.blue,
-                            '&:hover': { borderColor: colors.accent.blue, bgcolor: colors.accent.blue + '10' },
-                          }}
-                        >
-                          {switching === profile.id ? <CircularProgress size={12} sx={{ mr: 1 }} /> : null}
-                          Switch to this profile
-                        </Button>
-                      </Box>
-                    )}
+                    <Box sx={{ mt: 1 }}>
+                      <Typography sx={{ fontSize: '0.6rem', color: colors.text.dim, fontFamily: "'JetBrains Mono', monospace", mb: 1 }}>
+                        {isActive
+                          ? `Model: ${selectedModels[profile.id] || '—'}`
+                          : selectedModels[profile.id]
+                            ? `Last Model: ${selectedModels[profile.id]}`
+                            : 'Model: NA'}
+                      </Typography>
+                      <Button
+                        fullWidth size="small" variant="outlined"
+                        onClick={() => openModelPicker(profile)}
+                        disabled={!isActive && switching === profile.id}
+                        sx={{
+                          fontSize: '0.65rem', textTransform: 'none',
+                          borderColor: colors.accent.blue + '50', color: colors.accent.blue,
+                          '&:hover': { borderColor: colors.accent.blue, bgcolor: colors.accent.blue + '10' },
+                        }}
+                      >
+                        {!isActive && switching === profile.id ? <CircularProgress size={12} sx={{ mr: 1 }} /> : null}
+                        {isActive ? 'Switch Model' : 'Switch to this profile'}
+                      </Button>
+                    </Box>
                   </Box>
                 </Box>
               );
@@ -354,7 +358,16 @@ export function ProvidersPanel() {
           <FormControl size="small">
             <InputLabel>Provider</InputLabel>
             <Select value={newProfile.providerId} label="Provider"
-              onChange={(e) => setNewProfile({ ...newProfile, providerId: e.target.value })}>
+              onChange={(e) => {
+                const provId = e.target.value;
+                const sel = availableProviders.find(p => p.id === provId);
+                setNewProfile({
+                  ...newProfile,
+                  providerId: provId,
+                  apiKey: sel?.type === 'local' ? 'no-api-key-required' : newProfile.apiKey,
+                  baseUrl: sel?.type === 'cloud' ? (sel.defaultBaseUrl ?? '') : newProfile.baseUrl,
+                });
+              }}>
               {availableProviders.map((p) => (
                 <MenuItem key={p.id} value={p.id} sx={{ fontSize: '0.75rem' }}>
                   {p.name} {p.type === 'local' ? '(Local)' : ''}
@@ -365,12 +378,19 @@ export function ProvidersPanel() {
           <TextField size="small" label="Profile Name" value={newProfile.label}
             onChange={(e) => setNewProfile({ ...newProfile, label: e.target.value })}
             placeholder="e.g. OpenAI Work, Claude Personal" />
-          <TextField size="small" label="API Key" type="password" value={newProfile.apiKey}
-            onChange={(e) => setNewProfile({ ...newProfile, apiKey: e.target.value })}
-            placeholder="sk-..." />
-          <TextField size="small" label="Base URL (optional)" value={newProfile.baseUrl}
-            onChange={(e) => setNewProfile({ ...newProfile, baseUrl: e.target.value })}
-            placeholder="Leave empty for default" />
+          {(() => {
+            const sel = availableProviders.find(p => p.id === newProfile.providerId);
+            const isLocal = sel?.type === 'local';
+            return (
+              <>
+                {!isLocal && (
+                  <TextField size="small" label="API Key" type="password" value={newProfile.apiKey}
+                    onChange={(e) => setNewProfile({ ...newProfile, apiKey: e.target.value })}
+                    placeholder="sk-..." />
+                )}
+              </>
+            );
+          })()}
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2.5 }}>
           <Button onClick={() => setShowAddDialog(false)} sx={{ color: colors.text.dim, textTransform: 'none', fontSize: '0.75rem' }}>Cancel</Button>
@@ -384,7 +404,7 @@ export function ProvidersPanel() {
 
       {/* Model Picker Dialog */}
       <Dialog open={modelPickerOpen} onClose={() => setModelPickerOpen(false)}
-        PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, borderRadius: 2, maxWidth: 480, width: '100%' } }}>
+        PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, borderRadius: 2, maxWidth: 640, width: '100%' } }}>
         <DialogTitle sx={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.85rem', fontWeight: 700, letterSpacing: '1px', pb: 1 }}>
           {pickingProfile?.id === activeProfileId ? 'Switch Model' : `Switch to ${pickingProfile?.label ?? ''}`}
         </DialogTitle>
@@ -403,41 +423,40 @@ export function ProvidersPanel() {
           ) : pickerModels.length === 0 ? (
             <Typography sx={{ fontSize: '0.7rem', color: colors.text.dim, py: 2 }}>No models available for this provider.</Typography>
           ) : (
-            <RadioGroup
-              value={pickerSelectedModel}
-              onChange={(e) => setPickerSelectedModel(e.target.value)}
-            >
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, maxHeight: 320, overflow: 'auto' }}>
-                {pickerModels.map((m) => (
-                  <Box
-                    key={m.id}
-                    onClick={() => setPickerSelectedModel(m.id)}
-                    sx={{
-                      display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1,
-                      borderRadius: 1.5, cursor: 'pointer',
-                      border: `1px solid ${pickerSelectedModel === m.id ? colors.accent.blue + '40' : 'transparent'}`,
-                      bgcolor: pickerSelectedModel === m.id ? colors.accent.blue + '10' : 'transparent',
-                      '&:hover': { bgcolor: colors.accent.blue + '08' },
-                    }}
-                  >
-                    <Radio
-                      value={m.id}
-                      size="small"
-                      checked={pickerSelectedModel === m.id}
-                      sx={{ p: 0.5 }}
-                    />
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography sx={{ fontSize: '0.75rem' }}>{m.name || m.id}</Typography>
-                      {m.contextWindow != null && m.contextWindow > 0 && (
-                        <Typography sx={{ fontSize: '0.55rem', color: colors.text.dim, fontFamily: "'JetBrains Mono', monospace" }}>
-                          {m.contextWindow >= 1000000 ? `${(m.contextWindow / 1000000).toFixed(1)}M` : `${Math.round(m.contextWindow / 1000)}K`} context
-                        </Typography>
-                      )}
-                    </Box>
+            <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 1, maxHeight: 360, overflow: 'auto' }}>
+              {pickerModels.map((m) => (
+                <Box
+                  key={m.id}
+                  onClick={() => setPickerSelectedModel(m.id)}
+                  sx={{
+                    p: 1.5,
+                    border: `1px solid ${pickerSelectedModel === m.id ? colors.accent.blue : colors.border.default}`,
+                    borderRadius: 1,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    bgcolor: pickerSelectedModel === m.id ? colors.accent.blue : 'transparent',
+                    boxShadow: pickerSelectedModel === m.id ? `0 0 12px ${colors.accent.blue}40` : 'none',
+                    '&:hover': pickerSelectedModel === m.id ? {} : { borderColor: colors.border.strong, bgcolor: colors.bg.tertiary },
+                  }}
+                >
+                  <Typography sx={{ fontWeight: 600, fontSize: '0.78rem', color: pickerSelectedModel === m.id ? '#000' : colors.text.primary, mb: 0.5, wordBreak: 'break-word' }}>
+                    {m.name || m.id}
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', alignItems: 'center' }}>
+                    {m.contextWindow != null && m.contextWindow > 0 && (
+                      <Typography sx={{ fontSize: '0.6rem', fontFamily: "'JetBrains Mono', monospace", color: pickerSelectedModel === m.id ? '#000000aa' : colors.text.dim }}>
+                        {m.contextWindow >= 1000000 ? `${(m.contextWindow / 1000000).toFixed(1)}M` : `${Math.round(m.contextWindow / 1000)}K`} ctx
+                      </Typography>
+                    )}
+                    {m.capabilities && m.capabilities.length > 0 && m.capabilities.filter(c => c !== 'text' && c !== 'streaming').map((cap) => (
+                      <Typography key={cap} sx={{ fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace", color: pickerSelectedModel === m.id ? '#000000aa' : colors.accent.cyan, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                        {cap}
+                      </Typography>
+                    ))}
                   </Box>
-                ))}
-              </Box>
-            </RadioGroup>
+                </Box>
+              ))}
+            </Box>
           )}
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2.5 }}>
