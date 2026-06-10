@@ -1,11 +1,8 @@
 import { mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { getDataDir } from '@agentx/shared';
 
-const DEBUG_DIR = join(
-  process.env.XDG_DATA_HOME || join(process.env.HOME || '/tmp', '.local', 'share'),
-  'agentx',
-  'debug-logs',
-);
+const DEBUG_DIR = join(getDataDir(), 'debug-logs');
 
 interface DebugLogEntry {
   timestamp: string;

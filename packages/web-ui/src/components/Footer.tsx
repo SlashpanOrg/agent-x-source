@@ -1,7 +1,15 @@
+import { useState, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import { colors } from '../theme';
+import { health } from '../api';
 
 export function Footer() {
+  const [version, setVersion] = useState('');
+
+  useEffect(() => {
+    health.check().then((h) => setVersion(h.version)).catch(() => {});
+  }, []);
+
   return (
     <Box sx={{
       flexShrink: 0, borderTop: `1px solid ${colors.border.default}`,
@@ -20,7 +28,7 @@ export function Footer() {
         </span>
       </Box>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-        <span>Free to Use</span>
+        {version && <span>v{version}</span>}
       </Box>
     </Box>
   );

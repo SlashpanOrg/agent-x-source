@@ -1,16 +1,11 @@
-import { getLogger, generateSessionId, VERSION, authManager } from '@agentx/shared';
+import { getLogger, generateSessionId, VERSION, authManager, getDataDir } from '@agentx/shared';
+
+export { getDataDir } from '@agentx/shared';
 import type { AgentXConfig, EngineEvent } from '@agentx/shared';
 import { ConfigManager, PluginRegistry, Agent, Gateway, SessionStore, DiscordBridge, SlackBridge, EmailBridge, TelegramChannelPlugin, TelegramStore, DiscordStore, SlackStore } from '@agentx/engine';
 import { writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
-
-export function getDataDir(): string {
-  return process.env['XDG_DATA_HOME']
-    ? join(process.env['XDG_DATA_HOME'], 'agentx')
-    : join(homedir(), '.local', 'share', 'agentx');
-}
 
 export const DAEMON_PORT = parseInt(process.env['AGENTX_PORT'] ?? '3333', 10);
 const DAEMON_API_URL = `http://127.0.0.1:${DAEMON_PORT}`;

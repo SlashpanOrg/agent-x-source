@@ -17,7 +17,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { getDataDir } from '../platform.js';
 import {
   deriveKey,
   generateDEK,
@@ -49,10 +49,7 @@ export interface AuthState {
 const AUTH_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 function getAuthDir(): string {
-  const dataHome = process.env['XDG_DATA_HOME'];
-  return dataHome
-    ? join(dataHome, 'agentx')
-    : join(homedir(), '.local', 'share', 'agentx');
+  return getDataDir();
 }
 
 function getAuthPath(): string {

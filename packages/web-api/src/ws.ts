@@ -2,12 +2,10 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'http';
 import { join } from 'node:path';
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { getDataDir } from '@agentx/shared';
 import { getEngine } from './engine.js';
 
-const DATA_DIR = process.env['XDG_DATA_HOME']
-  ? join(process.env['XDG_DATA_HOME'], 'agentx')
-  : join(homedir(), '.local', 'share', 'agentx');
+const DATA_DIR = getDataDir();
 const SESSIONS_DIR = join(DATA_DIR, 'sessions');
 
 function atomicWriteFileSync(filePath: string, content: string): void {

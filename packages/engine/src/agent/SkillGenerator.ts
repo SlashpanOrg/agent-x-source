@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
-import { getLogger } from '@agentx/shared';
+import { getLogger, getConfigDir } from '@agentx/shared';
 import type { Agent } from './Agent.js';
 import { findBundledSkill, getBundledSkills } from './BundledSkills.js';
 
@@ -27,7 +26,7 @@ export class SkillGenerator {
   private skills: Map<string, GeneratedSkill> = new Map();
 
   constructor() {
-    this.skillsDir = join(homedir(), '.config', 'agentx', 'skills');
+    this.skillsDir = join(getConfigDir(), 'skills');
     this.ensureDir();
     this.loadSkills();
   }

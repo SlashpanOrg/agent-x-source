@@ -12,7 +12,7 @@ import type {
   PlanStep,
   ToolResult,
 } from '@agentx/shared';
-import { FailoverReason, generateMessageId, getLogger, resolveSpaceError, type ChannelKind } from '@agentx/shared';
+import { FailoverReason, generateMessageId, getLogger, resolveSpaceError, type ChannelKind, getConfigDir } from '@agentx/shared';
 import { join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import type { ProviderInterface } from '../providers/ProviderInterface.js';
@@ -375,11 +375,8 @@ export class Agent {
     // Initialize recipe engine
     this.recipeEngine = new RecipeEngine();
     setRecipeEngineInstance(this.recipeEngine);
-    const homeDir = process.env['HOME'] || process.env['USERPROFILE'] || '';
-    if (homeDir) {
-      const recipeDir = join(homeDir, '.config', 'agentx', 'recipes');
-      this.recipeEngine.addDirectory(recipeDir);
-    }
+    const recipeDir = join(getConfigDir(), 'recipes');
+    this.recipeEngine.addDirectory(recipeDir);
 
     // Initialize file watcher for watch mode
     this.fileWatcher = new FileWatcher();

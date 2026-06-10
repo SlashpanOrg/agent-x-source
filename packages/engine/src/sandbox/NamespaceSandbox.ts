@@ -4,6 +4,7 @@ import { join, resolve, normalize } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import type { Sandbox, SandboxResult, SandboxOptions } from '@agentx/shared';
+import { IS_WINDOWS } from '../tools/platform.js';
 
 interface BackgroundProcess {
   pid: number;
@@ -207,8 +208,8 @@ export class NamespaceSandbox implements Sandbox {
     command: string,
     _options?: SandboxOptions,
   ): { command: string; args: string[] } {
-    const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
-    const shellArg = process.platform === 'win32' ? '/c' : '-c';
+    const shell = IS_WINDOWS ? 'cmd.exe' : '/bin/sh';
+    const shellArg = IS_WINDOWS ? '/c' : '-c';
     return { command: shell, args: [shellArg, command] };
   }
 

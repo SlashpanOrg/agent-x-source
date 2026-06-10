@@ -1,15 +1,14 @@
 import React from 'react';
 import { render } from 'ink';
-import { VERSION, APP_NAME, TAGLINE, getLogger } from '@agentx/shared';
+import { VERSION, APP_NAME, TAGLINE, getLogger, getConfigDir, getDataDir, getCacheDir, getHomeDir } from '@agentx/shared';
 import { initSessionTrace } from './sessionTrace.js';
 import { App } from '@agentx/tui';
 import { ConfigManager, TelegramStore } from '@agentx/engine';
 import { existsSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { isDaemonRunning, getDaemonStatus, stopDaemon, getDataDir } from './daemon.js';
+import { isDaemonRunning, getDaemonStatus, stopDaemon } from './daemon.js';
 
 const TUI_ACTIVE_PATH = join(getDataDir(), 'tui-active.mark');
 
@@ -125,11 +124,7 @@ async function ensureWebApiRunning(): Promise<void> {
 
 /** Crash marker — written on start, removed on clean exit */
 function getCrashMarkerPath(): string {
-  const home = homedir();
-  const base = process.env['XDG_DATA_HOME']
-    ? join(process.env['XDG_DATA_HOME'], 'agentx')
-    : join(home, '.local', 'share', 'agentx');
-  return join(base, '.crash_marker');
+  return join(getDataDir(), '.crash_marker');
 }
 
 function writeCrashMarker(): void {
@@ -176,16 +171,10 @@ async function handleUninstall(): Promise<void> {
   const readline = await import('node:readline');
   const { rmSync } = await import('node:fs');
 
-  const home = homedir();
-  const configDir = process.env['XDG_CONFIG_HOME']
-    ? join(process.env['XDG_CONFIG_HOME'], 'agentx')
-    : join(home, '.config', 'agentx');
-  const dataDir = process.env['XDG_DATA_HOME']
-    ? join(process.env['XDG_DATA_HOME'], 'agentx')
-    : join(home, '.local', 'share', 'agentx');
-  const cacheDir = process.env['XDG_CACHE_HOME']
-    ? join(process.env['XDG_CACHE_HOME'], 'agentx')
-    : join(home, '.cache', 'agentx');
+  const configDir = getConfigDir();
+  const dataDir = getDataDir();
+  const cacheDir = getCacheDir();
+  const home = getHomeDir();
   const binDir = join(home, '.agentx');
   const binLink = join(home, '.local', 'bin', 'agentx');
 

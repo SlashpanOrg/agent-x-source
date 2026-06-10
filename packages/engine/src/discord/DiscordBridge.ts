@@ -15,13 +15,7 @@ import type { Agent } from '../agent/Agent.js';
 import { AgentEventBus } from '../EventBus.js';
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
-
-function getDataDir(): string {
-  return process.env['XDG_DATA_HOME']
-    ? join(process.env['XDG_DATA_HOME'], 'agentx')
-    : join(homedir(), '.local', 'share', 'agentx');
-}
+import { getDataDir } from '@agentx/shared';
 
 export interface DiscordConfig {
   botToken: string;

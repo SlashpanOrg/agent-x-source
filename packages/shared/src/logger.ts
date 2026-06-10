@@ -4,7 +4,7 @@
  */
 import { appendFileSync, existsSync, mkdirSync, statSync, renameSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { getLogDir } from './utils/paths.js';
 
 const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5 MB
 const MAX_ROTATED_FILES = 3;
@@ -102,9 +102,5 @@ export function getLogger(logDir?: string): Logger {
 }
 
 function getDefaultLogDir(): string {
-  const HOME = homedir();
-  const base = process.env['XDG_DATA_HOME']
-    ? join(process.env['XDG_DATA_HOME'], 'agentx')
-    : join(HOME, '.local', 'share', 'agentx');
-  return join(base, 'logs');
+  return getLogDir();
 }

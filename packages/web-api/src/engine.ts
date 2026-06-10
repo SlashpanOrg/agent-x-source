@@ -24,7 +24,7 @@ import {
 import type { AgentXConfig, ProviderId, TelemetryBus } from '@agentx/shared';
 import { unsubscribeAgent } from './ws.js';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { getDataDir } from '@agentx/shared';
 
 export interface EngineState {
   configManager: ConfigManager;
@@ -218,7 +218,7 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
   eng.agent = agent;
 
   // Set context persistence directory for session restore
-  const dataDir = process.env['XDG_DATA_HOME'] || join(homedir(), '.local', 'share', 'agentx');
+  const dataDir = getDataDir();
   const sessDir = join(dataDir, 'sessions', session.id);
   agent.setContextPersistDir(sessDir);
 
