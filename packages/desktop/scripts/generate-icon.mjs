@@ -3,8 +3,8 @@ import { join, resolve } from 'path';
 import { tmpdir, platform } from 'os';
 import { execSync } from 'child_process';
 
-const ROOT = resolve(import.meta.dirname, '..', '..', '..', '..');
-const LOGO_PNG = join(ROOT, 'source', 'assets', 'logo.png');
+const ROOT = resolve(import.meta.dirname, '..', '..', '..');
+const LOGO_PNG = join(ROOT, 'assets', 'logo.png');
 const BUILD = join(import.meta.dirname, '..', 'build');
 const ICON_PNG = join(BUILD, 'icon.png');
 const TRAY_PNG = join(BUILD, 'tray.png');
