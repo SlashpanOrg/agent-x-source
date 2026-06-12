@@ -19,6 +19,8 @@ function getDefaultBaseUrl(providerId: ProviderId): string {
     case 'perplexity': return 'https://api.perplexity.ai';
     case 'cohere': return 'https://api.cohere.com/compatibility/v1';
     case 'commandcode': return 'https://api.commandcode.ai/provider/v1';
+    case 'opencode': return 'https://opencode.ai/zen/go/v1';
+    case 'opencode-zen': return 'https://opencode.ai/zen/v1';
     default: return 'https://api.openai.com/v1';
   }
 }
@@ -53,8 +55,10 @@ export class ProviderFactory {
       case 'perplexity':
       case 'cohere':
       case 'commandcode':
+      case 'opencode':
+      case 'opencode-zen':
         if (!apiKey) throw new Error(`${providerId} requires an API key`);
-        return new OpenAICompatibleProvider(providerId, providerId, apiKey, baseUrl ?? getDefaultBaseUrl(providerId));
+        return new OpenAICompatibleProvider(providerId, providerId === 'opencode-zen' ? 'OpenCode Zen (Free Models)' : providerId, apiKey, baseUrl ?? getDefaultBaseUrl(providerId));
       case 'azure':
         if (!apiKey) throw new Error('Azure OpenAI requires an API key');
         if (!baseUrl) throw new Error('Azure OpenAI requires a base URL (resource endpoint)');

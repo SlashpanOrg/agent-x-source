@@ -86,6 +86,25 @@ export class ToolExecutor {
       return { success: false, output: `Unknown tool: ${toolId}`, error: 'TOOL_NOT_FOUND' };
     }
 
+    // Validate required arguments from tool schema
+    const required = tool.schema.required;
+    if (required && required.length > 0) {
+      const missing: string[] = [];
+      for (const key of required) {
+        const val = args[key];
+        if (val === undefined || val === null || val === '') {
+          missing.push(key);
+        }
+      }
+      if (missing.length > 0) {
+        return {
+          success: false,
+          output: `Missing required argument(s): ${missing.join(', ')}. Expected: ${required.join(', ')}`,
+          error: 'INVALID_ARGS',
+        };
+      }
+    }
+
     // Safety audit — intercept before execution
     if (this.safetyAuditor) {
       const blocked = await this.safetyAuditor.intercept(toolId, args);

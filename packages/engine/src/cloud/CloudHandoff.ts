@@ -386,7 +386,7 @@ export async function runCloudWorker(
     const { ConfigManager } = await import('../config/ConfigManager.js');
 
     const config = new ConfigManager().load();
-    const agent = new Agent({ config, sessionId });
+    const agent = new Agent({ config, sessionId, scopePath: process.cwd() });
 
     const result = await agent.sendMessage(prompt);
 

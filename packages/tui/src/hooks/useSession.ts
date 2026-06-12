@@ -448,7 +448,7 @@ export function useSession(
       }
 
       // No daemon — create local agent
-      const agent = new Agent({ config, sessionId, gitAutoCommit, gitAware });
+      const agent = new Agent({ config, sessionId, scopePath: process.cwd(), gitAutoCommit, gitAware });
       agentRef.current = agent;
 
       try {

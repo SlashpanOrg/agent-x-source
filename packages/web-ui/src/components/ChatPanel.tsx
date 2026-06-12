@@ -6,7 +6,7 @@ import IconButton from '@mui/material/IconButton';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
 import CircularProgress from '@mui/material/CircularProgress';
-import Collapse from '@mui/material/Collapse';
+
 import List from '@mui/material/List';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
@@ -2388,12 +2388,12 @@ function MessageBubble({ message, loadingSteps }: { message: UIMessage; loadingS
 
         {/* Tool calls */}
         {message.toolCalls && message.toolCalls.length > 0 && (
-          <Box sx={{ mb: 0.75 }}>{message.toolCalls.map((tc) => (<ToolCallChip key={tc.id} tool={tc} />))}</Box>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '0.25em', mb: 0.75 }}>{message.toolCalls.map((tc) => (<ToolCallChip key={tc.id} tool={tc} />))}</Box>
         )}
 
         {/* Sub agents */}
         {message.subAgents && message.subAgents.length > 0 && (
-          <Box sx={{ mb: 0.75 }}>{message.subAgents.map((sa) => (<SubAgentChip key={sa.id} agent={sa} />))}</Box>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '0.25em', mb: 0.75 }}>{message.subAgents.map((sa) => (<SubAgentChip key={sa.id} agent={sa} />))}</Box>
         )}
 
         {/* Inline todos */}
@@ -2448,50 +2448,33 @@ function MessageBubble({ message, loadingSteps }: { message: UIMessage; loadingS
 // ─── Tool Call Chip ───
 
 function ToolCallChip({ tool }: { tool: ToolCall }) {
-  const [expanded, setExpanded] = useState(false);
   return (
-    <Box sx={{ mb: 0.5 }}>
-      <Chip size="small"
-        label={tool.name}
-        onClick={() => setExpanded(!expanded)}
-        sx={{
-          fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace", height: 20,
-          bgcolor: tool.status === 'running' ? colors.accent.orange + '10' : tool.status === 'error' ? colors.accent.red + '10' : colors.accent.green + '10',
-          border: `1px solid ${tool.status === 'running' ? colors.accent.orange : tool.status === 'error' ? colors.accent.red : colors.accent.green}20`,
-          color: tool.status === 'running' ? colors.accent.orange : tool.status === 'error' ? colors.accent.red : colors.accent.green,
-          cursor: 'pointer',
-        }}
-      />
-      <Collapse in={expanded}>
-        {tool.args && <Box sx={{ mt: 0.5, p: 0.75, fontSize: '0.55rem', bgcolor: colors.bg.tertiary, borderRadius: 1, fontFamily: "'JetBrains Mono', monospace", color: colors.text.dim, whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'auto' }}>{tool.args}</Box>}
-        {tool.result && <Box sx={{ mt: 0.5, p: 0.75, fontSize: '0.55rem', bgcolor: colors.bg.tertiary, borderRadius: 1, fontFamily: "'JetBrains Mono', monospace", color: colors.text.secondary, whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'auto' }}>{tool.result}</Box>}
-      </Collapse>
-    </Box>
+    <Chip size="small"
+      label={tool.name}
+      sx={{
+        fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace", height: 20,
+        bgcolor: tool.status === 'running' ? colors.accent.orange + '10' : tool.status === 'error' ? colors.accent.red + '10' : colors.accent.green + '10',
+        border: `1px solid ${tool.status === 'running' ? colors.accent.orange : tool.status === 'error' ? colors.accent.red : colors.accent.green}20`,
+        color: tool.status === 'running' ? colors.accent.orange : tool.status === 'error' ? colors.accent.red : colors.accent.green,
+      }}
+    />
   );
 }
 
 // ─── Sub-Agent Chip ───
 
 function SubAgentChip({ agent }: { agent: SubAgent }) {
-  const [expanded, setExpanded] = useState(false);
   return (
-    <Box sx={{ mb: 0.5 }}>
-      <Chip size="small"
-        icon={agent.status === 'running' ? <CircularProgress size={10} sx={{ color: 'inherit' }} /> : <AccountTreeIcon sx={{ fontSize: 11 }} />}
-        label={`${agent.name}: ${agent.task.slice(0, 35)}${agent.task.length > 35 ? '…' : ''}`}
-        onClick={() => setExpanded(!expanded)}
-        sx={{
-          fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace", height: 20,
-          bgcolor: agent.status === 'running' ? colors.accent.purple + '10' : colors.accent.green + '10',
-          border: `1px solid ${agent.status === 'running' ? colors.accent.purple : colors.accent.green}20`,
-          color: agent.status === 'running' ? colors.accent.purple : colors.accent.green,
-          cursor: 'pointer',
-        }}
-      />
-      <Collapse in={expanded}>
-        {agent.result && <Box sx={{ mt: 0.5, p: 0.75, fontSize: '0.55rem', bgcolor: colors.bg.tertiary, borderRadius: 1, fontFamily: "'JetBrains Mono', monospace", color: colors.text.secondary, whiteSpace: 'pre-wrap', maxHeight: 100, overflow: 'auto' }}>{agent.result}</Box>}
-      </Collapse>
-    </Box>
+    <Chip size="small"
+      icon={agent.status === 'running' ? <CircularProgress size={10} sx={{ color: 'inherit' }} /> : <AccountTreeIcon sx={{ fontSize: 11 }} />}
+      label={`${agent.name}: ${agent.task.slice(0, 35)}${agent.task.length > 35 ? '…' : ''}`}
+      sx={{
+        fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace", height: 20,
+        bgcolor: agent.status === 'running' ? colors.accent.purple + '10' : colors.accent.green + '10',
+        border: `1px solid ${agent.status === 'running' ? colors.accent.purple : colors.accent.green}20`,
+        color: agent.status === 'running' ? colors.accent.purple : colors.accent.green,
+      }}
+    />
   );
 }
 

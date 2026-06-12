@@ -13,7 +13,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import LogoutIcon from '@mui/icons-material/Logout';
 import DnsIcon from '@mui/icons-material/Dns';
 import { useNavigate } from 'react-router-dom';
-import { auth } from '../api';
+import { auth, setAuthToken } from '../api';
 import { useApp } from '../store/AppContext';
 import { colors } from '../theme';
 import type { PanelId } from '../pages/Console';
@@ -41,6 +41,7 @@ export function Sidebar({ active, onNavigate }: Props) {
 
   const handleLogout = async () => {
     try { await auth.logout(); } catch { /* ignore */ }
+    setAuthToken(null);
     setAuthenticated(false);
     navigate('/login');
   };

@@ -113,6 +113,32 @@ const PRICING: Record<string, ModelPricing> = {
   'mimo-v2.5-pro': { inputPerMillion: 2.00, outputPerMillion: 6.00 },
   'mimo-v2.5': { inputPerMillion: 0.80, outputPerMillion: 4.00 },
   'nemotron-3-ultra': { inputPerMillion: 0.50, outputPerMillion: 2.50 },
+
+  // OpenCode Go & Zen (via opencode.ai)
+  'deepseek-v4-flash-free': { inputPerMillion: 0, outputPerMillion: 0 },
+  'big-pickle': { inputPerMillion: 0, outputPerMillion: 0 },
+  'mimo-v2.5-free': { inputPerMillion: 0, outputPerMillion: 0 },
+  'north-mini-code-free': { inputPerMillion: 0, outputPerMillion: 0 },
+  'nemotron-3-ultra-free': { inputPerMillion: 0, outputPerMillion: 0 },
+  'claude-haiku-4-5': { inputPerMillion: 1.00, outputPerMillion: 5.00 },
+  'claude-opus-4-5': { inputPerMillion: 5.00, outputPerMillion: 25.00 },
+  'claude-opus-4-6': { inputPerMillion: 5.00, outputPerMillion: 25.00 },
+  'claude-opus-4-7': { inputPerMillion: 5.00, outputPerMillion: 25.00 },
+  'gemini-3-flash': { inputPerMillion: 0.50, outputPerMillion: 3.00 },
+  'gemini-3.1-pro': { inputPerMillion: 2.00, outputPerMillion: 12.00 },
+  'gemini-3.5-flash': { inputPerMillion: 2.00, outputPerMillion: 9.00 },
+  'gpt-5': { inputPerMillion: 1.00, outputPerMillion: 9.00 },
+  'gpt-5-codex': { inputPerMillion: 1.00, outputPerMillion: 9.00 },
+  'gpt-5-nano': { inputPerMillion: 0.05, outputPerMillion: 0.40 },
+  'gpt-5.1': { inputPerMillion: 1.00, outputPerMillion: 9.00 },
+  'gpt-5.1-codex': { inputPerMillion: 1.00, outputPerMillion: 9.00 },
+  'gpt-5.1-codex-max': { inputPerMillion: 1.00, outputPerMillion: 10.00 },
+  'gpt-5.1-codex-mini': { inputPerMillion: 0.25, outputPerMillion: 2.00 },
+  'gpt-5.2': { inputPerMillion: 2.00, outputPerMillion: 14.00 },
+  'gpt-5.2-codex': { inputPerMillion: 2.00, outputPerMillion: 14.00 },
+  'gpt-5.3-codex': { inputPerMillion: 2.00, outputPerMillion: 14.00 },
+  'gpt-5.3-codex-spark': { inputPerMillion: 2.00, outputPerMillion: 14.00 },
+  'gpt-5.4-nano': { inputPerMillion: 0.20, outputPerMillion: 1.00 },
 };
 
 export function getModelPricing(modelId: string): ModelPricing {

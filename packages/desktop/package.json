@@ -1,6 +1,6 @@
 {
   "name": "@agentx/desktop",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "private": true,
   "description": "Agent-X — Your AI Wingman (Desktop)",
   "homepage": "https://github.com/SlashpanOrg/agent-x",
@@ -10,7 +10,7 @@
     "prebuild": "node ../../scripts/sync-version.mjs && node scripts/generate-icon.mjs",
     "build": "tsup",
     "build:deps": "pnpm --filter @agentx/web-api run build && pnpm --filter @agentx/web-ui run build",
-    "dev": "tsup && electron dist/main.js",
+    "dev": "tsup && electron-rebuild -f -w better-sqlite3 -m ../web-api && electron dist/main.js",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "pack": "electron-builder --dir",

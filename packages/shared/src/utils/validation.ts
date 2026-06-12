@@ -17,6 +17,8 @@ export const providerIdSchema = z.enum([
   'azure',
   'cohere',
   'commandcode',
+  'opencode',
+  'opencode-zen',
 ]);
 
 export const permissionDecisionSchema = z.enum([

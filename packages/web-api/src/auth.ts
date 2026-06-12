@@ -84,6 +84,10 @@ function getToken(req: Request): string | undefined {
     return auth.slice(7);
   }
 
+  // Check query parameter (for SSE EventSource which can't set custom headers)
+  const tokenParam = req.query.token as string | undefined;
+  if (tokenParam) return tokenParam;
+
   return undefined;
 }
 
@@ -221,12 +225,12 @@ export function createAuthRouter(): Router {
       res.cookie('agentx_session', token, {
         httpOnly: true,
         secure: false, // Set to true in production with HTTPS
-        sameSite: 'strict',
+        sameSite: 'lax', // lax needed for same-origin page navigations
         maxAge: 24 * 60 * 60 * 1000, // 24 hours
         path: '/',
       });
 
-      res.json({ ok: true, username });
+      res.json({ ok: true, username, token });
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : 'Setup failed';
       res.status(500).json({ error: 'setup-failed', message });
@@ -270,12 +274,12 @@ export function createAuthRouter(): Router {
       res.cookie('agentx_session', token, {
         httpOnly: true,
         secure: false, // Set to true in production with HTTPS
-        sameSite: 'strict',
+        sameSite: 'lax', // lax needed for same-origin page navigations
         maxAge: 24 * 60 * 60 * 1000, // 24 hours
         path: '/',
       });
 
-      res.json({ ok: true, username });
+      res.json({ ok: true, username, token });
     } catch (e: unknown) {
       recordAttempt(ip, false);
       const message = e instanceof Error ? e.message : 'Authentication failed';

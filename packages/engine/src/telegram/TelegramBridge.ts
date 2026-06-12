@@ -344,11 +344,12 @@ export class TelegramBridge {
       if (cmd) {
         try {
           const response = await this.commandHandler(cmd, args, chatId);
-          if (response !== null) {
+          if (response !== null && response !== undefined) {
             await this.sendMessage(chatId, response);
-            return;
           }
         } catch { /* fall through to agent */ }
+        // Commands handled — skip agent processing
+        return;
       }
     }
 

@@ -33,6 +33,7 @@ import type { DoomLoopDetector } from '../tools/DoomLoopDetector.js';
 import type { TokenTracker } from '../session/TokenTracker.js';
 import { estimateOutputTokens } from '../session/tokenCount.js';
 import type { GitManager } from '../session/GitManager.js';
+import type { SessionLogger } from '../session/SessionLogger.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Dependency contract (implemented by Agent)
@@ -84,6 +85,9 @@ export interface CompletionLoopDeps {
 
   // Clarification dialog
   waitForClarification(question: string, options: string[], allowFreeform: boolean): Promise<string>;
+
+  // Session logging
+  readonly sessionLogger: SessionLogger | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,6 +217,20 @@ export class CompletionLoop {
       };
 
       this.deps.emit({ type: 'loading_start', stage: round === 0 ? 'thinking' : 'tool_execution' });
+
+      // Log the LLM request
+      this.deps.sessionLogger?.log({
+        type: 'llm_request',
+        round,
+        provider: this.deps.config.provider.activeProvider,
+        model: request.model,
+        messages: request.messages.map(m => ({
+          role: m.role,
+          content: typeof m.content === 'string' ? m.content.slice(0, 500) : JSON.stringify(m.content).slice(0, 500),
+          toolCalls: m.toolCalls?.map(tc => ({ name: tc.function.name, args: tc.function.arguments })),
+        })),
+        tools: request.tools?.map(t => t.function?.name ?? 'unknown'),
+      });
 
       // Stream response with retry support
       let fullContent = '';  // Content for THIS round only
@@ -421,6 +439,18 @@ export class CompletionLoop {
                 : raw;
               this.deps.messages.push({ role: 'tool', content: truncated, toolCallId: r.id });
             }
+
+            // Log tool results
+            this.deps.sessionLogger?.log({
+              type: 'tool_results',
+              round,
+              results: batchResults.map(r => ({
+                name: r.name,
+                success: r.success,
+                output: r.output.slice(0, 500),
+                elapsed: r.elapsed,
+              })),
+            });
           }
         }
 
@@ -459,6 +489,14 @@ export class CompletionLoop {
       this.deps.emit({ type: 'loading_end' });
 
       this.deps.messages.push({ role: 'assistant', content: accumulatedContent });
+
+      // Log the LLM response
+      this.deps.sessionLogger?.log({
+        type: 'llm_response',
+        round,
+        content: accumulatedContent.slice(0, 1000),
+        usage: lastUsage ?? null,
+      });
 
       const tokenCount = lastUsage
         ? lastUsage.inputTokens + lastUsage.outputTokens

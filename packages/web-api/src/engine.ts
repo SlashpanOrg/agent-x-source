@@ -20,6 +20,7 @@ import {
   WebhookNotifierRuntime,
   SQLiteBrowserRuntime,
   MCPBridge,
+  SessionLogger,
 } from '@agentx/engine';
 import type { AgentXConfig, ProviderId, TelemetryBus } from '@agentx/shared';
 import { unsubscribeAgent } from './ws.js';
@@ -30,6 +31,7 @@ export interface EngineState {
   configManager: ConfigManager;
   sessionManager: SessionManager;
   agent: Agent | null;
+  channelAgent: Agent | null;
   crewManager: CrewManager;
   toolkit: ReturnType<typeof createDefaultToolkit>;
   configured: boolean;
@@ -127,6 +129,7 @@ export function getEngine(): EngineState {
     configManager,
     sessionManager,
     agent: null,
+    channelAgent: null,
     crewManager,
     toolkit,
     configured,
@@ -145,7 +148,7 @@ export function getEngine(): EngineState {
     dek: null,
   };
 
-  // Boot-time Telegram auto-start — bridge starts independently of agent
+  // Boot-time channel auto-start — bridge starts, agent attaches on first session
   const tgPlugin = state!.pluginRegistry.getPlugin('telegram');
   const tgConfig = tgPlugin?.config ?? {};
   if (tgPlugin?.enabled && tgConfig['botToken'] && !process.env['AGENTX_DAEMON_HANDLES_TG']) {
@@ -156,9 +159,12 @@ export function getEngine(): EngineState {
       gw.startChannel('telegram').then(() => {
         const bridge = gw.getTelegramBridge();
         if (bridge) state!.telegramBridge = bridge;
+        try {
+          const entry = (gw as any).registry.getChannel('telegram');
+          if (entry?.plugin) entry.plugin.setAgent(ensureChannelAgent());
+        } catch { /* agent can attach later */ }
       }).catch((e: unknown) => {
         console.error('Failed to start Telegram channel on boot:', (e as Error).message);
-        // Clean up dead gateway state so restart endpoint can create fresh
         state!.gateway = null;
         state!.telegramBridge = null;
       });
@@ -227,8 +233,10 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
       pendingCwd || process.cwd(),
     );
   }
-  // Consume the pending CWD so it doesn't leak to the next session
-  if (pendingCwd) {
+  // Use the session's stored scopePath, falling back to pendingCwd if set
+  if (session?.scopePath) {
+    eng.toolkit.executor.setScopePath(session.scopePath);
+  } else if (pendingCwd) {
     eng.toolkit.executor.setScopePath(pendingCwd);
   }
   pendingCwd = null;
@@ -254,6 +262,11 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
   }
 
   eng.agent = agent;
+
+  // Create session logger for this agent
+  const sessionLogger = new SessionLogger(session.id);
+  sessionLogger.init();
+  agent.sessionLogger = sessionLogger;
 
   // Set context persistence directory for session restore
   const dataDir = getDataDir();
@@ -313,8 +326,10 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
   const tgConfig = tgPlugin?.config ?? {};
   if (tgPlugin?.enabled && tgConfig['botToken'] && !eng.telegramBridge && !process.env['AGENTX_DAEMON_HANDLES_TG']) {
     try {
+      // Create a dedicated agent for Telegram so it doesn't conflict with web UI
+      const channelAgent = ensureChannelAgent();
       const tgChannelPlugin = eng.gateway!.registerTelegram(tgConfig['botToken'] as string);
-      tgChannelPlugin.setAgent(agent);
+      tgChannelPlugin.setAgent(channelAgent);
       eng.gateway!.startChannel('telegram').catch((e: unknown) => {
         console.error('Failed to start Telegram channel', e);
       }).then(() => {
@@ -329,11 +344,12 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
       console.error('Failed to start Telegram bridge', e);
     }
   } else if (eng.gateway && tgPlugin?.enabled && tgConfig['botToken']) {
-    // Bridge already running — re-attach agent for web session changes
+    // Bridge already running — ensure Telegram has its dedicated agent
     try {
+      const channelAgent = ensureChannelAgent();
       const entry = (eng.gateway as any).registry.getChannel('telegram');
       if (entry?.plugin && 'setAgent' in entry.plugin) {
-        entry.plugin.setAgent(agent);
+        entry.plugin.setAgent(channelAgent);
       }
     } catch { /* best-effort */ }
   }
@@ -512,11 +528,61 @@ export function getOrCreateAgent(config?: AgentXConfig): Agent {
   return createAgent(config);
 }
 
+/** Create or return a dedicated agent for messaging channels — independent of web UI agent */
+export function ensureChannelAgent(): Agent {
+  const eng = getEngine();
+  if (eng.channelAgent) return eng.channelAgent;
+
+  let cfg: AgentXConfig;
+  try {
+    cfg = eng.configManager.load();
+  } catch {
+    cfg = getDefaultConfig();
+  }
+
+  const activeProvider = cfg.provider.activeProvider as ProviderId;
+  const CHANNEL_SESSION_ID = '__channel__';
+
+  // Restore persistent channel session, or create it once
+  let session = eng.sessionManager.restoreSession(CHANNEL_SESSION_ID);
+  if (!session) {
+    session = eng.sessionManager.createSession(
+      activeProvider,
+      cfg.provider.activeModel,
+      undefined,
+      process.cwd(),
+      CHANNEL_SESSION_ID,
+    );
+  }
+
+  const agent = new Agent({
+    config: cfg,
+    sessionId: session.id,
+    systemPrompt: '',
+    toolExecutor: eng.toolkit.executor,
+    toolRegistry: eng.toolkit.registry,
+  });
+  (agent.sauce as { crew: CrewManager }).crew = eng.crewManager;
+  agent.sauce.crew.refresh();
+  const dataDir = getDataDir();
+  const sessDir = join(dataDir, 'sessions', session.id);
+  agent.setContextPersistDir(sessDir);
+
+  // Create session logger for the channel agent
+  const channelLogger = new SessionLogger(session.id);
+  channelLogger.init();
+  agent.sessionLogger = channelLogger;
+
+  eng.channelAgent = agent;
+  return agent;
+}
+
 export function destroyAgent(): void {
   const eng = getEngine();
   // Unsubscribe WebSocket event listener before destroying agent
   unsubscribeAgent();
   if (eng.agent) {
+    (eng.agent as any).sessionLogger?.close();
     eng.agent.endSession();
     eng.agent = null;
   }
@@ -525,7 +591,13 @@ export function destroyAgent(): void {
 
 export function clearEngine(): void {
   if (state?.agent) {
+    (state.agent as any).sessionLogger?.close();
     state.agent.endSession();
+  }
+  if (state?.channelAgent) {
+    (state.channelAgent as any).sessionLogger?.close();
+    state.channelAgent.endSession();
+    state.channelAgent = null;
   }
   state = null;
 }

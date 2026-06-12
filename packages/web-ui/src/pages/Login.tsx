@@ -3,13 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
-import { auth } from '../api';
+import { auth, setAuthToken } from '../api';
 import { useApp } from '../store/AppContext';
 import { useGlobalError } from '../components/ErrorBand';
 import { colors } from '../theme';
 
 export function Login() {
-  const { setAuthenticated, initialize } = useApp();
+  const { setAuthenticated } = useApp();
   const navigate = useNavigate();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -78,8 +78,8 @@ export function Login() {
     setLoading(true);
     try {
       const res = await auth.login(username, password);
+      setAuthToken(res.token);
       setAuthenticated(true, res.username);
-      await initialize();
       navigate('/');
     } catch (err) {
       showError(err instanceof Error ? err.message : 'Authentication failed');
