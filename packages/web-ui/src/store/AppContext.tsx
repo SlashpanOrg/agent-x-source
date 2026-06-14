@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
-import { auth, config, health, connectSSE, type AgentXConfig, type TelemetryEvent, type HealthStatus } from '../api';
+import { auth, config, health, connectSSE, setOnUnauthorized, setAuthToken, type AgentXConfig, type TelemetryEvent, type HealthStatus } from '../api';
 
 type AppView = 'loading' | 'docking' | 'setup-auth' | 'setup-wizard' | 'login' | 'console';
 export type AuthState = 'loading' | 'no-root-user' | 'unauthenticated' | 'needs-setup' | 'authenticated';
@@ -63,6 +63,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setConfig = useCallback((c: AgentXConfig) => { setAppConfig(c); }, []);
 
+  // Restore auth token from sessionStorage on mount
+  useEffect(() => {
+    const stored = sessionStorage.getItem('agentx_auth_token');
+    if (stored) {
+      setAuthToken(stored);
+    }
+  }, []);
+
+  // Register unauthorized handler — any 401 response will reset auth state
+  useEffect(() => {
+    setOnUnauthorized(() => {
+      setAuthToken(null);
+      sessionStorage.removeItem('agentx_auth_token');
+      setAuthState('unauthenticated');
+      setView('login');
+      setAuth(false);
+    });
+    return () => setOnUnauthorized(null);
+  }, []);
+
   const initialize = useCallback(async () => {
     setView('loading');
     setAuthState('loading');
@@ -122,6 +142,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const disconnect = connectSSE(pushEvent);
     return disconnect;
   }, [authState, pushEvent]);
+
+  // Load config when authenticated (e.g. after login, when initialize() isn't called)
+  useEffect(() => {
+    if (authState !== 'authenticated' || appConfig) return;
+    config.get().then((cfg) => setAppConfig(cfg)).catch(() => {});
+  }, [authState, appConfig]);
 
   const state: AppState = {
     view, authState, authenticated, username, config: appConfig, serverOnline, events, healthData,

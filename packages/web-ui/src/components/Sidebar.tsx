@@ -1,7 +1,6 @@
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
-import Typography from '@mui/material/Typography';
 import Divider from '@mui/material/Divider';
 import ChatIcon from '@mui/icons-material/Chat';
 import ExtensionIcon from '@mui/icons-material/Extension';
@@ -14,7 +13,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import LogoutIcon from '@mui/icons-material/Logout';
 import DnsIcon from '@mui/icons-material/Dns';
 import { useNavigate } from 'react-router-dom';
-import { auth } from '../api';
+import { auth, setAuthToken } from '../api';
 import { useApp } from '../store/AppContext';
 import { colors } from '../theme';
 import type { PanelId } from '../pages/Console';
@@ -42,6 +41,7 @@ export function Sidebar({ active, onNavigate }: Props) {
 
   const handleLogout = async () => {
     try { await auth.logout(); } catch { /* ignore */ }
+    setAuthToken(null);
     setAuthenticated(false);
     navigate('/login');
   };
@@ -54,9 +54,9 @@ export function Sidebar({ active, onNavigate }: Props) {
     }}>
       {/* Brand mark */}
       <Tooltip title="@agentx" placement="right">
-        <Typography sx={{ fontSize: '0.6rem', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: colors.accent.blue, mb: 2, letterSpacing: '1px', cursor: 'default' }}>
-          @ax
-        </Typography>
+        <Box sx={{ mb: 2, cursor: 'default' }}>
+          <img src="/logo.png" alt="Agent-X" style={{ width: 28, height: 28, objectFit: 'contain' }} />
+        </Box>
       </Tooltip>
 
       {/* Nav items */}

@@ -1,10 +1,9 @@
 import type { ChannelPlugin } from '../types.js';
 import type { FocusState, FocusManager } from '../FocusManager.js';
-import { getDataDir, type VisualUpdate } from '@agentx/shared';
+import { getDataDir, type VisualUpdate, type AgentXConfig } from '@agentx/shared';
 import { TelegramBridge } from '../../telegram/TelegramBridge.js';
 import type { TelegramConfig } from '../../telegram/TelegramBridge.js';
 import type { Agent } from '../../agent/Agent.js';
-import { CrewManager } from '../../secret-sauce/CrewManager.js';
 import { ConfigManager } from '../../config/ConfigManager.js';
 import { ProviderFactory } from '../../providers/index.js';
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
@@ -66,6 +65,55 @@ export class TelegramChannelPlugin implements ChannelPlugin {
     this.setupFileHandling();
     this.setupCommandHandling();
     this.setupMessageHandling();
+    this.setupCallbackHandlers();
+  }
+
+  private setupCallbackHandlers(): void {
+    // Profile selection via inline keyboard
+    this.bridge.onCallback('profile', (data: string, chatId: number) => {
+      const profileId = data.split(':').slice(1).join(':');
+      if (!this.agent) {
+        void this.bridge.sendToChat(chatId, '⚠️ Agent not initialized.');
+        return;
+      }
+      const cfg = (this.agent as any).config as AgentXConfig;
+      let foundProviderId: string | null = null;
+      for (const [pid, pcfg] of Object.entries(cfg.provider.providers)) {
+        if (pcfg.profiles?.[profileId]) { foundProviderId = pid; break; }
+        if (pid + '-default' === profileId) { foundProviderId = pid; break; }
+      }
+      if (!foundProviderId) {
+        void this.bridge.sendToChat(chatId, `❌ Profile not found.`);
+        return;
+      }
+      const pCfg = cfg.provider.providers[foundProviderId];
+      if (!pCfg) return;
+      this.agent.switchProvider(foundProviderId as any, pCfg.profiles?.[profileId]?.apiKey ?? pCfg.apiKey, pCfg.profiles?.[profileId]?.baseUrl ?? pCfg.baseUrl);
+      void this.bridge.sendToChat(chatId, `✅ Switched to ${profileId}\nUse /models to pick a model.`);
+    });
+
+    // Model selection via inline keyboard
+    this.bridge.onCallback('model', (data: string, chatId: number) => {
+      const modelId = data.split(':').slice(1).join(':');
+      if (!this.agent) {
+        void this.bridge.sendToChat(chatId, '⚠️ Agent not initialized.');
+        return;
+      }
+      const agent = this.agent;
+      void (async () => {
+        try {
+          const success = await agent.trialModel(modelId);
+          if (success) {
+            agent.switchModel(modelId);
+            void this.bridge.sendToChat(chatId, `✅ Switched to model: ${modelId}`);
+          } else {
+            void this.bridge.sendToChat(chatId, `❌ Model validation failed.`);
+          }
+        } catch (err) {
+          void this.bridge.sendToChat(chatId, `❌ ${err instanceof Error ? err.message : String(err)}`);
+        }
+      })();
+    });
   }
 
   private setupPermissionHandling(): void {
@@ -126,7 +174,10 @@ export class TelegramChannelPlugin implements ChannelPlugin {
 
   private setupFileHandling(): void {
     this.bridge.setFileHandler((fileId: string, fileName: string, mimeType: string, caption: string | undefined, chatId: number) => {
-      if (!this.agent) return;
+      if (!this.agent) {
+        void this.bridge.sendToChat(chatId, '⚠️ Agent-X is starting up. Please wait a moment and try again.');
+        return;
+      }
       this.activeChatId = chatId;
 
       void (async () => {
@@ -145,8 +196,10 @@ export class TelegramChannelPlugin implements ChannelPlugin {
 
           this.enqueueMessage(fileMsg, chatId);
         } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          this.bridge.sendToChat(chatId, `❌ Failed to receive file: ${errMsg}`);
+          let errMsg = err instanceof Error ? err.message : String(err);
+          const jsonMatch = errMsg.match(/"message"\s*:\s*"([^"]+)"/);
+          if (jsonMatch?.[1]) errMsg = jsonMatch[1];
+          this.bridge.sendToChat(chatId, `❌ ${errMsg}`);
         }
       })();
     });
@@ -174,19 +227,32 @@ export class TelegramChannelPlugin implements ChannelPlugin {
   }
 
   private async processQueue(): Promise<void> {
-    if (this.processingQueue || !this.agent) return;
+    if (this.processingQueue) return;
+    if (!this.agent) {
+      // Drain queue with error responses — agent not initialized yet
+      while (this.messageQueue.length > 0) {
+        const item = this.messageQueue.shift()!;
+        await this.bridge.sendToChat(item.chatId, '⚠️ Agent-X is starting up. Please wait a moment and try again.');
+      }
+      return;
+    }
     this.processingQueue = true;
 
     while (this.messageQueue.length > 0) {
       const item = this.messageQueue.shift()!;
       try {
-        const response = await this.agent.sendMessage(item.text);
+        const response = await this.agent.sendMessage(item.text, { sourceChannel: 'telegram', channelId: String(item.chatId) });
         if (response.content) {
           await this.bridge.sendToChat(item.chatId, response.content);
         }
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        await this.bridge.sendToChat(item.chatId, `⚠️ Error: ${errMsg}`);
+        let errMsg = err instanceof Error ? err.message : String(err);
+        // Strip verbose JSON from provider errors
+        const jsonMatch = errMsg.match(/"message"\s*:\s*"([^"]+)"/);
+        if (jsonMatch?.[1]) errMsg = jsonMatch[1];
+        // Trim to reasonable length for Telegram
+        if (errMsg.length > 400) errMsg = errMsg.slice(0, 400) + '...';
+        await this.bridge.sendToChat(item.chatId, `⚠️ ${errMsg}`);
       }
     }
 
@@ -202,22 +268,15 @@ export class TelegramChannelPlugin implements ChannelPlugin {
 
       case 'help':
         return [
-          '🤖 *Agent-X Commands:*',
+          '🤖 *Agent-X Channel Commands:*',
           '',
-          '📋 *Crew:*',
-          '  /crew list — List crew members',
-          '  /crew switch <name> — Switch crew member',
-          '  /crew current — Show current crew',
+          '🔌 *Profile:*',
+          '  /profiles — List configured provider profiles',
+          '  /profile <id> — Switch channel to a profile',
           '',
           '🧠 *Model:*',
-          '  /model current — Show current model',
-          '  /model list — List available models',
-          '  /model switch <id> — Switch model',
-          '',
-          '🔌 *Provider:*',
-          '  /provider current — Show provider',
-          '  /provider list — List providers',
-          '  /provider switch <id> — Switch provider',
+          '  /models — List available models',
+          '  /model <id> — Switch channel model',
           '',
           '💬 *Session:*',
           '  /clear — Clear conversation history',
@@ -226,99 +285,94 @@ export class TelegramChannelPlugin implements ChannelPlugin {
           '',
           '🧰 *Other:*',
           '  /remember <text> — Save to memory',
-          '  /tools — List available tools',
-          '  /status — Show system status',
-          '  /timezone [tz] — View/set timezone',
-          '  /focus — Show current focus channel',
+          '  /status — Show channel status',
+          '  /help — Show this help',
           '',
           'Or just type a message to chat!',
         ].join('\n');
 
-      case 'crew': {
-        const sub = args[0];
-        const pm = new CrewManager();
-        if (!sub || sub === 'list') {
-          const crews = pm.list();
-          if (crews.length === 0) return '📋 No crews configured.';
-          const lines = crews.map((p) => `${p.enabled !== false ? '●' : '○'} ${p.name}`);
-          return `📋 *Crew Members:*\n${lines.join('\n')}`;
+      case 'profiles': {
+        const cfg = (this.agent as any).config as AgentXConfig;
+        const profiles: Array<{ id: string; label: string; providerId: string }> = [];
+        Object.entries(cfg.provider.providers).forEach(([pid, pcfg]) => {
+          if (pcfg.profiles) {
+            Object.entries(pcfg.profiles).forEach(([profId, prof]) => {
+              profiles.push({ id: profId, label: prof.label, providerId: pid });
+            });
+          } else if (pcfg.configured) {
+            profiles.push({ id: pid + '-default', label: pid, providerId: pid });
+          }
+        });
+        if (profiles.length === 0) return '🔌 No profiles configured.';
+        const active = cfg.provider.activeProvider;
+        const lines = profiles.map((p) => `${p.providerId === active ? '●' : '○'} ${p.label} (${p.providerId})`);
+        void this.bridge.sendWithButtons(this.activeChatId ?? 0, `🔌 *Profiles:*\n${lines.join('\n')}`, profiles.map(p => ({ text: p.label, callbackData: `profile:${p.id}` })));
+        return null; // handled via inline buttons
+      }
+
+      case 'profile': {
+        const profileId = args[0];
+        if (!profileId) return '❌ Usage: /profile <profile_id>\nUse /profiles to list available profiles.';
+        const cfg = (this.agent as any).config as AgentXConfig;
+        let foundProviderId: string | null = null;
+        for (const [pid, pcfg] of Object.entries(cfg.provider.providers)) {
+          if (pcfg.profiles?.[profileId]) {
+            foundProviderId = pid;
+            break;
+          }
+          if (pid + '-default' === profileId) {
+            foundProviderId = pid;
+            break;
+          }
         }
-        return '📋 *Crew commands:*\n/crew list';
+        if (!foundProviderId) return `❌ Profile "${profileId}" not found. Use /profiles to list.`;
+        const pCfg = cfg.provider.providers[foundProviderId];
+        if (!pCfg) return `❌ Provider "${foundProviderId}" not configured.`;
+        this.agent.switchProvider(foundProviderId as any, pCfg.profiles?.[profileId]?.apiKey ?? pCfg.apiKey, pCfg.profiles?.[profileId]?.baseUrl ?? pCfg.baseUrl);
+        return `✅ Switched to profile: ${profileId} (${foundProviderId})\nUse /models to pick a model.`;
+      }
+
+      case 'models': {
+        try {
+          const cfg = (this.agent as any).config as AgentXConfig;
+          const provider = ProviderFactory.create(
+            cfg.provider.activeProvider,
+            cfg.provider.providers[cfg.provider.activeProvider]?.apiKey,
+            cfg.provider.providers[cfg.provider.activeProvider]?.baseUrl,
+          );
+          const models = await provider.listModels();
+          const activeModel = cfg.provider.activeModel;
+          const displayModels = models.slice(0, 24);
+          void this.bridge.sendWithButtons(
+            this.activeChatId ?? 0,
+            `🧠 *Models* (${cfg.provider.activeProvider}) — tap to switch:`,
+            displayModels.map((m: { id: string; name?: string }) => ({
+              text: `${m.id === activeModel ? '● ' : ''}${m.name ?? m.id}`,
+              callbackData: `model:${m.id}`,
+            })),
+          );
+          if (models.length > 24) {
+            void this.bridge.sendToChat(this.activeChatId ?? 0, `... and ${models.length - 24} more. Use /model <id> for any model.`);
+          }
+          return null;
+        } catch (err) {
+          return `❌ ${err instanceof Error ? err.message : String(err)}`;
+        }
       }
 
       case 'model': {
-        const sub = args[0];
-        const configMgr = this.configManager ?? new ConfigManager();
-        const cfg = configMgr.load();
-        if (!sub || sub === 'current') {
-          return `🧠 *Current Model:* ${cfg.provider.activeModel}\n*Provider:* ${cfg.provider.activeProvider}`;
-        }
-        if (sub === 'list') {
-          try {
-            const provider = ProviderFactory.create(
-              cfg.provider.activeProvider,
-              cfg.provider.providers[cfg.provider.activeProvider]?.apiKey,
-              cfg.provider.providers[cfg.provider.activeProvider]?.baseUrl,
-            );
-            const models = await provider.listModels();
-            const lines = models.slice(0, 20).map((m) =>
-              `${m.id === cfg.provider.activeModel ? '● ' : '○ '}${m.name ?? m.id}`,
-            );
-            return `🧠 *Models* (${cfg.provider.activeProvider}):\n${lines.join('\n')}${models.length > 20 ? `\n... and ${models.length - 20} more` : ''}\n\nUse /model switch <id> to change`;
-          } catch (err) {
-            return `❌ Failed to list models: ${err instanceof Error ? err.message : String(err)}`;
+        const modelId = args[0];
+        if (!modelId) return '❌ Usage: /model <model_id>\nUse /models to list.';
+        try {
+          const success = await this.agent.trialModel(modelId);
+          if (success) {
+            this.agent.switchModel(modelId);
+            return `✅ Switched to model: ${modelId}`;
           }
+          return `❌ Model "${modelId}" failed validation.`;
+        } catch (err) {
+          return `❌ ${err instanceof Error ? err.message : String(err)}`;
         }
-        if (sub === 'switch') {
-          const modelId = args.slice(1).join(' ');
-          if (!modelId) return '❌ Usage: /model switch <model_id>';
-          try {
-            const success = await this.agent.trialModel(modelId);
-            if (success) {
-              this.agent.switchModel(modelId);
-              const cur = configMgr.load();
-              cur.provider.activeModel = modelId;
-              configMgr.save(cur);
-              return `✅ Switched to model: ${modelId}`;
-            }
-            return `❌ Model "${modelId}" failed validation.`;
-          } catch (err) {
-            return `❌ Failed to switch: ${err instanceof Error ? err.message : String(err)}`;
-          }
-        }
-        return '🧠 *Model commands:*\n/model current\n/model list\n/model switch <id>';
-      }
-
-      case 'provider': {
-        const sub = args[0];
-        const configMgr = this.configManager ?? new ConfigManager();
-        const cfg = configMgr.load();
-        if (!sub || sub === 'current') {
-          return `🔌 *Provider:* ${cfg.provider.activeProvider}\n*Model:* ${cfg.provider.activeModel}`;
-        }
-        if (sub === 'list') {
-          const providers = ['openai', 'anthropic', 'google', 'ollama', 'lmstudio'];
-          const lines = providers.map((p) => `${p === cfg.provider.activeProvider ? '● ' : '○ '}${p}`);
-          return `🔌 *Providers:*\n${lines.join('\n')}\n\nUse /provider switch <name> to change`;
-        }
-        if (sub === 'switch') {
-          const providerId = args[1];
-          if (!providerId) return '❌ Usage: /provider switch <provider_id>';
-          try {
-            const cur = configMgr.load();
-            const pConfig = cur.provider.providers[providerId];
-            const key = pConfig?.apiKey;
-            const url = pConfig?.baseUrl;
-            this.agent.switchProvider(providerId as any, key, url);
-            cur.provider.activeProvider = providerId as any;
-            cur.provider.activeModel = '';
-            configMgr.save(cur);
-            return `✅ Switched to provider: ${providerId}\nUse /model list to pick a model.`;
-          } catch (err) {
-            return `❌ Failed: ${err instanceof Error ? err.message : String(err)}`;
-          }
-        }
-        return '🔌 *Provider commands:*\n/provider current\n/provider list\n/provider switch <id>';
       }
 
       case 'remember': {

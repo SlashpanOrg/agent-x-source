@@ -2,18 +2,36 @@ import type { CommandInterface, CommandContext, CommandResult } from '../Command
 import { Scheduler } from '../../scheduler/Scheduler.js';
 import type { AgentEventBus } from '../../EventBus.js';
 
-let schedulerInstance: Scheduler | null = null;
+const schedulerMap = new Map<string, Scheduler>();
 
 export function getSchedulerInstance(eventBus?: AgentEventBus): Scheduler {
-  if (!schedulerInstance && eventBus) {
-    schedulerInstance = new Scheduler(eventBus);
-    schedulerInstance.start();
+  for (const scheduler of schedulerMap.values()) {
+    return scheduler;
   }
-  return schedulerInstance!;
+  if (eventBus) {
+    const scheduler = new Scheduler(eventBus);
+    scheduler.start();
+    schedulerMap.set('__default__', scheduler);
+    return scheduler;
+  }
+  throw new Error('No scheduler available. Create an agent first.');
 }
 
-export function setSchedulerInstance(scheduler: Scheduler): void {
-  schedulerInstance = scheduler;
+export function setSchedulerInstance(sessionId: string, scheduler: Scheduler): void {
+  schedulerMap.set(sessionId, scheduler);
+}
+
+export function getSchedulerForSession(sessionId: string): Scheduler | null {
+  return schedulerMap.get(sessionId) ?? null;
+}
+
+function getScheduler(context: CommandContext): Scheduler | null {
+  const s = context.sessionId ? schedulerMap.get(context.sessionId) : undefined;
+  if (s) return s;
+  for (const scheduler of schedulerMap.values()) {
+    return scheduler;
+  }
+  return null;
 }
 
 export const scheduleCommand: CommandInterface = {
@@ -22,7 +40,8 @@ export const scheduleCommand: CommandInterface = {
   aliases: ['cron'],
   usage: '/schedule add <cron> <instruction> | /schedule list | /schedule remove <id>',
   async execute(args: string[], context: CommandContext): Promise<CommandResult> {
-    if (!schedulerInstance) {
+    const scheduler = getScheduler(context);
+    if (!scheduler) {
       context.emit('Scheduler not initialized.');
       return { success: false, action: 'none' };
     }
@@ -30,7 +49,7 @@ export const scheduleCommand: CommandInterface = {
     const subcommand = args[0]?.toLowerCase();
 
     if (!subcommand || subcommand === 'list') {
-      const jobs = schedulerInstance.getJobs();
+      const jobs = scheduler.getJobs();
       if (jobs.length === 0) {
         context.emit('No scheduled jobs.');
       } else {
@@ -56,7 +75,7 @@ export const scheduleCommand: CommandInterface = {
         const instruction = quotedMatch[2] ?? '';
         const name = instruction.slice(0, 30);
         try {
-          const job = schedulerInstance.addJob(name, cron, instruction);
+          const job = scheduler.addJob(name, cron, instruction);
           context.emit(`Scheduled: "${job.name}" [${job.cron}] — ID: ${job.id}`);
         } catch (e) {
           context.emit(`Error: ${e instanceof Error ? e.message : 'Invalid cron expression'}`);
@@ -72,7 +91,7 @@ export const scheduleCommand: CommandInterface = {
         const instruction = parts.slice(5).join(' ');
         const name = instruction.slice(0, 30);
         try {
-          const job = schedulerInstance.addJob(name, cron, instruction);
+          const job = scheduler.addJob(name, cron, instruction);
           context.emit(`Scheduled: "${job.name}" [${job.cron}] — ID: ${job.id}`);
         } catch (e) {
           context.emit(`Error: ${e instanceof Error ? e.message : 'Invalid cron expression'}`);
@@ -91,7 +110,7 @@ export const scheduleCommand: CommandInterface = {
         context.emit('Usage: /schedule remove <job-id>');
         return { success: false, action: 'none' };
       }
-      if (schedulerInstance.removeJob(id)) {
+      if (scheduler.removeJob(id)) {
         context.emit(`Removed job ${id}`);
       } else {
         context.emit(`Job not found: ${id}`);
@@ -105,7 +124,7 @@ export const scheduleCommand: CommandInterface = {
         context.emit('Usage: /schedule toggle <job-id>');
         return { success: false, action: 'none' };
       }
-      const enabled = schedulerInstance.toggleJob(id);
+      const enabled = scheduler.toggleJob(id);
       context.emit(`Job ${id} is now ${enabled ? 'enabled' : 'disabled'}`);
       return { success: true, action: 'none' };
     }

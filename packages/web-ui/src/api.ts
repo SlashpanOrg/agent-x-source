@@ -2,6 +2,28 @@
 
 const BASE = '/api';
 
+// Auth token management — avoids cookie dependency since Electron's cookie
+// store may not persist cookies across navigations within the same session.
+let authToken: string | null = null;
+let onUnauthorized: (() => void) | null = null;
+
+export function setAuthToken(token: string | null): void {
+  authToken = token;
+  if (token) {
+    sessionStorage.setItem('agentx_auth_token', token);
+  } else {
+    sessionStorage.removeItem('agentx_auth_token');
+  }
+}
+
+export function getAuthToken(): string | null {
+  return authToken;
+}
+
+export function setOnUnauthorized(cb: (() => void) | null): void {
+  onUnauthorized = cb;
+}
+
 // Debug logger — writes parse errors to ~/.local/share/agentx/debug-logs/
 // so developers can see raw API responses without guessing the data format.
 async function writeDebugLog(entry: Record<string, unknown>): Promise<void> {
@@ -9,21 +31,27 @@ async function writeDebugLog(entry: Record<string, unknown>): Promise<void> {
     await fetch(`${BASE}/debug/log`, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
       body: JSON.stringify(entry),
     });
   } catch { /* best effort */ }
 }
 
 async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(opts.headers as Record<string, string> ?? {}),
+  };
+  if (authToken) {
+    headers['Authorization'] = `Bearer ${authToken}`;
+  }
   const res = await fetch(`${BASE}${path}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...(opts.headers as Record<string, string> ?? {}) },
+    headers,
     ...opts,
   });
   if (res.status === 401) {
-    // Redirect to login
-    window.location.href = '/login';
+    onUnauthorized?.();
     throw new Error('Unauthorized');
   }
   if (!res.ok) {
@@ -69,8 +97,8 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
 export const auth = {
   check: () => request<{ hasRootUser: boolean }>('/auth/check'),
   status: () => request<{ isAuthenticated: boolean; username?: string | null }>('/auth/status'),
-  setup: (username: string, password: string) => request<{ ok: boolean }>('/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
-  login: (username: string, password: string) => request<{ ok: boolean; username: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  setup: (username: string, password: string) => request<{ ok: boolean; username: string; token: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  login: (username: string, password: string) => request<{ ok: boolean; username: string; token: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
 };
 
@@ -102,7 +130,7 @@ export const providers = {
 // ─── Models ───
 export const models = {
   switch: (modelId: string) => request<{ ok: boolean }>('/model/switch', { method: 'POST', body: JSON.stringify({ modelId }) }),
-  current: () => request<{ model: string; provider: string }>('/models'),
+  current: () => request<{ model: string; provider: string; activeProfile?: string }>('/models'),
 };
 
 // ─── Crews ───
@@ -205,7 +233,7 @@ export const system = {
 };
 
 // ─── Session Settings ───
-export type AgentMode = 'agent' | 'ask' | 'plan';
+export type AgentMode = 'agent' | 'plan';
 
 export const sessionSettings = {
   get: () => request<{ mode: AgentMode }>('/session/settings'),
@@ -330,7 +358,10 @@ export function connectSSE(
   function connect() {
     if (closed) return;
     setState(retryCount === 0 ? 'connecting' : 'reconnecting', { attempt: retryCount });
-    es = new EventSource(`${BASE}/chat/stream`, { withCredentials: true });
+    const streamUrl = authToken
+      ? `${BASE}/chat/stream?token=${encodeURIComponent(authToken)}`
+      : `${BASE}/chat/stream`;
+    es = new EventSource(streamUrl, { withCredentials: true });
 
     es.addEventListener('telemetry', (e) => {
       try {
@@ -459,6 +490,7 @@ export interface SessionInfo {
   tokensUsed: number;
   createdAt: string;
   title?: string;
+  scopePath?: string;
 }
 
 export interface SessionContext {
@@ -577,6 +609,7 @@ export interface HealthStatus {
   crewCount: number;
   agentActive: boolean;
   telegramConnected: boolean;
+  telegramBot?: string | null;
   memory: { rss: number; heapUsed: number };
   config?: { provider?: string; model?: string; user?: string };
 }

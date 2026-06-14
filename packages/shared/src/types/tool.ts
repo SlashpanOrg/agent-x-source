@@ -70,4 +70,5 @@ export interface ToolExecutionContext {
   scopePath: string;
   agentId?: string;
   timeout: number;
+  mode?: 'agent' | 'plan';
 }

@@ -20,6 +20,7 @@ import {
   WebhookNotifierRuntime,
   SQLiteBrowserRuntime,
   MCPBridge,
+  SessionLogger,
 } from '@agentx/engine';
 import type { AgentXConfig, ProviderId, TelemetryBus } from '@agentx/shared';
 import { unsubscribeAgent } from './ws.js';
@@ -30,6 +31,7 @@ export interface EngineState {
   configManager: ConfigManager;
   sessionManager: SessionManager;
   agent: Agent | null;
+  channelAgent: Agent | null;
   crewManager: CrewManager;
   toolkit: ReturnType<typeof createDefaultToolkit>;
   configured: boolean;
@@ -49,6 +51,10 @@ export interface EngineState {
 }
 
 let state: EngineState | null = null;
+let pendingCwd: string | null = null;
+
+export function setPendingCwd(cwd: string | null): void { pendingCwd = cwd; }
+export function getPendingCwd(): string | null { return pendingCwd; }
 
 function safeLoadConfig(configManager: ConfigManager): void {
   try {
@@ -90,6 +96,12 @@ export function getEngine(): EngineState {
     sessionManager = new SessionManager();
   }
 
+  // Recover any sessions that exist on disk but not in the DB (e.g. after DB migration)
+  try {
+    const sessionsDir = join(getDataDir(), 'sessions');
+    (sessionManager as any).store.recoverOrphanedSessions?.(sessionsDir);
+  } catch { /* non-critical */ }
+
   const crewManager = new CrewManager();
 
   const telemetry = new DefaultTelemetryBus({ enabled: true });
@@ -117,6 +129,7 @@ export function getEngine(): EngineState {
     configManager,
     sessionManager,
     agent: null,
+    channelAgent: null,
     crewManager,
     toolkit,
     configured,
@@ -134,6 +147,32 @@ export function getEngine(): EngineState {
     mcpBridge,
     dek: null,
   };
+
+  // Boot-time channel auto-start — bridge starts, agent attaches on first session
+  const tgPlugin = state!.pluginRegistry.getPlugin('telegram');
+  const tgConfig = tgPlugin?.config ?? {};
+  if (tgPlugin?.enabled && tgConfig['botToken'] && !process.env['AGENTX_DAEMON_HANDLES_TG']) {
+    try {
+      const gw = new Gateway();
+      state!.gateway = gw;
+      gw.registerTelegram(tgConfig['botToken'] as string);
+      gw.startChannel('telegram').then(() => {
+        const bridge = gw.getTelegramBridge();
+        if (bridge) state!.telegramBridge = bridge;
+        try {
+          const entry = (gw as any).registry.getChannel('telegram');
+          if (entry?.plugin) entry.plugin.setAgent(ensureChannelAgent());
+        } catch { /* agent can attach later */ }
+      }).catch((e: unknown) => {
+        console.error('Failed to start Telegram channel on boot:', (e as Error).message);
+        state!.gateway = null;
+        state!.telegramBridge = null;
+      });
+    } catch (e) {
+      console.error('Failed to register Telegram on boot:', (e as Error).message);
+      state!.gateway = null;
+    }
+  }
 
   return state!;
 }
@@ -183,7 +222,7 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
         activeProvider,
         cfg.provider.activeModel,
         undefined,
-        process.cwd(),
+        pendingCwd || process.cwd(),
       );
     }
   } else {
@@ -191,9 +230,16 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
       activeProvider,
       cfg.provider.activeModel,
       undefined,
-      process.cwd(),
+      pendingCwd || process.cwd(),
     );
   }
+  // Use the session's stored scopePath, falling back to pendingCwd if set
+  if (session?.scopePath) {
+    eng.toolkit.executor.setScopePath(session.scopePath);
+  } else if (pendingCwd) {
+    eng.toolkit.executor.setScopePath(pendingCwd);
+  }
+  pendingCwd = null;
 
   const agent = new Agent({
     config: cfg,
@@ -216,6 +262,11 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
   }
 
   eng.agent = agent;
+
+  // Create session logger for this agent
+  const sessionLogger = new SessionLogger(session.id);
+  sessionLogger.init();
+  agent.sessionLogger = sessionLogger;
 
   // Set context persistence directory for session restore
   const dataDir = getDataDir();
@@ -266,17 +317,19 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
   // ─── Create Gateway for channel management ───
   if (!eng.gateway) {
     const gateway = new Gateway();
-    gateway.attachAgent(agent);
     eng.gateway = gateway;
   }
+  eng.gateway!.attachAgent(agent);
 
   // Start Telegram bridge via Gateway (skip if daemon handles it)
   const tgPlugin = eng.pluginRegistry.getPlugin('telegram');
   const tgConfig = tgPlugin?.config ?? {};
   if (tgPlugin?.enabled && tgConfig['botToken'] && !eng.telegramBridge && !process.env['AGENTX_DAEMON_HANDLES_TG']) {
     try {
+      // Create a dedicated agent for Telegram so it doesn't conflict with web UI
+      const channelAgent = ensureChannelAgent();
       const tgChannelPlugin = eng.gateway!.registerTelegram(tgConfig['botToken'] as string);
-      tgChannelPlugin.setAgent(agent);
+      tgChannelPlugin.setAgent(channelAgent);
       eng.gateway!.startChannel('telegram').catch((e: unknown) => {
         console.error('Failed to start Telegram channel', e);
       }).then(() => {
@@ -290,6 +343,15 @@ export function createAgent(config?: AgentXConfig, sessionId?: string): Agent {
     } catch (e) {
       console.error('Failed to start Telegram bridge', e);
     }
+  } else if (eng.gateway && tgPlugin?.enabled && tgConfig['botToken']) {
+    // Bridge already running — ensure Telegram has its dedicated agent
+    try {
+      const channelAgent = ensureChannelAgent();
+      const entry = (eng.gateway as any).registry.getChannel('telegram');
+      if (entry?.plugin && 'setAgent' in entry.plugin) {
+        entry.plugin.setAgent(channelAgent);
+      }
+    } catch { /* best-effort */ }
   }
 
   // Start Discord bridge if plugin is configured (direct bridge until Gateway migration)
@@ -466,50 +528,76 @@ export function getOrCreateAgent(config?: AgentXConfig): Agent {
   return createAgent(config);
 }
 
+/** Create or return a dedicated agent for messaging channels — independent of web UI agent */
+export function ensureChannelAgent(): Agent {
+  const eng = getEngine();
+  if (eng.channelAgent) return eng.channelAgent;
+
+  let cfg: AgentXConfig;
+  try {
+    cfg = eng.configManager.load();
+  } catch {
+    cfg = getDefaultConfig();
+  }
+
+  const activeProvider = cfg.provider.activeProvider as ProviderId;
+  const CHANNEL_SESSION_ID = '__channel__';
+
+  // Restore persistent channel session, or create it once
+  let session = eng.sessionManager.restoreSession(CHANNEL_SESSION_ID);
+  if (!session) {
+    session = eng.sessionManager.createSession(
+      activeProvider,
+      cfg.provider.activeModel,
+      undefined,
+      process.cwd(),
+      CHANNEL_SESSION_ID,
+    );
+  }
+
+  const agent = new Agent({
+    config: cfg,
+    sessionId: session.id,
+    systemPrompt: '',
+    toolExecutor: eng.toolkit.executor,
+    toolRegistry: eng.toolkit.registry,
+  });
+  (agent.sauce as { crew: CrewManager }).crew = eng.crewManager;
+  agent.sauce.crew.refresh();
+  const dataDir = getDataDir();
+  const sessDir = join(dataDir, 'sessions', session.id);
+  agent.setContextPersistDir(sessDir);
+
+  // Create session logger for the channel agent
+  const channelLogger = new SessionLogger(session.id);
+  channelLogger.init();
+  agent.sessionLogger = channelLogger;
+
+  eng.channelAgent = agent;
+  return agent;
+}
+
 export function destroyAgent(): void {
   const eng = getEngine();
   // Unsubscribe WebSocket event listener before destroying agent
   unsubscribeAgent();
   if (eng.agent) {
+    (eng.agent as any).sessionLogger?.close();
     eng.agent.endSession();
     eng.agent = null;
   }
-  if (eng.gateway) {
-    void eng.gateway.stopAll();
-    eng.gateway = null;
-  }
-  if (eng.telegramBridge) {
-    eng.telegramBridge.stop();
-    eng.telegramBridge = null;
-  }
-  if (eng.discordBridge) {
-    eng.discordBridge.stop();
-    eng.discordBridge = null;
-  }
-  if (eng.slackBridge) {
-    eng.slackBridge.stop();
-    eng.slackBridge = null;
-  }
-  if (eng.emailBridge) {
-    eng.emailBridge.stop();
-    eng.emailBridge = null;
-  }
-  if (eng.redisRuntime) {
-    void eng.redisRuntime.disconnect();
-    eng.redisRuntime = null;
-  }
-  if (eng.webhookRuntime) {
-    eng.webhookRuntime.setEnabled(false);
-    eng.webhookRuntime = null;
-  }
-  if (eng.sqliteBrowser) {
-    eng.sqliteBrowser = null;
-  }
+  // Keep gateway and telegram bridge alive — they serve Telegram independently
 }
 
 export function clearEngine(): void {
   if (state?.agent) {
+    (state.agent as any).sessionLogger?.close();
     state.agent.endSession();
+  }
+  if (state?.channelAgent) {
+    (state.channelAgent as any).sessionLogger?.close();
+    state.channelAgent.endSession();
+    state.channelAgent = null;
   }
   state = null;
 }

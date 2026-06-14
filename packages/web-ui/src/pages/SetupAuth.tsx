@@ -4,7 +4,7 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
 import LinearProgress from '@mui/material/LinearProgress';
-import { auth } from '../api';
+import { auth, setAuthToken } from '../api';
 import { useApp } from '../store/AppContext';
 import { useGlobalError } from '../components/ErrorBand';
 import { colors } from '../theme';
@@ -98,9 +98,10 @@ export function SetupAuth() {
 
     setLoading(true);
     try {
-      await auth.setup(username, password);
-      setAuthState('needs-setup');
-      navigate('/setup/wizard');
+    const res = await auth.setup(username, password);
+    setAuthToken(res.token);
+    setAuthState('needs-setup');
+    navigate('/setup/wizard');
     } catch (err) {
       showError(err instanceof Error ? err.message : 'Setup failed');
     } finally {

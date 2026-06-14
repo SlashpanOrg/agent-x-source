@@ -31,12 +31,14 @@ export class OpenAITransport extends BaseTransport {
     });
 
     if (!response.ok) {
+      const bodyText = await response.text().catch(() => '');
+      const bodySnippet = bodyText ? `: ${bodyText.slice(0, 300)}` : '';
       yield {
         type: 'provider.error',
         turnId: plan.requestId,
         code: `HTTP_${response.status}`,
-        message: `Provider returned ${response.status}: ${response.statusText}`,
-        rawBody: await response.text().catch(() => ''),
+        message: `Provider returned ${response.status}: ${response.statusText}${bodySnippet}`,
+        rawBody: bodyText,
         ts: Date.now(),
       };
       return;

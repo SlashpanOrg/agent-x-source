@@ -23,6 +23,16 @@ export interface ToolExecutionEntry {
 
 const MAX_HISTORY = 200;
 
+const WRITE_TOOLS = new Set([
+  'file_write', 'file_delete', 'folder_create', 'folder_delete', 'folder_move', 'file_copy',
+  'file_patch', 'code_replace', 'code_insert', 'code_range',
+  'csv_create', 'pdf_create', 'docx_create', 'pptx_create', 'xlsx_create',
+  'json_set', 'http_download', 'archive_create', 'archive_extract',
+  'browser_screenshot', 'chart_generate', 'qr_generate',
+  'shell_exec', 'shell_background', 'shell_exec_streaming',
+  'db_query',
+]);
+
 export class ToolExecutor {
   private registry: ToolRegistry;
   private permissionManager: PermissionManager;
@@ -34,11 +44,16 @@ export class ToolExecutor {
   private safetyAuditor: SafetyAuditor | null = null;
   private policyEngine: PolicyEngine | null = null;
   private executionHistory: ToolExecutionEntry[] = [];
+  private mode: 'agent' | 'plan' = 'agent';
 
   constructor(registry: ToolRegistry, scopePath: string) {
     this.registry = registry;
     this.permissionManager = new PermissionManager();
     this.scopeGuard = new ScopeGuard(scopePath);
+  }
+
+  setMode(mode: 'agent' | 'plan'): void {
+    this.mode = mode;
   }
 
   getExecutionHistory(): ToolExecutionEntry[] {
@@ -86,6 +101,25 @@ export class ToolExecutor {
       return { success: false, output: `Unknown tool: ${toolId}`, error: 'TOOL_NOT_FOUND' };
     }
 
+    // Validate required arguments from tool schema
+    const required = tool.schema.required;
+    if (required && required.length > 0) {
+      const missing: string[] = [];
+      for (const key of required) {
+        const val = args[key];
+        if (val === undefined || val === null || val === '') {
+          missing.push(key);
+        }
+      }
+      if (missing.length > 0) {
+        return {
+          success: false,
+          output: `Missing required argument(s): ${missing.join(', ')}. Expected: ${required.join(', ')}`,
+          error: 'INVALID_ARGS',
+        };
+      }
+    }
+
     // Safety audit — intercept before execution
     if (this.safetyAuditor) {
       const blocked = await this.safetyAuditor.intercept(toolId, args);
@@ -94,48 +128,51 @@ export class ToolExecutor {
 
     // Enterprise policy evaluation
     if (this.policyEngine) {
-      const path = (args['path'] ?? args['filePath'] ?? args['file'] ?? args['target'] ?? args['from']) as string | undefined;
-      const decision = this.policyEngine.evaluate(toolId, path);
+      const policyPath = (args['path'] ?? args['filePath'] ?? args['file'] ?? args['target'] ?? args['from']) as string | undefined;
+      const decision = this.policyEngine.evaluate(toolId, policyPath);
       if (decision === 'deny') {
         return { success: false, output: 'Blocked by enterprise policy', error: 'POLICY_DENIED' };
       }
     }
 
-    // Check scope for path-based tools
-    const path = (args['path'] ?? args['filePath'] ?? args['file'] ?? args['target'] ?? args['from']) as string | undefined;
-    if (path) {
-      const validation = this.scopeGuard.validatePath(path);
-      if (!validation.valid) {
-        return { success: false, output: validation.error ?? 'Path outside scope', error: 'SCOPE_VIOLATION' };
+    // Check scope for ALL path-like arguments
+    const pathKeys = ['path', 'filePath', 'file', 'target', 'from', 'to', 'cwd', 'output', 'source', 'archive', 'file1', 'file2', 'database'];
+    let scopePathForHook: string | undefined;
+    for (const key of pathKeys) {
+      const p = args[key] as string | undefined;
+      if (p && typeof p === 'string') {
+        if (!scopePathForHook) scopePathForHook = p;
+        const validation = this.scopeGuard.validatePath(p);
+        if (!validation.valid) {
+          const label = key === 'to' ? 'Destination path' : key === 'cwd' ? 'Working directory' : `Path (${key})`;
+          return { success: false, output: `${label} outside scope: ${validation.error}`, error: 'SCOPE_VIOLATION' };
+        }
       }
     }
-    // Also check 'to' destination for move operations
-    const toPath = args['to'] as string | undefined;
-    if (toPath) {
-      const validation = this.scopeGuard.validatePath(toPath);
-      if (!validation.valid) {
-        return { success: false, output: validation.error ?? 'Destination path outside scope', error: 'SCOPE_VIOLATION' };
-      }
+
+    // Plan mode: block write/exec tools entirely
+    if (this.mode === 'plan' && WRITE_TOOLS.has(toolId)) {
+      return { success: false, output: `"${toolId}" is not available in Plan mode. Switch to Agent mode to use this tool.`, error: 'MODE_RESTRICTED' };
     }
 
     // Check permissions — previously denied tools still get a chance to be re-allowed
-    const decision = this.permissionManager.check(toolId, path);
+    const decision = this.permissionManager.check(toolId, scopePathForHook);
     const needsPermission = decision !== 'allow_always';
 
     if (needsPermission && this.permissionRequestHandler && tool.riskLevel !== 'low') {
-      const response = await this.permissionRequestHandler(toolId, path ?? '*', tool.riskLevel);
+      const response = await this.permissionRequestHandler(toolId, scopePathForHook ?? '*', tool.riskLevel);
       if (response === 'deny') {
-        this.permissionManager.deny(toolId, path);
+        this.permissionManager.deny(toolId, scopePathForHook);
         return { success: false, output: 'Permission denied', error: 'PERMISSION_DENIED' };
       }
       if (response === 'allow_always') {
-        this.permissionManager.grant(toolId, 'allow_always', path);
+        this.permissionManager.grant(toolId, 'allow_always', scopePathForHook);
       }
     }
 
     // Fire before-tool hook for diff/preview
-    if (this.beforeToolHook && path) {
-      this.beforeToolHook(toolId, args, path);
+    if (this.beforeToolHook && scopePathForHook) {
+      this.beforeToolHook(toolId, args, scopePathForHook);
     }
 
     // Execute with timeout enforcement
@@ -149,7 +186,7 @@ export class ToolExecutor {
       sessionId,
       scopePath: this.scopeGuard.getScopePath(),
       timeout: 30_000,
-
+      mode: this.mode,
     };
 
     try {

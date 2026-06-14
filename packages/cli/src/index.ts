@@ -716,7 +716,7 @@ async function main(): Promise<void> {
     const { generateSessionId } = await import('@agentx/shared');
     const configMgr = new ConfigManager();
     const config = configMgr.load();
-    const agent = new Agent({ config, sessionId: generateSessionId() });
+    const agent = new Agent({ config, sessionId: generateSessionId(), scopePath: process.cwd() });
     if (allowAllTools && agent.getToolExecutor()) {
       agent.getToolExecutor()!.getPermissionManager().allowAll();
     }

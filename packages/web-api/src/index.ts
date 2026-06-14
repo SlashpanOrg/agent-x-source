@@ -6,7 +6,7 @@ import { join, dirname, basename, resolve } from 'node:path';
 import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, createReadStream, renameSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { generateId, VERSION, getDataDir, getConfigDir, getCacheDir, getHomeDir } from '@agentx/shared';
-import { getEngine, createAgent, destroyAgent, clearEngine, getOrCreateAgent } from './engine.js';
+import { getEngine, createAgent, destroyAgent, clearEngine, getOrCreateAgent, setPendingCwd, ensureChannelAgent } from './engine.js';
 import { setupWebSocket, ensureSubscribed } from './ws.js';
 import { authMiddleware, createAuthRouter } from './auth.js';
 import { ProviderFactory, DiscordBridge, DiscordStore, SlackBridge, SlackStore, EmailBridge, Agent } from '@agentx/engine';
@@ -95,6 +95,7 @@ app.get('/api/health', (_req, res) => {
   let agentActive = false;
   let configInfo: Record<string, unknown> = {};
   let telegramConnected = false;
+  let telegramBot: string | null = null;
   if (eng) {
     try {
       const sessions = eng.sessionManager.listSessions(9999);
@@ -113,6 +114,7 @@ app.get('/api/health', (_req, res) => {
       const tgPlugin = eng.pluginRegistry.getPlugin('telegram');
       telegramConnected = !!tgPlugin?.enabled && !!tgPlugin?.config?.['botToken'];
     } catch { /* ignore */ }
+    telegramBot = eng.telegramBridge?.isRunning() ? eng.telegramBridge.getStatus().botUsername ?? null : null;
   }
   res.json({
     status: 'ok',
@@ -125,9 +127,11 @@ app.get('/api/health', (_req, res) => {
     config: configInfo,
     sessions: sessionCount,
     crews: crewCount,
-    
+    sessionCount,
+    crewCount,
     agentActive,
     telegramConnected,
+    telegramBot,
     gateway: eng?.gateway ? {
       focus: eng.gateway.focus.getFocus(),
       channels: eng.gateway.registry.listChannels(),
@@ -205,6 +209,8 @@ const AVAILABLE_PROVIDERS = [
   { id: 'azure', name: 'Azure OpenAI', type: 'cloud', requiresApiKey: true, defaultBaseUrl: '' },
   { id: 'cohere', name: 'Cohere', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.cohere.com/compatibility/v1' },
   { id: 'commandcode', name: 'CommandCode', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.commandcode.ai/provider/v1' },
+  { id: 'opencode', name: 'OpenCode Go', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://opencode.ai/zen/go/v1' },
+  { id: 'opencode-zen', name: 'OpenCode Zen (Free Models)', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://opencode.ai/zen/v1' },
   { id: 'ollama', name: 'Ollama', type: 'local', requiresApiKey: false, defaultBaseUrl: 'http://localhost:11434' },
   { id: 'lmstudio', name: 'LM Studio', type: 'local', requiresApiKey: false, defaultBaseUrl: 'http://localhost:1234/v1' },
 ];
@@ -302,13 +308,15 @@ app.get('/api/providers', (_req, res) => {
   const eng = getEngine();
   try {
     const config = eng.configManager.load();
-    const configured: Array<{ id: string; configured: boolean; apiKey?: string; baseUrl?: string; profiles?: string[]; activeProfile?: string }> = [];
+    const configured: Array<{ id: string; configured: boolean; apiKey?: string; baseUrl?: string; profiles?: Array<{ id: string; label: string }>; activeProfile?: string }> = [];
     for (const [id, creds] of Object.entries(config.provider.providers)) {
       if (creds.configured) {
-        const entry: { id: string; configured: boolean; apiKey?: string; baseUrl?: string; profiles?: string[]; activeProfile?: string } = {
+        const entry: { id: string; configured: boolean; apiKey?: string; baseUrl?: string; profiles?: Array<{ id: string; label: string }>; activeProfile?: string } = {
           id, configured: true, apiKey: creds.apiKey, baseUrl: creds.baseUrl,
         };
-        if (creds.profiles) entry.profiles = Object.keys(creds.profiles);
+        if (creds.profiles) {
+          entry.profiles = Object.entries(creds.profiles).map(([pid, prof]) => ({ id: pid, label: prof.label }));
+        }
         if (creds.activeProfile) entry.activeProfile = creds.activeProfile;
         configured.push(entry);
       }
@@ -448,7 +456,8 @@ app.get('/api/models', async (_req, res) => {
     if (eng.agent) {
       try { await eng.agent.listModels(); } catch { /* ignore */ }
     }
-    res.json({ model: config.provider.activeModel, provider: config.provider.activeProvider, currentModel: config.provider.activeModel });
+    const activeProfile = config.provider.providers[config.provider.activeProvider]?.activeProfile;
+    res.json({ model: config.provider.activeModel, provider: config.provider.activeProvider, activeProfile, currentModel: config.provider.activeModel });
   } catch (e: unknown) {
     res.status(500).json({ error: e instanceof Error ? e.message : 'failed' });
   }
@@ -456,7 +465,9 @@ app.get('/api/models', async (_req, res) => {
 
 app.get('/api/cwd', (_req, res) => {
   const eng = getEngine();
-  const scopePath = eng.sessionManager.getActiveSession()?.scopePath || process.cwd();
+  const sess = eng.sessionManager.getActiveSession();
+  const raw = sess?.scopePath ?? null;
+  const scopePath = raw && raw !== '/' ? raw : null;
   res.json({ cwd: scopePath });
 });
 
@@ -464,14 +475,17 @@ app.post('/api/cwd', (req, res) => {
   try {
     const { path } = req.body as { path: string };
     if (!path || typeof path !== 'string') { res.status(400).json({ error: 'path-required' }); return; }
+    const resolved = resolve(path);
     const eng = getEngine();
     const sess = eng.sessionManager.getActiveSession();
-    if (!sess) { res.status(400).json({ error: 'no-session' }); return; }
-    const resolved = resolve(path);
-    eng.sessionManager.updateSession({ scopePath: resolved });
-    // Also update the tool executor scope if the engine exposes it
-    const executor = (eng as any).toolExecutor;
-    if (executor?.setScopePath) executor.setScopePath(resolved);
+    if (sess) {
+      eng.sessionManager.updateSession({ scopePath: resolved });
+      const executor = (eng as any).toolExecutor;
+      if (executor?.setScopePath) executor.setScopePath(resolved);
+    } else {
+      // No active session yet — store pending CWD for the next createAgent() call
+      setPendingCwd(resolved);
+    }
     res.json({ cwd: resolved });
   } catch (e: unknown) {
     res.status(500).json({ error: e instanceof Error ? e.message : 'scope-update-failed' });
@@ -497,9 +511,9 @@ app.get('/api/filesystem/dirs', (req, res) => {
 });
 
 // ───── Session Mode & Approval ─────
-// Agent mode: 'ask' (chat only), 'plan' (generate plans, tools need permission), 'agent' (full autonomy, auto-approve tools)
-const sessionSettings: { mode: 'agent' | 'ask' | 'plan' } = {
-  mode: 'ask',
+// Agent: full autonomy with tool execution; Plan: generates plans, no write access
+const sessionSettings: { mode: 'agent' | 'plan' } = {
+  mode: 'plan',
 };
 
 app.get('/api/session/settings', (_req, res) => {
@@ -507,14 +521,17 @@ app.get('/api/session/settings', (_req, res) => {
 });
 
 app.post('/api/session/mode', (req, res) => {
-  const { mode } = req.body as { mode: 'agent' | 'ask' | 'plan' };
-  if (!['agent', 'ask', 'plan'].includes(mode)) { res.status(400).json({ error: 'invalid-mode' }); return; }
+  const { mode } = req.body as { mode: 'agent' | 'plan' };
+  if (!['agent', 'plan'].includes(mode)) { res.status(400).json({ error: 'invalid-mode' }); return; }
   sessionSettings.mode = mode;
   const eng = getEngine();
   if (eng.agent) {
     eng.agent.setPlanMode(mode === 'plan');
-    eng.agent.autoApproveTools = (mode === 'agent');
   }
+  // Sync mode to toolkit executor for Plan mode tool restriction
+  try {
+    (eng as any).toolkit?.executor?.setMode?.(mode);
+  } catch { /* best-effort */ }
   res.json({ ok: true, mode });
 });
 
@@ -530,7 +547,7 @@ app.get('/api/agent/state', (_req, res) => {
   const crewStates = eng.sessionManager.getCrewStates();
   res.json({
     active: true,
-    session: session ? { id: session.id, title: session.title, status: session.status } : null,
+    session: session ? { id: session.id, title: session.title, status: session.status, scopePath: session.scopePath } : null,
     crew: { crewStates },
     model: { provider: session?.providerId, model: session?.modelId },
     processing: (agent as unknown as { isProcessing?: boolean }).isProcessing ?? false,
@@ -722,7 +739,6 @@ app.post('/api/chat/message', async (req, res) => {
 
     // Apply session mode to agent
     agent.setPlanMode(sessionSettings.mode === 'plan');
-    agent.autoApproveTools = (sessionSettings.mode === 'agent');
 
     // Build the full message content with attachments if provided
     let fullText = text;
@@ -732,11 +748,9 @@ app.post('/api/chat/message', async (req, res) => {
     }
 
     // Build instruction based on mode (kept separate from user content)
-    const instruction = sessionSettings.mode === 'ask'
-      ? 'Only provide an answer/explanation. Do NOT execute any tools, make changes, or take actions. Just reply with knowledge.'
-      : sessionSettings.mode === 'plan'
-        ? 'Generate a detailed plan for this request. Do NOT execute the plan yet — only outline the steps.'
-        : undefined;
+    const instruction = sessionSettings.mode === 'plan'
+      ? 'Generate a detailed plan for this request. Do NOT execute the plan yet — only outline the steps.'
+      : undefined;
 
     // Auto-checkpoint before each user turn — enables /undo to roll back this turn
     try {
@@ -763,7 +777,10 @@ app.post('/api/chat/message', async (req, res) => {
       }
     } catch { /* checkpoint failure shouldn't block the message */ }
 
-    const message = await agent.sendMessage(fullText, instruction ? { instruction } : undefined);
+    const message = await Promise.race([
+      agent.sendMessage(fullText, instruction ? { instruction } : undefined),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('The operation was aborted due to timeout')), 180000)),
+    ]);
     if (!message || (message as Record<string, unknown>).id === '__clarify__') {
       res.json({ ok: true, clarification: true });
       return;
@@ -835,9 +852,7 @@ app.post('/api/chat/steer', async (req, res) => {
       const attachmentSection = attachments.map(a => `\n\n--- File: ${a.name} ---\n${a.content}`).join('');
       fullText = text + attachmentSection;
     }
-    const instruction = sessionSettings.mode === 'ask'
-      ? 'Only provide an answer/explanation. Do NOT execute any tools, make changes, or take actions. Just reply with knowledge.'
-      : undefined;
+    const instruction = undefined;
     const message = await agent.sendMessage(fullText, instruction ? { instruction } : undefined);
     if (!message || (message as Record<string, unknown>).id === '__clarify__') {
       res.json({ ok: true, clarification: true });
@@ -862,17 +877,14 @@ app.post('/api/chat/stop-and-send', async (req, res) => {
     await waitForIdle(agent);
     ensureSubscribed();
     agent.setPlanMode(sessionSettings.mode === 'plan');
-    agent.autoApproveTools = (sessionSettings.mode === 'agent');
     let fullText = text;
     if (attachments && attachments.length > 0) {
       const attachmentSection = attachments.map(a => `\n\n--- File: ${a.name} ---\n${a.content}`).join('');
       fullText = text + attachmentSection;
     }
-    const instruction = sessionSettings.mode === 'ask'
-      ? 'Only provide an answer/explanation. Do NOT execute any tools, make changes, or take actions. Just reply with knowledge.'
-      : sessionSettings.mode === 'plan'
-        ? 'Generate a detailed plan for this request. Do NOT execute the plan yet — only outline the steps.'
-        : undefined;
+    const instruction = sessionSettings.mode === 'plan'
+      ? 'Generate a detailed plan for this request. Do NOT execute the plan yet — only outline the steps.'
+      : undefined;
     const message = await agent.sendMessage(fullText, instruction ? { instruction } : undefined);
     if (!message || (message as Record<string, unknown>).id === '__clarify__') {
       res.json({ ok: true, clarification: true });
@@ -984,7 +996,8 @@ app.post('/api/permission/respond', (req, res) => {
 // ───── Sessions ─────
 app.get('/api/sessions', (_req, res) => {
   const eng = getEngine();
-  const sessions = eng.sessionManager.listSessions(50) as unknown as Array<Record<string, unknown>>;
+  const all = eng.sessionManager.listSessions(50) as unknown as Array<Record<string, unknown>>;
+  const sessions = all.filter(s => s.id !== '__channel__');
   for (const s of sessions) {
     try {
       const convPath = join(getSessionDir(s.id as string), 'conversation.json');
@@ -1010,7 +1023,7 @@ app.get('/api/sessions/search', (req, res) => {
     const results: Array<{ sessionId: string; title?: string; createdAt?: string; snippet: string; matchCount: number }> = [];
     for (const s of sessions) {
       const sid = (s as unknown as { id?: string; sessionId?: string }).id ?? (s as unknown as { sessionId?: string }).sessionId;
-      if (!sid) continue;
+      if (!sid || sid === '__channel__') continue;
       const conv = join(getSessionDir(sid), 'conversation.json');
       if (!existsSync(conv)) continue;
       let messages: Array<{ role?: string; content?: string }> = [];
@@ -1143,9 +1156,11 @@ app.delete('/api/sessions/:id', (req, res) => {
 
 app.post('/api/sessions/:id/restore', (req, res) => {
   try {
+    const sessionId = req.params['id']!;
+    if (sessionId === '__channel__') { res.status(403).json({ error: 'channel-session' }); return; }
     const eng = getEngine();
     destroyAgent();
-    const session = eng.sessionManager.restoreSession(req.params['id']!);
+    const session = eng.sessionManager.restoreSession(sessionId);
     if (!session) { res.status(404).json({ error: 'not-found' }); return; }
     createAgent(undefined, req.params['id']!);
     ensureSubscribed();
@@ -1387,6 +1402,27 @@ app.post('/api/telegram/start', async (req, res) => {
     }
     // Auto-enable the plugin
     eng.pluginRegistry.enable('telegram');
+    // Start Telegram bridge immediately if not already running
+    if (!eng.telegramBridge && !process.env['AGENTX_DAEMON_HANDLES_TG']) {
+      // If gateway exists but bridge is dead, clean up stale state
+      if (eng.gateway) {
+        try { eng.gateway.stopChannel('telegram'); } catch { /* ignore */ }
+        eng.gateway = null;
+      }
+      const { Gateway } = await import('@agentx/engine');
+      eng.gateway = new Gateway();
+      try {
+        const tgPlugin = eng.gateway.registerTelegram(token);
+        tgPlugin.setAgent(ensureChannelAgent());
+        await eng.gateway.startChannel('telegram');
+        eng.telegramBridge = eng.gateway.getTelegramBridge();
+        res.json({ ok: true, message: 'Telegram bot started and listening.' });
+        return;
+      } catch (e) {
+        res.json({ ok: true, message: 'Token saved but bridge start failed. Will retry on next session.' });
+        return;
+      }
+    }
     res.json({ ok: true, message: 'Token saved. Telegram plugin configured and enabled.' });
   } catch (e: unknown) {
     res.status(400).json({ error: e instanceof Error ? e.message : 'save-failed' });
@@ -1396,10 +1432,19 @@ app.post('/api/telegram/start', async (req, res) => {
 app.post('/api/telegram/stop', (_req, res) => {
   try {
     const eng = getEngine();
-    if (eng.pluginRegistry.isInstalled('telegram')) {
-      eng.pluginRegistry.uninstall('telegram');
+    // Stop running bridge
+    if (eng.telegramBridge) {
+      try { eng.telegramBridge.stop(); } catch { /* ignore */ }
+      eng.telegramBridge = null;
     }
-    res.json({ ok: true });
+    if (eng.gateway) {
+      try { eng.gateway.stopChannel('telegram'); } catch { /* ignore */ }
+    }
+    // Disable plugin but keep config so it auto-starts on next launch
+    if (eng.pluginRegistry.isInstalled('telegram')) {
+      eng.pluginRegistry.disable('telegram');
+    }
+    res.json({ ok: true, message: 'Telegram bot stopped. Config preserved for next launch.' });
   } catch {
     res.status(500).json({ error: 'clear-failed' });
   }
@@ -2617,6 +2662,13 @@ setupWebSocket(server);
 export { app, server };
 
 export function startServer(port = PORT): ReturnType<typeof server.listen> {
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${port} is already in use. Is another Agent-X instance running?`);
+    } else {
+      console.error('Server error:', err.message);
+    }
+  });
   return server.listen(port, () => {
     console.log(`Agent-X web API listening on http://localhost:${port}`);
   });

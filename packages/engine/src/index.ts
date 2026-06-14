@@ -11,6 +11,7 @@ export { FileWatcher } from './session/FileWatcher.js';
 export { BackgroundQueue } from './session/BackgroundQueue.js';
 export { ModelRouter } from './session/ModelRouter.js';
 export { RecipeEngine } from './session/RecipeEngine.js';
+export { SessionLogger } from './session/SessionLogger.js';
 export { AgentBus, getAgentBus, setAgentBus } from './agent/AgentBus.js';
 export type { AgentMessage, AgentSubscription } from './agent/AgentBus.js';
 export { SpecialistRegistry } from './agent/SpecialistRegistry.js';

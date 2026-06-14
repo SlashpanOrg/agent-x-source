@@ -34,8 +34,13 @@ export async function fileRead(args: Record<string, unknown>, context: ToolExecu
 }
 
 export async function fileWrite(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
-  const filePath = resolve(context.scopePath, args['path'] as string);
-  const content = args['content'] as string;
+  const rawPath = args['path'];
+  const filePath = resolve(context.scopePath, typeof rawPath === 'string' && rawPath.trim() ? rawPath : '.');
+  const rawContent = args['content'];
+  if (typeof rawContent !== 'string') {
+    return { success: false, output: 'Missing or invalid required argument: content', error: 'INVALID_ARGS' };
+  }
+  const content = rawContent;
   const mode = (args['mode'] as string) || 'overwrite';
   try {
     mkdirSync(dirname(filePath), { recursive: true });
@@ -68,7 +73,8 @@ export async function fileDelete(args: Record<string, unknown>, context: ToolExe
 }
 
 export async function folderCreate(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
-  const dirPath = resolve(context.scopePath, args['path'] as string);
+  const rawPath = args['path'];
+  const dirPath = resolve(context.scopePath, typeof rawPath === 'string' && rawPath.trim() ? rawPath : '.');
   try {
     mkdirSync(dirPath, { recursive: true });
     return { success: true, output: `Created directory ${dirPath}` };

@@ -1,5 +1,5 @@
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
-import { getSchedulerInstance } from '../../commands/builtin/schedule.js';
+import { getSchedulerInstance, getSchedulerForSession } from '../../commands/builtin/schedule.js';
 
 /**
  * Set a reminder or recurring task. The agent uses this tool autonomously when
@@ -7,7 +7,7 @@ import { getSchedulerInstance } from '../../commands/builtin/schedule.js';
  */
 export async function reminderSet(
   args: Record<string, unknown>,
-  _context: ToolExecutionContext,
+  context: ToolExecutionContext,
 ): Promise<ToolResult> {
   const name = (args['name'] as string) ?? 'Reminder';
   const message = (args['message'] as string) ?? name;
@@ -17,7 +17,7 @@ export async function reminderSet(
   const cron = args['cron'] as string | undefined;
   const atTime = args['at_time'] as string | undefined;
 
-  const scheduler = getSchedulerInstance();
+  const scheduler = getSchedulerForSession(context.sessionId) ?? getSchedulerInstance();
   if (!scheduler) {
     return { success: false, output: 'Scheduler not available', error: 'NO_SCHEDULER' };
   }
@@ -79,9 +79,9 @@ export async function reminderSet(
  */
 export async function reminderList(
   _args: Record<string, unknown>,
-  _context: ToolExecutionContext,
+  context: ToolExecutionContext,
 ): Promise<ToolResult> {
-  const scheduler = getSchedulerInstance();
+  const scheduler = getSchedulerForSession(context.sessionId) ?? getSchedulerInstance();
   if (!scheduler) {
     return { success: false, output: 'Scheduler not available', error: 'NO_SCHEDULER' };
   }
@@ -106,12 +106,12 @@ export async function reminderList(
  */
 export async function reminderCancel(
   args: Record<string, unknown>,
-  _context: ToolExecutionContext,
+  context: ToolExecutionContext,
 ): Promise<ToolResult> {
   const id = args['id'] as string | undefined;
   const name = args['name'] as string | undefined;
 
-  const scheduler = getSchedulerInstance();
+  const scheduler = getSchedulerForSession(context.sessionId) ?? getSchedulerInstance();
   if (!scheduler) {
     return { success: false, output: 'Scheduler not available', error: 'NO_SCHEDULER' };
   }

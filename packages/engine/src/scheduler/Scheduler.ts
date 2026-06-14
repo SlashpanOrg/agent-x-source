@@ -104,11 +104,17 @@ export class Scheduler {
     return this.jobs.size;
   }
 
-  constructor(eventBus: AgentEventBus) {
+  constructor(eventBus: AgentEventBus, sessionId?: string) {
     this.eventBus = eventBus;
     const dataDir = getDataDir();
     mkdirSync(dataDir, { recursive: true });
-    this.persistPath = join(dataDir, 'scheduler.json');
+    this.persistPath = sessionId
+      ? join(dataDir, 'sessions', sessionId, 'scheduler.json')
+      : join(dataDir, 'scheduler.json');
+    if (sessionId) {
+      mkdirSync(join(dataDir, 'sessions'), { recursive: true });
+      mkdirSync(join(dataDir, 'sessions', sessionId), { recursive: true });
+    }
     this.restore();
   }
 

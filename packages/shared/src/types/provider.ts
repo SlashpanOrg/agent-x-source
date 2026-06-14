@@ -23,7 +23,9 @@ export type ProviderId =
   | 'perplexity'
   | 'azure'
   | 'cohere'
-  | 'commandcode';
+  | 'commandcode'
+  | 'opencode'
+  | 'opencode-zen';
 
 export interface ModelInfo {
   id: string;

@@ -6,7 +6,7 @@ import IconButton from '@mui/material/IconButton';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
 import CircularProgress from '@mui/material/CircularProgress';
-import Collapse from '@mui/material/Collapse';
+
 import List from '@mui/material/List';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
@@ -36,7 +36,7 @@ import PlayCircleIcon from '@mui/icons-material/PlayCircle';
 import QueueIcon from '@mui/icons-material/PlaylistAdd';
 import BoltIcon from '@mui/icons-material/Bolt';
 
-import QuestionAnswerIcon from '@mui/icons-material/QuestionAnswer';
+import ReplayIcon from '@mui/icons-material/Replay';
 import RouteIcon from '@mui/icons-material/Route';
 import SearchIcon from '@mui/icons-material/Search';
 import HistoryIcon from '@mui/icons-material/History';
@@ -48,6 +48,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { chat, sessions, todos, tools, models, crews, providers, system, sessionSettings, connectSSE, type TelemetryEvent, type ChatMessage, type TodoItem, type SessionInfo, type Crew, type AgentMode, type ModelInfo, type ConnectionState } from '../api';
 import { colors } from '../theme';
+import ModeSuggestionModal, { shouldSuggestMode, DISMISS_KEY } from './ModeSuggestionModal';
 import {
   ConnectionHealthDot,
   ScrollToBottomPill,
@@ -146,8 +147,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   // Loading step indicator state
   const [loadingSteps, setLoadingSteps] = useState<Array<{ id: string; label: string; status: string }> | null>(null);
 
-  // Provider error band state
-  const [providerError, setProviderError] = useState<string | null>(null);
+  // Provider error band state — array of messages for unified warning band
+  const [warnings, setWarnings] = useState<string[]>([]);
 
   // Clarification suggestions state
   const [clarification, setClarification] = useState<{ question: string; options: string[]; recommended?: string; allowChooseAll?: boolean } | null>(null);
@@ -177,9 +178,9 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       .replace(/[\x00-\x1F\x7F]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
-    // Strip URLs for cleaner display
-    msg = msg.replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim();
-    return msg.length > 500 ? msg.slice(0, 500) + '...' : msg;
+    // Strip variable retry time suffix so dedup works across retries
+    msg = msg.replace(/\s*Please retry in [\d.]+s\.?\s*$/, '');
+    return msg;
   }, []);
 
   // Sync view with sessionId prop from URL — also restore session history on mount/refresh
@@ -204,6 +205,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         const outputEst = visible.filter(m => m.role === 'assistant').reduce((acc, m) => acc + (m.tokenCount ?? Math.ceil((m.content?.length ?? 0) / 4)), 0);
         setTokenInput(inputEst);
         setTokenOutput(outputEst);
+        if (session.scopePath) setCwd(session.scopePath);
         loadTodos();
       }).catch((err) => {
         console.error('Failed to restore session on mount:', err);
@@ -220,13 +222,14 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const [tokenOutput, setTokenOutput] = useState(0);
   const [tokenInputPrice, setTokenInputPrice] = useState(0);
   const [tokenOutputPrice, setTokenOutputPrice] = useState(0);
-  const [tokenTotal] = useState(128000);
+  const [tokenTotal, setTokenTotal] = useState(128000);
   const [compactionCount, setCompactionCount] = useState(0);
+  const skipSuggestionRef = useRef(false);
 
   // Model/Provider state
   const [currentModel, setCurrentModel] = useState('');
   const [currentProvider, setCurrentProvider] = useState('');
-  const [providerList, setProviderList] = useState<Array<{ id: string; configured: boolean }>>([]);
+  const [providerList, setProviderList] = useState<Array<{ id: string; label: string; providerId: string }>>([]);
   const [modelList, setModelList] = useState<ModelInfo[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [configLoaded, setConfigLoaded] = useState(false);
@@ -235,7 +238,9 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const [crewList, setCrewList] = useState<Crew[]>([]);
 
   // Agent mode
-  const [agentMode, setAgentMode] = useState<AgentMode>('ask');
+  const [agentMode, setAgentMode] = useState<AgentMode>('plan');
+  const [modeSuggestOpen, setModeSuggestOpen] = useState(false);
+  const [pendingSendText, setPendingSendText] = useState<string | null>(null);
 
   // CWD
   const [cwd, setCwd] = useState('');
@@ -345,7 +350,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   useEffect(() => {
     // Get current model/provider - fallback to providers endpoint if models fails
     models.current()
-      .then((r) => { setCurrentModel(r.model || ''); setCurrentProvider(r.provider || ''); })
+      .then((r) => { setCurrentModel(r.model || ''); setCurrentProvider(r.activeProfile || r.provider || ''); })
       .catch(() => {
         // Fallback: get active provider from /providers endpoint
         fetch('/api/providers', { credentials: 'include' })
@@ -356,13 +361,23 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       .finally(() => { setConfigLoaded(true); });
     crews.list().then((list) => { setCrewList(list); }).catch(() => {});
     system.cwd().then((r) => { setCwd(r.cwd || ''); }).catch(() => {});
-    sessionSettings.get().then((s) => { setAgentMode(s.mode); }).catch(() => {});
-    // Load configured providers (also gets active provider as fallback)
+    sessionSettings.get().then((s) => { if (s.mode === 'agent' || s.mode === 'plan') setAgentMode(s.mode); else setAgentMode('plan'); }).catch(() => {});
+    // Load configured provider profiles
     fetch('/api/providers', { credentials: 'include' })
       .then(r => r.json())
-      .then((data: { active?: string; providers?: Array<{ id: string; configured: boolean }> }) => {
-        if (data.providers) setProviderList(data.providers.filter(Boolean).map(p => ({ id: p.id, configured: true })));
-        if (data.active && !currentProvider) setCurrentProvider(data.active);
+      .then((data: { active?: string; providers?: Array<{ id: string; activeProfile?: string; profiles?: Array<{ id: string; label: string }> }> }) => {
+        if (data.providers) {
+          const allProfiles: Array<{ id: string; label: string; providerId: string }> = [];
+          data.providers.forEach(p => {
+            if (p.profiles && p.profiles.length > 0) {
+              p.profiles.forEach(prof => allProfiles.push({ id: prof.id, label: prof.label, providerId: p.id }));
+            } else {
+              // Fallback: single default profile
+              allProfiles.push({ id: p.id + '-default', label: p.id, providerId: p.id });
+            }
+          });
+          setProviderList(allProfiles);
+        }
       })
       .catch(() => {});
   }, []);
@@ -370,11 +385,20 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   // Load models when provider changes
   useEffect(() => {
     if (!currentProvider) { setModelList([]); return; }
+    const profile = providerList.find(p => p.id === currentProvider);
+    const providerId = profile?.providerId || currentProvider;
     setLoadingModels(true);
-    providers.models(currentProvider).then((m) => { setModelList(m); }).catch(() => { setModelList([]); }).finally(() => setLoadingModels(false));
-  }, [currentProvider]);
+    providers.models(providerId).then((m) => { setModelList(m); }).catch(() => { setModelList([]); }).finally(() => setLoadingModels(false));
+  }, [currentProvider, providerList]);
 
   useEffect(() => { loadTodos(); }, [loadTodos]);
+
+  // Update tokenTotal when model's context window is known
+  useEffect(() => {
+    if (!currentModel || modelList.length === 0) return;
+    const match = modelList.find(m => m.id === currentModel);
+    if (match?.contextWindow) setTokenTotal(match.contextWindow);
+  }, [currentModel, modelList]);
 
   // Connect SSE for streaming events
   useEffect(() => {
@@ -443,10 +467,29 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
             const msg = ev.message as { id?: string; content?: string; role?: string; crew?: { crewId: string; name: string; callsign: string } } | undefined;
             const crew = msg?.crew;
             setStreaming(false);
+            if (!msg || msg.role === 'system') return prev;
+            const text = msg.content ?? '';
             if (last?.role === 'assistant') {
-              return updateLastMessage(prev, { content: msg?.content ?? last.content, streaming: false, ...(crew ? { crew } : {}) });
-            } else if (msg?.content && msg.role === 'assistant') {
-              return [...prev, { id: msg.id || crypto.randomUUID(), role: 'assistant', content: msg.content, streaming: false, ...(crew ? { crew } : {}) }];
+              if (last.streaming) {
+                if (last.content) {
+                  // Streaming with content — this is an independent message (e.g. reminder).
+                  // Finalize the streaming message and append the new one.
+                  const finalized = { ...last, streaming: false };
+                  return msg.role === 'assistant'
+                    ? [...prev.slice(0, -1), finalized, { id: msg.id || crypto.randomUUID(), role: 'assistant' as const, content: text, streaming: false, ...(crew ? { crew } : {}) } as UIMessage]
+                    : [...prev.slice(0, -1), finalized];
+                }
+                // Streaming placeholder with no content yet — this is the final content
+                return updateLastMessage(prev, { content: text || last.content, streaming: false, ...(crew ? { crew } : {}) });
+              }
+              // Not streaming — independent message, append
+              if (msg.role === 'assistant' && text) {
+                return [...prev, { id: msg.id || crypto.randomUUID(), role: 'assistant' as const, content: text, streaming: false, ...(crew ? { crew } : {}) } as UIMessage];
+              }
+              return prev;
+            }
+            if (msg.role === 'assistant' && text) {
+              return [...prev, { id: msg.id || crypto.randomUUID(), role: 'assistant' as const, content: text, streaming: false, ...(crew ? { crew } : {}) } as UIMessage];
             }
             return prev;
           }
@@ -519,6 +562,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
           case 'token_usage': {
             const used = ev.totalTokens as number | undefined;
             if (used != null) setTokenUsed(prev => Math.max(prev, used));
+            const cw = ev.contextWindow as number | undefined;
+            if (cw != null && cw > 0) setTokenTotal(cw);
             const inp = ev.inputTokens as number | undefined;
             if (inp != null) setTokenInput(prev => Math.max(prev, inp));
             const out = ev.outputTokens as number | undefined;
@@ -572,7 +617,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
           case 'provider_error': {
             const providerMsg = (ev.message as string) ?? 'Provider error';
-            setProviderError(extractProviderError(providerMsg));
+            const msg = extractProviderError(providerMsg);
+            setWarnings(prev => prev.includes(msg) ? prev : [...prev, msg]);
             if (providerErrorTimerRef.current) clearTimeout(providerErrorTimerRef.current);
             setStreaming(false);
             if (last?.role !== 'assistant') return prev;
@@ -592,12 +638,11 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
           case 'error': {
             const errorText = (ev.message as string) ?? (ev.error as string) ?? 'Unknown error';
-            // Provider errors now arrive as 'provider_error' events — this case handles
-            // only non-provider errors (internal bugs, context overflow, etc.)
+            // Route to warning band — errors should not pollute the chat bubble
+            setWarnings(prev => prev.includes(errorText) ? prev : [...prev, errorText]);
             setStreaming(false);
             if (last?.role !== 'assistant') return prev;
-            const newContent = last.content ? `${last.content}\n\n⚠️ ${errorText}` : `⚠️ ${errorText}`;
-            return updateLastMessage(prev, { content: newContent, streaming: false });
+            return updateLastMessage(prev, { streaming: false });
           }
 
           default:
@@ -676,6 +721,14 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const handleSend = useCallback(async (overrideText?: string) => {
     const text = typeof overrideText === 'string' ? overrideText.trim() : input.trim();
     if ((!text && attachments.length === 0) || streaming) return;
+
+    // Mode suggestion: if in Plan mode and text implies action, suggest switching to Agent
+    if (agentMode === 'plan' && shouldSuggestMode(text) && !localStorage.getItem(DISMISS_KEY) && !skipSuggestionRef.current) {
+      setPendingSendText(text);
+      setModeSuggestOpen(true);
+      return;
+    }
+
     if (text.startsWith('/')) {
       const handled = await runSlashCommand(text);
       if (handled) {
@@ -739,25 +792,29 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       const errorMsg = err instanceof Error ? err.message : 'Unknown error';
       const displayError = errorMsg.length > 200 ? errorMsg.slice(0, 200) + '...' : errorMsg;
       // Show provider error band for quota/auth errors (not in chat)
-      const isProviderErr = /429|quota|billing|suspended|rate.?limit|api.?key|unauthorized|forbidden|exceeded|invalid.*key|disabled|expired/i.test(errorMsg);
+      const isProviderErr = /429|quota|billing|suspended|rate.?limit|api.?key|unauthorized|forbidden|exceeded|invalid.*key|disabled|expired|insufficient|credits|balance|dunning|deny/i.test(errorMsg);
       if (isProviderErr) {
-        setProviderError(extractProviderError(errorMsg));
+        const msg = extractProviderError(errorMsg);
+        setWarnings(prev => prev.includes(msg) ? prev : [...prev, msg]);
         if (providerErrorTimerRef.current) clearTimeout(providerErrorTimerRef.current);
+        // Clear server-side agent processing state so next message isn't blocked
+        chat.cancel().catch(() => {});
+      } else {
+        // Non-provider errors (e.g., "Agent is busy") — also show in warning band
+        setWarnings(prev => prev.includes(displayError) ? prev : [...prev, displayError]);
+        chat.cancel().catch(() => {});
       }
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === 'assistant' && last.streaming) {
-          if (isProviderErr) {
-            // Remove the empty streaming placeholder — don't show error in chat
-            return prev.slice(0, -1);
-          }
-          return [...prev.slice(0, -1), { ...last, content: last.content || `⚠️ ${displayError}`, streaming: false }];
+          // Remove the empty streaming placeholder — errors go to warning band, not chat
+          return prev.slice(0, -1);
         }
         return prev;
       });
       setStreaming(false);
     }
-  }, [input, streaming, attachments, currentProvider, currentModel]);
+  }, [input, streaming, attachments, currentProvider, currentModel, agentMode]);
 
   // --- Clarification keyboard navigation & submission ---
   const clearClarification = useCallback(() => {
@@ -955,10 +1012,22 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   }, [currentSessionId, messages]);
 
   // ─── Global keyboard shortcuts (declared after runSlashCommand to avoid TDZ) ───
+  // Tab key cycles mode when not typing in input
+  const handleToggleMode = useCallback(() => {
+    setAgentMode(prev => {
+      const next = prev === 'agent' ? 'plan' : 'agent';
+      sessionSettings.setMode(next).catch(() => {});
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key.toLowerCase() === 'k') {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        handleToggleMode();
+      } else if (mod && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPaletteOpen(o => !o);
       } else if (mod && e.key.toLowerCase() === 'f') {
@@ -976,7 +1045,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [currentSessionId, streaming, runSlashCommand]);
+  }, [currentSessionId, streaming, runSlashCommand, view, handleToggleMode]);
 
   // ─── Command palette actions (declared after runSlashCommand to avoid TDZ) ───
   const paletteActions: PaletteAction[] = useMemo(() => [
@@ -992,7 +1061,6 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     { id: 'goal', label: 'Set Goal Mode objective', icon: <FlagIcon sx={{ fontSize: 14 }} />, run: () => { setInput('/goal '); } },
     { id: 'mode-agent', label: 'Switch mode → Agent', icon: <SmartToyIcon sx={{ fontSize: 14 }} />, run: () => { setAgentMode('agent'); sessionSettings.setMode('agent').catch(() => {}); } },
     { id: 'mode-plan', label: 'Switch mode → Plan', icon: <RouteIcon sx={{ fontSize: 14 }} />, run: () => { setAgentMode('plan'); sessionSettings.setMode('plan').catch(() => {}); } },
-    { id: 'mode-ask', label: 'Switch mode → Ask', icon: <QuestionAnswerIcon sx={{ fontSize: 14 }} />, run: () => { setAgentMode('ask'); sessionSettings.setMode('ask').catch(() => {}); } },
   ], [runSlashCommand]);
 
   const handleStopAndSend = async () => {
@@ -1078,13 +1146,16 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   };
 
   const handleShowSessions = () => {
+    setStreaming(false);
     loadSessions();
     navigate('/console/chat');
   };
 
   const handleSelectSession = async (s: SessionInfo) => {
+    setWarnings([]);
+    setStreaming(false);
     try {
-      const { messages: historyMsgs } = await sessions.restore(s.id);
+      const { messages: historyMsgs, session } = await sessions.restore(s.id);
       const visible = historyMsgs.filter((m) => m.role !== 'system');
       setMessages(visible.map((m) => ({ ...m, streaming: false })));
       setCurrentSessionTitle(s.title ?? `Session ${s.id.slice(0, 8)}`);
@@ -1096,6 +1167,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       const outputEst = visible.filter(m => m.role === 'assistant').reduce((acc, m) => acc + (m.tokenCount ?? Math.ceil((m.content?.length ?? 0) / 4)), 0);
       setTokenInput(inputEst);
       setTokenOutput(outputEst);
+      if (session?.scopePath) setCwd(session.scopePath);
       navigate(`/console/chat/${s.id}`);
       loadTodos();
     } catch { /* ignore */ }
@@ -1107,6 +1179,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   };
 
   const startNewSession = async (folder: string) => {
+    setWarnings([]);
+    setStreaming(false);
     setMessages([]);
     setCurrentSessionTitle(null);
     setCurrentSessionId(null);
@@ -1346,15 +1420,21 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
             </Box>
           )}
 
-          {visibleMessages.map((msg, idx) => (
+          {visibleMessages.map((msg, idx) => {
+            const isLastUser = msg.role === 'user' && visibleMessages.slice(idx + 1).every(m => m.role !== 'user');
+            return (
             <MessageBubble
               key={msg.id}
               message={msg}
+              isLastUser={isLastUser}
+              onResend={isLastUser ? handleSend : undefined}
+              onDismissDoomLoop={() => setMessages(prev => { const last = prev[prev.length - 1]; if (!last?.doomLoop) return prev; return [...prev.slice(0, -1), { ...last, doomLoop: null }]; })}
               loadingSteps={idx === visibleMessages.length - 1 && msg.streaming && !msg.content ? loadingSteps : null}
             />
-          ))}
-          {streaming && !loadingSteps && (visibleMessages.length === 0 || (visibleMessages[visibleMessages.length - 1]?.role !== 'assistant')) && (
-            <ThinkingIndicator />
+            );
+          })}
+          {streaming && (visibleMessages.length === 0 || (visibleMessages[visibleMessages.length - 1]?.role !== 'assistant')) && (
+            <ThinkingIndicator label={loadingSteps?.[0]?.label} />
           )}
 
           {permissionPrompt && (
@@ -1375,15 +1455,23 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
         {/* ─── Unified Input Module ─── */}
         <Box sx={{ px: 2, pb: 1.5, pt: 1, position: 'relative' }}>
-          {/* Provider error band — slides from behind the input card */}
+          {/* Unified warning band — combines provider errors and send-blocked notifications */}
+          {(() => {
+            const allWarnings: string[] = [...warnings];
+            if (sendBlocked && configLoaded && sendBlockedReason) {
+              allWarnings.unshift(sendBlockedReason);
+            }
+            const hasWarnings = allWarnings.length > 0;
+
+            return (
           <Box sx={{
             position: 'relative',
             zIndex: 0,
             overflow: 'hidden',
-            maxHeight: providerError ? 140 : 0,
-            opacity: providerError ? 1 : 0,
+            maxHeight: hasWarnings ? 260 : 0,
+            opacity: hasWarnings ? 1 : 0,
             transition: 'max-height 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease',
-            mb: providerError ? '-20px' : 0,
+            mb: hasWarnings ? '-20px' : 0,
           }}>
             <Box sx={{
               bgcolor: colors.accent.orange + '18',
@@ -1396,32 +1484,34 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
               display: 'flex',
               alignItems: 'flex-start',
               gap: 0.75,
+              maxHeight: 250,
             }}>
-              <Typography sx={{
-                fontSize: '0.58rem',
-                color: colors.accent.orange,
-                fontFamily: "'Inter', sans-serif",
-                fontWeight: 500,
-                whiteSpace: 'normal',
-                overflow: 'hidden',
-                display: '-webkit-box',
-                WebkitLineClamp: 5,
-                WebkitBoxOrient: 'vertical',
-                flex: 1,
-                letterSpacing: '0.2px',
-                lineHeight: 1.5,
-              }}>
-                ⚠ {providerError}
-              </Typography>
+              <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 0.3, overflowY: 'auto', maxHeight: 240, pb: 2 }}>
+                {allWarnings.map((msg, i) => (
+                  <Typography key={i} sx={{
+                    fontSize: '0.58rem',
+                    color: colors.accent.orange,
+                    fontFamily: "'Inter', sans-serif",
+                    fontWeight: 500,
+                    letterSpacing: '0.2px',
+                    lineHeight: 1.5,
+                    flexShrink: 0,
+                  }}>
+                    ⚠ {msg}
+                  </Typography>
+                ))}
+              </Box>
               <IconButton
                 size="small"
-                onClick={() => setProviderError(null)}
+                onClick={() => setWarnings([])}
                 sx={{ color: colors.accent.orange + 'cc', p: 0, minWidth: 0, '&:hover': { bgcolor: colors.accent.orange + '20' } }}
               >
                 <CloseIcon sx={{ fontSize: 11 }} />
               </IconButton>
             </Box>
           </Box>
+            );
+          })()}
 
           {/* Attachment chips */}
           {attachments.length > 0 && (
@@ -1444,12 +1534,12 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
           <Box sx={{
             position: 'relative',
             zIndex: 1,
-            border: `1px solid ${agentMode === 'agent' ? colors.accent.orange + '60' : agentMode === 'plan' ? colors.accent.purple + '60' : colors.border.default}`,
+            border: `1px solid ${agentMode === 'agent' ? colors.accent.orange + '60' : colors.border.default}`,
             borderRadius: '14px',
             bgcolor: colors.bg.tertiary,
-            backgroundImage: agentMode === 'agent' ? `linear-gradient(${colors.accent.orange}08, ${colors.accent.orange}08)` : agentMode === 'plan' ? `linear-gradient(${colors.accent.purple}08, ${colors.accent.purple}08)` : 'none',
+            backgroundImage: agentMode === 'agent' ? `linear-gradient(${colors.accent.orange}08, ${colors.accent.orange}08)` : 'none',
             transition: 'border-color 0.2s, background-color 0.2s',
-            '&:focus-within': { borderColor: agentMode === 'agent' ? colors.accent.orange + '90' : agentMode === 'plan' ? colors.accent.purple + '90' : colors.border.strong },
+            '&:focus-within': { borderColor: agentMode === 'agent' ? colors.accent.orange + '90' : colors.border.strong },
           }}>
             {/* Slash command autocomplete */}
             {showSlash && (
@@ -1472,14 +1562,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
                 onSelectAgent={handleMentionSelectAgent}
               />
             )}
-            {/* No provider/model warning */}
-            {sendBlocked && configLoaded && (
-              <Box sx={{ px: 1.5, py: 0.4, bgcolor: colors.accent.orange + '12', borderTop: `1px solid ${colors.accent.orange}30`, borderBottom: `1px solid ${colors.accent.orange}30` }}>
-                <Typography sx={{ fontSize: '0.6rem', color: colors.accent.orange, fontFamily: "'JetBrains Mono', monospace", textAlign: 'center' }}>
-                  ⚠ {sendBlockedReason}
-                </Typography>
-              </Box>
-            )}
+            {/* No provider/model warning — merged into unified warning band below */}
             {/* Clarification panel: vertical list with keyboard navigation */}
             {clarification && (
               <Box
@@ -1663,7 +1746,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
               {streaming ? (
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
-                  <IconButton size="small" onClick={(e) => input.trim() ? setSendMenuAnchor(e.currentTarget) : handleCancel()} sx={{ color: colors.accent.red, p: 0.5 }}>
+                  <IconButton size="small" onClick={handleCancel} sx={{ color: colors.accent.red, p: 0.5 }}>
                     <StopIcon sx={{ fontSize: 20 }} />
                   </IconButton>
                   {input.trim() && (
@@ -1731,54 +1814,45 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
               </Tooltip>
 
               {/* Agent Mode */}
-              <Tooltip title={agentMode === 'agent' ? 'Agent — full autonomy, auto-approves tools' : agentMode === 'plan' ? 'Plan — generates plans, tools need approval' : 'Ask — chat & planning only, no tools'} arrow>
+              <Tooltip title={agentMode === 'agent' ? 'Agent — full access, executes tools freely' : 'Plan — outlines steps, no write access'} arrow>
                 <Chip
                   size="small"
-                  icon={agentMode === 'agent' ? <SmartToyIcon sx={{ fontSize: '12px !important' }} /> : agentMode === 'plan' ? <RouteIcon sx={{ fontSize: '12px !important' }} /> : <QuestionAnswerIcon sx={{ fontSize: '12px !important' }} />}
-                  label={agentMode.charAt(0).toUpperCase() + agentMode.slice(1)}
+                  label={agentMode === 'agent' ? 'Agent' : 'Plan'}
                   onClick={(e) => setModeMenuAnchor(e.currentTarget)}
                   sx={{
                     fontSize: '0.55rem', height: 20, cursor: 'pointer',
-                    bgcolor: 'transparent', border: 'none',
-                    color: agentMode === 'agent' ? colors.accent.orange : agentMode === 'plan' ? colors.accent.purple : colors.text.secondary,
-                    '&:hover': { bgcolor: colors.bg.primary },
+                    bgcolor: agentMode === 'agent' ? colors.accent.orange + '12' : colors.bg.tertiary,
+                    border: `1px solid ${agentMode === 'agent' ? colors.accent.orange + '30' : colors.border.default}`,
+                    borderRadius: '10px',
+                    color: agentMode === 'agent' ? colors.accent.orange : colors.text.secondary,
+                    '&:hover': { bgcolor: agentMode === 'agent' ? colors.accent.orange + '20' : colors.bg.primary },
                   }}
                 />
               </Tooltip>
 
               <Menu anchorEl={modeMenuAnchor} open={Boolean(modeMenuAnchor)} onClose={() => setModeMenuAnchor(null)}
-                PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, minWidth: 200 } }}>
+                PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, minWidth: 220 } }}>
                 <MenuItem onClick={() => { setAgentMode('agent'); sessionSettings.setMode('agent').catch(() => {}); setModeMenuAnchor(null); }}
-                  selected={agentMode === 'agent'} sx={{ fontSize: '0.7rem', py: 0.75 }}>
-                  <SmartToyIcon sx={{ fontSize: 14, mr: 1, color: colors.accent.orange }} />
+                  selected={agentMode === 'agent'} sx={{ fontSize: '0.7rem', py: 0.75, borderLeft: agentMode === 'agent' ? `3px solid ${colors.accent.orange}` : '3px solid transparent' }}>
                   <Box>
-                    <Typography sx={{ fontSize: '0.7rem', fontWeight: 500 }}>Agent</Typography>
-                    <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>Full autonomy — answers, plans & executes freely</Typography>
+                    <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: colors.accent.orange }}>Agent</Typography>
+                    <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>Full access — executes tools freely</Typography>
                   </Box>
                 </MenuItem>
                 <MenuItem onClick={() => { setAgentMode('plan'); sessionSettings.setMode('plan').catch(() => {}); setModeMenuAnchor(null); }}
-                  selected={agentMode === 'plan'} sx={{ fontSize: '0.7rem', py: 0.75 }}>
-                  <RouteIcon sx={{ fontSize: 14, mr: 1, color: colors.accent.purple }} />
+                  selected={agentMode === 'plan'} sx={{ fontSize: '0.7rem', py: 0.75, borderLeft: agentMode === 'plan' ? `3px solid ${colors.text.secondary}` : '3px solid transparent' }}>
                   <Box>
-                    <Typography sx={{ fontSize: '0.7rem', fontWeight: 500 }}>Plan</Typography>
-                    <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>Generates plans — tools require permission</Typography>
-                  </Box>
-                </MenuItem>
-                <MenuItem onClick={() => { setAgentMode('ask'); sessionSettings.setMode('ask').catch(() => {}); setModeMenuAnchor(null); }}
-                  selected={agentMode === 'ask'} sx={{ fontSize: '0.7rem', py: 0.75 }}>
-                  <QuestionAnswerIcon sx={{ fontSize: 14, mr: 1, color: colors.text.secondary }} />
-                  <Box>
-                    <Typography sx={{ fontSize: '0.7rem', fontWeight: 500 }}>Ask</Typography>
-                    <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>Chat & planning only — no code execution</Typography>
+                    <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: colors.text.secondary }}>Plan</Typography>
+                    <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>Outlines steps — no write access</Typography>
                   </Box>
                 </MenuItem>
               </Menu>
 
-              {/* Provider */}
-              <Tooltip title="Provider" arrow>
+              {/* Provider Profile */}
+              <Tooltip title="Provider Profile" arrow>
                 <Chip
                   size="small"
-                  label={currentProvider || 'Provider'}
+                  label={(() => { const p = providerList.find(pr => pr.id === currentProvider); return p?.label || currentProvider || 'Provider'; })()}
                   onClick={(e) => setProviderMenuAnchor(e.currentTarget)}
                   sx={{
                     fontSize: '0.55rem', height: 20, cursor: 'pointer',
@@ -1790,16 +1864,19 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
               </Tooltip>
 
               <Menu anchorEl={providerMenuAnchor} open={Boolean(providerMenuAnchor)} onClose={() => setProviderMenuAnchor(null)}
-                PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, minWidth: 150 } }}>
-                {providerList.filter(Boolean).map((p) => (
-                  <MenuItem key={p.id} onClick={() => {
-                    setCurrentProvider(p.id);
-                    setCurrentModel(''); // Clear model on provider change
+                PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, minWidth: 200 } }}>
+                {providerList.filter(Boolean).map((profile) => (
+                  <MenuItem key={profile.id} onClick={() => {
+                    setCurrentProvider(profile.id);
+                    setCurrentModel('');
                     setModelList([]);
-                    providers.switch(p.id).catch(() => {});
+                    providers.switchProfile(profile.providerId, profile.id).catch(() => {});
                     setProviderMenuAnchor(null);
-                  }} selected={p.id === currentProvider} sx={{ fontSize: '0.7rem' }}>
-                    {p.id}
+                  }} selected={profile.id === currentProvider} sx={{ fontSize: '0.7rem' }}>
+                    <Box>
+                      <Typography sx={{ fontSize: '0.7rem' }}>{profile.label}</Typography>
+                      <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim, fontFamily: "'JetBrains Mono', monospace" }}>{profile.providerId}</Typography>
+                    </Box>
                   </MenuItem>
                 ))}
                 {providerList.length === 0 && (
@@ -1813,12 +1890,11 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
                   size="small"
                   label={currentModel || 'Model'}
                   onClick={(e) => setModelMenuAnchor(e.currentTarget)}
-                  sx={{
-                    fontSize: '0.55rem', height: 20, cursor: 'pointer', maxWidth: 140,
-                    bgcolor: 'transparent', border: 'none',
-                    color: currentModel ? colors.accent.blue : colors.text.dim,
-                    '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' },
-                    '&:hover': { bgcolor: colors.bg.primary },
+                    sx={{
+                      fontSize: '0.55rem', height: 20, cursor: 'pointer',
+                      bgcolor: 'transparent', border: 'none',
+                      color: currentModel ? colors.accent.blue : colors.text.dim,
+                      '&:hover': { bgcolor: colors.bg.primary },
                   }}
                 />
               </Tooltip>
@@ -1840,7 +1916,10 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
                     return (
                     <MenuItem key={m.id} onClick={() => {
                       setCurrentModel(m.id);
-                      if (m.providerId && m.providerId !== currentProvider) {
+                      if (m.contextWindow) setTokenTotal(m.contextWindow);
+                      const profile = providerList.find(p => p.id === currentProvider);
+                      const providerId = profile?.providerId || currentProvider;
+                      if (m.providerId && m.providerId !== providerId) {
                         setCurrentProvider(m.providerId);
                         providers.switch(m.providerId).then(() => {
                           models.switch(m.id).catch(() => {});
@@ -2085,6 +2164,30 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
           <CircularProgress size={40} sx={{ color: '#fff' }} />
         </Box>
       )}
+
+      <ModeSuggestionModal
+        open={modeSuggestOpen}
+        onSwitch={() => {
+          setModeSuggestOpen(false);
+          setAgentMode('agent');
+          sessionSettings.setMode('agent').catch(() => {});
+          // Re-send with Agent mode
+          const txt = pendingSendText;
+          setPendingSendText(null);
+          if (txt) setTimeout(() => handleSend(txt), 50);
+        }}
+        onStay={() => {
+          setModeSuggestOpen(false);
+          skipSuggestionRef.current = true;
+          const txt = pendingSendText;
+          setPendingSendText(null);
+          if (txt) setTimeout(() => handleSend(txt), 50);
+        }}
+        onClose={() => {
+          setModeSuggestOpen(false);
+          setPendingSendText(null);
+        }}
+      />
     </Box>
   );
 }
@@ -2094,37 +2197,21 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 function LoadingStepsIndicator({ steps }: { steps: Array<{ id: string; label: string; status: string }> }) {
   const label = steps[0]?.label ?? 'Working...';
   return (
-    <Box sx={{
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      border: '1px dashed', borderColor: colors.border.subtle,
-      borderRadius: 2, py: 1.5, px: 2, mb: 2,
-      animation: 'agentx-fadeIn 0.3s ease-out',
+    <Typography sx={{
+      fontSize: '0.75rem',
+      fontWeight: 500,
+      background: `linear-gradient(90deg, ${colors.text.dim} 0%, ${colors.text.primary} 50%, ${colors.text.dim} 100%)`,
+      backgroundSize: '200% 100%',
+      WebkitBackgroundClip: 'text',
+      WebkitTextFillColor: 'transparent',
+      animation: 'agentx-shimmer 2s infinite linear',
     }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-        <Box sx={{
-          width: 18, height: 18, borderRadius: '50%',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          bgcolor: colors.accent.purple + '15', flexShrink: 0,
-        }}>
-          <SmartToyIcon sx={{ fontSize: 11, color: colors.accent.purple }} />
-        </Box>
-        <Typography sx={{
-          fontSize: '0.75rem',
-          fontWeight: 500,
-          background: `linear-gradient(90deg, ${colors.text.dim} 0%, ${colors.text.primary} 50%, ${colors.text.dim} 100%)`,
-          backgroundSize: '200% 100%',
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
-          animation: 'agentx-shimmer 2s infinite linear',
-        }}>
-          {label}
-        </Typography>
-      </Box>
-    </Box>
+      {label}
+    </Typography>
   );
 }
 
-function ThinkingIndicator() {
+function ThinkingIndicator({ label }: { label?: string }) {
   return (
     <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start', mb: 2, animation: 'agentx-fadeIn 0.3s ease-out' }}>
       <Box sx={{
@@ -2134,12 +2221,18 @@ function ThinkingIndicator() {
         <SmartToyIcon sx={{ fontSize: 15, color: colors.accent.purple }} />
       </Box>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1.5 }}>
-        <Box sx={{ display: 'flex', gap: 0.4 }}>
-          <Box sx={{ width: 5, height: 5, borderRadius: '50%', bgcolor: colors.accent.purple, animation: 'agentx-pulse 1.4s ease-in-out infinite' }} />
-          <Box sx={{ width: 5, height: 5, borderRadius: '50%', bgcolor: colors.accent.purple, animation: 'agentx-pulse 1.4s ease-in-out 0.2s infinite' }} />
-          <Box sx={{ width: 5, height: 5, borderRadius: '50%', bgcolor: colors.accent.purple, animation: 'agentx-pulse 1.4s ease-in-out 0.4s infinite' }} />
-        </Box>
-        <Typography sx={{ fontSize: '0.6rem', color: colors.text.dim, fontStyle: 'italic' }}>Thinking...</Typography>
+        {label ? (
+          <LoadingStepsIndicator steps={[{ id: '', label, status: 'running' }]} />
+        ) : (
+          <>
+            <Box sx={{ display: 'flex', gap: 0.4 }}>
+              <Box sx={{ width: 5, height: 5, borderRadius: '50%', bgcolor: colors.accent.purple, animation: 'agentx-pulse 1.4s ease-in-out infinite' }} />
+              <Box sx={{ width: 5, height: 5, borderRadius: '50%', bgcolor: colors.accent.purple, animation: 'agentx-pulse 1.4s ease-in-out 0.2s infinite' }} />
+              <Box sx={{ width: 5, height: 5, borderRadius: '50%', bgcolor: colors.accent.purple, animation: 'agentx-pulse 1.4s ease-in-out 0.4s infinite' }} />
+            </Box>
+            <Typography sx={{ fontSize: '0.6rem', color: colors.text.dim, fontStyle: 'italic' }}>Thinking...</Typography>
+          </>
+        )}
       </Box>
     </Box>
   );
@@ -2204,12 +2297,62 @@ const MARKDOWN_BASE_SX = {
   '& a': { color: colors.accent.blue, textDecoration: 'none', '&:hover': { textDecoration: 'underline' } },
 };
 
+const MAX_CODE_LINES = 30;
+
+function CodeBlockWithCopy({ code, language }: { code: string; language?: string }) {
+  const [copied, setCopied] = useState(false);
+  const displayCode = code;
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <Box sx={{ position: 'relative', my: 0.75 }}>
+      <Box sx={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        px: 1.5, py: 0.4,
+        bgcolor: '#2d2d2d', borderTopLeftRadius: 6, borderTopRightRadius: 6,
+        borderBottom: '1px solid #3a3a3a',
+      }}>
+        <Typography sx={{ fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace", color: colors.text.dim, textTransform: 'lowercase' }}>
+          {language || 'code'}
+        </Typography>
+        <Box component="button" onClick={handleCopy}
+          sx={{
+            display: 'flex', alignItems: 'center', gap: 0.4,
+            bgcolor: 'transparent', border: 'none', cursor: 'pointer', p: 0.25,
+            color: copied ? colors.accent.green : colors.text.dim,
+            fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace",
+            '&:hover': { color: copied ? colors.accent.green : colors.text.secondary },
+          }}>
+          {copied ? 'Copied' : 'Copy'}
+        </Box>
+      </Box>
+      <SyntaxHighlighter style={oneDark} language={language || 'text'} PreTag="div"
+        customStyle={{ borderTopLeftRadius: 0, borderTopRightRadius: 0, borderBottomLeftRadius: 6, borderBottomRightRadius: 6, fontSize: '0.7rem', margin: 0, padding: '10px 12px' }}>
+        {displayCode}
+      </SyntaxHighlighter>
+    </Box>
+  );
+}
+
 const MARKDOWN_COMPONENTS = {
   code({ className, children, ...props }: any) {
     const match = /language-(\w+)/.exec(className ?? '');
-    const code = String(children).replace(/\n$/, '');
+    let code = String(children).replace(/\n$/, '');
+    const lines = code.split('\n');
+    const truncated = lines.length > MAX_CODE_LINES;
+    if (truncated) {
+      code = lines.slice(0, MAX_CODE_LINES).join('\n') + `\n// … ${lines.length - MAX_CODE_LINES} more line${lines.length - MAX_CODE_LINES === 1 ? '' : 's'} truncated`;
+    }
     if (match) {
-      return (<SyntaxHighlighter style={oneDark} language={match[1]} PreTag="div" customStyle={{ borderRadius: 6, fontSize: '0.7rem', margin: '6px 0', padding: '10px 12px' }}>{code}</SyntaxHighlighter>);
+      return <CodeBlockWithCopy code={code} language={match[1]} />;
+    }
+    if (truncated) {
+      return <pre style={{ maxHeight: 200, overflow: 'auto', background: colors.bg.tertiary, borderRadius: 4, padding: '6px 10px', margin: '4px 0' }}><code className={className} style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.72rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{code}</code></pre>;
     }
     return <code className={className} style={{ background: colors.bg.tertiary, padding: '1px 5px', borderRadius: 3, fontSize: '0.72rem' }} {...props}>{children}</code>;
   },
@@ -2277,7 +2420,7 @@ function getResponderName(content: string): { name: string; callsign: string } |
   return null;
 }
 
-function MessageBubble({ message, loadingSteps }: { message: UIMessage; loadingSteps?: Array<{ id: string; label: string; status: string }> | null }) {
+function MessageBubble({ message, loadingSteps, isLastUser, onResend, onDismissDoomLoop }: { message: UIMessage; loadingSteps?: Array<{ id: string; label: string; status: string }> | null; isLastUser?: boolean; onResend?: (content: string) => void; onDismissDoomLoop?: () => void }) {
   const isUser = message.role === 'user';
   const crewInfo = message.crew;
   const responderName = !isUser && !crewInfo && message.content ? getResponderName(message.content) : null;
@@ -2353,7 +2496,7 @@ function MessageBubble({ message, loadingSteps }: { message: UIMessage; loadingS
           <DoomLoopWarning
             toolName={message.doomLoop.toolName}
             count={message.doomLoop.count}
-            onContinue={() => { /* user dismisses; cleared on next user turn */ }}
+            onContinue={() => onDismissDoomLoop?.()}
             onStop={() => { chat.cancel().catch(() => {}); }}
           />
         )}
@@ -2370,12 +2513,12 @@ function MessageBubble({ message, loadingSteps }: { message: UIMessage; loadingS
 
         {/* Tool calls */}
         {message.toolCalls && message.toolCalls.length > 0 && (
-          <Box sx={{ mb: 0.75 }}>{message.toolCalls.map((tc) => (<ToolCallChip key={tc.id} tool={tc} />))}</Box>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '0.25em', mb: 0.75 }}>{message.toolCalls.map((tc) => (<ToolCallChip key={tc.id} tool={tc} />))}</Box>
         )}
 
         {/* Sub agents */}
         {message.subAgents && message.subAgents.length > 0 && (
-          <Box sx={{ mb: 0.75 }}>{message.subAgents.map((sa) => (<SubAgentChip key={sa.id} agent={sa} />))}</Box>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '0.25em', mb: 0.75 }}>{message.subAgents.map((sa) => (<SubAgentChip key={sa.id} agent={sa} />))}</Box>
         )}
 
         {/* Inline todos */}
@@ -2395,10 +2538,16 @@ function MessageBubble({ message, loadingSteps }: { message: UIMessage; loadingS
         {message.content && !isUser && <CrewAwareMarkdown content={message.content} />}
         {message.content && isUser && <UserMentionText content={message.content} />}
 
-        {/* Loading steps (instead of streaming dots when steps are available) */}
-        {message.streaming && !message.content && loadingSteps && (
-          <LoadingStepsIndicator steps={loadingSteps} />
+        {/* Resend button on last user message only */}
+        {isUser && isLastUser && message.content && onResend && (
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 0.5 }}>
+            <IconButton size="small" onClick={() => onResend(message.content)}
+              sx={{ p: 0.3, opacity: 0.4, '&:hover': { opacity: 1, bgcolor: 'transparent' } }}>
+              <ReplayIcon sx={{ fontSize: 13 }} />
+            </IconButton>
+          </Box>
         )}
+
         {/* Streaming dots (empty content, no steps) */}
         {message.streaming && !message.content && !loadingSteps && (
           <Box sx={{ display: 'flex', gap: 0.4, py: 0.5 }}>
@@ -2434,50 +2583,33 @@ function MessageBubble({ message, loadingSteps }: { message: UIMessage; loadingS
 // ─── Tool Call Chip ───
 
 function ToolCallChip({ tool }: { tool: ToolCall }) {
-  const [expanded, setExpanded] = useState(false);
   return (
-    <Box sx={{ mb: 0.5 }}>
-      <Chip size="small"
-        label={tool.name}
-        onClick={() => setExpanded(!expanded)}
-        sx={{
-          fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace", height: 20,
-          bgcolor: tool.status === 'running' ? colors.accent.orange + '10' : tool.status === 'error' ? colors.accent.red + '10' : colors.accent.green + '10',
-          border: `1px solid ${tool.status === 'running' ? colors.accent.orange : tool.status === 'error' ? colors.accent.red : colors.accent.green}20`,
-          color: tool.status === 'running' ? colors.accent.orange : tool.status === 'error' ? colors.accent.red : colors.accent.green,
-          cursor: 'pointer',
-        }}
-      />
-      <Collapse in={expanded}>
-        {tool.args && <Box sx={{ mt: 0.5, p: 0.75, fontSize: '0.55rem', bgcolor: colors.bg.tertiary, borderRadius: 1, fontFamily: "'JetBrains Mono', monospace", color: colors.text.dim, whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'auto' }}>{tool.args}</Box>}
-        {tool.result && <Box sx={{ mt: 0.5, p: 0.75, fontSize: '0.55rem', bgcolor: colors.bg.tertiary, borderRadius: 1, fontFamily: "'JetBrains Mono', monospace", color: colors.text.secondary, whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'auto' }}>{tool.result}</Box>}
-      </Collapse>
-    </Box>
+    <Chip size="small"
+      label={tool.name}
+      sx={{
+        fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace", height: 20,
+        bgcolor: tool.status === 'running' ? colors.accent.orange + '10' : tool.status === 'error' ? colors.accent.red + '10' : colors.accent.green + '10',
+        border: `1px solid ${tool.status === 'running' ? colors.accent.orange : tool.status === 'error' ? colors.accent.red : colors.accent.green}20`,
+        color: tool.status === 'running' ? colors.accent.orange : tool.status === 'error' ? colors.accent.red : colors.accent.green,
+      }}
+    />
   );
 }
 
 // ─── Sub-Agent Chip ───
 
 function SubAgentChip({ agent }: { agent: SubAgent }) {
-  const [expanded, setExpanded] = useState(false);
   return (
-    <Box sx={{ mb: 0.5 }}>
-      <Chip size="small"
-        icon={agent.status === 'running' ? <CircularProgress size={10} sx={{ color: 'inherit' }} /> : <AccountTreeIcon sx={{ fontSize: 11 }} />}
-        label={`${agent.name}: ${agent.task.slice(0, 35)}${agent.task.length > 35 ? '…' : ''}`}
-        onClick={() => setExpanded(!expanded)}
-        sx={{
-          fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace", height: 20,
-          bgcolor: agent.status === 'running' ? colors.accent.purple + '10' : colors.accent.green + '10',
-          border: `1px solid ${agent.status === 'running' ? colors.accent.purple : colors.accent.green}20`,
-          color: agent.status === 'running' ? colors.accent.purple : colors.accent.green,
-          cursor: 'pointer',
-        }}
-      />
-      <Collapse in={expanded}>
-        {agent.result && <Box sx={{ mt: 0.5, p: 0.75, fontSize: '0.55rem', bgcolor: colors.bg.tertiary, borderRadius: 1, fontFamily: "'JetBrains Mono', monospace", color: colors.text.secondary, whiteSpace: 'pre-wrap', maxHeight: 100, overflow: 'auto' }}>{agent.result}</Box>}
-      </Collapse>
-    </Box>
+    <Chip size="small"
+      icon={agent.status === 'running' ? <CircularProgress size={10} sx={{ color: 'inherit' }} /> : <AccountTreeIcon sx={{ fontSize: 11 }} />}
+      label={`${agent.name}: ${agent.task.slice(0, 35)}${agent.task.length > 35 ? '…' : ''}`}
+      sx={{
+        fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace", height: 20,
+        bgcolor: agent.status === 'running' ? colors.accent.purple + '10' : colors.accent.green + '10',
+        border: `1px solid ${agent.status === 'running' ? colors.accent.purple : colors.accent.green}20`,
+        color: agent.status === 'running' ? colors.accent.purple : colors.accent.green,
+      }}
+    />
   );
 }
 

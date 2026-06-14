@@ -355,6 +355,7 @@ export async function startDaemon(): Promise<void> {
   const agent = new Agent({
     config,
     sessionId,
+    scopePath: process.cwd(),
   });
 
   try {
@@ -442,7 +443,7 @@ export async function startDaemon(): Promise<void> {
     discordBridge = new DiscordBridge();
     discordBridge.setAgentFactory(async (userId: string) => {
       const userSessionId = generateSessionId();
-      const userAgent = new Agent({ config, sessionId: userSessionId });
+      const userAgent = new Agent({ config, sessionId: userSessionId, scopePath: process.cwd() });
       try {
         sessionStore.createSession({
           id: userSessionId,
@@ -466,7 +467,7 @@ export async function startDaemon(): Promise<void> {
     slackBridge = new SlackBridge(slackConfig);
     slackBridge.setAgentFactory((userId) => {
       const userSessionId = `${sessionId}-slack-${userId}`;
-      const userAgent = new Agent({ config, sessionId: userSessionId, systemPrompt: undefined });
+      const userAgent = new Agent({ config, sessionId: userSessionId, scopePath: process.cwd(), systemPrompt: undefined });
       try {
         sessionStore.createSession({
           id: userSessionId,

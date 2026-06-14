@@ -76,6 +76,16 @@ let unsubscribeFromAgent: (() => void) | null = null;
 export function setupWebSocket(server: Server): void {
   wss = new WebSocketServer({ server, path: '/ws' });
 
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') return;
+    console.error('WebSocket server error:', err.message);
+  });
+
+  wss.on('error', (err) => {
+    if ((err as any).code === 'EADDRINUSE') return;
+    console.error('WebSocket error:', (err as Error).message);
+  });
+
   wss.on('connection', (ws: WebSocket) => {
     ws.send(JSON.stringify({ type: 'connected' }));
 
@@ -323,7 +333,8 @@ export function subscribeToAgent(agent: { events: { on: (handler: (event: Record
       if (evType === 'tool_complete') {
         const tool = (event as any).tool as string || '';
         const elapsed = (event as any).elapsed as number || 0;
-        const result = (event as any).result as string || (event as any).output as string || '';
+        const resultObj = (event as any).result;
+        const result = typeof resultObj === 'string' ? resultObj : (resultObj?.output as string || '');
         if (sessionId && tool) {
           const snippet = result.length > 500 ? result.slice(0, 500) + '...' : result;
           appendContextFile(sessionId, 'system', `[tool] ${tool} completed (${elapsed}ms)\n${snippet}`);

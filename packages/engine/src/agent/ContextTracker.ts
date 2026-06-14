@@ -11,19 +11,38 @@ export interface ContextEntry {
   ts: number;
 }
 
+interface HistoryEntry {
+  role: string;
+  content: string;
+  ts: number;
+}
+
 export class ContextTracker {
   private store = new Map<string, ContextEntry[]>();
-  private maxEntries = 40;
+  private maxEntries = 50;
   private sessionDir: string | null = null;
+
+  private recentHistory = new Map<string, HistoryEntry[]>();
+  private maxHistoryMessages = 50;
+  private maxHistoryChars = 48000;
 
   setSessionDir(dir: string): void {
     this.sessionDir = dir;
     this.loadFromDisk();
+    this.loadHistoryFromDisk();
   }
 
   record(sessionId: string, role: 'user' | 'assistant' | 'crew', content: string, crewName?: string): void {
     const entries = this.store.get(sessionId) ?? [];
     const now = Date.now();
+
+    // Push raw message into recent history
+    const history = this.recentHistory.get(sessionId) ?? [];
+    const displayName = role === 'crew' ? (crewName ?? 'Agent') : role === 'user' ? 'User' : 'Agent-X';
+    const label = role === 'user' ? 'User' : displayName;
+    history.push({ role: label, content: content.slice(0, 2000), ts: now });
+    this.trimHistory(history);
+    this.recentHistory.set(sessionId, history);
 
     if (role === 'user') {
       let recorded = false;
@@ -40,35 +59,35 @@ export class ContextTracker {
         entries.push({ type: 'delegation', detail: `User requested @${mentionMatch[1]} to handle: ${this.firstSentence(content, 150)}`, ts: now });
         recorded = true;
       }
-      // Always capture at least the first sentence of every user message for context awareness
       if (!recorded) {
         entries.push({ type: 'fact', detail: `User: ${this.firstSentence(content, 200)}`, ts: now });
       }
     }
 
     if (role === 'assistant' || role === 'crew') {
-      const displayName = crewName ?? 'Agent-X';
+      const dn = crewName ?? 'Agent-X';
       if (DECISION_PATTERNS.test(content)) {
-        entries.push({ type: 'decision', detail: `${displayName}: ${this.firstSentence(content, 200)}`, ts: now });
+        entries.push({ type: 'decision', detail: `${dn}: ${this.firstSentence(content, 200)}`, ts: now });
       } else {
-        entries.push({ type: 'fact', detail: `${displayName}: ${this.firstSentence(content, 200)}`, ts: now });
+        entries.push({ type: 'fact', detail: `${dn}: ${this.firstSentence(content, 200)}`, ts: now });
       }
     }
 
     while (entries.length > this.maxEntries) entries.shift();
     this.store.set(sessionId, entries);
     this.saveToDisk();
+    this.saveHistoryToDisk();
   }
 
   getContextSummary(sessionId: string): string {
     const entries = this.store.get(sessionId);
     if (!entries || entries.length === 0) return '';
 
-    const recent = entries.slice(-15);
-    const tasks = recent.filter(e => e.type === 'task').slice(-5);
-    const decisions = recent.filter(e => e.type === 'decision').slice(-5);
-    const questions = recent.filter(e => e.type === 'question').slice(-3);
-    const delegations = recent.filter(e => e.type === 'delegation').slice(-3);
+    const recent = entries.slice(-40);
+    const tasks = recent.filter(e => e.type === 'task').slice(-8);
+    const decisions = recent.filter(e => e.type === 'decision').slice(-8);
+    const questions = recent.filter(e => e.type === 'question').slice(-5);
+    const delegations = recent.filter(e => e.type === 'delegation').slice(-5);
 
     const lines: string[] = [];
     if (tasks.length > 0) lines.push('Active tasks: ' + tasks.map(t => `- ${t.detail}`).join('\n'));
@@ -81,6 +100,14 @@ export class ContextTracker {
       : '';
   }
 
+  getRecentHistory(sessionId: string): string {
+    const history = this.recentHistory.get(sessionId);
+    if (!history || history.length === 0) return '';
+
+    const lines = history.map(e => `${e.role}: ${e.content}`);
+    return `[RECENT_HISTORY]\nHere are the recent messages in this conversation (up to ${this.maxHistoryMessages} messages / ~12K tokens). Use this for continuity:\n\n${lines.join('\n')}\n[/RECENT_HISTORY]`;
+  }
+
   getTextForExpertiseCheck(sessionId: string): string {
     const entries = this.store.get(sessionId);
     if (!entries || entries.length === 0) return '';
@@ -89,11 +116,22 @@ export class ContextTracker {
 
   clear(sessionId: string): void {
     this.store.delete(sessionId);
+    this.recentHistory.delete(sessionId);
     this.saveToDisk();
+    this.saveHistoryToDisk();
   }
 
   getAll(sessionId: string): ContextEntry[] {
     return [...(this.store.get(sessionId) ?? [])];
+  }
+
+  private trimHistory(history: HistoryEntry[]): void {
+    while (history.length > this.maxHistoryMessages) history.shift();
+    let totalChars = history.reduce((sum, e) => sum + e.role.length + e.content.length + 2, 0);
+    while (totalChars > this.maxHistoryChars && history.length > 1) {
+      const removed = history.shift();
+      if (removed) totalChars -= removed.role.length + removed.content.length + 2;
+    }
   }
 
   private saveToDisk(): void {
@@ -119,6 +157,38 @@ export class ContextTracker {
           for (const [sid, entries] of Object.entries(raw)) {
             if (Array.isArray(entries)) {
               this.store.set(sid, entries as ContextEntry[]);
+            }
+          }
+        }
+      }
+    } catch { /* best effort */ }
+  }
+
+  private saveHistoryToDisk(): void {
+    if (!this.sessionDir) return;
+    try {
+      mkdirSync(this.sessionDir, { recursive: true });
+      const filePath = join(this.sessionDir, 'context_summary.json');
+      const allEntries: Record<string, HistoryEntry[]> = {};
+      for (const [sid, history] of this.recentHistory.entries()) {
+        allEntries[sid] = history;
+      }
+      writeFileSync(filePath, JSON.stringify(allEntries, null, 2));
+    } catch { /* best effort */ }
+  }
+
+  private loadHistoryFromDisk(): void {
+    if (!this.sessionDir) return;
+    try {
+      const filePath = join(this.sessionDir, 'context_summary.json');
+      if (existsSync(filePath)) {
+        const raw = JSON.parse(readFileSync(filePath, 'utf-8'));
+        if (typeof raw === 'object') {
+          for (const [sid, history] of Object.entries(raw)) {
+            if (Array.isArray(history)) {
+              const typed = history as HistoryEntry[];
+              this.trimHistory(typed);
+              this.recentHistory.set(sid, typed);
             }
           }
         }

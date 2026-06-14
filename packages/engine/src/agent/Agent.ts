@@ -68,6 +68,7 @@ import { CrewOrchestrator, type CrewMember } from './CrewOrchestrator.js';
 import { ContextTracker } from './ContextTracker.js';
 
 import { TodoManager } from './TodoManager.js';
+import type { SessionLogger } from '../session/SessionLogger.js';
 
 // ─── UNIFIED PIPELINE IMPORTS (Phase 1-11 integration) ───
 import { InputNormalizer } from '../communication/InputNormalizer.js';
@@ -100,6 +101,7 @@ import { GenericTransport } from '../providers/transports/GenericTransport.js';
 export interface AgentOptions {
   config: AgentXConfig;
   sessionId: string;
+  scopePath?: string;
   systemPrompt?: string;
   toolExecutor?: ToolExecutor | EnhancedToolExecutor;
   toolRegistry?: ToolRegistry;
@@ -131,7 +133,7 @@ export class Agent {
   private toolExecutor?: EnhancedToolExecutor;
   private toolRegistry?: ToolRegistry;
   private permissionResolve: ((choice: 'allow_once' | 'allow_always' | 'deny') => void) | null = null;
-  autoApproveTools = false; // set by session mode: true in agent mode, false in ask/plan
+  autoApproveTools = false;
   private cachedModels: Map<string, number> = new Map(); // modelId -> contextWindow
   private cachedModelCapabilities: Map<string, string[]> = new Map(); // modelId -> capabilities
   private groundedModels: Set<string> = new Set(); // models that failed trial this session
@@ -192,6 +194,7 @@ export class Agent {
   private _telegramChatId: number | null = null;
   private crewOrchestrator: CrewOrchestrator | null = null;
   private contextTracker = new ContextTracker();
+  sessionLogger: SessionLogger | null = null;
   onTokenLog: ((opts: { inputTokens: number; outputTokens: number; costUsd: number }) => void) | null = null;
 
   setContextPersistDir(dir: string): void {
@@ -240,8 +243,8 @@ export class Agent {
     this.taskManager = new TaskManager(this.eventBus);
     setTaskManagerInstance(this.taskManager);
     this.todoManager = new TodoManager(this.eventBus);
-    this.scheduler = new Scheduler(this.eventBus);
-    setSchedulerInstance(this.scheduler);
+    this.scheduler = new Scheduler(this.eventBus, this.sessionId);
+    setSchedulerInstance(this.sessionId, this.scheduler);
     setIndexerEventBus(this.eventBus);
     this.secretSauce = new SecretSauceManager();
     this.errorShield = new ErrorShield();
@@ -253,7 +256,7 @@ export class Agent {
         this.toolExecutor = options.toolExecutor;
       } else if (options.toolExecutor instanceof ToolExecutor && !(options.toolExecutor instanceof EnhancedToolExecutor)) {
         // Wrap plain ToolExecutor in Enhanced for parallel/doom-loop/repair capabilities
-        this.toolExecutor = new EnhancedToolExecutor(options.toolRegistry, process.cwd());
+        this.toolExecutor = new EnhancedToolExecutor(options.toolRegistry, options.scopePath ?? process.cwd());
         // Copy handlers and hooks from provided executor
         const providedHandlers = (options.toolExecutor as unknown as Record<string, unknown>)['handlers'] as
           | Map<string, (args: Record<string, unknown>, ctx: import('@agentx/shared').ToolExecutionContext) => Promise<import('@agentx/shared').ToolResult>>
@@ -270,7 +273,7 @@ export class Agent {
         }
       } else {
         // Plain mock object from tests — wrap it
-        this.toolExecutor = new EnhancedToolExecutor(options.toolRegistry, process.cwd());
+        this.toolExecutor = new EnhancedToolExecutor(options.toolRegistry, options.scopePath ?? process.cwd());
         const mockObj = options.toolExecutor as unknown as Record<string, unknown>;
         if (typeof mockObj['execute'] === 'function') {
           const mockExec = mockObj['execute'] as (...args: unknown[]) => Promise<unknown>;
@@ -288,10 +291,11 @@ export class Agent {
       }
       this.toolRegistry = options.toolRegistry;
     } else {
-      const toolkit = createDefaultToolkit(process.cwd());
+      const effectiveScope = options.scopePath ?? process.cwd();
+      const toolkit = createDefaultToolkit(effectiveScope);
       this.toolRegistry = toolkit.registry;
       // Use EnhancedToolExecutor for parallel/doom-loop/repair capabilities
-      this.toolExecutor = new EnhancedToolExecutor(toolkit.registry, process.cwd());
+      this.toolExecutor = new EnhancedToolExecutor(toolkit.registry, effectiveScope);
       // Copy handlers from factory executor
       const handlersMap = (toolkit.executor as unknown as Record<string, unknown>)['handlers'] as
         | Map<string, (args: Record<string, unknown>, ctx: import('@agentx/shared').ToolExecutionContext) => Promise<import('@agentx/shared').ToolResult>>
@@ -335,14 +339,14 @@ export class Agent {
     // Git integration
     this.gitAutoCommit = options.gitAutoCommit ?? false;
     if (options.gitAware || options.gitAutoCommit) {
-      this.gitManager = new GitManager({ scopePath: process.cwd() });
+      this.gitManager = new GitManager({ scopePath: options.scopePath ?? process.cwd() });
     }
 
     // Apply git-aware scope if requested
     if (options.gitAware && this.gitManager?.isInsideRepo()) {
-      const scopePath = this.gitManager.getRepoRoot();
-      if (scopePath && this.toolExecutor) {
-        this.toolExecutor.setScopePath(scopePath);
+      const repoRoot = this.gitManager.getRepoRoot();
+      if (repoRoot && this.toolExecutor) {
+        this.toolExecutor.setScopePath(repoRoot);
       }
     }
 
@@ -785,6 +789,7 @@ export class Agent {
           if (/thought_signature|function.?call/i.test(msg)) {
             getLogger().error('MODEL_INCOMPAT', 'Model does not support function calling — switch to a capable model (e.g. gemini-2.0-flash, claude-3-haiku)');
           }
+          this.sessionLogger?.logErrorAPI(this.config.provider.activeProvider, label, 0, msg);
           throw lastError;
         }
 
@@ -1359,6 +1364,7 @@ Return ONLY valid JSON, no other text.`;
 
       this.errorShield.logError(error);
       const rawProviderMessage = error instanceof Error ? error.message : String(error);
+      this.sessionLogger?.logErrorUser(rawProviderMessage, classified.reason);
       const { message: friendlyMessage, actions } = this.toFriendlyError(error);
       const PROVIDER_ERROR_REASONS = new Set([
         FailoverReason.AUTH,
@@ -1541,6 +1547,7 @@ Return ONLY valid JSON, no other text.`;
         this.clarificationResolve = null;
         return response;
       },
+      sessionLogger: this.sessionLogger ?? null,
     });
     return loop.run(startTime);
   }
@@ -1607,6 +1614,7 @@ Return ONLY valid JSON, no other text.`;
         }
       } catch (err) {
         const errorResult: ToolResult = { success: false, output: (err as Error).message, error: 'STEP_ERROR' };
+        this.sessionLogger?.logToolError(tc.function.name, (err as Error).message);
         this.emit({ type: 'tool_complete', tool: tc.function.name, result: errorResult, elapsed: Date.now() - toolStartTime });
       }
     }
@@ -1766,13 +1774,16 @@ Return ONLY valid JSON, no other text.`;
     // Inject session context (recent tasks, decisions, delegations)
     const contextSummary = this.contextTracker.getContextSummary(this.sessionId);
 
+    // Inject recent raw conversation history (last 50 messages / ~12K tokens)
+    const recentHistory = this.contextTracker.getRecentHistory(this.sessionId);
+
     // Inject user callsign
     const callsign = this.config.user?.callsign;
     const userSection = callsign
       ? `\n\n[USER]\nThe user's name/callsign is "${callsign}". Address them by this name when appropriate.\n[/USER]`
       : '';
 
-    this.setSystemPrompt(prompt + contextSummary + userSection + identitySection + taskPanelSection);
+    this.setSystemPrompt(prompt + contextSummary + recentHistory + userSection + identitySection + taskPanelSection);
   }
 
   switchProvider(providerId: ProviderId, apiKey?: string, baseUrl?: string): void {
@@ -2002,6 +2013,7 @@ Return ONLY valid JSON, no other text.`;
     } catch (error) {
       this.emit({ type: 'loading_end' });
       const errorMessage = error instanceof Error ? error.message : String(error);
+      this.sessionLogger?.logErrorUser(errorMessage, 'RESEARCH_FAILED');
       const fallback: Message = {
         id: generateMessageId(),
         sessionId: this.sessionId,

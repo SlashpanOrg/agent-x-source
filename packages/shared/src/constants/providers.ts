@@ -128,6 +128,22 @@ export const PROVIDERS: Record<string, ProviderConfig> = {
     baseUrlConfigurable: true,
     defaultBaseUrl: 'https://api.commandcode.ai/provider/v1',
   },
+  opencode: {
+    id: 'opencode',
+    name: 'OpenCode Go',
+    type: 'cloud',
+    apiKeyRequired: true,
+    baseUrlConfigurable: true,
+    defaultBaseUrl: 'https://opencode.ai/zen/go/v1',
+  },
+  'opencode-zen': {
+    id: 'opencode-zen',
+    name: 'OpenCode Zen (Free Models)',
+    type: 'cloud',
+    apiKeyRequired: true,
+    baseUrlConfigurable: true,
+    defaultBaseUrl: 'https://opencode.ai/zen/v1',
+  },
 } as const;
 
 export const PROVIDER_IDS = Object.keys(PROVIDERS) as string[];

@@ -61,6 +61,7 @@ export class SessionManager {
         provider: session.providerId,
         model: session.modelId,
         crewId: session.crewId,
+        scopePath: session.scopePath,
         tokensUsed: session.tokenUsed,
         tokenAvailable: session.tokenAvailable,
         createdAt: session.createdAt,
@@ -92,10 +93,10 @@ export class SessionManager {
     return this.getSessionStore().listSessions(limit) as unknown as Session[];
   }
 
-  createSession(providerId: string, modelId: string, crewId?: string, scopePath?: string): Session {
+  createSession(providerId: string, modelId: string, crewId?: string, scopePath?: string, id?: string): Session {
     const contextWindow = 128_000;
     const session: Session = {
-      id: generateSessionId(),
+      id: id ?? generateSessionId(),
       title: 'New Session',
       status: 'active' as SessionStatus,
       providerId,
