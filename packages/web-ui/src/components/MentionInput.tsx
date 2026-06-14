@@ -68,14 +68,22 @@ export function MentionInput({ value, onChange, onKeyDown, onMentionQuery, place
 
   useEffect(() => {
     if (value === '' && prevValueRef.current !== '') {
-      const newSeg = { type: 'text' as const, id: crypto.randomUUID(), value: '' };
-      setSegments([newSeg]);
       setMentionQueryLocal(null);
       mentionOriginRef.current = null;
-      requestAnimationFrame(() => {
-        const el = textInputRefs.current.get(newSeg.id);
-        if (el) el.focus();
-      });
+      const existingEmpty = segments.find(s => s.type === 'text' && (s as TextSegment).value === '');
+      if (existingEmpty) {
+        requestAnimationFrame(() => {
+          const el = textInputRefs.current.get(existingEmpty.id);
+          if (el) el.focus();
+        });
+      } else {
+        const newSeg = { type: 'text' as const, id: crypto.randomUUID(), value: '' };
+        setSegments([newSeg]);
+        requestAnimationFrame(() => {
+          const el = textInputRefs.current.get(newSeg.id);
+          if (el) el.focus();
+        });
+      }
     }
     prevValueRef.current = value;
   }, [value]);

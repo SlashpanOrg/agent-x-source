@@ -465,7 +465,9 @@ app.get('/api/models', async (_req, res) => {
 
 app.get('/api/cwd', (_req, res) => {
   const eng = getEngine();
-  const scopePath = eng.sessionManager.getActiveSession()?.scopePath || process.cwd();
+  const sess = eng.sessionManager.getActiveSession();
+  const raw = sess?.scopePath ?? null;
+  const scopePath = raw && raw !== '/' ? raw : null;
   res.json({ cwd: scopePath });
 });
 
@@ -509,9 +511,9 @@ app.get('/api/filesystem/dirs', (req, res) => {
 });
 
 // ───── Session Mode & Approval ─────
-// Agent mode: 'ask' (chat only), 'plan' (generate plans, tools need permission), 'agent' (full autonomy, auto-approve tools)
-const sessionSettings: { mode: 'agent' | 'ask' | 'plan' } = {
-  mode: 'ask',
+// Agent: full autonomy with tool execution; Plan: generates plans, no write access
+const sessionSettings: { mode: 'agent' | 'plan' } = {
+  mode: 'plan',
 };
 
 app.get('/api/session/settings', (_req, res) => {
@@ -519,14 +521,17 @@ app.get('/api/session/settings', (_req, res) => {
 });
 
 app.post('/api/session/mode', (req, res) => {
-  const { mode } = req.body as { mode: 'agent' | 'ask' | 'plan' };
-  if (!['agent', 'ask', 'plan'].includes(mode)) { res.status(400).json({ error: 'invalid-mode' }); return; }
+  const { mode } = req.body as { mode: 'agent' | 'plan' };
+  if (!['agent', 'plan'].includes(mode)) { res.status(400).json({ error: 'invalid-mode' }); return; }
   sessionSettings.mode = mode;
   const eng = getEngine();
   if (eng.agent) {
     eng.agent.setPlanMode(mode === 'plan');
-    eng.agent.autoApproveTools = (mode === 'agent');
   }
+  // Sync mode to toolkit executor for Plan mode tool restriction
+  try {
+    (eng as any).toolkit?.executor?.setMode?.(mode);
+  } catch { /* best-effort */ }
   res.json({ ok: true, mode });
 });
 
@@ -542,7 +547,7 @@ app.get('/api/agent/state', (_req, res) => {
   const crewStates = eng.sessionManager.getCrewStates();
   res.json({
     active: true,
-    session: session ? { id: session.id, title: session.title, status: session.status } : null,
+    session: session ? { id: session.id, title: session.title, status: session.status, scopePath: session.scopePath } : null,
     crew: { crewStates },
     model: { provider: session?.providerId, model: session?.modelId },
     processing: (agent as unknown as { isProcessing?: boolean }).isProcessing ?? false,
@@ -734,7 +739,6 @@ app.post('/api/chat/message', async (req, res) => {
 
     // Apply session mode to agent
     agent.setPlanMode(sessionSettings.mode === 'plan');
-    agent.autoApproveTools = (sessionSettings.mode === 'agent');
 
     // Build the full message content with attachments if provided
     let fullText = text;
@@ -744,11 +748,9 @@ app.post('/api/chat/message', async (req, res) => {
     }
 
     // Build instruction based on mode (kept separate from user content)
-    const instruction = sessionSettings.mode === 'ask'
-      ? 'Only provide an answer/explanation. Do NOT execute any tools, make changes, or take actions. Just reply with knowledge.'
-      : sessionSettings.mode === 'plan'
-        ? 'Generate a detailed plan for this request. Do NOT execute the plan yet — only outline the steps.'
-        : undefined;
+    const instruction = sessionSettings.mode === 'plan'
+      ? 'Generate a detailed plan for this request. Do NOT execute the plan yet — only outline the steps.'
+      : undefined;
 
     // Auto-checkpoint before each user turn — enables /undo to roll back this turn
     try {
@@ -850,9 +852,7 @@ app.post('/api/chat/steer', async (req, res) => {
       const attachmentSection = attachments.map(a => `\n\n--- File: ${a.name} ---\n${a.content}`).join('');
       fullText = text + attachmentSection;
     }
-    const instruction = sessionSettings.mode === 'ask'
-      ? 'Only provide an answer/explanation. Do NOT execute any tools, make changes, or take actions. Just reply with knowledge.'
-      : undefined;
+    const instruction = undefined;
     const message = await agent.sendMessage(fullText, instruction ? { instruction } : undefined);
     if (!message || (message as Record<string, unknown>).id === '__clarify__') {
       res.json({ ok: true, clarification: true });
@@ -877,17 +877,14 @@ app.post('/api/chat/stop-and-send', async (req, res) => {
     await waitForIdle(agent);
     ensureSubscribed();
     agent.setPlanMode(sessionSettings.mode === 'plan');
-    agent.autoApproveTools = (sessionSettings.mode === 'agent');
     let fullText = text;
     if (attachments && attachments.length > 0) {
       const attachmentSection = attachments.map(a => `\n\n--- File: ${a.name} ---\n${a.content}`).join('');
       fullText = text + attachmentSection;
     }
-    const instruction = sessionSettings.mode === 'ask'
-      ? 'Only provide an answer/explanation. Do NOT execute any tools, make changes, or take actions. Just reply with knowledge.'
-      : sessionSettings.mode === 'plan'
-        ? 'Generate a detailed plan for this request. Do NOT execute the plan yet — only outline the steps.'
-        : undefined;
+    const instruction = sessionSettings.mode === 'plan'
+      ? 'Generate a detailed plan for this request. Do NOT execute the plan yet — only outline the steps.'
+      : undefined;
     const message = await agent.sendMessage(fullText, instruction ? { instruction } : undefined);
     if (!message || (message as Record<string, unknown>).id === '__clarify__') {
       res.json({ ok: true, clarification: true });
@@ -999,7 +996,8 @@ app.post('/api/permission/respond', (req, res) => {
 // ───── Sessions ─────
 app.get('/api/sessions', (_req, res) => {
   const eng = getEngine();
-  const sessions = eng.sessionManager.listSessions(50) as unknown as Array<Record<string, unknown>>;
+  const all = eng.sessionManager.listSessions(50) as unknown as Array<Record<string, unknown>>;
+  const sessions = all.filter(s => s.id !== '__channel__');
   for (const s of sessions) {
     try {
       const convPath = join(getSessionDir(s.id as string), 'conversation.json');
@@ -1025,7 +1023,7 @@ app.get('/api/sessions/search', (req, res) => {
     const results: Array<{ sessionId: string; title?: string; createdAt?: string; snippet: string; matchCount: number }> = [];
     for (const s of sessions) {
       const sid = (s as unknown as { id?: string; sessionId?: string }).id ?? (s as unknown as { sessionId?: string }).sessionId;
-      if (!sid) continue;
+      if (!sid || sid === '__channel__') continue;
       const conv = join(getSessionDir(sid), 'conversation.json');
       if (!existsSync(conv)) continue;
       let messages: Array<{ role?: string; content?: string }> = [];
@@ -1158,9 +1156,11 @@ app.delete('/api/sessions/:id', (req, res) => {
 
 app.post('/api/sessions/:id/restore', (req, res) => {
   try {
+    const sessionId = req.params['id']!;
+    if (sessionId === '__channel__') { res.status(403).json({ error: 'channel-session' }); return; }
     const eng = getEngine();
     destroyAgent();
-    const session = eng.sessionManager.restoreSession(req.params['id']!);
+    const session = eng.sessionManager.restoreSession(sessionId);
     if (!session) { res.status(404).json({ error: 'not-found' }); return; }
     createAgent(undefined, req.params['id']!);
     ensureSubscribed();

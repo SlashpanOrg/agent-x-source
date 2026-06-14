@@ -36,7 +36,7 @@ import PlayCircleIcon from '@mui/icons-material/PlayCircle';
 import QueueIcon from '@mui/icons-material/PlaylistAdd';
 import BoltIcon from '@mui/icons-material/Bolt';
 
-import QuestionAnswerIcon from '@mui/icons-material/QuestionAnswer';
+import ReplayIcon from '@mui/icons-material/Replay';
 import RouteIcon from '@mui/icons-material/Route';
 import SearchIcon from '@mui/icons-material/Search';
 import HistoryIcon from '@mui/icons-material/History';
@@ -48,6 +48,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { chat, sessions, todos, tools, models, crews, providers, system, sessionSettings, connectSSE, type TelemetryEvent, type ChatMessage, type TodoItem, type SessionInfo, type Crew, type AgentMode, type ModelInfo, type ConnectionState } from '../api';
 import { colors } from '../theme';
+import ModeSuggestionModal, { shouldSuggestMode, DISMISS_KEY } from './ModeSuggestionModal';
 import {
   ConnectionHealthDot,
   ScrollToBottomPill,
@@ -204,6 +205,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         const outputEst = visible.filter(m => m.role === 'assistant').reduce((acc, m) => acc + (m.tokenCount ?? Math.ceil((m.content?.length ?? 0) / 4)), 0);
         setTokenInput(inputEst);
         setTokenOutput(outputEst);
+        if (session.scopePath) setCwd(session.scopePath);
         loadTodos();
       }).catch((err) => {
         console.error('Failed to restore session on mount:', err);
@@ -220,8 +222,9 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const [tokenOutput, setTokenOutput] = useState(0);
   const [tokenInputPrice, setTokenInputPrice] = useState(0);
   const [tokenOutputPrice, setTokenOutputPrice] = useState(0);
-  const [tokenTotal] = useState(128000);
+  const [tokenTotal, setTokenTotal] = useState(128000);
   const [compactionCount, setCompactionCount] = useState(0);
+  const skipSuggestionRef = useRef(false);
 
   // Model/Provider state
   const [currentModel, setCurrentModel] = useState('');
@@ -235,7 +238,9 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const [crewList, setCrewList] = useState<Crew[]>([]);
 
   // Agent mode
-  const [agentMode, setAgentMode] = useState<AgentMode>('ask');
+  const [agentMode, setAgentMode] = useState<AgentMode>('plan');
+  const [modeSuggestOpen, setModeSuggestOpen] = useState(false);
+  const [pendingSendText, setPendingSendText] = useState<string | null>(null);
 
   // CWD
   const [cwd, setCwd] = useState('');
@@ -356,7 +361,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       .finally(() => { setConfigLoaded(true); });
     crews.list().then((list) => { setCrewList(list); }).catch(() => {});
     system.cwd().then((r) => { setCwd(r.cwd || ''); }).catch(() => {});
-    sessionSettings.get().then((s) => { setAgentMode(s.mode); }).catch(() => {});
+    sessionSettings.get().then((s) => { if (s.mode === 'agent' || s.mode === 'plan') setAgentMode(s.mode); else setAgentMode('plan'); }).catch(() => {});
     // Load configured provider profiles
     fetch('/api/providers', { credentials: 'include' })
       .then(r => r.json())
@@ -387,6 +392,13 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   }, [currentProvider, providerList]);
 
   useEffect(() => { loadTodos(); }, [loadTodos]);
+
+  // Update tokenTotal when model's context window is known
+  useEffect(() => {
+    if (!currentModel || modelList.length === 0) return;
+    const match = modelList.find(m => m.id === currentModel);
+    if (match?.contextWindow) setTokenTotal(match.contextWindow);
+  }, [currentModel, modelList]);
 
   // Connect SSE for streaming events
   useEffect(() => {
@@ -455,10 +467,29 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
             const msg = ev.message as { id?: string; content?: string; role?: string; crew?: { crewId: string; name: string; callsign: string } } | undefined;
             const crew = msg?.crew;
             setStreaming(false);
+            if (!msg || msg.role === 'system') return prev;
+            const text = msg.content ?? '';
             if (last?.role === 'assistant') {
-              return updateLastMessage(prev, { content: msg?.content ?? last.content, streaming: false, ...(crew ? { crew } : {}) });
-            } else if (msg?.content && msg.role === 'assistant') {
-              return [...prev, { id: msg.id || crypto.randomUUID(), role: 'assistant', content: msg.content, streaming: false, ...(crew ? { crew } : {}) }];
+              if (last.streaming) {
+                if (last.content) {
+                  // Streaming with content — this is an independent message (e.g. reminder).
+                  // Finalize the streaming message and append the new one.
+                  const finalized = { ...last, streaming: false };
+                  return msg.role === 'assistant'
+                    ? [...prev.slice(0, -1), finalized, { id: msg.id || crypto.randomUUID(), role: 'assistant' as const, content: text, streaming: false, ...(crew ? { crew } : {}) } as UIMessage]
+                    : [...prev.slice(0, -1), finalized];
+                }
+                // Streaming placeholder with no content yet — this is the final content
+                return updateLastMessage(prev, { content: text || last.content, streaming: false, ...(crew ? { crew } : {}) });
+              }
+              // Not streaming — independent message, append
+              if (msg.role === 'assistant' && text) {
+                return [...prev, { id: msg.id || crypto.randomUUID(), role: 'assistant' as const, content: text, streaming: false, ...(crew ? { crew } : {}) } as UIMessage];
+              }
+              return prev;
+            }
+            if (msg.role === 'assistant' && text) {
+              return [...prev, { id: msg.id || crypto.randomUUID(), role: 'assistant' as const, content: text, streaming: false, ...(crew ? { crew } : {}) } as UIMessage];
             }
             return prev;
           }
@@ -531,6 +562,8 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
           case 'token_usage': {
             const used = ev.totalTokens as number | undefined;
             if (used != null) setTokenUsed(prev => Math.max(prev, used));
+            const cw = ev.contextWindow as number | undefined;
+            if (cw != null && cw > 0) setTokenTotal(cw);
             const inp = ev.inputTokens as number | undefined;
             if (inp != null) setTokenInput(prev => Math.max(prev, inp));
             const out = ev.outputTokens as number | undefined;
@@ -688,6 +721,14 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   const handleSend = useCallback(async (overrideText?: string) => {
     const text = typeof overrideText === 'string' ? overrideText.trim() : input.trim();
     if ((!text && attachments.length === 0) || streaming) return;
+
+    // Mode suggestion: if in Plan mode and text implies action, suggest switching to Agent
+    if (agentMode === 'plan' && shouldSuggestMode(text) && !localStorage.getItem(DISMISS_KEY) && !skipSuggestionRef.current) {
+      setPendingSendText(text);
+      setModeSuggestOpen(true);
+      return;
+    }
+
     if (text.startsWith('/')) {
       const handled = await runSlashCommand(text);
       if (handled) {
@@ -773,7 +814,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       });
       setStreaming(false);
     }
-  }, [input, streaming, attachments, currentProvider, currentModel]);
+  }, [input, streaming, attachments, currentProvider, currentModel, agentMode]);
 
   // --- Clarification keyboard navigation & submission ---
   const clearClarification = useCallback(() => {
@@ -971,10 +1012,22 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
   }, [currentSessionId, messages]);
 
   // ─── Global keyboard shortcuts (declared after runSlashCommand to avoid TDZ) ───
+  // Tab key cycles mode when not typing in input
+  const handleToggleMode = useCallback(() => {
+    setAgentMode(prev => {
+      const next = prev === 'agent' ? 'plan' : 'agent';
+      sessionSettings.setMode(next).catch(() => {});
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key.toLowerCase() === 'k') {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        handleToggleMode();
+      } else if (mod && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPaletteOpen(o => !o);
       } else if (mod && e.key.toLowerCase() === 'f') {
@@ -992,7 +1045,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [currentSessionId, streaming, runSlashCommand]);
+  }, [currentSessionId, streaming, runSlashCommand, view, handleToggleMode]);
 
   // ─── Command palette actions (declared after runSlashCommand to avoid TDZ) ───
   const paletteActions: PaletteAction[] = useMemo(() => [
@@ -1008,7 +1061,6 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     { id: 'goal', label: 'Set Goal Mode objective', icon: <FlagIcon sx={{ fontSize: 14 }} />, run: () => { setInput('/goal '); } },
     { id: 'mode-agent', label: 'Switch mode → Agent', icon: <SmartToyIcon sx={{ fontSize: 14 }} />, run: () => { setAgentMode('agent'); sessionSettings.setMode('agent').catch(() => {}); } },
     { id: 'mode-plan', label: 'Switch mode → Plan', icon: <RouteIcon sx={{ fontSize: 14 }} />, run: () => { setAgentMode('plan'); sessionSettings.setMode('plan').catch(() => {}); } },
-    { id: 'mode-ask', label: 'Switch mode → Ask', icon: <QuestionAnswerIcon sx={{ fontSize: 14 }} />, run: () => { setAgentMode('ask'); sessionSettings.setMode('ask').catch(() => {}); } },
   ], [runSlashCommand]);
 
   const handleStopAndSend = async () => {
@@ -1103,7 +1155,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     setWarnings([]);
     setStreaming(false);
     try {
-      const { messages: historyMsgs } = await sessions.restore(s.id);
+      const { messages: historyMsgs, session } = await sessions.restore(s.id);
       const visible = historyMsgs.filter((m) => m.role !== 'system');
       setMessages(visible.map((m) => ({ ...m, streaming: false })));
       setCurrentSessionTitle(s.title ?? `Session ${s.id.slice(0, 8)}`);
@@ -1115,6 +1167,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       const outputEst = visible.filter(m => m.role === 'assistant').reduce((acc, m) => acc + (m.tokenCount ?? Math.ceil((m.content?.length ?? 0) / 4)), 0);
       setTokenInput(inputEst);
       setTokenOutput(outputEst);
+      if (session?.scopePath) setCwd(session.scopePath);
       navigate(`/console/chat/${s.id}`);
       loadTodos();
     } catch { /* ignore */ }
@@ -1367,13 +1420,19 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
             </Box>
           )}
 
-          {visibleMessages.map((msg, idx) => (
+          {visibleMessages.map((msg, idx) => {
+            const isLastUser = msg.role === 'user' && visibleMessages.slice(idx + 1).every(m => m.role !== 'user');
+            return (
             <MessageBubble
               key={msg.id}
               message={msg}
+              isLastUser={isLastUser}
+              onResend={isLastUser ? handleSend : undefined}
+              onDismissDoomLoop={() => setMessages(prev => { const last = prev[prev.length - 1]; if (!last?.doomLoop) return prev; return [...prev.slice(0, -1), { ...last, doomLoop: null }]; })}
               loadingSteps={idx === visibleMessages.length - 1 && msg.streaming && !msg.content ? loadingSteps : null}
             />
-          ))}
+            );
+          })}
           {streaming && (visibleMessages.length === 0 || (visibleMessages[visibleMessages.length - 1]?.role !== 'assistant')) && (
             <ThinkingIndicator label={loadingSteps?.[0]?.label} />
           )}
@@ -1475,12 +1534,12 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
           <Box sx={{
             position: 'relative',
             zIndex: 1,
-            border: `1px solid ${agentMode === 'agent' ? colors.accent.orange + '60' : agentMode === 'plan' ? colors.accent.purple + '60' : colors.border.default}`,
+            border: `1px solid ${agentMode === 'agent' ? colors.accent.orange + '60' : colors.border.default}`,
             borderRadius: '14px',
             bgcolor: colors.bg.tertiary,
-            backgroundImage: agentMode === 'agent' ? `linear-gradient(${colors.accent.orange}08, ${colors.accent.orange}08)` : agentMode === 'plan' ? `linear-gradient(${colors.accent.purple}08, ${colors.accent.purple}08)` : 'none',
+            backgroundImage: agentMode === 'agent' ? `linear-gradient(${colors.accent.orange}08, ${colors.accent.orange}08)` : 'none',
             transition: 'border-color 0.2s, background-color 0.2s',
-            '&:focus-within': { borderColor: agentMode === 'agent' ? colors.accent.orange + '90' : agentMode === 'plan' ? colors.accent.purple + '90' : colors.border.strong },
+            '&:focus-within': { borderColor: agentMode === 'agent' ? colors.accent.orange + '90' : colors.border.strong },
           }}>
             {/* Slash command autocomplete */}
             {showSlash && (
@@ -1687,7 +1746,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
 
               {streaming ? (
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
-                  <IconButton size="small" onClick={(e) => input.trim() ? setSendMenuAnchor(e.currentTarget) : handleCancel()} sx={{ color: colors.accent.red, p: 0.5 }}>
+                  <IconButton size="small" onClick={handleCancel} sx={{ color: colors.accent.red, p: 0.5 }}>
                     <StopIcon sx={{ fontSize: 20 }} />
                   </IconButton>
                   {input.trim() && (
@@ -1755,45 +1814,36 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
               </Tooltip>
 
               {/* Agent Mode */}
-              <Tooltip title={agentMode === 'agent' ? 'Agent — full autonomy, auto-approves tools' : agentMode === 'plan' ? 'Plan — generates plans, tools need approval' : 'Ask — chat & planning only, no tools'} arrow>
+              <Tooltip title={agentMode === 'agent' ? 'Agent — full access, executes tools freely' : 'Plan — outlines steps, no write access'} arrow>
                 <Chip
                   size="small"
-                  icon={agentMode === 'agent' ? <SmartToyIcon sx={{ fontSize: '12px !important' }} /> : agentMode === 'plan' ? <RouteIcon sx={{ fontSize: '12px !important' }} /> : <QuestionAnswerIcon sx={{ fontSize: '12px !important' }} />}
-                  label={agentMode.charAt(0).toUpperCase() + agentMode.slice(1)}
+                  label={agentMode === 'agent' ? 'Agent' : 'Plan'}
                   onClick={(e) => setModeMenuAnchor(e.currentTarget)}
                   sx={{
                     fontSize: '0.55rem', height: 20, cursor: 'pointer',
-                    bgcolor: 'transparent', border: 'none',
-                    color: agentMode === 'agent' ? colors.accent.orange : agentMode === 'plan' ? colors.accent.purple : colors.text.secondary,
-                    '&:hover': { bgcolor: colors.bg.primary },
+                    bgcolor: agentMode === 'agent' ? colors.accent.orange + '12' : colors.bg.tertiary,
+                    border: `1px solid ${agentMode === 'agent' ? colors.accent.orange + '30' : colors.border.default}`,
+                    borderRadius: '10px',
+                    color: agentMode === 'agent' ? colors.accent.orange : colors.text.secondary,
+                    '&:hover': { bgcolor: agentMode === 'agent' ? colors.accent.orange + '20' : colors.bg.primary },
                   }}
                 />
               </Tooltip>
 
               <Menu anchorEl={modeMenuAnchor} open={Boolean(modeMenuAnchor)} onClose={() => setModeMenuAnchor(null)}
-                PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, minWidth: 200 } }}>
+                PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, minWidth: 220 } }}>
                 <MenuItem onClick={() => { setAgentMode('agent'); sessionSettings.setMode('agent').catch(() => {}); setModeMenuAnchor(null); }}
-                  selected={agentMode === 'agent'} sx={{ fontSize: '0.7rem', py: 0.75 }}>
-                  <SmartToyIcon sx={{ fontSize: 14, mr: 1, color: colors.accent.orange }} />
+                  selected={agentMode === 'agent'} sx={{ fontSize: '0.7rem', py: 0.75, borderLeft: agentMode === 'agent' ? `3px solid ${colors.accent.orange}` : '3px solid transparent' }}>
                   <Box>
-                    <Typography sx={{ fontSize: '0.7rem', fontWeight: 500 }}>Agent</Typography>
-                    <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>Full autonomy — answers, plans & executes freely</Typography>
+                    <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: colors.accent.orange }}>Agent</Typography>
+                    <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>Full access — executes tools freely</Typography>
                   </Box>
                 </MenuItem>
                 <MenuItem onClick={() => { setAgentMode('plan'); sessionSettings.setMode('plan').catch(() => {}); setModeMenuAnchor(null); }}
-                  selected={agentMode === 'plan'} sx={{ fontSize: '0.7rem', py: 0.75 }}>
-                  <RouteIcon sx={{ fontSize: 14, mr: 1, color: colors.accent.purple }} />
+                  selected={agentMode === 'plan'} sx={{ fontSize: '0.7rem', py: 0.75, borderLeft: agentMode === 'plan' ? `3px solid ${colors.text.secondary}` : '3px solid transparent' }}>
                   <Box>
-                    <Typography sx={{ fontSize: '0.7rem', fontWeight: 500 }}>Plan</Typography>
-                    <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>Generates plans — tools require permission</Typography>
-                  </Box>
-                </MenuItem>
-                <MenuItem onClick={() => { setAgentMode('ask'); sessionSettings.setMode('ask').catch(() => {}); setModeMenuAnchor(null); }}
-                  selected={agentMode === 'ask'} sx={{ fontSize: '0.7rem', py: 0.75 }}>
-                  <QuestionAnswerIcon sx={{ fontSize: 14, mr: 1, color: colors.text.secondary }} />
-                  <Box>
-                    <Typography sx={{ fontSize: '0.7rem', fontWeight: 500 }}>Ask</Typography>
-                    <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>Chat & planning only — no code execution</Typography>
+                    <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: colors.text.secondary }}>Plan</Typography>
+                    <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim }}>Outlines steps — no write access</Typography>
                   </Box>
                 </MenuItem>
               </Menu>
@@ -1866,6 +1916,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
                     return (
                     <MenuItem key={m.id} onClick={() => {
                       setCurrentModel(m.id);
+                      if (m.contextWindow) setTokenTotal(m.contextWindow);
                       const profile = providerList.find(p => p.id === currentProvider);
                       const providerId = profile?.providerId || currentProvider;
                       if (m.providerId && m.providerId !== providerId) {
@@ -2113,6 +2164,30 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
           <CircularProgress size={40} sx={{ color: '#fff' }} />
         </Box>
       )}
+
+      <ModeSuggestionModal
+        open={modeSuggestOpen}
+        onSwitch={() => {
+          setModeSuggestOpen(false);
+          setAgentMode('agent');
+          sessionSettings.setMode('agent').catch(() => {});
+          // Re-send with Agent mode
+          const txt = pendingSendText;
+          setPendingSendText(null);
+          if (txt) setTimeout(() => handleSend(txt), 50);
+        }}
+        onStay={() => {
+          setModeSuggestOpen(false);
+          skipSuggestionRef.current = true;
+          const txt = pendingSendText;
+          setPendingSendText(null);
+          if (txt) setTimeout(() => handleSend(txt), 50);
+        }}
+        onClose={() => {
+          setModeSuggestOpen(false);
+          setPendingSendText(null);
+        }}
+      />
     </Box>
   );
 }
@@ -2222,12 +2297,62 @@ const MARKDOWN_BASE_SX = {
   '& a': { color: colors.accent.blue, textDecoration: 'none', '&:hover': { textDecoration: 'underline' } },
 };
 
+const MAX_CODE_LINES = 30;
+
+function CodeBlockWithCopy({ code, language }: { code: string; language?: string }) {
+  const [copied, setCopied] = useState(false);
+  const displayCode = code;
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <Box sx={{ position: 'relative', my: 0.75 }}>
+      <Box sx={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        px: 1.5, py: 0.4,
+        bgcolor: '#2d2d2d', borderTopLeftRadius: 6, borderTopRightRadius: 6,
+        borderBottom: '1px solid #3a3a3a',
+      }}>
+        <Typography sx={{ fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace", color: colors.text.dim, textTransform: 'lowercase' }}>
+          {language || 'code'}
+        </Typography>
+        <Box component="button" onClick={handleCopy}
+          sx={{
+            display: 'flex', alignItems: 'center', gap: 0.4,
+            bgcolor: 'transparent', border: 'none', cursor: 'pointer', p: 0.25,
+            color: copied ? colors.accent.green : colors.text.dim,
+            fontSize: '0.55rem', fontFamily: "'JetBrains Mono', monospace",
+            '&:hover': { color: copied ? colors.accent.green : colors.text.secondary },
+          }}>
+          {copied ? 'Copied' : 'Copy'}
+        </Box>
+      </Box>
+      <SyntaxHighlighter style={oneDark} language={language || 'text'} PreTag="div"
+        customStyle={{ borderTopLeftRadius: 0, borderTopRightRadius: 0, borderBottomLeftRadius: 6, borderBottomRightRadius: 6, fontSize: '0.7rem', margin: 0, padding: '10px 12px' }}>
+        {displayCode}
+      </SyntaxHighlighter>
+    </Box>
+  );
+}
+
 const MARKDOWN_COMPONENTS = {
   code({ className, children, ...props }: any) {
     const match = /language-(\w+)/.exec(className ?? '');
-    const code = String(children).replace(/\n$/, '');
+    let code = String(children).replace(/\n$/, '');
+    const lines = code.split('\n');
+    const truncated = lines.length > MAX_CODE_LINES;
+    if (truncated) {
+      code = lines.slice(0, MAX_CODE_LINES).join('\n') + `\n// … ${lines.length - MAX_CODE_LINES} more line${lines.length - MAX_CODE_LINES === 1 ? '' : 's'} truncated`;
+    }
     if (match) {
-      return (<SyntaxHighlighter style={oneDark} language={match[1]} PreTag="div" customStyle={{ borderRadius: 6, fontSize: '0.7rem', margin: '6px 0', padding: '10px 12px' }}>{code}</SyntaxHighlighter>);
+      return <CodeBlockWithCopy code={code} language={match[1]} />;
+    }
+    if (truncated) {
+      return <pre style={{ maxHeight: 200, overflow: 'auto', background: colors.bg.tertiary, borderRadius: 4, padding: '6px 10px', margin: '4px 0' }}><code className={className} style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.72rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{code}</code></pre>;
     }
     return <code className={className} style={{ background: colors.bg.tertiary, padding: '1px 5px', borderRadius: 3, fontSize: '0.72rem' }} {...props}>{children}</code>;
   },
@@ -2295,7 +2420,7 @@ function getResponderName(content: string): { name: string; callsign: string } |
   return null;
 }
 
-function MessageBubble({ message, loadingSteps }: { message: UIMessage; loadingSteps?: Array<{ id: string; label: string; status: string }> | null }) {
+function MessageBubble({ message, loadingSteps, isLastUser, onResend, onDismissDoomLoop }: { message: UIMessage; loadingSteps?: Array<{ id: string; label: string; status: string }> | null; isLastUser?: boolean; onResend?: (content: string) => void; onDismissDoomLoop?: () => void }) {
   const isUser = message.role === 'user';
   const crewInfo = message.crew;
   const responderName = !isUser && !crewInfo && message.content ? getResponderName(message.content) : null;
@@ -2371,7 +2496,7 @@ function MessageBubble({ message, loadingSteps }: { message: UIMessage; loadingS
           <DoomLoopWarning
             toolName={message.doomLoop.toolName}
             count={message.doomLoop.count}
-            onContinue={() => { /* user dismisses; cleared on next user turn */ }}
+            onContinue={() => onDismissDoomLoop?.()}
             onStop={() => { chat.cancel().catch(() => {}); }}
           />
         )}
@@ -2412,6 +2537,16 @@ function MessageBubble({ message, loadingSteps }: { message: UIMessage; loadingS
         {/* Message text (crew-aware) */}
         {message.content && !isUser && <CrewAwareMarkdown content={message.content} />}
         {message.content && isUser && <UserMentionText content={message.content} />}
+
+        {/* Resend button on last user message only */}
+        {isUser && isLastUser && message.content && onResend && (
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 0.5 }}>
+            <IconButton size="small" onClick={() => onResend(message.content)}
+              sx={{ p: 0.3, opacity: 0.4, '&:hover': { opacity: 1, bgcolor: 'transparent' } }}>
+              <ReplayIcon sx={{ fontSize: 13 }} />
+            </IconButton>
+          </Box>
+        )}
 
         {/* Streaming dots (empty content, no steps) */}
         {message.streaming && !message.content && !loadingSteps && (

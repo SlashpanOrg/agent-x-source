@@ -233,7 +233,7 @@ export const system = {
 };
 
 // ─── Session Settings ───
-export type AgentMode = 'agent' | 'ask' | 'plan';
+export type AgentMode = 'agent' | 'plan';
 
 export const sessionSettings = {
   get: () => request<{ mode: AgentMode }>('/session/settings'),
@@ -490,6 +490,7 @@ export interface SessionInfo {
   tokensUsed: number;
   createdAt: string;
   title?: string;
+  scopePath?: string;
 }
 
 export interface SessionContext {

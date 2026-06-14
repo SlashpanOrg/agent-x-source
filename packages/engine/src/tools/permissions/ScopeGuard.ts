@@ -21,7 +21,7 @@ export class ScopeGuard {
   }
 
   isWithinScope(targetPath: string): boolean {
-    const normalizedTarget = normalize(resolve(targetPath));
+    const normalizedTarget = normalize(resolve(this.scopePath, targetPath));
     const withinScope = normalizedTarget.startsWith(this.scopePath) || normalizedTarget.startsWith(this.scopePathReal);
     if (!withinScope) return false;
     if (this.gitAware && this.gitManager?.isInsideRepo()) {
@@ -36,7 +36,7 @@ export class ScopeGuard {
       return { valid: false, resolved: targetPath, error: 'Path contains null bytes' };
     }
 
-    let resolved = normalize(resolve(targetPath));
+    let resolved = normalize(resolve(this.scopePath, targetPath));
 
     // Strip trailing separator to prevent comparison bypass
     while (resolved.endsWith(sep) && resolved.length > 1) {

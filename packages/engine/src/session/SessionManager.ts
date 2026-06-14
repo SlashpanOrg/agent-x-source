@@ -61,6 +61,7 @@ export class SessionManager {
         provider: session.providerId,
         model: session.modelId,
         crewId: session.crewId,
+        scopePath: session.scopePath,
         tokensUsed: session.tokenUsed,
         tokenAvailable: session.tokenAvailable,
         createdAt: session.createdAt,

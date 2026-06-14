@@ -133,7 +133,7 @@ export class Agent {
   private toolExecutor?: EnhancedToolExecutor;
   private toolRegistry?: ToolRegistry;
   private permissionResolve: ((choice: 'allow_once' | 'allow_always' | 'deny') => void) | null = null;
-  autoApproveTools = false; // set by session mode: true in agent mode, false in ask/plan
+  autoApproveTools = false;
   private cachedModels: Map<string, number> = new Map(); // modelId -> contextWindow
   private cachedModelCapabilities: Map<string, string[]> = new Map(); // modelId -> capabilities
   private groundedModels: Set<string> = new Set(); // models that failed trial this session
@@ -243,8 +243,8 @@ export class Agent {
     this.taskManager = new TaskManager(this.eventBus);
     setTaskManagerInstance(this.taskManager);
     this.todoManager = new TodoManager(this.eventBus);
-    this.scheduler = new Scheduler(this.eventBus);
-    setSchedulerInstance(this.scheduler);
+    this.scheduler = new Scheduler(this.eventBus, this.sessionId);
+    setSchedulerInstance(this.sessionId, this.scheduler);
     setIndexerEventBus(this.eventBus);
     this.secretSauce = new SecretSauceManager();
     this.errorShield = new ErrorShield();
@@ -1774,13 +1774,16 @@ Return ONLY valid JSON, no other text.`;
     // Inject session context (recent tasks, decisions, delegations)
     const contextSummary = this.contextTracker.getContextSummary(this.sessionId);
 
+    // Inject recent raw conversation history (last 50 messages / ~12K tokens)
+    const recentHistory = this.contextTracker.getRecentHistory(this.sessionId);
+
     // Inject user callsign
     const callsign = this.config.user?.callsign;
     const userSection = callsign
       ? `\n\n[USER]\nThe user's name/callsign is "${callsign}". Address them by this name when appropriate.\n[/USER]`
       : '';
 
-    this.setSystemPrompt(prompt + contextSummary + userSection + identitySection + taskPanelSection);
+    this.setSystemPrompt(prompt + contextSummary + recentHistory + userSection + identitySection + taskPanelSection);
   }
 
   switchProvider(providerId: ProviderId, apiKey?: string, baseUrl?: string): void {

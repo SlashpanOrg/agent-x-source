@@ -1,10 +1,30 @@
 import { execSync, spawn } from 'node:child_process';
-import { resolve } from 'node:path';
+import { resolve, normalize } from 'node:path';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 import { IS_WINDOWS, getShellCommand, getProcessListCommand } from '../platform.js';
 
+function validateRedirects(command: string, scopePath: string): string | null {
+  // Match shell redirects: > file, >> file, 2> file, &> file, >| file
+  // Exclude file descriptor duplications: >&2, 2>&1, 1>&2
+  const redirectRe = /(?:^|\s)(?:\d*&?>[>|]?\s*)([^\s;|&`$()<>]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = redirectRe.exec(command)) !== null) {
+    const target = m[1]!;
+    // Skip fd targets (e.g. "1" or "2") and variables/heredocs
+    if (/^\d+$/.test(target) || target.startsWith('$') || target.startsWith('{') || target.startsWith('<')) continue;
+    const resolved = normalize(resolve(scopePath, target));
+    if (!resolved.startsWith(scopePath)) {
+      return `Redirect target "${target}" resolves to "${resolved}" which is outside scope (${scopePath})`;
+    }
+  }
+  return null;
+}
+
 export async function shellExec(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
   const command = args['command'] as string;
+  if (!command) return { success: false, output: 'No command provided', error: 'EXEC_ERROR' };
+  const redirectErr = validateRedirects(command, context.scopePath);
+  if (redirectErr) return { success: false, output: redirectErr, error: 'SCOPE_VIOLATION' };
   const cwd = args['cwd'] ? resolve(context.scopePath, args['cwd'] as string) : context.scopePath;
   const timeout = (args['timeout'] as number) ?? 30000;
   const maxLength = (args['maxLength'] as number) ?? 30000;
@@ -37,6 +57,9 @@ export async function shellExec(args: Record<string, unknown>, context: ToolExec
 
 export async function shellBackground(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
   const command = args['command'] as string;
+  if (!command) return { success: false, output: 'No command provided', error: 'EXEC_ERROR' };
+  const redirectErr = validateRedirects(command, context.scopePath);
+  if (redirectErr) return { success: false, output: redirectErr, error: 'SCOPE_VIOLATION' };
   const cwd = args['cwd'] ? resolve(context.scopePath, args['cwd'] as string) : context.scopePath;
 
   try {
@@ -90,6 +113,9 @@ export async function processList(_args: Record<string, unknown>, context: ToolE
 
 export async function shellExecStreaming(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
   const command = args['command'] as string;
+  if (!command) return { success: false, output: 'No command provided', error: 'EXEC_ERROR' };
+  const redirectErr = validateRedirects(command, context.scopePath);
+  if (redirectErr) return { success: false, output: redirectErr, error: 'SCOPE_VIOLATION' };
   const cwd = args['cwd'] ? resolve(context.scopePath, args['cwd'] as string) : context.scopePath;
   const maxLength = (args['maxLength'] as number) ?? 30000;
   const shell = getShellCommand(command);

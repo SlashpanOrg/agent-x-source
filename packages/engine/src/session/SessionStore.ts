@@ -275,7 +275,7 @@ export class SessionStore {
           const title = firstUserMsg?.content?.slice(0, 80) ?? 'Recovered session';
 
           // Try to read scope from context.json
-          let scopePath = '/';
+          let scopePath = process.cwd();
           const ctxPath = join(sessionDir, 'context.json');
           if (existsSync(ctxPath)) {
             try {
