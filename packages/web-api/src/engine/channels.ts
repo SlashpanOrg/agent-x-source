@@ -1,6 +1,6 @@
 import type { Agent } from '@agentx/engine';
 import type { ChannelBindingId, ProviderId } from '@agentx/shared';
-import { isChannelSessionId, channelSessionIdForBinding, CHANNEL_SESSION_ID, hydrateMessageHistoryEntries, getAgentFilesDir } from '@agentx/shared';
+import { isChannelSessionId, channelSessionIdForBinding, channelSessionIdForContact, CHANNEL_SESSION_ID, hydrateMessageHistoryEntries, getAgentFilesDir } from '@agentx/shared';
 import { getEngine } from './state.js';
 import { createAgent } from './agent-lifecycle.js';
 
@@ -67,17 +67,26 @@ export function syncChannelSuperSessionContext(
   }
 }
 
-export function ensureChannelAgent(channel: ChannelBindingId = 'telegram'): Agent {
+export function ensureChannelAgent(channel: ChannelBindingId = 'telegram', senderId?: string): Agent {
   const eng = getEngine();
   const map = eng.channelAgents ?? (eng.channelAgents = new Map());
-  const cached = map.get(channel);
+
+  // For WhatsApp, use per-contact sessions so each contact gets an isolated
+  // conversation history. The cache key includes the senderId to keep agents
+  // separate. For all other channels, use the shared session model.
+  const usePerContact = channel === 'whatsapp' && senderId;
+  const cacheKey = usePerContact ? `${channel}:${senderId}` : channel;
+
+  const cached = map.get(cacheKey);
   if (cached) {
     if (channel === 'telegram') eng.channelAgent = cached;
     return cached;
   }
 
   const cfg = eng.configManager.load();
-  const sessionId = channelSessionIdForBinding(channel);
+  const sessionId = usePerContact
+    ? channelSessionIdForContact(channel, senderId!)
+    : channelSessionIdForBinding(channel);
 
   // Channel agents operate in the Agent-X app files directory by default.
   // This keeps generated attachments, PDFs, temp scratch files, and channel deliverables
@@ -110,7 +119,7 @@ export function ensureChannelAgent(channel: ChannelBindingId = 'telegram'): Agen
   }
 
   const agent = createAgent(cfg, session, { attachToEngine: false });
-  map.set(channel, agent);
+  map.set(cacheKey, agent);
   if (channel === 'telegram') eng.channelAgent = agent;
 
   // Inherit the app's current location/timezone so channel replies (Telegram, Slack, etc.)

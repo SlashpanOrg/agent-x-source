@@ -1,4 +1,5 @@
 import type { IntegrationOAuthConfig } from '@agentx/shared';
+import { getLogger } from '@agentx/shared';
 import { resolveOAuthMetadata, type OAuthServerMetadata } from './discovery.js';
 import type { PkceChallenge } from './pkce-flow.js';
 
@@ -151,4 +152,52 @@ function resolveClientId(oauth: IntegrationOAuthConfig): string {
 export function tokenExpiresAt(expiresIn?: number): string | undefined {
   if (!expiresIn || expiresIn <= 0) return undefined;
   return new Date(Date.now() + expiresIn * 1000).toISOString();
+}
+
+/**
+ * Revoke an OAuth access/refresh token with the provider's revocation endpoint
+ * (RFC 7009). Best-effort — if the server doesn't expose a revocation_endpoint
+ * or the request fails, we silently continue so the disconnect flow still
+ * completes locally.
+ */
+export async function revokeOAuthToken(options: {
+  oauth: IntegrationOAuthConfig;
+  token: string;
+  tokenTypeHint?: 'access_token' | 'refresh_token';
+  remoteResourceUrl?: string;
+}): Promise<void> {
+  try {
+    const metadata = await resolveOAuthMetadata({
+      discoveryUrl: options.oauth.discoveryUrl,
+      authorizationUrl: options.oauth.authorizationUrl,
+      tokenUrl: options.oauth.tokenUrl,
+      remoteResourceUrl: options.remoteResourceUrl,
+    });
+    if (!metadata.revocation_endpoint) return;
+
+    const body = new URLSearchParams();
+    body.set('token', options.token);
+    if (options.tokenTypeHint) body.set('token_type_hint', options.tokenTypeHint);
+    try {
+      body.set('client_id', resolveClientId(options.oauth));
+    } catch {
+      // client_id is optional for revocation per RFC 7009 §2.1
+    }
+
+    await fetch(metadata.revocation_endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body,
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    // Best-effort — don't block disconnect on revocation failure
+    getLogger().warn(
+      'OAUTH_REVOKE',
+      `Token revocation failed (non-blocking): ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }

@@ -51,7 +51,34 @@ export class IntegrationConnectionStore {
   ): Promise<IntegrationConnection> {
     const provider = getProviderById(input.providerId);
     const now = new Date().toISOString();
-    const existing = input.id ? this.getConnection(input.id) : undefined;
+    // When no explicit id is provided, find an existing connection for the same
+    // provider+remote URL so reconnecting reuses it instead of creating duplicates.
+    let existing = input.id ? this.getConnection(input.id) : undefined;
+    if (!existing && !input.id) {
+      const remoteUrl = input.remote?.url;
+      existing = this.data.connections.find(
+        (c) => c.providerId === input.providerId && (c.remote?.url ?? null) === (remoteUrl ?? null),
+      );
+    }
+
+    // If we're reusing an existing connection, purge any stale duplicate
+    // connections for the same provider so the store stays clean.
+    if (existing) {
+      const duplicates = this.data.connections.filter(
+        (c) => c.providerId === input.providerId && c.id !== existing!.id,
+      );
+      for (const dup of duplicates) {
+        delete this.data.secretRefs[dup.id];
+        delete this.legacySecrets[dup.id];
+        await this.vault.delete(dup.id).catch(() => {});
+      }
+      if (duplicates.length > 0) {
+        this.data.connections = this.data.connections.filter(
+          (c) => c.providerId !== input.providerId || c.id === existing!.id,
+        );
+      }
+    }
+
     const connection: IntegrationConnection = {
       id: existing?.id ?? input.id ?? randomUUID(),
       providerId: input.providerId,

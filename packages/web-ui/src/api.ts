@@ -988,9 +988,55 @@ export const bridges = {
     stop: () => request<{ ok: boolean }>('/email/stop', { method: 'POST' }),
     status: () => request<BridgeStatus>('/email/status'),
   },
+  whatsapp: {
+    status: () => request<WhatsAppSessionStatusResponse>('/whatsapp/status'),
+    link: () => request<WhatsAppLinkResponse>('/whatsapp/link', { method: 'POST' }),
+    stop: () => request<{ ok: boolean; message: string }>('/whatsapp/stop', { method: 'POST' }),
+    unlink: () => request<{ ok: boolean; message: string }>('/whatsapp/unlink', { method: 'POST' }),
+    pairingCode: (phoneNumber: string) =>
+      request<WhatsAppPairingCodeResponse>('/whatsapp/pairing-code', { method: 'POST', body: JSON.stringify({ phoneNumber }) }),
+    retry: () => request<WhatsAppRetryResponse>('/whatsapp/retry', { method: 'POST' }),
+  },
   clearConversation: (channelId: string) =>
     request<{ success: boolean; message: string }>(`/channels/${channelId}/clear`, { method: 'POST' }),
 };
+
+export interface WhatsAppSessionStatusResponse {
+  status: string;
+  engine: string;
+  phoneNumber?: string;
+  pushName?: string;
+  lastError?: string;
+  connectedAt?: string;
+  lastActiveAt?: string;
+  qrDataUrl?: string | null;
+  /** Present when WhatsApp is soft-paused (protocol break / version upgrade). */
+  paused?: boolean;
+  /** Human-readable explanation shown in the UI when paused. */
+  message?: string;
+}
+
+export interface WhatsAppLinkResponse {
+  ok: boolean;
+  status: string;
+  qrDataUrl?: string | null;
+  message?: string;
+  phoneNumber?: string;
+}
+
+export interface WhatsAppPairingCodeResponse {
+  ok: boolean;
+  pairingCode: string;
+}
+
+export interface WhatsAppRetryResponse {
+  ok: boolean;
+  paused: boolean;
+  status?: string;
+  phoneNumber?: string;
+  message?: string;
+  error?: string;
+}
 
 export interface TelegramDiscoverResponse {
   ok: boolean;
@@ -2701,12 +2747,16 @@ export const integrations = {
     request<{ entries: Array<{
       id: string;
       timestamp: string;
+      connectionId: string;
       providerId: string;
       toolName: string;
+      toolId: string;
       readonly: boolean;
       success: boolean;
       error?: string;
       argsSummary?: string;
+      input?: string;
+      output?: string;
     }> }>(`/integrations/audit?limit=${limit}`),
 };
 

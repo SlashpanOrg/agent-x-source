@@ -19,16 +19,16 @@ export class IntegrationAuditLog {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
     };
-    const line = [
-      full.timestamp,
-      full.providerId,
-      full.toolName,
-      full.readonly ? 'READ' : 'WRITE',
-      full.success ? 'OK' : 'FAIL',
-      full.argsSummary ?? '',
-      full.error ?? '',
-    ].join('\t');
-    appendFileSync(this.logPath, `${line}\n`, 'utf-8');
+    // JSONL format — one JSON object per line. This preserves all fields
+    // including connectionId, toolId, input, and output for the expandable
+    // audit UI. Truncate input/output to 10KB each to prevent unbounded
+    // log growth from large MCP responses.
+    const logLine: IntegrationAuditEntry = {
+      ...full,
+      input: full.input ? full.input.slice(0, 10_000) : undefined,
+      output: full.output ? full.output.slice(0, 10_000) : undefined,
+    };
+    appendFileSync(this.logPath, `${JSON.stringify(logLine)}\n`, 'utf-8');
     return full;
   }
 
@@ -36,19 +36,24 @@ export class IntegrationAuditLog {
     if (!existsSync(this.logPath)) return [];
     const lines = readFileSync(this.logPath, 'utf-8').trim().split('\n').filter(Boolean);
     return lines.slice(-limit).map((line) => {
-      const [timestamp, providerId, toolName, mode, status, argsSummary, error] = line.split('\t');
-      return {
-        id: `${timestamp}:${toolName}`,
-        timestamp: timestamp ?? '',
-        connectionId: '',
-        providerId: providerId ?? '',
-        toolName: toolName ?? '',
-        toolId: '',
-        readonly: mode === 'READ',
-        success: status === 'OK',
-        argsSummary: argsSummary || undefined,
-        error: error || undefined,
-      };
+      try {
+        return JSON.parse(line) as IntegrationAuditEntry;
+      } catch {
+        // Legacy tab-separated format — parse best-effort
+        const [timestamp, providerId, toolName, mode, status, argsSummary, error] = line.split('\t');
+        return {
+          id: `${timestamp}:${toolName}`,
+          timestamp: timestamp ?? '',
+          connectionId: '',
+          providerId: providerId ?? '',
+          toolName: toolName ?? '',
+          toolId: '',
+          readonly: mode === 'READ',
+          success: status === 'OK',
+          argsSummary: argsSummary || undefined,
+          error: error || undefined,
+        };
+      }
     });
   }
 }

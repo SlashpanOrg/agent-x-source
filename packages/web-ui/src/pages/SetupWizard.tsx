@@ -37,7 +37,7 @@ import { useLocalModelSupported, useSystemCapabilities } from '../hooks/useSyste
 import { ModelBenchmarkRunner, BenchmarkGradeAck, canProceedWithBenchmarkGrade } from '../components/settings/ModelBenchmarkRunner';
 import { WizardVoiceStep } from '../components/setup/WizardVoiceStep';
 import { WizardNeuralStep } from '../components/setup/WizardNeuralStep';
-import { WizardTelegramStep } from '../components/setup/WizardTelegramStep';
+import { WizardChannelStep } from '../components/setup/WizardChannelStep';
 import { WorkspaceCard } from '../components/settings/WorkspaceCard';
 import { WizardPerformancePreset } from '../components/setup/WizardPerformancePreset';
 import { WizardCheckMark, WizardStepHeader, WizardStepIcon } from '../components/setup/wizard-ui';
@@ -62,7 +62,7 @@ import {
 import { buildLocalBaseUrl, parseLocalEndpoint, defaultLocalPort } from '../utils/local-provider-endpoint';
 import type { AgentPersonaConfig, CommunicationStyle, DecisionMakingStyle } from '../api';
 
-const ALL_STEPS = ['Storage', 'Provider', 'Profile', 'Local Model', 'Model', 'Benchmark', 'Neural Core', 'Callsign', 'Agent Persona', 'Voice Comms', 'Telegram Relay', 'Complete'];
+const ALL_STEPS = ['Storage', 'Provider', 'Profile', 'Local Model', 'Model', 'Benchmark', 'Neural Core', 'Callsign', 'Agent Persona', 'Voice Comms', 'Channel Connect', 'Complete'];
 
 /** Preset personas the user can quickly pick in the wizard. */
 const PERSONA_PRESETS: Array<{
@@ -254,6 +254,9 @@ export function SetupWizard() {
   const [telegramLinked, setTelegramLinked] = useState(false);
   const [telegramBotLabel, setTelegramBotLabel] = useState<string | null>(null);
   const [telegramChatLabel, setTelegramChatLabel] = useState<string | null>(null);
+  const [whatsappLinked, setWhatsappLinked] = useState(false);
+  const [whatsappPhoneNumber, setWhatsappPhoneNumber] = useState<string | null>(null);
+  const [whatsappPushName, setWhatsappPushName] = useState<string | null>(null);
   /** Gate persist until restore finishes — avoids wiping localStorage with empty defaults (Strict Mode). */
   const [progressHydrated, setProgressHydrated] = useState(false);
   const [workspaceReady, setWorkspaceReady] = useState(false);
@@ -329,9 +332,13 @@ export function SetupWizard() {
       if (saved.selectedLocalModel) setSelectedLocalModel(saved.selectedLocalModel);
       if (saved.skipLocalModel) setSkipLocalModel(saved.skipLocalModel);
       if (saved.voiceCalibrated) setVoiceCalibrated(saved.voiceCalibrated);
+      if (saved.neuralReady) setNeuralReady(saved.neuralReady);
       if (saved.telegramLinked) setTelegramLinked(saved.telegramLinked);
       if (saved.telegramBotLabel) setTelegramBotLabel(saved.telegramBotLabel);
       if (saved.telegramChatLabel) setTelegramChatLabel(saved.telegramChatLabel);
+      if (saved.whatsappLinked) setWhatsappLinked(saved.whatsappLinked);
+      if (saved.whatsappPhoneNumber) setWhatsappPhoneNumber(saved.whatsappPhoneNumber);
+      if (saved.whatsappPushName) setWhatsappPushName(saved.whatsappPushName);
       if (saved.selectedProvider) {
         setModelsLoading(true);
         provApi.models(saved.selectedProvider).then(m => {
@@ -396,9 +403,13 @@ export function SetupWizard() {
       selectedLocalModel,
       skipLocalModel,
       voiceCalibrated,
+      neuralReady,
       telegramLinked,
       telegramBotLabel: telegramBotLabel ?? undefined,
       telegramChatLabel: telegramChatLabel ?? undefined,
+      whatsappLinked,
+      whatsappPhoneNumber: whatsappPhoneNumber ?? undefined,
+      whatsappPushName: whatsappPushName ?? undefined,
       personaName,
       personaDescription,
       personaCommStyle,
@@ -412,7 +423,8 @@ export function SetupWizard() {
   }, [
     progressHydrated, step, maxReachedStep, selectedProvider, selectedModel, selectedReasoningEffort, callsign,
     selectedBackend, profileName, apiKey, apiKeyConfigured, baseUrl, localHost, localPort,
-    selectedLocalModel, skipLocalModel, voiceCalibrated, telegramLinked, telegramBotLabel, telegramChatLabel,
+    selectedLocalModel, skipLocalModel, voiceCalibrated, neuralReady, telegramLinked, telegramBotLabel, telegramChatLabel,
+    whatsappLinked, whatsappPhoneNumber, whatsappPushName,
     personaName, personaDescription, personaCommStyle, personaDecisionStyle, personaDomain, personaTraits,
     limitedOverride, standbyOverride, benchmarkResult?.grade,
   ]);
@@ -766,7 +778,7 @@ export function SetupWizard() {
                 (label === 'Local Model' && skipLocalModel)
                 || (label === 'Neural Core' && !neuralReady)
                 || (label === 'Voice Comms' && !voiceCalibrated)
-                || (label === 'Telegram Relay' && !telegramLinked)
+                || (label === 'Channel Connect' && !telegramLinked && !whatsappLinked)
               ),
             );
             const isCompleted = reached && !isCurrent && !isSkipped;
@@ -1555,14 +1567,22 @@ export function SetupWizard() {
               )}
 
               {step === 10 && (
-                <WizardTelegramStep
-                  alreadyLinked={telegramLinked}
-                  initialBotLabel={telegramBotLabel}
-                  initialChatLabel={telegramChatLabel}
-                  onLinkedChange={(linked, meta) => {
+                <WizardChannelStep
+                  telegramLinked={telegramLinked}
+                  initialTelegramBotLabel={telegramBotLabel}
+                  initialTelegramChatLabel={telegramChatLabel}
+                  onTelegramLinkedChange={(linked, meta) => {
                     setTelegramLinked(linked);
                     if (meta?.botLabel !== undefined) setTelegramBotLabel(meta.botLabel);
                     if (meta?.chatLabel !== undefined) setTelegramChatLabel(meta.chatLabel);
+                  }}
+                  whatsappLinked={whatsappLinked}
+                  initialWhatsAppPhoneNumber={whatsappPhoneNumber}
+                  initialWhatsAppPushName={whatsappPushName}
+                  onWhatsAppLinkedChange={(linked, meta) => {
+                    setWhatsappLinked(linked);
+                    if (meta?.phoneNumber !== undefined) setWhatsappPhoneNumber(meta.phoneNumber);
+                    if (meta?.pushName !== undefined) setWhatsappPushName(meta.pushName);
                   }}
                 />
               )}
@@ -1591,6 +1611,7 @@ export function SetupWizard() {
                         personaName || null,
                         voiceCalibrated ? 'Voice' : null,
                         telegramLinked ? 'Telegram' : null,
+                        whatsappLinked ? 'WhatsApp' : null,
                       ].filter(Boolean).map((label) => (
                         <Box
                           key={String(label)}
@@ -1735,14 +1756,14 @@ export function SetupWizard() {
             </Box>
           )}
           {step === 10 && (
-            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', justifyContent: telegramLinked ? 'flex-end' : 'space-between', width: '100%' }}>
-              {!telegramLinked && (
+            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', justifyContent: (telegramLinked || whatsappLinked) ? 'flex-end' : 'space-between', width: '100%' }}>
+              {!telegramLinked && !whatsappLinked && (
                 <Button onClick={next} sx={wizardSkipBtnSx}>
                   Skip for now
                 </Button>
               )}
               <Button variant="contained" onClick={next} sx={wizardPrimaryBtnSx}>
-                {telegramLinked ? 'Continue →' : 'Skip →'}
+                {(telegramLinked || whatsappLinked) ? 'Continue →' : 'Skip →'}
               </Button>
             </Box>
           )}

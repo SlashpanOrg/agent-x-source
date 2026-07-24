@@ -395,6 +395,19 @@ export class ToolExecutor implements ToolPermissionHost {
       }
     }
 
+    // Validate argument types and nested structure against the tool schema.
+    // This catches LLM mistakes early (e.g. sending a string instead of an
+    // array, or using wrong field names in nested objects) and gives a clear
+    // error message instead of letting the MCP server fail opaquely.
+    const schemaError = validateToolArgsAgainstSchema(tool.schema, args);
+    if (schemaError) {
+      return {
+        success: false,
+        output: schemaError,
+        error: 'SCHEMA_VALIDATION_FAILED',
+      };
+    }
+
     // Third-party access — block local scavenging for external service requests
     const scavengerBlock = blockCredentialScavenger(toolId, args);
     if (scavengerBlock) return scavengerBlock;
@@ -602,4 +615,110 @@ export class ToolExecutor implements ToolPermissionHost {
   getScopeGuard(): ScopeGuard {
     return this.scopeGuard;
   }
+}
+
+// ─── Schema validation ──────────────────────────────────────────────────
+
+/**
+ * Lightweight JSON Schema validator for tool arguments.
+ * Validates types, required fields, array items, and nested object properties.
+ * Returns an error message string if validation fails, or null if valid.
+ *
+ * This is intentionally lightweight (not full JSON Schema) — it covers the
+ * common LLM mistakes: wrong types, missing required nested fields, and
+ * arrays of wrong element types. Full JSON Schema validation (ajv) would be
+ * heavier and isn't needed for the common failure modes we see.
+ */
+function validateToolArgsAgainstSchema(
+  schema: { type?: string; properties?: Record<string, unknown>; required?: string[] },
+  args: Record<string, unknown>,
+  path = '',
+): string | null {
+  if (!schema?.properties) return null;
+
+  for (const [key, value] of Object.entries(args)) {
+    const fieldPath = path ? `${path}.${key}` : key;
+    const propSchema = schema.properties[key] as
+      | { type?: string; items?: Record<string, unknown>; properties?: Record<string, unknown>; required?: string[] }
+      | undefined;
+
+    // Skip validation for unknown properties — some tools accept extra args.
+    if (!propSchema) continue;
+
+    const expectedType = propSchema.type;
+    if (!expectedType) continue;
+
+    const typeError = checkType(value, expectedType, fieldPath);
+    if (typeError) return typeError;
+
+    // Validate array items
+    if (expectedType === 'array' && Array.isArray(value) && propSchema.items) {
+      const itemSchema = propSchema.items as { type?: string; properties?: Record<string, unknown>; required?: string[] };
+      for (let i = 0; i < value.length; i++) {
+        const itemPath = `${fieldPath}[${i}]`;
+        const itemError = checkType(value[i], itemSchema.type, itemPath);
+        if (itemError) return itemError;
+
+        // Recursively validate nested object items (e.g. cartItems[].menu_item_id)
+        if (typeof value[i] === 'object' && value[i] !== null && !Array.isArray(value[i]) && itemSchema.properties) {
+          const nestedError = validateToolArgsAgainstSchema(itemSchema, value[i] as Record<string, unknown>, itemPath);
+          if (nestedError) return nestedError;
+        }
+      }
+    }
+
+    // Validate nested object properties
+    if (expectedType === 'object' && typeof value === 'object' && value !== null && !Array.isArray(value) && propSchema.properties) {
+      const nestedError = validateToolArgsAgainstSchema(propSchema, value as Record<string, unknown>, fieldPath);
+      if (nestedError) return nestedError;
+    }
+  }
+
+  return null;
+}
+
+function checkType(value: unknown, expectedType: string | undefined, path: string): string | null {
+  if (!expectedType) return null;
+  if (value === undefined || value === null) return null; // Optional — required check is separate
+
+  switch (expectedType) {
+    case 'string':
+      if (typeof value !== 'string') {
+        // Accept numbers/booleans as strings (common LLM coercion) but reject objects/arrays.
+        if (typeof value === 'object') {
+          return `Argument "${path}" should be a string but got ${Array.isArray(value) ? 'array' : 'object'}.`;
+        }
+      }
+      break;
+    case 'number':
+    case 'integer':
+      if (typeof value !== 'number') {
+        // Accept numeric strings (common LLM behavior)
+        if (typeof value === 'string' && !isNaN(Number(value))) break;
+        return `Argument "${path}" should be a number but got ${typeof value}.`;
+      }
+      break;
+    case 'boolean':
+      if (typeof value !== 'boolean') {
+        // Accept "true"/"false" strings
+        if (typeof value === 'string' && (value === 'true' || value === 'false')) break;
+        return `Argument "${path}" should be a boolean but got ${typeof value}.`;
+      }
+      break;
+    case 'array':
+      if (!Array.isArray(value)) {
+        return `Argument "${path}" should be an array but got ${typeof value}.` +
+          (typeof value === 'object' ? ' Did you forget to wrap it in []?' : '');
+      }
+      break;
+    case 'object':
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return `Argument "${path}" should be an object but got ${Array.isArray(value) ? 'array' : typeof value}.`;
+      }
+      break;
+    default:
+      // Unknown type — skip validation
+      break;
+  }
+  return null;
 }

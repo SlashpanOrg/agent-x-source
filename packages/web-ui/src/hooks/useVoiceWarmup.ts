@@ -212,7 +212,10 @@ export function useVoiceWarmup(voiceEnabled: boolean, canRunWeb: boolean): Voice
         const merged = mergeVoiceConfig(cfg);
         const isXai = merged.engine === 'realtime_xai';
         engineXaiRef.current = isXai;
-        xaiConfiguredRef.current = isXai && Boolean(merged.xai?.apiKey);
+        // The /config endpoint redacts the apiKey (sets it to undefined) and
+        // exposes apiKeyConfigured instead. Use that to determine whether xAI
+        // is ready — checking apiKey directly always returns false on the client.
+        xaiConfiguredRef.current = isXai && Boolean(merged.xai?.apiKeyConfigured ?? merged.xai?.apiKey);
         if (isXai) {
           autoStartRef.current = false;
           warmupAllowedRef.current = false;

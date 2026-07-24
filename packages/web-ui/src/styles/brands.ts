@@ -3,6 +3,7 @@ export const brands = {
   telegram: '#0088cc',
   discord: '#5865f2',
   slack: '#ecb22e',
+  whatsapp: '#25D366',
   youtube: '#ff0000',
   imdb: '#f5c518',
   instagram: '#E1306C',

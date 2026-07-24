@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import CircularProgress from '@mui/material/CircularProgress';
 import LinearProgress from '@mui/material/LinearProgress';
 import TextField from '@mui/material/TextField';
 import MenuItem from '@mui/material/MenuItem';
@@ -41,8 +42,13 @@ export function WizardVoiceStep({ onReadyChange, onBusyChange, callsign, agentNa
   const [deploying, setDeploying] = useState(false);
   const [deployStatus, setDeployStatus] = useState<VoiceSetupStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [installComplete, setInstallComplete] = useState(Boolean(alreadyCalibrated));
-  const [warmupComplete, setWarmupComplete] = useState(Boolean(alreadyCalibrated));
+  // Local engine install/warmup state. Initialize to false — the useEffect
+  // below checks the actual setup status and sets them to true only if the
+  // local engine is genuinely installed. We must NOT use alreadyCalibrated
+  // here because that flag is true when ANY engine (including xAI) is
+  // configured, which would falsely show the Local engine as ready.
+  const [installComplete, setInstallComplete] = useState(false);
+  const [warmupComplete, setWarmupComplete] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [testingMic, setTestingMic] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
@@ -55,12 +61,15 @@ export function WizardVoiceStep({ onReadyChange, onBusyChange, callsign, agentNa
   const [xaiModel, setXaiModel] = useState('grok-voice-latest');
   const [xaiConfigured, setXaiConfigured] = useState(false);
   const [selectedLocalVoice, setSelectedLocalVoice] = useState('kokoro-af');
+  const [switching, setSwitching] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
 
   const localComplete = installComplete && warmupComplete;
-  const complete = engine === 'realtime_xai' ? xaiConfigured : localComplete;
+  // True if EITHER engine is configured — used for onReadyChange so switching
+  // engine cards to browse doesn't mark the step as incomplete.
+  const anyEngineReady = xaiConfigured || localComplete;
 
   useEffect(() => () => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -69,11 +78,12 @@ export function WizardVoiceStep({ onReadyChange, onBusyChange, callsign, agentNa
   }, []);
 
   useEffect(() => {
+    let activeEngine: 'stt_llm_tts' | 'realtime_xai' = 'stt_llm_tts';
     void (async () => {
       try {
         const [cfg, capRes] = await Promise.all([voice.getConfig(), voice.capabilities()]);
         const merged = mergeVoiceConfig(cfg);
-        const activeEngine = merged.engine ?? 'stt_llm_tts';
+        activeEngine = merged.engine ?? 'stt_llm_tts';
         setEngine(activeEngine);
         if (activeEngine === 'realtime_xai') {
           const xaiReady = Boolean(capRes.capabilities.realtimeXai?.configured || alreadyCalibrated);
@@ -88,19 +98,25 @@ export function WizardVoiceStep({ onReadyChange, onBusyChange, callsign, agentNa
           }
         } else {
           setSelectedLocalVoice(merged.tts?.voiceId ?? 'kokoro-af');
-          let installed = alreadyCalibrated;
+          // Check the actual setup status — don't trust alreadyCalibrated
+          // because it may be true due to xAI being configured, not the local
+          // engine. Only mark as installed if the setup phase is genuinely
+          // 'complete'.
+          let installed = false;
           if (capRes.capabilities.pythonAvailable && capRes.capabilities.ffmpegAvailable) {
             const { status } = await voice.setupStatus();
             if (status.phase === 'complete') installed = true;
           }
-          // Revisit: skip re-warmup when install is already done (or parent marked ready).
           if (installed) {
             setInstallComplete(true);
             setWarmupComplete(true);
           }
         }
       } catch {
-        if (alreadyCalibrated) {
+        // Only trust alreadyCalibrated for the local engine when the active
+        // engine is actually local. If xAI is active, alreadyCalibrated being
+        // true doesn't mean the local engine was installed.
+        if (alreadyCalibrated && activeEngine === 'stt_llm_tts') {
           setInstallComplete(true);
           setWarmupComplete(true);
         }
@@ -109,12 +125,15 @@ export function WizardVoiceStep({ onReadyChange, onBusyChange, callsign, agentNa
   }, [alreadyCalibrated]);
 
   useEffect(() => {
-    onReadyChange?.(complete);
-  }, [complete, onReadyChange]);
+    // Use anyEngineReady so switching engine cards to browse doesn't reset
+    // the wizard's completion state. The step stays "ready" as long as at
+    // least one engine is configured.
+    onReadyChange?.(anyEngineReady);
+  }, [anyEngineReady, onReadyChange]);
 
   useEffect(() => {
-    onBusyChange?.(deploying || (engine === 'stt_llm_tts' && installComplete && !warmupComplete) || xaiValidating);
-  }, [deploying, installComplete, warmupComplete, engine, xaiValidating, onBusyChange]);
+    onBusyChange?.(switching || deploying || (engine === 'stt_llm_tts' && installComplete && !warmupComplete) || xaiValidating);
+  }, [switching, deploying, installComplete, warmupComplete, engine, xaiValidating, onBusyChange]);
 
   const persistVoiceConfig = async (patch: { engine?: 'stt_llm_tts' | 'realtime_xai'; enabled?: boolean; xai?: { apiKey?: string; voice?: string; model?: string } }) => {
     const cfg = await voice.getConfig();
@@ -216,13 +235,17 @@ export function WizardVoiceStep({ onReadyChange, onBusyChange, callsign, agentNa
   };
 
   const selectEngine = async (next: 'stt_llm_tts' | 'realtime_xai') => {
+    if (engine === next) return;
     setError(null);
+    setSwitching(true);
     setEngine(next);
     try {
       const cfg = await voice.getConfig();
       await voice.updateConfig(applyVoicePreset(mergeVoiceConfig({ ...cfg, engine: next })));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to switch engine');
+    } finally {
+      setSwitching(false);
     }
   };
 
@@ -416,7 +439,11 @@ export function WizardVoiceStep({ onReadyChange, onBusyChange, callsign, agentNa
           </Box>
         </Box>
 
-        {engine === 'stt_llm_tts' ? (
+        {switching ? (
+          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', py: 3 }}>
+            <CircularProgress size={20} />
+          </Box>
+        ) : engine === 'stt_llm_tts' ? (
         <>
           <WizardStatusLine label="STT ENGINE" value="faster-distil-whisper small.en" />
           <WizardStatusLine label="TTS ENGINE" value="Kokoro ONNX (FP32)" />

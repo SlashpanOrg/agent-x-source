@@ -102,7 +102,9 @@ export const KOKORO_VOICE_PROFILES: KokoroVoiceProfile[] = [
 ];
 
 export function mergeVoiceConfig(input?: VoiceConfig | null): VoiceConfig {
-  const hasXaiCredentials = Boolean(input?.xai?.apiKey);
+  // The /config endpoint redacts apiKey (sets it to undefined) and exposes
+  // apiKeyConfigured instead. Check both so this works on both client and server.
+  const hasXaiCredentials = Boolean(input?.xai?.apiKey ?? input?.xai?.apiKeyConfigured);
   const engine = input?.engine ?? (hasXaiCredentials ? 'realtime_xai' : 'stt_llm_tts');
   const isXai = engine === 'realtime_xai';
   const enabled = input?.enabled ?? (hasXaiCredentials || isXai);

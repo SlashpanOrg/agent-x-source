@@ -296,6 +296,10 @@ export interface ResolveThirdPartyAccessOpts {
   driveReadIntent?: boolean;
   /** Tool IDs actually registered in the toolkit after sync (source of truth for hints) */
   registeredIntegrationToolIds?: string[];
+  /** Native (builtin, non-integration) tool IDs in the registry — used to skip
+   * "[INTEGRATION REQUIRED/UNAVAILABLE]" hints for providers that have native
+   * tool equivalents (e.g. WhatsApp via Baileys). */
+  nativeToolIds?: string[];
 }
 
 /**
@@ -380,6 +384,18 @@ export function resolveThirdPartyAccess(opts: ResolveThirdPartyAccessOpts): Thir
     return {};
   }
 
+  // If every mentioned provider has native (builtin) tool equivalents, don't
+  // generate an MCP "integration required" hint — the native tools handle it.
+  // This prevents the agent from telling the user to "connect WhatsApp in MCP
+  // Store" when WhatsApp is actually a native Baileys-based integration.
+  const nativeIds = opts.nativeToolIds ?? [];
+  if (providerIds.length > 0 && nativeIds.length > 0) {
+    const allCoveredByNative = providerIds.every((pid) => providerHasNativeTools(pid, nativeIds));
+    if (allCoveredByNative && !genericExternal) {
+      return {};
+    }
+  }
+
   const category = serviceIntent?.category ?? 'third-party app';
   const reason = serviceIntent?.reason ?? 'External app or account request — requires MCP integration';
 
@@ -445,9 +461,17 @@ export function resolveMentionedProviderAccess(
   userText: string,
   snapshot: IntegrationTurnSnapshotRef,
   registeredIntegrationToolIds: string[] = [],
+  nativeToolIds: string[] = [],
 ): ThirdPartyAccessResolution | undefined {
   for (const entry of snapshot.unavailable) {
     if (!mentionsProvider(userText, entry.providerId, entry.name)) continue;
+    // If native (builtin) tools cover this provider, don't tell the agent the
+    // integration is "unavailable" — the native tools handle it. This prevents
+    // the agent from confusing MCP integrations with native tools (e.g.
+    // WhatsApp has native Baileys-based tools, not just the MCP Business API).
+    if (providerHasNativeTools(entry.providerId, nativeToolIds)) {
+      return undefined;
+    }
     return {
       promptHint: [
         `[INTEGRATION UNAVAILABLE] ${entry.name} MCP is not connected`,
@@ -474,4 +498,22 @@ export function resolveMentionedProviderAccess(
   }
 
   return undefined;
+}
+
+/**
+ * Check if native (builtin) tools exist in the registry for a provider that
+ * also has an MCP catalog entry. This lets us skip the "[INTEGRATION
+ * UNAVAILABLE]" hint when the user mentions a service that's handled by
+ * native tools (e.g. WhatsApp via Baileys) rather than MCP.
+ *
+ * Maps MCP provider IDs to native tool ID prefixes.
+ */
+const NATIVE_TOOL_PROVIDER_PREFIXES: Record<string, string> = {
+  whatsapp: 'whatsapp_',
+};
+
+function providerHasNativeTools(providerId: string, nativeToolIds: string[]): boolean {
+  const prefix = NATIVE_TOOL_PROVIDER_PREFIXES[providerId];
+  if (!prefix) return false;
+  return nativeToolIds.some((id) => id.startsWith(prefix));
 }

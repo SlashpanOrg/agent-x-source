@@ -415,11 +415,11 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       const timedOut = await Promise.race([
         syncPromise.then((sync) => ({ sync, timedOut: false as const })),
         new Promise<{ sync: null; timedOut: true }>((resolve) => {
-          setTimeout(() => resolve({ sync: null, timedOut: true }), 4_000);
+          setTimeout(() => resolve({ sync: null, timedOut: true }), 8_000);
         }),
       ]);
       if (timedOut.timedOut) {
-        getLogger().warn('XAI_VOICE', 'Integration tool sync timed out — continuing with base tools');
+        getLogger().warn('XAI_VOICE', 'Integration tool sync timed out (8s) — continuing with base tools');
         // prepareForAgentTurn may still hold the toolkit bridge — restore now so
         // local voice / chat keep working while sync finishes in the background.
         restorePrimaryToolkitBridge();

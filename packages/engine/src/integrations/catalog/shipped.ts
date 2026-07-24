@@ -506,4 +506,99 @@ export const SHIPPED_PROVIDERS: IntegrationProvider[] = [
     capabilities: { search: true, read: true, write: true, transact: true },
     tools: { alwaysConfirm: ['create', 'update', 'delete', 'fulfill', 'refund'] },
   },
+  // ─── Swiggy MCP (3 servers: Food, Instamart, Dineout) ────────────────────
+  // Swiggy Builders Club exposes Swiggy's commerce platform as MCP servers.
+  // Auth: OAuth 2.1 with PKCE + Dynamic Client Registration (RFC 7591).
+  // Agent-X runs locally (http://localhost) so no production approval needed.
+  // Note: India-only service — requires an Indian phone number for OTP auth.
+  {
+    id: 'swiggy-food',
+    name: 'Swiggy Food',
+    category: 'shopping',
+    catalogStatus: 'active',
+    description: 'Restaurant discovery, menus, ordering, and delivery tracking via Swiggy MCP.',
+    icon: 'restaurant',
+    website: 'https://mcp.swiggy.com',
+    trust: 'verified',
+    server: {
+      type: 'remote',
+      url: 'https://mcp.swiggy.com/food',
+      package: 'https://mcp.swiggy.com/food',
+    },
+    auth: {
+      primary: 'oauth',
+      developer: ['remote_url', 'oauth'],
+      oauth: {
+        discoveryUrl: 'https://mcp.swiggy.com/.well-known/oauth-authorization-server',
+        scopes: ['mcp:tools'],
+        resource: 'https://mcp.swiggy.com/food',
+      },
+      connectGuide: [
+        { title: 'Sign in with Swiggy', body: 'Authorize Agent-X with your Swiggy account. A browser window opens for phone + OTP verification.', link: 'https://mcp.swiggy.com/builders/docs/start/authenticate/' },
+        { title: 'Start ordering', body: 'Once connected, your agent can search restaurants, view menus, place orders, and track deliveries.' },
+      ],
+    },
+    capabilities: { search: true, read: true, write: true, transact: true },
+    tools: { alwaysConfirm: ['place_order', 'checkout', 'pay', 'cancel'] },
+  },
+  {
+    id: 'swiggy-instamart',
+    name: 'Swiggy Instamart',
+    category: 'shopping',
+    catalogStatus: 'active',
+    description: 'Quick-commerce grocery ordering via Swiggy Instamart MCP.',
+    icon: 'grocery',
+    website: 'https://mcp.swiggy.com',
+    trust: 'verified',
+    server: {
+      type: 'remote',
+      url: 'https://mcp.swiggy.com/im',
+      package: 'https://mcp.swiggy.com/im',
+    },
+    auth: {
+      primary: 'oauth',
+      developer: ['remote_url', 'oauth'],
+      oauth: {
+        discoveryUrl: 'https://mcp.swiggy.com/.well-known/oauth-authorization-server',
+        scopes: ['mcp:tools'],
+        resource: 'https://mcp.swiggy.com/im',
+      },
+      connectGuide: [
+        { title: 'Sign in with Swiggy', body: 'Authorize Agent-X with your Swiggy account. A browser window opens for phone + OTP verification.', link: 'https://mcp.swiggy.com/builders/docs/start/authenticate/' },
+        { title: 'Start ordering', body: 'Once connected, your agent can search groceries, build carts, and place Instamart orders for quick delivery.' },
+      ],
+    },
+    capabilities: { search: true, read: true, write: true, transact: true },
+    tools: { alwaysConfirm: ['place_order', 'checkout', 'pay', 'cancel'] },
+  },
+  {
+    id: 'swiggy-dineout',
+    name: 'Swiggy Dineout',
+    category: 'shopping',
+    catalogStatus: 'active',
+    description: 'Restaurant table reservations and availability via Swiggy Dineout MCP.',
+    icon: 'restaurant_menu',
+    website: 'https://mcp.swiggy.com',
+    trust: 'verified',
+    server: {
+      type: 'remote',
+      url: 'https://mcp.swiggy.com/dineout',
+      package: 'https://mcp.swiggy.com/dineout',
+    },
+    auth: {
+      primary: 'oauth',
+      developer: ['remote_url', 'oauth'],
+      oauth: {
+        discoveryUrl: 'https://mcp.swiggy.com/.well-known/oauth-authorization-server',
+        scopes: ['mcp:tools'],
+        resource: 'https://mcp.swiggy.com/dineout',
+      },
+      connectGuide: [
+        { title: 'Sign in with Swiggy', body: 'Authorize Agent-X with your Swiggy account. A browser window opens for phone + OTP verification.', link: 'https://mcp.swiggy.com/builders/docs/start/authenticate/' },
+        { title: 'Book a table', body: 'Once connected, your agent can check restaurant availability and make table reservations.' },
+      ],
+    },
+    capabilities: { search: true, read: true, write: true, transact: true },
+    tools: { alwaysConfirm: ['book', 'reserve', 'cancel'] },
+  },
 ];

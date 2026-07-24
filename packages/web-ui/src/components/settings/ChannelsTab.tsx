@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import TextField from '@mui/material/TextField';
@@ -16,10 +16,16 @@ import ForumIcon from '@mui/icons-material/Forum';
 import EmailIcon from '@mui/icons-material/Email';
 import NotificationsIcon from '@mui/icons-material/Notifications';
 import HeadphonesIcon from '@mui/icons-material/Headphones';
+import WhatsAppIcon from '@mui/icons-material/WhatsApp';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import QrCode2Icon from '@mui/icons-material/QrCode2';
+import PhoneIcon from '@mui/icons-material/Phone';
+import PauseCircleIcon from '@mui/icons-material/PauseCircle';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import type { NotificationChannelsConfig } from '@agentx/shared/browser';
 import { channels as channelsApi, bridges } from '../../api';
+import type { WhatsAppSessionStatusResponse } from '../../api';
 import {
   settingsTheme,
   settingsMonoSx,
@@ -34,6 +40,7 @@ import {
 } from '../../styles/settings-theme';
 import { SettingsSectionHeader } from './SettingsSectionHeader';
 import { brands } from '../../styles/brands';
+import { colors, alphaColor } from '../../theme';
 
 export interface ChannelsTabProps {
   value: NotificationChannelsConfig;
@@ -93,6 +100,18 @@ const CHANNELS: ChannelMeta[] = [
       'Configure SMTP for automation summaries and alerts.',
     ],
   },
+  {
+    id: 'whatsapp',
+    name: 'WhatsApp',
+    tagline: 'Chat with Agent-X via your linked number',
+    accent: brands.whatsapp ?? '#25D366',
+    icon: <WhatsAppIcon sx={{ fontSize: 16 }} />,
+    instructions: [
+      'Enable WhatsApp and click Connect to start the linking flow.',
+      'Scan the QR code with WhatsApp → Settings → Linked Devices → Link a Device, or use a pairing code.',
+      '⚠️ Using unofficial WhatsApp integrations carries a risk of account ban. Link a number you can afford to lose.',
+    ],
+  },
 ];
 
 function getField(
@@ -138,11 +157,18 @@ function channelStatusLabel(id: keyof NotificationChannelsConfig, section: Recor
   if (id === 'email') {
     return section.smtpHost && section.toAddress ? 'READY' : 'SETUP';
   }
+  if (id === 'whatsapp') {
+    // WhatsApp status is determined at runtime by the session service, not
+    // by config fields. The config-level status just shows whether it's
+    // enabled. The runtime status (connected/disconnected/qr_ready) is
+    // fetched separately and shown in the WhatsAppFields component.
+    return section.enabled === true ? 'ENABLED' : 'OFF';
+  }
   return 'SETUP';
 }
 
 function statusState(status: string): 'active' | 'warn' | 'idle' {
-  if (status === 'READY') return 'active';
+  if (status === 'READY' || status === 'ENABLED') return 'active';
   if (status === 'PARTIAL' || status === 'VERIFY') return 'warn';
   return 'idle';
 }
@@ -188,38 +214,6 @@ function CredentialField({
   );
 }
 
-function AllowedUserIdsField({
-  section,
-  value,
-  onChange,
-}: {
-  section: keyof NotificationChannelsConfig;
-  value: NotificationChannelsConfig;
-  onChange: (next: NotificationChannelsConfig) => void;
-}) {
-  return (
-    <Box sx={{ gridColumn: '1 / -1' }}>
-      <FieldLabel>Allowed User IDs</FieldLabel>
-      <TextField
-        size="small"
-        fullWidth
-        placeholder="123456789, 987654321"
-        helperText="Inbound messaging requires at least one allowed user ID per channel."
-        value={getField(value, section, 'allowedUserIds')}
-        onChange={(e) => onChange(setField(value, section, 'allowedUserIds', e.target.value))}
-        sx={{
-          ...settingsTextFieldSx,
-          '& .MuiFormHelperText-root': {
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: '0.55rem',
-            color: settingsTheme.text.dim,
-            mt: 0.5,
-          },
-        }}
-      />
-    </Box>
-  );
-}
 
 function TelegramFields({
   value,
@@ -358,6 +352,373 @@ function TelegramFields({
           </Typography>
         )}
       </Box>
+    </Box>
+  );
+}
+
+// ─── WhatsApp Fields ─────────────────────────────────────────────────────
+
+function WhatsAppFields() {
+  const [sessionStatus, setSessionStatus] = useState<WhatsAppSessionStatusResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [linking, setLinking] = useState(false);
+  const [pairingPhone, setPairingPhone] = useState('');
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [pollTimer, setPollTimer] = useState<ReturnType<typeof setInterval> | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  // Fetch status on mount and poll periodically while the tab is visible.
+  // This ensures the settings page reflects the current connection state
+  // even if WhatsApp was connected via the setup wizard or reconnected
+  // after a transient failure.
+  const fetchStatus = async () => {
+    try {
+      const status = await bridges.whatsapp.status();
+      setSessionStatus(status);
+    } catch {
+      // Session not configured yet — that's fine
+    }
+  };
+
+  useEffect(() => {
+    void fetchStatus();
+    // Poll every 5 seconds while the component is mounted so the status
+    // stays fresh (e.g. if WhatsApp connects via the wizard or reconnects
+    // after a transient disconnection).
+    const timer = setInterval(() => void fetchStatus(), 5_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Clean up polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollTimer) clearInterval(pollTimer);
+    };
+  }, [pollTimer]);
+
+  const handleConnect = async () => {
+    setLinking(true);
+    setError(null);
+    setSuccess(null);
+    setQrOpen(true);
+    try {
+      const result = await bridges.whatsapp.link();
+      if (result.qrDataUrl) {
+        setQrDataUrl(result.qrDataUrl);
+      }
+      setSessionStatus({ ...sessionStatus, status: result.status, qrDataUrl: result.qrDataUrl } as WhatsAppSessionStatusResponse);
+
+      // If not immediately ready, start polling for status updates
+      if (result.status !== 'ready') {
+        const timer = setInterval(async () => {
+          try {
+            const status = await bridges.whatsapp.status();
+            setSessionStatus(status);
+            if (status.qrDataUrl) setQrDataUrl(status.qrDataUrl);
+            if (status.status === 'ready') {
+              clearInterval(timer);
+              setPollTimer(null);
+              setQrOpen(false);
+              setSuccess(`WhatsApp linked${status.phoneNumber ? ` (${status.phoneNumber})` : ''}`);
+              setLinking(false);
+            }
+          } catch {
+            // ignore polling errors
+          }
+        }, 3000);
+        setPollTimer(timer);
+      } else {
+        setSuccess(`WhatsApp linked${result.phoneNumber ? ` (${result.phoneNumber})` : ''}`);
+        setQrOpen(false);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to start linking');
+      setQrOpen(false);
+    } finally {
+      setLinking(false);
+    }
+  };
+
+  const handleStop = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await bridges.whatsapp.stop();
+      setSuccess('WhatsApp session stopped');
+      await fetchStatus();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to stop session');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUnlink = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await bridges.whatsapp.unlink();
+      setSuccess('WhatsApp unlinked — all credentials purged');
+      await fetchStatus();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to unlink');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePairingCode = async () => {
+    if (!pairingPhone.trim()) {
+      setError('Enter a phone number first');
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await bridges.whatsapp.pairingCode(pairingPhone.trim());
+      setPairingCode(result.pairingCode);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to request pairing code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      const result = await bridges.whatsapp.retry();
+      if (result.ok && !result.paused) {
+        setSuccess('WhatsApp reconnected successfully');
+        await fetchStatus();
+      } else {
+        setRetryError(result.error ?? 'Retry failed — WhatsApp is still unable to connect');
+      }
+    } catch (e) {
+      setRetryError(e instanceof Error ? e.message : 'Failed to retry connection');
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  const runtimeStatus = sessionStatus?.status ?? 'unknown';
+  const isConnected = runtimeStatus === 'ready';
+  const isPaused = sessionStatus?.paused === true;
+
+  // Soft-paused state: show a clean disabled overlay instead of the normal UI.
+  if (isPaused) {
+    return (
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+        <Box sx={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          gap: 1, py: 3, px: 2,
+          border: `1px solid ${settingsTheme.border.subtle}`,
+          borderRadius: '8px',
+          bgcolor: alphaColor(colors.ink, 0.02),
+          textAlign: 'center',
+        }}>
+          <PauseCircleIcon sx={{ fontSize: 32, color: settingsTheme.text.dim }} />
+          <Typography sx={{ ...settingsMonoSx, fontSize: '0.7rem', color: settingsTheme.text.primary, fontWeight: 600 }}>
+            WhatsApp Temporarily Disabled
+          </Typography>
+          <Typography sx={{ fontSize: '0.6rem', color: settingsTheme.text.dim, lineHeight: 1.6, maxWidth: 320 }}>
+            {sessionStatus?.message ?? 'WhatsApp is temporarily disabled due to a connection failure. This may be due to a WhatsApp protocol update. You can click Retry to try again, or wait for the next Agent-X update.'}
+          </Typography>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={retrying ? <CircularProgress size={14} /> : <RefreshIcon sx={{ fontSize: 14 }} />}
+            onClick={handleRetry}
+            disabled={retrying}
+            sx={{
+              mt: 1,
+              ...settingsBtnGhostSx,
+              borderColor: settingsTheme.accent.signal,
+              color: settingsTheme.accent.signal,
+              '&:hover': { borderColor: settingsTheme.accent.signal, bgcolor: alphaColor(settingsTheme.accent.signal, 0.08) },
+            }}
+          >
+            {retrying ? 'Retrying…' : 'Retry Connection'}
+          </Button>
+          {retryError && (
+            <Typography sx={{ fontSize: '0.55rem', color: settingsTheme.accent.alert, mt: 0.5, maxWidth: 320 }}>
+              {retryError}
+            </Typography>
+          )}
+        </Box>
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+      {/* Runtime status indicator */}
+      <Box sx={{
+        display: 'flex', alignItems: 'center', gap: 1,
+        border: `1px solid ${settingsTheme.border.subtle}`,
+        borderRadius: '4px', px: 1.25, py: 0.75,
+      }}>
+        <Box sx={{
+          width: 8, height: 8, borderRadius: '50%',
+          bgcolor: isConnected ? settingsTheme.accent.signal
+            : runtimeStatus === 'qr_ready' || runtimeStatus === 'pairing' ? settingsTheme.accent.amber
+            : runtimeStatus === 'failed' ? settingsTheme.accent.alert
+            : settingsTheme.text.dim,
+        }} />
+        <Typography sx={{ fontSize: '0.6rem', color: settingsTheme.text.dim, ...settingsMonoSx, textTransform: 'uppercase' }}>
+          {isConnected ? `Connected${sessionStatus?.phoneNumber ? ` — ${sessionStatus.phoneNumber}` : ''}` : `Status: ${runtimeStatus}`}
+        </Typography>
+        {sessionStatus?.pushName && (
+          <Typography sx={{ fontSize: '0.55rem', color: settingsTheme.text.dim, ml: 'auto' }}>
+            {sessionStatus.pushName}
+          </Typography>
+        )}
+      </Box>
+
+      {/* Alerts */}
+      {error && <Alert severity="error" sx={{ fontSize: '0.65rem', py: 0.5 }} onClose={() => setError(null)}>{error}</Alert>}
+      {success && <Alert severity="success" sx={{ fontSize: '0.65rem', py: 0.5 }} onClose={() => setSuccess(null)}>{success}</Alert>}
+
+      {/* Action buttons */}
+      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+        {!isConnected && (
+          <Button
+            size="small"
+            variant="contained"
+            startIcon={<QrCode2Icon sx={{ fontSize: 14 }} />}
+            onClick={handleConnect}
+            disabled={linking}
+            sx={settingsBtnPrimarySx}
+          >
+            {linking ? <CircularProgress size={14} sx={{ mr: 1 }} /> : null}
+            Connect
+          </Button>
+        )}
+        {isConnected && (
+          <Button
+            size="small"
+            startIcon={<DeleteOutlineIcon sx={{ fontSize: 14 }} />}
+            onClick={handleStop}
+            disabled={loading}
+            sx={settingsBtnGhostSx}
+          >
+            Stop
+          </Button>
+        )}
+        <Button
+          size="small"
+          startIcon={<DeleteOutlineIcon sx={{ fontSize: 14 }} />}
+          onClick={handleUnlink}
+          disabled={loading || !sessionStatus}
+          sx={settingsBtnDangerSx}
+        >
+          Unlink
+        </Button>
+      </Box>
+
+      {/* Pairing code alternative */}
+      {!isConnected && (
+        <Box sx={{
+          border: `1px solid ${settingsTheme.border.subtle}`,
+          borderRadius: '4px', p: 1.25,
+        }}>
+          <Typography sx={{ ...settingsOverlineSx, fontSize: '0.5rem', mb: 0.75 }}>
+            Pairing Code (Alternative to QR)
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end' }}>
+            <TextField
+              size="small"
+              placeholder="15551234567"
+              value={pairingPhone}
+              onChange={(e) => setPairingPhone(e.target.value)}
+              sx={{ ...settingsTextFieldSx, flex: 1 }}
+            />
+            <Button
+              size="small"
+              startIcon={<PhoneIcon sx={{ fontSize: 14 }} />}
+              onClick={handlePairingCode}
+              disabled={loading || !pairingPhone.trim()}
+              sx={settingsBtnGhostSx}
+            >
+              Get Code
+            </Button>
+          </Box>
+          {pairingCode && (
+            <Box sx={{
+              mt: 1, p: 1, bgcolor: settingsTheme.bg.void, borderRadius: '4px',
+              border: `1px solid ${settingsTheme.border.subtle}`,
+              display: 'flex', alignItems: 'center', gap: 1,
+            }}>
+              <Typography sx={{ fontSize: '0.7rem', fontWeight: 700, ...settingsMonoSx, letterSpacing: '2px' }}>
+                {pairingCode}
+              </Typography>
+              <Typography sx={{ fontSize: '0.55rem', color: settingsTheme.text.dim }}>
+                Enter this in WhatsApp → Linked Devices → Link a Device
+              </Typography>
+            </Box>
+          )}
+        </Box>
+      )}
+
+      {/* QR Code Modal */}
+      <Dialog
+        open={qrOpen}
+        onClose={() => { if (!linking) setQrOpen(false); }}
+        PaperProps={{ sx: {
+          bgcolor: settingsTheme.bg.void,
+          border: `1px solid ${settingsTheme.border.default}`,
+          borderRadius: '6px',
+          maxWidth: 380,
+          width: '100%',
+        }}}
+      >
+        <DialogTitle sx={{ fontSize: '0.85rem', fontWeight: 700, pb: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+          <WhatsAppIcon sx={{ fontSize: 18, color: '#25D366' }} />
+          Link WhatsApp
+        </DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.65rem', color: settingsTheme.text.dim, mb: 1.5 }}>
+            Scan this QR code with your phone:
+          </Typography>
+          <Typography sx={{ fontSize: '0.6rem', color: settingsTheme.text.dim, mb: 1.5, ...settingsMonoSx }}>
+            WhatsApp → Settings → Linked Devices → Link a Device
+          </Typography>
+          <Box sx={{
+            display: 'flex', justifyContent: 'center', alignItems: 'center',
+            width: 256, height: 256, bgcolor: '#fff', borderRadius: '4px', p: 2,
+            mx: 'auto',
+          }}>
+            {qrDataUrl ? (
+              <Box component="img" src={qrDataUrl} alt="WhatsApp QR Code" sx={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+            ) : (
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                <CircularProgress size={32} />
+                <Typography sx={{ fontSize: '0.6rem', color: settingsTheme.text.dim }}>
+                  Generating QR code...
+                </Typography>
+              </Box>
+            )}
+          </Box>
+          <Typography sx={{ fontSize: '0.55rem', color: settingsTheme.text.dim, mt: 1.5, textAlign: 'center' }}>
+            Waiting for scan... keep this window open.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button
+            onClick={() => setQrOpen(false)}
+            disabled={linking}
+            sx={{ color: settingsTheme.text.dim }}
+          >
+            Cancel
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
@@ -519,7 +880,6 @@ function ChannelCard({
                     placeholder="https://hooks.slack.com/..."
                     gridColumn="1 / -1"
                   />
-                  <AllowedUserIdsField section="slack" value={value} onChange={onChange} />
                 </Box>
               </Box>
             )}
@@ -548,7 +908,6 @@ function ChannelCard({
                     placeholder="https://discord.com/api/webhooks/..."
                     gridColumn="1 / -1"
                   />
-                  <AllowedUserIdsField section="discord" value={value} onChange={onChange} />
                 </Box>
               </Box>
             )}
@@ -596,7 +955,10 @@ function ChannelCard({
               </Box>
             )}
 
-            {/* Danger zone */}
+            {meta.id === 'whatsapp' && <WhatsAppFields />}
+
+            {/* Danger zone — only for Telegram */}
+            {meta.id === 'telegram' && (
             <Box sx={{
               border: `1px dashed ${settingsTheme.border.alert}`,
               borderRadius: '4px',
@@ -622,6 +984,7 @@ function ChannelCard({
                 Clear Conversation
               </Button>
             </Box>
+            )}
           </Box>
         </Collapse>
       </Box>
@@ -670,6 +1033,7 @@ export function mergeChannelsConfig(raw?: NotificationChannelsConfig | null): No
     slack: { enabled: false, inbound: true, outbound: true, ...raw?.slack },
     discord: { enabled: false, inbound: true, outbound: true, ...raw?.discord },
     email: { enabled: false, inbound: false, outbound: true, ...raw?.email },
+    whatsapp: { enabled: false, inbound: true, outbound: true, ...raw?.whatsapp },
   };
 }
 

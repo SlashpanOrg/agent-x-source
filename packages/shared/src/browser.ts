@@ -189,7 +189,9 @@ export {
 export {
   CHANNEL_SESSION_ID,
   channelSessionIdForBinding,
+  channelSessionIdForContact,
   parseChannelBindingFromSessionId,
+  contactIdFromChannelSessionId,
   isChannelSessionId,
   isSuperSessionId,
   resolveFleetToolSessionScope,

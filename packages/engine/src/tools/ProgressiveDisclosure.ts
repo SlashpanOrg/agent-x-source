@@ -34,8 +34,15 @@ const CORE_TOOL_PATTERNS = [
   // Agent meta / charts / todos
   /^ask_clarification/, /^delegate_to/, /^sub_agent/, /^todo/,
   /^search_crew_hub/, /^render_chart$/, /^spawn_crew/, /^save_to_markdown$/, /^markdown_list$/,
-  // Native channel send (Telegram/Slack/Discord/Email) — must be available on messaging sessions
+  // Native channel tools (Telegram/Slack/Discord/Email/WhatsApp) — must be
+  // available on messaging sessions. WhatsApp has a full native tool surface
+  // (session management, messaging, contacts, groups) via Baileys, not just
+  // send_* — so we match the entire whatsapp_ prefix. Hiding these behind
+  // progressive disclosure caused the agent to tell users "WhatsApp is not
+  // available" even when it was connected, because the LLM could find them
+  // via tool_search but couldn't call them directly.
   /^(telegram|slack|discord|email)_send_/,
+  /^whatsapp_/,
   // Document creation tools — needed to build files (PDFs, spreadsheets, etc.) to send back to users
   /^(pdf|docx|xlsx|pptx|csv)_create$/, /^doc_(markdown|html|json|yaml|diagram|latex)$/,
 ];

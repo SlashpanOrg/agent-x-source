@@ -1863,7 +1863,8 @@ export class Agent {
     const messagingChannelInbound = options?.sourceChannel === 'telegram'
       || options?.sourceChannel === 'slack'
       || options?.sourceChannel === 'discord'
-      || options?.sourceChannel === 'email';
+      || options?.sourceChannel === 'email'
+      || options?.sourceChannel === 'whatsapp';
     this.activeInboundChannel = messagingChannelInbound ? (options?.sourceChannel ?? null) : null;
     this.toolExecutor?.setMessagingPermissionMode(messagingChannelInbound);
     this.toolExecutor?.setInboundSourceChannel(messagingChannelInbound ? (options?.sourceChannel ?? null) : null);

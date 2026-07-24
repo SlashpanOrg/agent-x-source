@@ -2,10 +2,11 @@ import type { IntegrationConnection, IntegrationProvider } from '../../api';
 
 export function isInstalledConnection(connection?: IntegrationConnection): boolean {
   if (!connection) return false;
+  // Only count actively connected (or syncing) connections as "installed".
+  // Error/disconnected connections are stale remnants from failed reconnects
+  // and should not inflate the installed count in the MCP Store.
   return connection.status === 'connected'
-    || connection.status === 'syncing'
-    || connection.status === 'error'
-    || connection.status === 'disconnected';
+    || connection.status === 'syncing';
 }
 
 export function connectionStatusRank(status: IntegrationConnection['status']): number {

@@ -1,7 +1,7 @@
 /**
  * Channel identifiers supported by the engine channel service.
  */
-export type ChannelId = 'telegram' | 'discord' | 'slack' | 'email';
+export type ChannelId = 'telegram' | 'discord' | 'slack' | 'email' | 'whatsapp';
 
 /**
  * Generic attachment for outbound channel messages.

@@ -55,11 +55,17 @@ export function getNotificationChannelStatus(
     && channels.discord.outbound !== false,
   );
 
+  const whatsappConfigured = Boolean(
+    channels?.whatsapp?.enabled === true
+    && channels.whatsapp.outbound !== false,
+  );
+
   return {
     telegram: { configured: telegramConfigured, enabled: channels?.telegram?.enabled === true },
     slack: { configured: slackConfigured, enabled: channels?.slack?.enabled === true },
     email: { configured: emailConfigured, enabled: channels?.email?.enabled === true },
     discord: { configured: discordConfigured, enabled: channels?.discord?.enabled === true },
+    whatsapp: { configured: whatsappConfigured, enabled: channels?.whatsapp?.enabled === true },
   };
 }
 

@@ -204,6 +204,9 @@ export const notificationChannelsConfigSchema = z.object({
     botToken: z.string().optional(),
     channelId: z.string().optional(),
   }).optional(),
+  whatsapp: channelDirectionSchema.extend({
+    engine: z.enum(['baileys', 'electron-wwebjs']).optional(),
+  }).optional(),
 }).optional();
 
 export const performancePresetSchema = z.enum(['quiet', 'balanced', 'moderate', 'ultimate']);

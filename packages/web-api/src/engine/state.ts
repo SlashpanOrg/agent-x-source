@@ -82,6 +82,8 @@ export interface EngineState {
   discordBridge: DiscordBridge | null;
   slackBridge: SlackBridge | null;
   emailBridge: EmailBridge | null;
+  /** WhatsApp session lifecycle service (null until WhatsApp is enabled + linked). */
+  whatsappSessionService: import('@agentx/engine').WhatsAppSessionService | null;
   redisRuntime: RedisCacheRuntime | null;
   webhookRuntime: WebhookNotifierRuntime | null;
   channelSessionBindings?: Partial<Record<ChannelBindingId, ChannelSessionBinding>>;
@@ -343,6 +345,7 @@ export function getEngine(): EngineState {
     discordBridge: null,
     slackBridge: null,
     emailBridge: null,
+    whatsappSessionService: null,
     redisRuntime: null,
     webhookRuntime: null,
     clientSituation: null,

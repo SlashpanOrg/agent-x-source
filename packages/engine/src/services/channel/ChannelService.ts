@@ -14,11 +14,24 @@ export interface ChannelServiceConfig {
   perChannelPolicies?: Partial<Record<ChannelId, ChannelPolicyConfig>>;
 }
 
-const ALL_CHANNEL_IDS: ChannelId[] = ['telegram', 'discord', 'slack', 'email'];
+const ALL_CHANNEL_IDS: ChannelId[] = ['telegram', 'discord', 'slack', 'email', 'whatsapp'];
 
 function isChannelId(value: string): value is ChannelId {
   return ALL_CHANNEL_IDS.includes(value as ChannelId);
 }
+
+/**
+ * Conservative retry defaults for WhatsApp — fewer retries and longer backoff
+ * than the default, reflecting WhatsApp's stricter anti-abuse posture.
+ * Per §5.5 of WHATSAPP_INTEGRATION_PLAN.md.
+ */
+const WHATSAPP_DEFAULT_POLICY: ChannelPolicyConfig = {
+  retry: {
+    maxRetries: 1,       // default is 3; WhatsApp: 1 retry only
+    baseDelayMs: 2_000,  // default is 500ms; WhatsApp: 2s base
+    maxDelayMs: 30_000,  // default is 10s; WhatsApp: 30s cap
+  },
+};
 
 export class ChannelService implements IChannelService {
   private readonly ctx: ServiceContext;
@@ -40,7 +53,13 @@ export class ChannelService implements IChannelService {
       channelService: this,
       logger: ctx.logger,
     });
-    this.rateLimiter = new ChannelRateLimiter(config.perChannelPolicies);
+    // Merge WhatsApp conservative defaults with any user-provided policies.
+    // User-provided WhatsApp policy takes precedence if explicitly set.
+    const policies = { ...config.perChannelPolicies };
+    if (!policies.whatsapp) {
+      policies.whatsapp = WHATSAPP_DEFAULT_POLICY;
+    }
+    this.rateLimiter = new ChannelRateLimiter(policies);
     this.registerBridgesFromConfig();
   }
 

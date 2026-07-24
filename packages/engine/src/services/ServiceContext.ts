@@ -9,6 +9,7 @@ import type { IJobQueue } from '../queue/IJobQueue.js';
 import type { IChannelService } from './channel/IChannelService.js';
 import { ChannelService } from './channel/ChannelService.js';
 import { resolveChannelInboundAgent } from '../channels/channel-inbound-router.js';
+import type { WhatsAppSessionService } from '../whatsapp/WhatsAppSessionService.js';
 
 /**
  * Shared context passed to every service on startup.
@@ -49,6 +50,19 @@ export function setChannelServiceInstance(instance: IChannelService | null): voi
   _channelServiceInstance = instance;
 }
 
+// ─── WhatsApp session service singleton ──────────────────────────────────
+// Same pattern as the channel service singleton above — allows tool handlers
+// to access the active WhatsAppSessionService without dependency injection.
+let _whatsappSessionServiceInstance: WhatsAppSessionService | null = null;
+
+export function getWhatsAppSessionServiceInstance(): WhatsAppSessionService | null {
+  return _whatsappSessionServiceInstance;
+}
+
+export function setWhatsAppSessionServiceInstance(instance: WhatsAppSessionService | null): void {
+  _whatsappSessionServiceInstance = instance;
+}
+
 /**
  * Build a ServiceContext, wiring in RedisCache when REDIS_URL is set and
  * falling back to LocalCache otherwise.
@@ -66,7 +80,7 @@ export function createServiceContext(
     eventBus: partial.eventBus ?? createEventBus(),
   };
   ctx.channelService = partial.channelService ?? new ChannelService(ctx, {
-    agentFactory: (channelId) => resolveChannelInboundAgent(channelId, null),
+    agentFactory: (channelId, senderId) => resolveChannelInboundAgent(channelId, null, senderId),
   });
   setChannelServiceInstance(ctx.channelService);
   return ctx;
