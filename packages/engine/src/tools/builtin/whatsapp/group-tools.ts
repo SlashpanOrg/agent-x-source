@@ -3,12 +3,9 @@
  *
  * All group management operations require the 'groupManagement' capability.
  * The tools return a clear "not supported" error if the engine doesn't
- * support group management.
- *
- * Note: The IWhatsAppEngine interface doesn't currently have group management
- * methods beyond what's in the callbacks. These tools are defined with the
- * correct schemas and capability gating, but return NOT_IMPLEMENTED until
- * the engine interface is extended with group methods.
+ * support group management. Baileys implements all of these against its
+ * multi-device socket API (groupCreate, groupMetadata, groupParticipantsUpdate,
+ * groupUpdateSubject, groupUpdateDescription, groupLeave, groupAcceptInvite).
  */
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 import {
@@ -33,10 +30,15 @@ export async function whatsappCreateGroup(
     const participantsResult = requireStringArray(args, 'participants');
     if (!Array.isArray(participantsResult)) return participantsResult;
 
+    if (!resolved.engine.createGroup) {
+      return { success: false, output: 'This WhatsApp engine does not support group creation.', error: 'NOT_SUPPORTED' };
+    }
+
+    const { groupId } = await resolved.engine.createGroup(subject, participantsResult);
     return {
-      success: false,
-      output: 'Group creation is not yet implemented in the engine interface. This will be added when the group management methods are extended on IWhatsAppEngine.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: `Group "${subject}" created. Group ID: ${groupId}. Participants invited: ${participantsResult.length}.`,
+      metadata: { groupId, subject, participants: participantsResult },
     };
   });
 }
@@ -54,10 +56,31 @@ export async function whatsappGetGroupInfo(
     const groupId = requireString(args, 'groupId');
     if (typeof groupId !== "string") return groupId;
 
+    if (!resolved.engine.getGroupInfo) {
+      return { success: false, output: 'This WhatsApp engine does not support fetching group info.', error: 'NOT_SUPPORTED' };
+    }
+
+    const info = await resolved.engine.getGroupInfo(groupId);
+    const lines = [
+      `Group: ${info.subject}`,
+      `  ID: ${info.groupId}`,
+      `  Participants: ${info.participants.length}${info.size ? ` (reported size: ${info.size})` : ''}`,
+    ];
+    if (info.owner) lines.push(`  Owner: ${info.owner}`);
+    if (info.creation) lines.push(`  Created: ${new Date(info.creation * 1000).toISOString()}`);
+    if (info.description) lines.push(`  Description: ${info.description}`);
+    if (info.inviteCode) lines.push(`  Invite code: ${info.inviteCode}`);
+    lines.push(`  Settings: ${info.announce ? 'admins-only messages' : 'all members can message'}, ${info.restrict ? 'admins-only edit' : 'all members can edit'}`);
+    lines.push('  Participants:');
+    for (const p of info.participants) {
+      const role = p.isSuperAdmin ? 'superadmin' : p.isAdmin ? 'admin' : 'member';
+      lines.push(`    - ${p.jid} (${role})`);
+    }
+
     return {
-      success: false,
-      output: 'Getting group info is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: lines.join('\n'),
+      metadata: { ...info },
     };
   });
 }
@@ -77,10 +100,15 @@ export async function whatsappAddParticipants(
     const participantsResult = requireStringArray(args, 'participants');
     if (!Array.isArray(participantsResult)) return participantsResult;
 
+    if (!resolved.engine.addParticipants) {
+      return { success: false, output: 'This WhatsApp engine does not support adding participants.', error: 'NOT_SUPPORTED' };
+    }
+
+    await resolved.engine.addParticipants(groupId, participantsResult);
     return {
-      success: false,
-      output: 'Adding participants is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: `Added ${participantsResult.length} participant${participantsResult.length === 1 ? '' : 's'} to group ${groupId}.`,
+      metadata: { groupId, participants: participantsResult },
     };
   });
 }
@@ -100,10 +128,15 @@ export async function whatsappRemoveParticipants(
     const participantsResult = requireStringArray(args, 'participants');
     if (!Array.isArray(participantsResult)) return participantsResult;
 
+    if (!resolved.engine.removeParticipants) {
+      return { success: false, output: 'This WhatsApp engine does not support removing participants.', error: 'NOT_SUPPORTED' };
+    }
+
+    await resolved.engine.removeParticipants(groupId, participantsResult);
     return {
-      success: false,
-      output: 'Removing participants is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: `Removed ${participantsResult.length} participant${participantsResult.length === 1 ? '' : 's'} from group ${groupId}.`,
+      metadata: { groupId, participants: participantsResult },
     };
   });
 }
@@ -123,10 +156,15 @@ export async function whatsappPromoteParticipant(
     const participant = requireString(args, 'participant');
     if (typeof participant !== "string") return participant;
 
+    if (!resolved.engine.promoteParticipant) {
+      return { success: false, output: 'This WhatsApp engine does not support promoting participants.', error: 'NOT_SUPPORTED' };
+    }
+
+    await resolved.engine.promoteParticipant(groupId, participant);
     return {
-      success: false,
-      output: 'Promoting participants is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: `Promoted ${participant} to admin in group ${groupId}.`,
+      metadata: { groupId, participant, action: 'promote' },
     };
   });
 }
@@ -146,10 +184,15 @@ export async function whatsappDemoteParticipant(
     const participant = requireString(args, 'participant');
     if (typeof participant !== "string") return participant;
 
+    if (!resolved.engine.demoteParticipant) {
+      return { success: false, output: 'This WhatsApp engine does not support demoting participants.', error: 'NOT_SUPPORTED' };
+    }
+
+    await resolved.engine.demoteParticipant(groupId, participant);
     return {
-      success: false,
-      output: 'Demoting participants is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: `Demoted ${participant} from admin to member in group ${groupId}.`,
+      metadata: { groupId, participant, action: 'demote' },
     };
   });
 }
@@ -169,10 +212,15 @@ export async function whatsappSetGroupSubject(
     const subject = requireString(args, 'subject');
     if (typeof subject !== "string") return subject;
 
+    if (!resolved.engine.setGroupSubject) {
+      return { success: false, output: 'This WhatsApp engine does not support changing group subject.', error: 'NOT_SUPPORTED' };
+    }
+
+    await resolved.engine.setGroupSubject(groupId, subject);
     return {
-      success: false,
-      output: 'Setting group subject is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: `Group ${groupId} subject updated to "${subject}".`,
+      metadata: { groupId, subject },
     };
   });
 }
@@ -192,10 +240,15 @@ export async function whatsappSetGroupDescription(
     const description = requireString(args, 'description');
     if (typeof description !== "string") return description;
 
+    if (!resolved.engine.setGroupDescription) {
+      return { success: false, output: 'This WhatsApp engine does not support changing group description.', error: 'NOT_SUPPORTED' };
+    }
+
+    await resolved.engine.setGroupDescription(groupId, description);
     return {
-      success: false,
-      output: 'Setting group description is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: `Group ${groupId} description updated.`,
+      metadata: { groupId, description },
     };
   });
 }
@@ -213,10 +266,15 @@ export async function whatsappLeaveGroup(
     const groupId = requireString(args, 'groupId');
     if (typeof groupId !== "string") return groupId;
 
+    if (!resolved.engine.leaveGroup) {
+      return { success: false, output: 'This WhatsApp engine does not support leaving groups.', error: 'NOT_SUPPORTED' };
+    }
+
+    await resolved.engine.leaveGroup(groupId);
     return {
-      success: false,
-      output: 'Leaving groups is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: `Left group ${groupId}.`,
+      metadata: { groupId },
     };
   });
 }
@@ -234,10 +292,15 @@ export async function whatsappJoinGroupByInvite(
     const inviteCode = requireString(args, 'inviteCode');
     if (typeof inviteCode !== "string") return inviteCode;
 
+    if (!resolved.engine.joinGroupByInvite) {
+      return { success: false, output: 'This WhatsApp engine does not support joining groups by invite.', error: 'NOT_SUPPORTED' };
+    }
+
+    const { groupId } = await resolved.engine.joinGroupByInvite(inviteCode);
     return {
-      success: false,
-      output: 'Joining groups by invite code is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: `Joined group ${groupId} via invite code ${inviteCode}.`,
+      metadata: { groupId, inviteCode },
     };
   });
 }

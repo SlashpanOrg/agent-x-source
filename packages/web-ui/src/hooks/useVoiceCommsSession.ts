@@ -46,6 +46,8 @@ export interface UseVoiceCommsSessionOptions {
    * session is inactive — e.g. crew call modal open while on hold or connecting.
    */
   spaceGuard?: boolean;
+  /** Dashboard voice activation mode: 'continue' (hydrate history) or 'new' (fresh start). */
+  conversationMode?: 'continue' | 'new';
 }
 
 export function useVoiceCommsSession({
@@ -61,6 +63,7 @@ export function useVoiceCommsSession({
   voiceContext,
   pttKeyboardEnabled = true,
   spaceGuard = false,
+  conversationMode = 'continue',
 }: UseVoiceCommsSessionOptions) {
   const mic = useMicrophonePermission();
   const fallbackCtx = useVoiceOptional();
@@ -90,6 +93,7 @@ export function useVoiceCommsSession({
     { onVoiceUserPending, onVoiceUserDiscarded, onAgentRunning, onTranscriptFinal, onVoiceTiming },
     voiceOnly,
     engine,
+    conversationMode,
   );
 
   useEffect(() => {

@@ -1,14 +1,15 @@
 /**
  * WhatsApp Label Tools (Phase 6.6).
  *
- * Labels are a Business-account-only feature. All label tools are guarded
- * with the 'labels' capability check — if the linked account is not a
- * Business account, the tools return a clear "not supported" error rather
- * than letting the underlying library throw an opaque exception.
+ * Labels are a WhatsApp Business API feature. Neither engine adapter currently
+ * implements label methods, so the 'labels' capability gate in
+ * `requireEngineWithCapability('labels')` returns CAPABILITY_NOT_SUPPORTED
+ * on every engine. The capability matrix lists no engines for 'labels'.
  *
- * Note: The IWhatsAppEngine interface doesn't currently have label methods.
- * These tools are defined with correct schemas and capability gating, but
- * return NOT_IMPLEMENTED until the engine interface is extended.
+ * If a future engine adds label support (by implementing the optional
+ * IWhatsAppEngine label methods and returning true from supportsCapability),
+ * these tool bodies would call them. Until then, every label tool returns
+ * a clear "not supported" error before reaching the body.
  */
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 import { requireEngineWithCapability, runTool, requireString } from './helpers.js';
@@ -23,10 +24,12 @@ export async function whatsappListLabels(
     const resolved = requireEngineWithCapability('labels');
     if ("error" in resolved) return resolved.error;
 
+    // If we reach here, the engine claims labels support but the interface
+    // doesn't yet define label methods. Surface a clear, honest message.
     return {
       success: false,
-      output: 'Listing labels is not yet implemented in the engine interface. This capability requires a WhatsApp Business account.',
-      error: 'NOT_IMPLEMENTED',
+      output: 'Labels are not supported by the active WhatsApp engine. Labels require a WhatsApp Business account and an engine adapter that implements the label API (neither Baileys nor the wwebjs adapter currently does).',
+      error: 'NOT_SUPPORTED',
     };
   });
 }
@@ -46,8 +49,8 @@ export async function whatsappGetChatLabels(
 
     return {
       success: false,
-      output: 'Getting chat labels is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      output: 'Labels are not supported by the active WhatsApp engine. Labels require a WhatsApp Business account and an engine adapter that implements the label API.',
+      error: 'NOT_SUPPORTED',
     };
   });
 }
@@ -69,8 +72,8 @@ export async function whatsappAddLabelToChat(
 
     return {
       success: false,
-      output: 'Adding labels to chats is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      output: 'Labels are not supported by the active WhatsApp engine. Labels require a WhatsApp Business account and an engine adapter that implements the label API.',
+      error: 'NOT_SUPPORTED',
     };
   });
 }
@@ -92,8 +95,8 @@ export async function whatsappRemoveLabelFromChat(
 
     return {
       success: false,
-      output: 'Removing labels from chats is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      output: 'Labels are not supported by the active WhatsApp engine. Labels require a WhatsApp Business account and an engine adapter that implements the label API.',
+      error: 'NOT_SUPPORTED',
     };
   });
 }

@@ -253,6 +253,7 @@ export {
   formatCallDividerDuration,
   formatCallDividerDayLabel,
   formatCallDividerTimeLabel,
+  buildNewConversationDividerMeta,
 } from './utils/call-transcript-divider.js';
 export type { CallDividerVariant, CallDividerMeta } from './utils/call-transcript-divider.js';
 

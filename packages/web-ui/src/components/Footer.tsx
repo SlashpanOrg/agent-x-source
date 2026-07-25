@@ -11,6 +11,8 @@ import { PARTICLE_PHASE_COLORS, type ParticlePhase } from './voice/VoiceParticle
 import { useCrewCallOptional } from './crew-call';
 import { formatCallDuration } from './crew-call/crew-call-theme';
 import { CORTEX_VIZ_ENABLED } from '../cortex/flags';
+import { useGeoLocation } from '../hooks/useGeoLocation';
+import LocationOnIcon from '@mui/icons-material/LocationOn';
 
 function particlePhaseCss(phase: ParticlePhase): string {
   const { r, g, b } = PARTICLE_PHASE_COLORS[phase];
@@ -44,6 +46,7 @@ export interface FooterProps {
 export function Footer({ onToggleLogs, logsOpen }: FooterProps) {
   const [version, setVersion] = useState('');
   const [zoomHint] = useState(getZoomShortcutHint);
+  const geoLocation = useGeoLocation();
   const voice = useVoiceOptional();
   const crewCall = useCrewCallOptional();
   const commsCtx = useVoiceCommsOptional();
@@ -316,6 +319,23 @@ export function Footer({ onToggleLogs, logsOpen }: FooterProps) {
             <span style={{ color: colors.border.default }}>/</span>
           </>
         )}
+        <Box
+          component="span"
+          title={geoLocation.fullLabel}
+          sx={{
+            display: 'inline-flex', alignItems: 'center', gap: '2px',
+            cursor: 'default', userSelect: 'none', letterSpacing: '0.5px',
+            color: geoLocation.resolved && !geoLocation.vpnSuspected
+              ? colors.text.dim
+              : colors.accent.orange,
+            transition: 'color 0.15s',
+            '&:hover': { color: colors.text.secondary },
+          }}
+        >
+          <LocationOnIcon sx={{ fontSize: 12 }} />
+          {geoLocation.cityLabel}
+        </Box>
+        <span style={{ color: colors.border.default }}>/</span>
         {version && (
           <>
             <span>v{version}</span>

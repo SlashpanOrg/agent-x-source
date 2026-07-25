@@ -534,7 +534,7 @@ export const WHATSAPP_TOOLS: ToolDefinition[] = [
     id: 'whatsapp_get_profile_picture',
     name: 'Get WhatsApp Profile Picture',
     description: 'Get the profile picture URL for a WhatsApp contact',
-    modelDescription: 'Get the profile picture URL for a WhatsApp contact by JID. Note: this feature is not yet fully implemented in all engines.',
+    modelDescription: 'Get the profile picture URL for a WhatsApp contact by JID. Returns null if the contact has hidden their picture or not set one.',
     category: CAT,
     riskLevel: 'low',
     schema: {

@@ -129,6 +129,47 @@ export interface WhatsAppGroupEvent {
   action: 'add' | 'remove' | 'promote' | 'demote';
 }
 
+/** A participant in a group, normalized from the engine's group metadata. */
+export interface WhatsAppGroupParticipant {
+  jid: string;
+  isAdmin: boolean;
+  isSuperAdmin: boolean;
+  admin?: 'admin' | 'superadmin' | null;
+}
+
+/** Group metadata normalized to Agent-X's canonical shape. */
+export interface WhatsAppGroupInfo {
+  groupId: string;
+  subject: string;
+  subjectOwner?: string;
+  creation?: number;
+  owner?: string;
+  description?: string;
+  descriptionId?: string;
+  size?: number;
+  restrict?: boolean;
+  announce?: boolean;
+  participants: WhatsAppGroupParticipant[];
+  inviteCode?: string;
+}
+
+/** A single reaction on a message. */
+export interface WhatsAppReactionEntry {
+  messageId: string;
+  chatId: string;
+  senderId: string;
+  emoji: string | null;
+  timestamp?: number;
+}
+
+/** A channel (newsletter) the user follows or can subscribe to. */
+export interface WhatsAppChannel {
+  jid: string;
+  name?: string;
+  description?: string;
+  subscribers?: number;
+}
+
 /** Info passed with the `ready` status transition. */
 export interface EngineReadyInfo {
   phoneNumber?: string;
@@ -236,4 +277,50 @@ export interface IWhatsAppEngine {
 
   // --- Calls -----------------------------------------------------------------
   rejectCall(callId: string): Promise<void>;
+
+  // --- Message history & reactions (Phase 6.2 extended) ---------------------
+  /**
+   * Fetch recent messages for a chat from the engine's local store.
+   * Engines that disable full history sync (e.g. Baileys) return messages
+   * observed since the session connected. Returns newest-first.
+   * @param limit - Maximum number of messages to return (default 50).
+   */
+  getMessageHistory?(chatId: string, limit?: number): Promise<WhatsAppIncomingMessage[]>;
+
+  /**
+   * Fetch reactions recorded for a specific message from the engine's local
+   * store. Returns reactions observed since the session connected.
+   */
+  getReactions?(chatId: string, messageId: string): Promise<WhatsAppReactionEntry[]>;
+
+  // --- Profile pictures -----------------------------------------------------
+  /** Resolve a profile picture URL for a JID (or null if none/privacy-restricted). */
+  getProfilePicture?(jid: string): Promise<{ url: string | null }>;
+
+  // --- Group management (requires 'groupManagement' capability) --------------
+  createGroup?(subject: string, participants: string[]): Promise<{ groupId: string }>;
+  getGroupInfo?(groupId: string): Promise<WhatsAppGroupInfo>;
+  addParticipants?(groupId: string, participants: string[]): Promise<void>;
+  removeParticipants?(groupId: string, participants: string[]): Promise<void>;
+  promoteParticipant?(groupId: string, participant: string): Promise<void>;
+  demoteParticipant?(groupId: string, participant: string): Promise<void>;
+  setGroupSubject?(groupId: string, subject: string): Promise<void>;
+  setGroupDescription?(groupId: string, description: string): Promise<void>;
+  leaveGroup?(groupId: string): Promise<void>;
+  joinGroupByInvite?(inviteCode: string): Promise<{ groupId: string }>;
+
+  // --- Profile management ---------------------------------------------------
+  setProfileName?(name: string): Promise<void>;
+  setProfileStatus?(status: string): Promise<void>;
+  /** Set the profile picture from base64-encoded media bytes. */
+  setProfilePicture?(media: { data: string; mimetype: string }): Promise<void>;
+
+  // --- Status stories (requires 'statusStories' capability) ------------------
+  postTextStatus?(text: string): Promise<WhatsAppSendResult>;
+  postImageStatus?(media: { data: string; mimetype: string; caption?: string }): Promise<WhatsAppSendResult>;
+  listStatusUpdates?(): Promise<{ jid: string; timestamp?: number }[]>;
+
+  // --- Channels / newsletters (requires 'channels' capability) ---------------
+  subscribeChannel?(inviteCode: string): Promise<{ jid: string }>;
+  listChannels?(): Promise<WhatsAppChannel[]>;
 }

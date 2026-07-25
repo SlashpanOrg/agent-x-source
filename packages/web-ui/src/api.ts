@@ -781,6 +781,22 @@ export const clientSituation = {
   get: () => request<{ situation: ClientSituation | null }>('/client-situation'),
 };
 
+// ─── Server-side Geolocation (IP-based, city-level) ───
+export interface GeoLocationResponse {
+  city: string | null;
+  fullLabel: string | null;
+  cityLabel: string;
+  method: 'ip' | 'timezone_only';
+  vpnSuspected: boolean;
+  resolvedAt?: number;
+  resolved: boolean;
+}
+
+export const geolocation = {
+  get: () => request<GeoLocationResponse>('/geolocation'),
+  refresh: () => request<GeoLocationResponse & { ok: boolean }>('/geolocation/refresh', { method: 'POST' }),
+};
+
 // ─── Tools ───
 export const tools = {
   list: () => request<ToolInfo[]>('/tools'),
@@ -1633,7 +1649,7 @@ export interface ChatMessage {
   timestamp?: string;
   createdAt?: string;
   metadata?: {
-    callDivider?: { variant: 'daytime' | 'time' | 'duration'; label: string };
+    callDivider?: { variant: 'daytime' | 'time' | 'duration' | 'new_conversation'; label: string };
     [key: string]: unknown;
   };
   tokenCount?: number;

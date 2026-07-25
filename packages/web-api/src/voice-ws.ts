@@ -35,6 +35,9 @@ import {
   getLogger,
   VOICE_PERMISSION_TIMEOUT_MS,
   VOICE_PERMISSION_TIMEOUT_INSTRUCTION,
+  buildNewConversationDividerMeta,
+  encodeCallDividerContent,
+  resetCallDividerClock,
 } from '@agentx/shared';
 import type { ProviderId, QuestionnairePayload } from '@agentx/shared';
 import { normalizeVoiceAssistantContent } from './voice-speakable.js';
@@ -110,6 +113,16 @@ interface VoiceWsSession {
   sttQueue?: Promise<unknown>;
   /** True while finishTurn owns the mic buffer — skip new STT previews. */
   turnFinishing?: boolean;
+  /**
+   * Dashboard voice activation mode:
+   * - 'continue' (default): hydrate agent with recent transcript history.
+   * - 'new': insert a new_conversation divider row and start the agent fresh
+   *   (no history hydration). The transcript UI still shows prior messages.
+   * Only meaningful for the dashboard voice-only session (__channel__:voice).
+   */
+  conversationMode?: 'continue' | 'new';
+  /** True once the conversationMode has been consumed by ensureChatSessionActive. */
+  conversationModeApplied?: boolean;
 }
 
 const activeSessions = new Map<WebSocket, VoiceWsSession>();
@@ -527,7 +540,10 @@ async function handleVoiceMessage(ws: WebSocket, data: WebSocket.RawData, isBina
   }
 }
 
-async function ensureChatSessionActive(chatSessionId: string): Promise<boolean> {
+async function ensureChatSessionActive(
+  chatSessionId: string,
+  conversationMode: 'continue' | 'new' = 'continue',
+): Promise<boolean> {
   const eng = getEngine();
   let peek = eng.sessionManager.getSessionById(chatSessionId);
 
@@ -554,11 +570,40 @@ async function ensureChatSessionActive(chatSessionId: string): Promise<boolean> 
   }
   if (!peek) return false;
 
+  // 'new' mode: persist a new_conversation divider row so the transcript UI
+  // can render the boundary. The divider is a real message-table entry (role
+  // 'system', content [call_divider:new_conversation]…) — never computed on
+  // the frontend. hydrateAgentRecentHistory already filters [call_divider:
+  // rows, so the agent won't see it or any prior history in 'new' mode.
+  if (conversationMode === 'new' && chatSessionId === '__channel__:voice') {
+    try {
+      const store = eng.sessionManager.getStorageAdapter();
+      if (store?.insertMessage) {
+        const dividerMeta = buildNewConversationDividerMeta();
+        store.insertMessage({
+          sessionId: chatSessionId,
+          role: 'system',
+          content: encodeCallDividerContent(dividerMeta),
+          metadata: { callDivider: dividerMeta },
+        });
+      }
+      // Reset the call-divider clock so the next spoken turn gets a fresh
+      // daytime divider rather than a tight-gap time divider.
+      resetCallDividerClock(chatSessionId);
+    } catch { /* best-effort */ }
+  }
+
   const existingAgent = eng.agent;
   const keepAgent = !!existingAgent
     && existingAgent.sessionId === chatSessionId
     && (!existingAgent.processing || existingAgent.isAwaitingClarification());
   if (keepAgent) {
+    // In 'new' mode with an already-live agent, clear its history so the agent
+    // starts fresh without the prior conversation context. The transcript UI
+    // still shows old messages because they remain in the DB.
+    if (conversationMode === 'new' && typeof existingAgent.clearHistory === 'function') {
+      try { existingAgent.clearHistory(); } catch { /* best-effort */ }
+    }
     seedCallDividerClockFromStore(chatSessionId);
     return true;
   }
@@ -568,14 +613,19 @@ async function ensureChatSessionActive(chatSessionId: string): Promise<boolean> 
   if (!session) return false;
   createAgent(undefined, session);
   if (eng.agent) {
-    // Storage hydration can hang on a busy write queue / PG lock — never block
-    // a voice turn forever waiting for history (left clients stuck after STT).
-    try {
-      await Promise.race([
-        hydrateAgentRecentHistory(eng.agent, chatSessionId, 24),
-        new Promise<void>((resolve) => setTimeout(resolve, 2_500)),
-      ]);
-    } catch { /* best-effort */ }
+    // 'new' mode: skip history hydration — agent starts with empty context.
+    // 'continue' mode (default): hydrate with recent transcript so the agent
+    // has conversational context from prior voice turns.
+    if (conversationMode !== 'new') {
+      // Storage hydration can hang on a busy write queue / PG lock — never block
+      // a voice turn forever waiting for history (left clients stuck after STT).
+      try {
+        await Promise.race([
+          hydrateAgentRecentHistory(eng.agent, chatSessionId, 24),
+          new Promise<void>((resolve) => setTimeout(resolve, 2_500)),
+        ]);
+      } catch { /* best-effort */ }
+    }
     seedCallDividerClockFromStore(chatSessionId);
   }
   ensureSubscribed();
@@ -619,6 +669,9 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
     : (typeof msg.chatSessionId === 'string' ? msg.chatSessionId : undefined);
   const voiceWsSessionId = String(msg.sessionId ?? randomUUID());
   const clientSituation = normalizeClientSituation(msg.clientSituation);
+  const conversationMode = (msg.conversationMode === 'new' || msg.conversationMode === 'continue')
+    ? (msg.conversationMode as 'continue' | 'new')
+    : 'continue' as const;
 
   if (voiceConfig.engine === 'realtime_xai') {
     const transport = new WebSocketVoiceTransport({ ws, sessionId: voiceWsSessionId, mode, engine: 'realtime_xai' });
@@ -684,6 +737,7 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
     searchWeb: false,
     bypassChip: false,
     ...(clientSituation ? { clientSituation } : {}),
+    conversationMode,
   });
   voiceSession.setState(mode === 'duplex' ? 'listening' : 'idle');
   ws.send(JSON.stringify({ type: 'session_ready', sessionId: voiceSession.sessionId, mode }));
@@ -1018,7 +1072,11 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void>
       voiceSession?.setState('idle');
       return;
     }
-    const sessionReady = await ensureChatSessionActive(chatSessionId);
+    // Apply conversationMode only on the first turn after activation; subsequent
+    // turns continue normally (the divider + skip-hydrate already happened).
+    const turnMode = session.conversationModeApplied ? 'continue' : (session.conversationMode ?? 'continue');
+    session.conversationModeApplied = true;
+    const sessionReady = await ensureChatSessionActive(chatSessionId, turnMode);
     if (!sessionReady) {
       session.duplexTurnInFlight = false;
       sendError(ws, 'Chat session not found');
@@ -1390,7 +1448,9 @@ async function runCallKickoff(
       sendError(ws, 'No chat session available for call');
       return;
     }
-    const sessionReady = await ensureChatSessionActive(chatSessionId);
+    const turnMode = session.conversationModeApplied ? 'continue' : (session.conversationMode ?? 'continue');
+    session.conversationModeApplied = true;
+    const sessionReady = await ensureChatSessionActive(chatSessionId, turnMode);
     if (!sessionReady) {
       sendError(ws, 'Chat session not found');
       return;

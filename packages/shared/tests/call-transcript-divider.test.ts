@@ -6,6 +6,7 @@ import {
   parseCallDivider,
   takeCallDividerForPersist,
   resetCallDividerClock,
+  buildNewConversationDividerMeta,
 } from '../src/utils/call-transcript-divider.js';
 
 describe('call-transcript-divider', () => {
@@ -42,5 +43,31 @@ describe('call-transcript-divider', () => {
     expect(first?.variant).toBe('daytime');
     expect(second).toBeNull();
     resetCallDividerClock(sid);
+  });
+
+  describe('new_conversation variant', () => {
+    it('builds a new_conversation divider meta with the correct label', () => {
+      const meta = buildNewConversationDividerMeta();
+      expect(meta.variant).toBe('new_conversation');
+      expect(meta.label).toBe('New conversation');
+    });
+
+    it('round-trips new_conversation encoded content', () => {
+      const meta = buildNewConversationDividerMeta();
+      const content = encodeCallDividerContent(meta);
+      expect(isCallDividerContent(content)).toBe(true);
+      expect(parseCallDivider(content)).toEqual(meta);
+    });
+
+    it('parses new_conversation from metadata.callDivider', () => {
+      const meta = buildNewConversationDividerMeta();
+      const parsed = parseCallDivider(undefined, { callDivider: meta });
+      expect(parsed).toEqual(meta);
+    });
+
+    it('matches the content regex for new_conversation', () => {
+      const content = '[call_divider:new_conversation]New conversation';
+      expect(isCallDividerContent(content)).toBe(true);
+    });
   });
 });

@@ -54,6 +54,11 @@ import type {
   WhatsAppCallEvent,
   WhatsAppGroupEvent,
   WhatsAppContactEntry,
+  WhatsAppIncomingMessage,
+  WhatsAppReactionEntry,
+  WhatsAppGroupInfo,
+  WhatsAppGroupParticipant,
+  WhatsAppChannel,
   EngineCapability,
 } from './IWhatsAppEngine.js';
 
@@ -136,6 +141,21 @@ export class BaileysEngine implements IWhatsAppEngine {
 
   /** In-memory contact store, populated from Baileys events. */
   private contacts = new Map<string, import('@whiskeysockets/baileys').Contact>();
+
+  /**
+   * In-memory message store, keyed by chatId. Populated from `messages.upsert`
+   * (both incoming and outgoing echoes) so `getMessageHistory` can return
+   * recent messages without full history sync (disabled per §0.7). Capped per
+   * chat to bound memory.
+   */
+  private messagesByChat = new Map<string, WhatsAppIncomingMessage[]>();
+  private readonly messageStoreCapPerChat = 500;
+
+  /** In-memory reaction store: chatId → messageId → reactions. */
+  private reactionsByMessage = new Map<string, Map<string, WhatsAppReactionEntry[]>>();
+
+  /** Channels (newsletters) the user has subscribed to via this engine. */
+  private followedChannels = new Map<string, WhatsAppChannel>();
 
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -286,17 +306,17 @@ export class BaileysEngine implements IWhatsAppEngine {
     switch (capability) {
       case 'rejectCall':
       case 'groupManagement':
-        return true;
       case 'chatHistoryFetch':
       case 'messageReactionsQuery':
+      case 'statusStories':
+      case 'channels':
+        // All implemented against the Baileys multi-device socket API.
         return true;
       case 'labels':
       case 'catalog':
-      case 'statusStories':
-      case 'channels':
-        // Baileys exposes these but reliability varies by account type.
-        // The capability matrix (§2.6) marks these as wwebjs-preferred.
-        return true;
+        // Labels and catalog are WhatsApp Business API / wwebjs features.
+        // Baileys multi-device does not expose them — require the wwebjs fallback.
+        return false;
       default:
         return false;
     }
@@ -686,6 +706,10 @@ export class BaileysEngine implements IWhatsAppEngine {
       }
       // type === 'append' (history sync) is intentionally ignored — we disabled
       // history sync (§0.7), so this branch shouldn't fire in practice.
+
+      // Record into the in-memory history store (both incoming and outgoing)
+      // so getMessageHistory can return recent conversation context.
+      this.recordMessage(mapped);
     }
   }
 
@@ -754,6 +778,8 @@ export class BaileysEngine implements IWhatsAppEngine {
       const senderId = senderRaw ? toNeutralJid(senderRaw) : '';
       const emoji = r.reaction.text ?? null;
       this.callbacks.onMessageReaction?.(chatId, messageId, senderId, emoji);
+      // Record into the in-memory reaction store so getReactions can query later.
+      this.recordReaction({ messageId, chatId, senderId, emoji, timestamp: Date.now() });
     }
   }
 
@@ -869,6 +895,227 @@ export class BaileysEngine implements IWhatsAppEngine {
       return { saved: true, name: c.name };
     }
     return { saved: false };
+  }
+
+  // ─── IWhatsAppEngine: message history & reactions ───────────────────────
+
+  async getMessageHistory(chatId: string, limit = 50): Promise<WhatsAppIncomingMessage[]> {
+    const store = this.messagesByChat.get(chatId);
+    if (!store || store.length === 0) return [];
+    // Store is appended in chronological order; return newest-first.
+    const start = Math.max(0, store.length - limit);
+    return store.slice(start).reverse();
+  }
+
+  async getReactions(chatId: string, messageId: string): Promise<WhatsAppReactionEntry[]> {
+    const chatReactions = this.reactionsByMessage.get(chatId);
+    if (!chatReactions) return [];
+    return chatReactions.get(messageId) ?? [];
+  }
+
+  /** Append a message to the per-chat in-memory store, capping the size. */
+  private recordMessage(msg: WhatsAppIncomingMessage): void {
+    let store = this.messagesByChat.get(msg.chatId);
+    if (!store) {
+      store = [];
+      this.messagesByChat.set(msg.chatId, store);
+    }
+    // De-dupe by message id (messages.upsert can re-emit on update).
+    if (store.some((m) => m.id === msg.id)) return;
+    store.push(msg);
+    if (store.length > this.messageStoreCapPerChat) {
+      store.splice(0, store.length - this.messageStoreCapPerChat);
+    }
+  }
+
+  /** Append a reaction to the in-memory store, keyed by chat + message. */
+  private recordReaction(entry: WhatsAppReactionEntry): void {
+    let chatReactions = this.reactionsByMessage.get(entry.chatId);
+    if (!chatReactions) {
+      chatReactions = new Map();
+      this.reactionsByMessage.set(entry.chatId, chatReactions);
+    }
+    let list = chatReactions.get(entry.messageId);
+    if (!list) {
+      list = [];
+      chatReactions.set(entry.messageId, list);
+    }
+    // If the same sender already reacted, replace their previous reaction
+    // (WhatsApp allows one reaction per user per message; null = removed).
+    const idx = list.findIndex((r) => r.senderId === entry.senderId);
+    if (idx >= 0) {
+      if (entry.emoji === null) list.splice(idx, 1);
+      else list[idx] = entry;
+    } else if (entry.emoji !== null) {
+      list.push(entry);
+    }
+  }
+
+  // ─── IWhatsAppEngine: profile pictures ──────────────────────────────────
+
+  async getProfilePicture(jid: string): Promise<{ url: string | null }> {
+    const sock = this.requireSocket();
+    try {
+      const url = await sock.profilePictureUrl(jid, 'image');
+      return { url: url ?? null };
+    } catch {
+      // Privacy-restricted or no picture — return null rather than throwing.
+      return { url: null };
+    }
+  }
+
+  // ─── IWhatsAppEngine: group management ──────────────────────────────────
+
+  async createGroup(subject: string, participants: string[]): Promise<{ groupId: string }> {
+    const sock = this.requireSocket();
+    const meta = await sock.groupCreate(subject, participants);
+    return { groupId: toNeutralJid(meta.id) };
+  }
+
+  async getGroupInfo(groupId: string): Promise<WhatsAppGroupInfo> {
+    const sock = this.requireSocket();
+    const meta = await sock.groupMetadata(groupId);
+    return this.toGroupInfo(meta);
+  }
+
+  async addParticipants(groupId: string, participants: string[]): Promise<void> {
+    const sock = this.requireSocket();
+    await sock.groupParticipantsUpdate(groupId, participants, 'add');
+  }
+
+  async removeParticipants(groupId: string, participants: string[]): Promise<void> {
+    const sock = this.requireSocket();
+    await sock.groupParticipantsUpdate(groupId, participants, 'remove');
+  }
+
+  async promoteParticipant(groupId: string, participant: string): Promise<void> {
+    const sock = this.requireSocket();
+    await sock.groupParticipantsUpdate(groupId, [participant], 'promote');
+  }
+
+  async demoteParticipant(groupId: string, participant: string): Promise<void> {
+    const sock = this.requireSocket();
+    await sock.groupParticipantsUpdate(groupId, [participant], 'demote');
+  }
+
+  async setGroupSubject(groupId: string, subject: string): Promise<void> {
+    const sock = this.requireSocket();
+    await sock.groupUpdateSubject(groupId, subject);
+  }
+
+  async setGroupDescription(groupId: string, description: string): Promise<void> {
+    const sock = this.requireSocket();
+    await sock.groupUpdateDescription(groupId, description);
+  }
+
+  async leaveGroup(groupId: string): Promise<void> {
+    const sock = this.requireSocket();
+    await sock.groupLeave(groupId);
+  }
+
+  async joinGroupByInvite(inviteCode: string): Promise<{ groupId: string }> {
+    const sock = this.requireSocket();
+    // groupAcceptInvite resolves the invite code to the joined group's jid.
+    const code = extractInviteCode(inviteCode);
+    const jid = await sock.groupAcceptInvite(code);
+    if (!jid) {
+      throw new Error('BaileysEngine: groupAcceptInvite returned no jid — the invite code may be invalid or revoked.');
+    }
+    return { groupId: toNeutralJid(jid) };
+  }
+
+  private toGroupInfo(meta: import('@whiskeysockets/baileys').GroupMetadata): WhatsAppGroupInfo {
+    return {
+      groupId: toNeutralJid(meta.id),
+      subject: meta.subject,
+      subjectOwner: meta.subjectOwner ? toNeutralJid(meta.subjectOwner) : undefined,
+      creation: meta.creation,
+      owner: meta.owner ? toNeutralJid(meta.owner) : undefined,
+      description: meta.desc,
+      descriptionId: meta.descId,
+      size: meta.size,
+      restrict: meta.restrict,
+      announce: meta.announce,
+      inviteCode: meta.inviteCode,
+      participants: meta.participants.map<WhatsAppGroupParticipant>((p) => ({
+        jid: toNeutralJid(p.id),
+        isAdmin: !!p.isAdmin,
+        isSuperAdmin: !!p.isSuperAdmin,
+        admin: p.admin ?? undefined,
+      })),
+    };
+  }
+
+  // ─── IWhatsAppEngine: profile management ────────────────────────────────
+
+  async setProfileName(name: string): Promise<void> {
+    const sock = this.requireSocket();
+    await sock.updateProfileName(name);
+  }
+
+  async setProfileStatus(status: string): Promise<void> {
+    const sock = this.requireSocket();
+    await sock.updateProfileStatus(status);
+  }
+
+  async setProfilePicture(media: { data: string; mimetype: string }): Promise<void> {
+    const sock = this.requireSocket();
+    // updateProfilePicture targets the linked number when jid is the user's own.
+    const me = this.meJid || sock.user?.id;
+    if (!me) {
+      throw new Error('BaileysEngine: cannot set profile picture — own JID not known yet (session not fully ready).');
+    }
+    await sock.updateProfilePicture(me, Buffer.from(media.data, 'base64'));
+  }
+
+  // ─── IWhatsAppEngine: status stories ────────────────────────────────────
+
+  async postTextStatus(text: string): Promise<WhatsAppSendResult> {
+    const sock = this.requireSocket();
+    const sent = await sock.sendMessage('status@broadcast', { text });
+    return this.toSendResult(sent);
+  }
+
+  async postImageStatus(media: { data: string; mimetype: string; caption?: string }): Promise<WhatsAppSendResult> {
+    const sock = this.requireSocket();
+    const sent = await sock.sendMessage('status@broadcast', {
+      image: Buffer.from(media.data, 'base64'),
+      mimetype: media.mimetype,
+      caption: media.caption,
+    });
+    return this.toSendResult(sent);
+  }
+
+  async listStatusUpdates(): Promise<{ jid: string; timestamp?: number }[]> {
+    // Baileys surfaces status updates via the `status.update` / `status.sync`
+    // events, which we don't currently persist. Return an empty list rather
+    // than throwing — the agent can still post statuses (the common case).
+    return [];
+  }
+
+  // ─── IWhatsAppEngine: channels (newsletters) ────────────────────────────
+
+  async subscribeChannel(inviteCode: string): Promise<{ jid: string }> {
+    const sock = this.requireSocket();
+    // Resolve the invite code to a newsletter jid via newsletterMetadata, then follow.
+    const code = extractInviteCode(inviteCode);
+    const meta = await sock.newsletterMetadata('invite', code);
+    if (!meta?.id) {
+      throw new Error('BaileysEngine: could not resolve channel from invite code — it may be invalid or revoked.');
+    }
+    const jid = toNeutralJid(meta.id);
+    await sock.newsletterFollow(jid);
+    this.followedChannels.set(jid, {
+      jid,
+      name: meta.name,
+      description: meta.description,
+      subscribers: meta.subscribers,
+    });
+    return { jid };
+  }
+
+  async listChannels(): Promise<WhatsAppChannel[]> {
+    return Array.from(this.followedChannels.values());
   }
 
   // ─── Internal: reconnect ────────────────────────────────────────────────
@@ -1043,4 +1290,26 @@ function buildVCard(contact: { displayName: string; phone: string; organization?
     org,
     'END:VCARD',
   ].filter(Boolean).join('\n');
+}
+
+/**
+ * Extract a WhatsApp invite code from either a raw code or a full invite URL.
+ * Accepts forms like:
+ *   - "https://chat.whatsapp.com/ABC123XYZ"
+ *   - "https://whatsapp.com/channel/002ABcd..."
+ *   - "ABC123XYZ" (raw code, returned as-is)
+ * Returns the trailing path segment, or the original input if no URL structure is found.
+ */
+function extractInviteCode(input: string): string {
+  const trimmed = input.trim();
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      const seg = parsed.pathname.split('/').filter(Boolean).pop();
+      if (seg) return seg;
+    }
+  } catch {
+    // Not a URL — treat as a raw code.
+  }
+  return trimmed;
 }

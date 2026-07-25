@@ -179,10 +179,28 @@ export async function whatsappGetProfilePicture(
     const jid = requireString(args, 'jid');
     if (typeof jid !== "string") return jid;
 
+    if (!resolved.engine.getProfilePicture) {
+      return {
+        success: false,
+        output: 'This WhatsApp engine does not support fetching profile pictures.',
+        error: 'NOT_SUPPORTED',
+      };
+    }
+
+    const { url } = await resolved.engine.getProfilePicture(jid);
+
+    if (!url) {
+      return {
+        success: true,
+        output: `No profile picture available for ${jid} (the contact may have hidden it or not set one).`,
+        metadata: { jid, url: null },
+      };
+    }
+
     return {
-      success: false,
-      output: 'Getting profile pictures is not yet implemented in the engine interface.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: `Profile picture URL for ${jid}: ${url}`,
+      metadata: { jid, url },
     };
   });
 }

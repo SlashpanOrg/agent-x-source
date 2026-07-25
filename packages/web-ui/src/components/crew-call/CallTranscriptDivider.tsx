@@ -5,8 +5,8 @@ import { callTheme } from './crew-call-theme';
 
 export interface CallTranscriptDividerProps {
   label: string;
-  /** 'daytime' | 'time' for segment markers; 'duration' for total call length. */
-  variant?: 'daytime' | 'time' | 'duration';
+  /** 'daytime' | 'time' for segment markers; 'duration' for total call length; 'new_conversation' for conversation boundary. */
+  variant?: 'daytime' | 'time' | 'duration' | 'new_conversation';
   /** Override accent (e.g. history panel uses app theme). */
   mutedColor?: string;
   lineColor?: string;

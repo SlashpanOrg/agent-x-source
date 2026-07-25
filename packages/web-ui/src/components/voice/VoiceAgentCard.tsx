@@ -1,23 +1,29 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import Popover from '@mui/material/Popover';
 import MenuItem from '@mui/material/MenuItem';
+import Dialog from '@mui/material/Dialog';
+import DialogContent from '@mui/material/DialogContent';
 import MicIcon from '@mui/icons-material/Mic';
 import MicOffIcon from '@mui/icons-material/MicOff';
 import PublicIcon from '@mui/icons-material/Public';
 import ShieldIcon from '@mui/icons-material/Shield';
+import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
+import FiberNewIcon from '@mui/icons-material/FiberNew';
 import { colors, alphaColor, MONO } from '../../theme';
 import { useVoiceOptional, useVoiceCommsOptional } from './VoiceProvider';
 import { voiceDisabledReason } from '../../voice/support';
 import { CommsSpinner } from './CommsSpinner';
 import { VoiceParticleField, type ParticlePhase } from './VoiceParticleField';
 import { VoiceTranscriptPanel } from './VoiceTranscriptPanel';
-import { voice as voiceApi, providers as providersApi, models as modelsApi, modelBenchmark } from '../../api';
+import { voice as voiceApi, providers as providersApi, models as modelsApi, modelBenchmark, sessions as sessionsApi } from '../../api';
 import type { ConfiguredProvider, ModelInfo, VoiceConfig } from '../../api';
 import { KOKORO_VOICE_PROFILES } from '../../voice/voice-config';
 import { usePersonaName } from '../../hooks/usePersonaName';
+
+const VOICE_SESSION_ID = '__channel__:voice';
 
 /**
  * Voice Agent card for the Bento dashboard — call-modal style centerpiece.
@@ -53,9 +59,34 @@ export function VoiceAgentCard({
   const envBlocked = voiceDisabledReason();
   const voiceActive = voiceCtx?.voiceActive ?? false;
   const setVoiceActive = voiceCtx?.setVoiceActive;
+  const setConversationMode = voiceCtx?.setConversationMode;
   const comms = commsCtx?.comms;
 
   const sessionReady = Boolean(voiceCtx?.voiceReady) && !envBlocked;
+
+  // ── Continue / New conversation modal ──────────────────────────────────
+  // When the user activates voice and there is existing transcript history,
+  // show a modal asking whether to continue the prior conversation (agent
+  // hydrates with history) or start a new one (agent starts fresh; a
+  // new_conversation divider row is inserted by the backend).
+  const [showConvModal, setShowConvModal] = useState(false);
+  const [checkingHistory, setCheckingHistory] = useState(false);
+  const hasHistoryRef = useRef(false);
+
+  const checkHasHistory = useCallback(async (): Promise<boolean> => {
+    try {
+      const page = await sessionsApi.getMessagesPage(VOICE_SESSION_ID, { limit: 1 });
+      return (page.total ?? 0) > 0;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const activateWithMode = useCallback((mode: 'continue' | 'new') => {
+    setConversationMode?.(mode);
+    setShowConvModal(false);
+    setVoiceActive?.(true);
+  }, [setConversationMode, setVoiceActive]);
 
   // Push toggle state to backend
   useEffect(() => {
@@ -77,9 +108,33 @@ export function VoiceAgentCard({
 
   const particlePhase: ParticlePhase = phase;
 
-  const handleClick = () => {
+  const handleClick = async () => {
     if (!sessionReady || !setVoiceActive) return;
-    setVoiceActive(!voiceActive);
+    // Deactivating: just turn off — no modal needed.
+    if (voiceActive) {
+      setVoiceActive(false);
+      return;
+    }
+    // Activating: check if there's existing voice transcript history.
+    // If yes, show the continue/new conversation modal. If no, activate
+    // directly with 'continue' (there's nothing to start fresh from).
+    setCheckingHistory(true);
+    try {
+      const hasHistory = await checkHasHistory();
+      hasHistoryRef.current = hasHistory;
+      if (hasHistory) {
+        setShowConvModal(true);
+      } else {
+        setConversationMode?.('continue');
+        setVoiceActive(true);
+      }
+    } catch {
+      // If the history check fails, activate with default mode.
+      setConversationMode?.('continue');
+      setVoiceActive(true);
+    } finally {
+      setCheckingHistory(false);
+    }
   };
 
   // Notify parent of active state changes (for connection pulses)
@@ -99,6 +154,7 @@ export function VoiceAgentCard({
       : 0;
 
   const statusText = (() => {
+    if (checkingHistory) return 'Checking…';
     if (!voiceActive) return 'Click to activate';
     if (!sessionReady) return 'Voice kit required';
     if (phase === 'disabled') return 'Click to activate';
@@ -274,6 +330,110 @@ export function VoiceAgentCard({
         refreshToken={transcriptRefresh}
         agentLabel={personaName}
       />
+
+      {/* Continue / New conversation modal — shown on activation when history exists */}
+      <Dialog
+        open={showConvModal}
+        onClose={() => setShowConvModal(false)}
+        maxWidth="xs"
+        fullWidth
+        slotProps={{
+          paper: {
+            sx: {
+              bgcolor: colors.bg.secondary,
+              border: `1px solid ${colors.border.default}`,
+              borderRadius: 2,
+            },
+          },
+        }}
+      >
+        <DialogContent sx={{ p: 2.5 }}>
+          <Typography sx={{
+            fontSize: '0.75rem',
+            fontFamily: MONO,
+            letterSpacing: '0.08em',
+            color: colors.text.primary,
+            textTransform: 'uppercase',
+            mb: 0.5,
+          }}>
+            Voice Session
+          </Typography>
+          <Typography sx={{
+            fontSize: '0.65rem',
+            fontFamily: MONO,
+            color: colors.text.dim,
+            mb: 2,
+          }}>
+            Continue from where you left off, or start a new conversation. The transcript stays either way.
+          </Typography>
+
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <Box
+              component="button"
+              type="button"
+              onClick={() => activateWithMode('continue')}
+              sx={{
+                all: 'unset',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.5,
+                p: 1.5,
+                borderRadius: 1.5,
+                border: `1px solid ${colors.border.default}`,
+                bgcolor: alphaColor(colors.bg.tertiary, '60'),
+                transition: 'border-color 0.15s, background 0.15s',
+                '&:hover': {
+                  borderColor: colors.accent.blue,
+                  bgcolor: alphaColor(colors.accent.blue, '10'),
+                },
+              }}
+            >
+              <ChatBubbleOutlineIcon sx={{ fontSize: 20, color: colors.accent.blue, flexShrink: 0 }} />
+              <Box>
+                <Typography sx={{ fontSize: '0.7rem', fontFamily: MONO, color: colors.text.primary, mb: 0.2 }}>
+                  Continue conversation
+                </Typography>
+                <Typography sx={{ fontSize: '0.55rem', fontFamily: MONO, color: colors.text.dim }}>
+                  Agent remembers prior voice turns
+                </Typography>
+              </Box>
+            </Box>
+
+            <Box
+              component="button"
+              type="button"
+              onClick={() => activateWithMode('new')}
+              sx={{
+                all: 'unset',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.5,
+                p: 1.5,
+                borderRadius: 1.5,
+                border: `1px solid ${colors.border.default}`,
+                bgcolor: alphaColor(colors.bg.tertiary, '60'),
+                transition: 'border-color 0.15s, background 0.15s',
+                '&:hover': {
+                  borderColor: colors.accent.green,
+                  bgcolor: alphaColor(colors.accent.green, '10'),
+                },
+              }}
+            >
+              <FiberNewIcon sx={{ fontSize: 20, color: colors.accent.green, flexShrink: 0 }} />
+              <Box>
+                <Typography sx={{ fontSize: '0.7rem', fontFamily: MONO, color: colors.text.primary, mb: 0.2 }}>
+                  Start new conversation
+                </Typography>
+                <Typography sx={{ fontSize: '0.55rem', fontFamily: MONO, color: colors.text.dim }}>
+                  Agent starts fresh · a divider marks the boundary
+                </Typography>
+              </Box>
+            </Box>
+          </Box>
+        </DialogContent>
+      </Dialog>
     </Box>
   );
 }

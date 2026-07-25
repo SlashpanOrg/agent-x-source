@@ -3,7 +3,7 @@ import { isCrewVoiceSessionId } from './crew-voice-session.js';
 /** Gap before a same-day time divider is written (hold/resume, long pause). */
 export const CALL_DIVIDER_GAP_MS = 15 * 60 * 1000;
 
-export type CallDividerVariant = 'daytime' | 'time' | 'duration';
+export type CallDividerVariant = 'daytime' | 'time' | 'duration' | 'new_conversation';
 
 export interface CallDividerMeta {
   variant: CallDividerVariant;
@@ -11,7 +11,7 @@ export interface CallDividerMeta {
 }
 
 /** Persisted marker row for call-duration (and optional standalone dividers). */
-export const CALL_DIVIDER_CONTENT_RE = /^\[call_divider:(daytime|time|duration)\](.*)$/i;
+export const CALL_DIVIDER_CONTENT_RE = /^\[call_divider:(daytime|time|duration|new_conversation)\](.*)$/i;
 
 /** Process-local clock of last spoken transcript persist per voice session. */
 const lastSpokenAtBySession = new Map<string, number>();
@@ -100,6 +100,7 @@ export function parseCallDivider(
 function fallbackLabel(variant: CallDividerVariant): string {
   if (variant === 'duration') return 'Call time';
   if (variant === 'time') return 'Later';
+  if (variant === 'new_conversation') return 'New conversation';
   return 'Call';
 }
 
@@ -109,7 +110,7 @@ export function readCallDividerMeta(metadata: unknown): CallDividerMeta | null {
   if (!raw || typeof raw !== 'object') return null;
   const variant = (raw as { variant?: unknown }).variant;
   const label = (raw as { label?: unknown }).label;
-  if (variant !== 'daytime' && variant !== 'time' && variant !== 'duration') return null;
+  if (variant !== 'daytime' && variant !== 'time' && variant !== 'duration' && variant !== 'new_conversation') return null;
   if (typeof label !== 'string' || !label.trim()) return null;
   return { variant, label: label.trim() };
 }
@@ -149,5 +150,12 @@ export function buildDurationDividerMeta(elapsedMs: number): CallDividerMeta {
   return {
     variant: 'duration',
     label: formatCallDividerDurationLabel(elapsedMs),
+  };
+}
+
+export function buildNewConversationDividerMeta(): CallDividerMeta {
+  return {
+    variant: 'new_conversation',
+    label: 'New conversation',
   };
 }

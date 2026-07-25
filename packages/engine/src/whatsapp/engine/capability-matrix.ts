@@ -26,17 +26,25 @@ export const CAPABILITY_MATRIX: Record<EngineCapability, WhatsAppEngineKind[]> =
   // Call rejection — Baileys handles this fully; wwebjs's rejectCall is a no-op.
   rejectCall: ['baileys'],
 
-  // Group management — both engines support participant add/remove/promote/demote.
-  groupManagement: ['baileys', 'electron-wwebjs'],
+  // Group management — Baileys implements all methods; wwebjs adapter doesn't
+  // wire them up yet (returns NOT_SUPPORTED from the method-existence guard).
+  groupManagement: ['baileys'],
 
-  // Extended capabilities — whatsapp-web.js has broader coverage because it
-  // drives the full WhatsApp Web UI; Baileys covers the core protocol.
-  labels: ['electron-wwebjs'],
-  catalog: ['electron-wwebjs'],
-  statusStories: ['electron-wwebjs'],
-  channels: ['electron-wwebjs'],
-  chatHistoryFetch: ['electron-wwebjs'],
-  messageReactionsQuery: ['electron-wwebjs'],
+  // Message history & reactions — Baileys tracks these in-memory from events
+  // (full history sync is disabled per §0.7). wwebjs adapter not yet wired.
+  chatHistoryFetch: ['baileys'],
+  messageReactionsQuery: ['baileys'],
+
+  // Status stories — Baileys can post to status@broadcast. wwebjs not yet wired.
+  statusStories: ['baileys'],
+
+  // Channels (newsletters) — Baileys supports follow/metadata. wwebjs not yet wired.
+  channels: ['baileys'],
+
+  // Labels & catalog — WhatsApp Business API feature. Neither engine adapter
+  // implements the methods yet; tools return CAPABILITY_NOT_SUPPORTED.
+  labels: [],
+  catalog: [],
 };
 
 /**

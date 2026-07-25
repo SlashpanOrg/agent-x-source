@@ -65,6 +65,13 @@ export interface VoiceSessionClientOptions extends VoiceSessionClientEvents {
   chatSessionId?: string;
   /** When true, use a segregated voice-only session (__channel__:voice) instead of a chat session. */
   voiceOnly?: boolean;
+  /**
+   * Dashboard voice activation mode:
+   * - 'continue' (default): agent hydrates with recent transcript history.
+   * - 'new': agent starts fresh; backend inserts a new_conversation divider row.
+   *   Only meaningful for voice-only sessions.
+   */
+  conversationMode?: 'continue' | 'new';
 }
 
 function wsUrl(authToken?: string | null): string {
@@ -80,6 +87,7 @@ export class VoiceSessionClient {
   private readonly mode: 'push-to-talk' | 'duplex';
   private readonly chatSessionId?: string;
   private readonly voiceOnly: boolean;
+  private readonly conversationMode: 'continue' | 'new';
   private mediaStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
   private workletNode: AudioWorkletNode | null = null;
@@ -104,6 +112,7 @@ export class VoiceSessionClient {
     this.mode = options.mode ?? 'push-to-talk';
     this.chatSessionId = options.chatSessionId;
     this.voiceOnly = Boolean(options.voiceOnly);
+    this.conversationMode = options.conversationMode ?? 'continue';
     this.playback.setOnIdle(() => {
       this.events.onPlaybackLevel?.(0);
       this.events.onPlaybackIdle?.();
@@ -199,6 +208,7 @@ export class VoiceSessionClient {
             sessionId: crypto.randomUUID(),
             ...(this.voiceOnly ? { voiceOnly: true } : {}),
             ...(!this.voiceOnly && this.chatSessionId ? { chatSessionId: this.chatSessionId } : {}),
+            ...(this.voiceOnly && this.conversationMode !== 'continue' ? { conversationMode: this.conversationMode } : {}),
             clientSituation,
           }));
         });

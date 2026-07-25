@@ -27,6 +27,8 @@ export function useVoiceSession(
   voiceOnly?: boolean,
   /** When the voice engine changes, drop the socket and allow a clean reconnect. */
   engine: VoiceEngineKind = 'stt_llm_tts',
+  /** Dashboard voice activation mode: 'continue' (hydrate history) or 'new' (fresh start). */
+  conversationMode: 'continue' | 'new' = 'continue',
 ) {
   const chatSessionId = typeof chatSessionIdOrCallbacks === 'string'
     ? chatSessionIdOrCallbacks
@@ -82,14 +84,15 @@ export function useVoiceSession(
 
   // Tear down when mode / chat session / engine changes (not on first mount).
   // Callers that keep `enabled` true will reconnect via startSession / ensurePttReady.
-  const sessionIdentityRef = useRef({ chatSessionId, mode, engine });
+  const sessionIdentityRef = useRef({ chatSessionId, mode, engine, conversationMode });
   useEffect(() => {
     const prev = sessionIdentityRef.current;
     const changed =
       prev.chatSessionId !== chatSessionId
       || prev.mode !== mode
-      || prev.engine !== engine;
-    sessionIdentityRef.current = { chatSessionId, mode, engine };
+      || prev.engine !== engine
+      || prev.conversationMode !== conversationMode;
+    sessionIdentityRef.current = { chatSessionId, mode, engine, conversationMode };
     if (!changed) return;
 
     clientRef.current?.disconnect();
@@ -144,6 +147,7 @@ export function useVoiceSession(
         mode,
         chatSessionId,
         voiceOnly,
+        conversationMode,
         onStateChange: (nextState) => {
           setState(nextState);
           if (nextState === 'listening' || nextState === 'ready') {

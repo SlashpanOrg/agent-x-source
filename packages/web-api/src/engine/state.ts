@@ -38,6 +38,8 @@ import {
   type ServiceContext,
   getSubAgentServiceInstance,
   getPersonaStore,
+  GeoLocationService,
+  setGeoLocationServiceInstance,
 } from '@agentx/engine';
 import type { AgentXConfig, TelemetryBus, StorageAdapter, ChannelBindingId, ChannelSessionBinding, ClientSituation } from '@agentx/shared';
 import {
@@ -91,6 +93,8 @@ export interface EngineState {
   boundSessionAgents?: Map<string, Agent>;
   /** Latest client situation from the app (location + timezone). Used by channel agents. */
   clientSituation: ClientSituation | null;
+  /** Server-side geolocation service (IP-based, refreshes every 15 min). */
+  geoLocationService: GeoLocationService | null;
   dek: Buffer | null;
   integrationHub: IntegrationHub;
 }
@@ -349,9 +353,21 @@ export function getEngine(): EngineState {
     redisRuntime: null,
     webhookRuntime: null,
     clientSituation: null,
+    geoLocationService: null,
     dek: null,
     integrationHub,
   };
+
+  // Start the server-side geolocation service — resolves location from IP
+  // address and refreshes every 15 minutes. Syncs to all agents on update.
+  const geoService = new GeoLocationService({
+    onUpdate: (situation) => {
+      setCurrentClientSituation(situation);
+    },
+  });
+  state.geoLocationService = geoService;
+  setGeoLocationServiceInstance(geoService);
+  geoService.start();
 
   // Wire the channel service agent resolver to the engine's channel agent factory.
   if (serviceContext.channelService instanceof ChannelService) {

@@ -10,6 +10,7 @@
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 import {
   requireEngine,
+  requireEngineWithCapability,
   runTool,
   requireString,
   optionalString,
@@ -428,31 +429,50 @@ export async function whatsappDeleteMessage(
 }
 
 // ─── WhatsAppGetMessageHistory ───────────────────────────────────────────
-// Note: This requires the 'chatHistoryFetch' capability. Not all engines
-// support this — Baileys can fetch from its local store, but the capability
-// must be declared in the capability matrix.
+// Requires the 'chatHistoryFetch' capability. Baileys returns messages
+// observed since the session connected (full history sync is disabled per §0.7).
 
 export async function whatsappGetMessageHistory(
   args: Record<string, unknown>,
   _context: ToolExecutionContext,
 ): Promise<ToolResult> {
   return runTool('get message history', async () => {
-    // This tool requires the chatHistoryFetch capability
-    const { requireEngineWithCapability } = await import('./helpers.js');
     const resolved = requireEngineWithCapability('chatHistoryFetch');
     if ("error" in resolved) return resolved.error;
 
     const chatId = requireString(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
+    const limit = optionalNumber(args, 'limit') ?? 50;
 
-    // The engine interface doesn't currently have a getMessageHistory method.
-    // This is a placeholder — the actual implementation would call
-    // engine.getMessageHistory(chatId, limit) once added to IWhatsAppEngine.
-    // For now, return a clear message.
+    if (!resolved.engine.getMessageHistory) {
+      return {
+        success: false,
+        output: 'This WhatsApp engine does not support fetching message history.',
+        error: 'NOT_SUPPORTED',
+      };
+    }
+
+    const messages = await resolved.engine.getMessageHistory(chatId, limit);
+
+    if (messages.length === 0) {
+      return {
+        success: true,
+        output: `No recent messages found for ${chatId}. Messages are tracked from the moment the session connected — send or receive a message first, or the chat may have no recent activity.`,
+        metadata: { chatId, count: 0 },
+      };
+    }
+
+    const lines = messages.map((m) => {
+      const dir = m.fromMe ? 'You' : (m.pushName ?? m.from ?? 'Them');
+      const time = new Date(m.timestamp * 1000).toISOString();
+      const body = m.body || `[${m.type}]`;
+      return `[${time}] ${dir}: ${body}`;
+    });
+
     return {
-      success: false,
-      output: 'Message history fetch is not yet implemented in the engine interface. This capability will be added in a future update.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: `Last ${messages.length} message${messages.length === 1 ? '' : 's'} in ${chatId}:\n${lines.join('\n')}`,
+      metadata: { chatId, count: messages.length, messages },
     };
   });
 }
@@ -464,7 +484,6 @@ export async function whatsappGetReactions(
   _context: ToolExecutionContext,
 ): Promise<ToolResult> {
   return runTool('get reactions', async () => {
-    const { requireEngineWithCapability } = await import('./helpers.js');
     const resolved = requireEngineWithCapability('messageReactionsQuery');
     if ("error" in resolved) return resolved.error;
 
@@ -473,12 +492,29 @@ export async function whatsappGetReactions(
     const messageId = requireString(args, 'messageId');
     if (typeof messageId !== "string") return messageId;
 
-    // Similar to message history — the engine interface doesn't yet have a
-    // getReactions method. Placeholder for now.
+    if (!resolved.engine.getReactions) {
+      return {
+        success: false,
+        output: 'This WhatsApp engine does not support querying reactions.',
+        error: 'NOT_SUPPORTED',
+      };
+    }
+
+    const reactions = await resolved.engine.getReactions(chatId, messageId);
+
+    if (reactions.length === 0) {
+      return {
+        success: true,
+        output: `No reactions recorded for message ${messageId} in ${chatId}. Reactions are tracked from the moment the session connected.`,
+        metadata: { chatId, messageId, count: 0 },
+      };
+    }
+
+    const lines = reactions.map((r) => `${r.senderId}: ${r.emoji ?? '(removed)'}`);
     return {
-      success: false,
-      output: 'Reaction query is not yet implemented in the engine interface. This capability will be added in a future update.',
-      error: 'NOT_IMPLEMENTED',
+      success: true,
+      output: `Reactions on message ${messageId} (${reactions.length}):\n${lines.join('\n')}`,
+      metadata: { chatId, messageId, count: reactions.length, reactions },
     };
   });
 }
