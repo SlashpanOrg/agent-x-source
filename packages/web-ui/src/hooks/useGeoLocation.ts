@@ -32,6 +32,11 @@ export function useGeoLocation(): UseGeoLocationResult {
   const [data, setData] = useState<GeoLocationResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const refreshingRef = useRef(false);
+  // Keep a ref to the latest data so fetchLocation doesn't depend on `data`
+  // (which would recreate the callback on every state change and re-trigger
+  // the mount/focus effect in an infinite loop).
+  const dataRef = useRef<GeoLocationResponse | null>(null);
+  useEffect(() => { dataRef.current = data; }, [data]);
 
   const fetchLocation = useCallback(async (silent = false) => {
     if (refreshingRef.current) return;
@@ -42,7 +47,7 @@ export function useGeoLocation(): UseGeoLocationResult {
       setData(result);
     } catch {
       // If fetch fails, keep existing data or set "not found"
-      if (!data) {
+      if (!dataRef.current) {
         setData({
           city: null,
           fullLabel: null,
@@ -56,7 +61,7 @@ export function useGeoLocation(): UseGeoLocationResult {
       setLoading(false);
       refreshingRef.current = false;
     }
-  }, [data]);
+  }, []);
 
   const refresh = useCallback(async () => {
     if (refreshingRef.current) return;
@@ -75,9 +80,12 @@ export function useGeoLocation(): UseGeoLocationResult {
     }
   }, []);
 
-  // Fetch on mount, then poll every 15 minutes.
+  // Fetch on mount (silent — no loading spinner flash), then poll every 15 minutes.
+  // The initial fetch is silent so the user sees "Location not found" immediately
+  // instead of a tiny 8px spinner that looks blank. The value updates to the actual
+  // city once the fetch completes. Only manual refresh() shows the loading spinner.
   useEffect(() => {
-    void fetchLocation();
+    void fetchLocation(true);
     const interval = setInterval(() => void fetchLocation(true), POLL_INTERVAL_MS);
     const onFocus = () => void fetchLocation(true);
     window.addEventListener('focus', onFocus);

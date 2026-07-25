@@ -282,6 +282,8 @@ export const crewChat = {
     created: boolean;
     crew: CrewChatCrewInfo;
     session: CrewChatSessionInfo;
+    /** Stable per-crew voice profile (local Kokoro + xAI voice IDs). */
+    crewVoiceProfile?: { local: string; xAI: string };
   }>('/crew-chat/voice-sessions', { method: 'POST', body: JSON.stringify(body) }),
 
   /** Call history — voice:{textSessionId} siblings only. */

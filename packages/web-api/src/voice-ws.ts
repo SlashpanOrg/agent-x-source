@@ -38,6 +38,7 @@ import {
   buildNewConversationDividerMeta,
   encodeCallDividerContent,
   resetCallDividerClock,
+  isCrewVoiceSessionId,
 } from '@agentx/shared';
 import type { ProviderId, QuestionnairePayload } from '@agentx/shared';
 import { normalizeVoiceAssistantContent } from './voice-speakable.js';
@@ -46,6 +47,7 @@ import type { ClientSituation } from '@agentx/shared';
 import { updateDuplexEndpointing } from './voice/duplex-endpointing.js';
 import { resolveCrewPrivateHostForAgent } from './host-crew-session.js';
 import { seedCallDividerClockFromStore } from './voice/seed-call-divider-clock.js';
+import { getCrewVoiceProfile } from './crew-voice-profiles.js';
 
 const SAMPLE_RATE = 16_000;
 /** Minimum interval between streaming STT preview passes (PTT + duplex). */
@@ -123,6 +125,12 @@ interface VoiceWsSession {
   conversationMode?: 'continue' | 'new';
   /** True once the conversationMode has been consumed by ensureChatSessionActive. */
   conversationModeApplied?: boolean;
+  /**
+   * Per-crew voice override for crew calls (voice:{textSessionId} sessions).
+   * When set, the local TTS engine uses this Kokoro voice ID instead of the
+   * global config. Set from the crew-voice-profiles.json store at session start.
+   */
+  crewVoiceId?: string;
 }
 
 const activeSessions = new Map<WebSocket, VoiceWsSession>();
@@ -161,7 +169,10 @@ async function speakSystemLine(session: VoiceWsSession, line: string): Promise<v
   const synthId = randomUUID();
   session.activeSynthId = synthId;
   try {
-    const stream = await service.synthesizeStreamText(line, { requestId: synthId });
+    const stream = await service.synthesizeStreamText(line, {
+      requestId: synthId,
+      ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
+    });
     for (const chunk of stream.chunks) {
       if (session.activeSynthId !== stream.requestId) break;
       const audio = Buffer.from(chunk.pcmBase64, 'base64');
@@ -673,9 +684,31 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
     ? (msg.conversationMode as 'continue' | 'new')
     : 'continue' as const;
 
+  // Crew call voice override: look up the per-crew voice profile for this
+  // voice:{textSessionId} session and apply it to whichever engine is active.
+  // The profile is created on first call (postCrewChatVoiceSession) and is
+  // stable thereafter — gives each crew member a consistent voice identity.
+  let crewVoiceId: string | undefined;
+  let crewXaiVoice: string | undefined;
+  if (chatSessionId && isCrewVoiceSessionId(chatSessionId)) {
+    const sessionRecord = getEngine().sessionManager.getSessionById(chatSessionId);
+    const callsign = sessionRecord?.hostCrewCallsign;
+    if (callsign) {
+      const profile = getCrewVoiceProfile(callsign);
+      if (profile) {
+        crewVoiceId = profile.local;
+        crewXaiVoice = profile.xAI;
+      }
+    }
+  }
+
   if (voiceConfig.engine === 'realtime_xai') {
     const transport = new WebSocketVoiceTransport({ ws, sessionId: voiceWsSessionId, mode, engine: 'realtime_xai' });
     const engine = new XaiRealtimeEngine();
+    // Apply per-crew xAI voice override if this is a crew call with a profile.
+    const xaiVoiceConfig = crewXaiVoice
+      ? { ...voiceConfig, xai: { ...voiceConfig.xai, voice: crewXaiVoice } }
+      : voiceConfig;
     try {
       const session = await engine.createSession({
         ws,
@@ -684,6 +717,7 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
         mode,
         chatSessionId,
         clientSituation,
+        voiceConfig: xaiVoiceConfig,
       });
       activeEngineSessions.set(ws, session);
     } catch (err) {
@@ -738,6 +772,7 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
     bypassChip: false,
     ...(clientSituation ? { clientSituation } : {}),
     conversationMode,
+    ...(crewVoiceId ? { crewVoiceId } : {}),
   });
   voiceSession.setState(mode === 'duplex' ? 'listening' : 'idle');
   ws.send(JSON.stringify({ type: 'session_ready', sessionId: voiceSession.sessionId, mode }));
@@ -1155,7 +1190,11 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void>
       if (session.textOnlyPlayback) return;
       const fillerId = randomUUID();
       session.activeSynthId = fillerId;
-      const stream = await service.synthesizeStreamText(line, { forFiller: true, requestId: fillerId });
+      const stream = await service.synthesizeStreamText(line, {
+        forFiller: true,
+        requestId: fillerId,
+        ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
+      });
       for (const chunk of stream.chunks) {
         if (session.activeSynthId !== stream.requestId) break;
         const audio = Buffer.from(chunk.pcmBase64, 'base64');
@@ -1186,7 +1225,10 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void>
       }
       const synthId = randomUUID();
       session.activeSynthId = synthId;
-      const stream = await service.synthesizeStreamText(unit, { requestId: synthId });
+      const stream = await service.synthesizeStreamText(unit, {
+        requestId: synthId,
+        ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
+      });
       for (const chunk of stream.chunks) {
         if (session.activeSynthId !== stream.requestId) break;
         const audio = Buffer.from(chunk.pcmBase64, 'base64');

@@ -433,7 +433,7 @@ function StatusRow({
       <Typography sx={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.55rem', color: colors.text.dim }}>
         {label}
       </Typography>
-      {checking ? (
+      {checking && !value ? (
         <CircularProgress size={8} sx={{ color: colors.text.dim }} />
       ) : (
         <Typography sx={{
@@ -446,6 +446,7 @@ function StatusRow({
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
+          ...(checking ? { opacity: 0.5 } : {}),
         }}>
           {value}
         </Typography>
