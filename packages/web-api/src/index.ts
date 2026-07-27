@@ -132,15 +132,6 @@ setAgentMetricsApi({
 const app: Express = express();
 app.use(express.json({ limit: '50mb' }));
 
-// Auth routes (must be before auth middleware)
-app.use('/api', createAuthRouter());
-
-// Gmail MCP OAuth callback
-app.get('/oauth2callback', (req, res) => { void handleMcpStdioOAuthCallback(req, res); });
-
-// Auth middleware
-app.use(authMiddleware);
-
 // Global middleware
 const corsOrigin = process.env.AGENTX_CORS_ORIGIN;
 app.use((_req, res, next) => {
@@ -160,11 +151,16 @@ app.use((_req, res, next) => {
 // Request ID
 app.use(requestIdMiddleware);
 
-// Structured request logging
-app.use(requestLogger);
-
-// HTTP request observability (metrics + spans)
+// HTTP request observability (metrics + spans). This is placed BEFORE auth so
+// auth spans (middleware, session_validate, login, status, ...) become children of
+// the HTTP root span instead of creating separate root traces that flood the list.
 app.use(requestObservabilityMiddleware);
+
+// Auth middleware (runs after HTTP observability is active; sets req.agentxSession).
+app.use(authMiddleware);
+
+// Structured request logging (after auth so the session is available for logs).
+app.use(requestLogger);
 
 // Security headers
 app.use((_req, res, next) => {
@@ -173,6 +169,12 @@ app.use((_req, res, next) => {
   res.setHeader('X-XSS-Protection', '1; mode=block');
   next();
 });
+
+// Auth routes (after request observability so auth operations are children of the HTTP span).
+app.use('/api', createAuthRouter());
+
+// Gmail MCP OAuth callback
+app.get('/oauth2callback', (req, res) => { void handleMcpStdioOAuthCallback(req, res); });
 
 // Existing service routers
 app.use('/api', neuralCortexRouter());

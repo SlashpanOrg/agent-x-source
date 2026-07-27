@@ -13,16 +13,23 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import type { ObservabilityApiContext } from './index.js';
 import type { ObservabilityDomain } from '@agentx/shared';
+import type { ListLogsFilters } from '@agentx/engine';
 
 export function logsRouter(ctx: ObservabilityApiContext): Router {
   const r = Router();
 
   r.get('/', async (req: Request, res: Response) => {
     try {
-      const domain = req.query.domain as ObservabilityDomain | undefined;
+      const rawDomain = req.query.domain as string | undefined;
+      const domain = rawDomain && rawDomain.toLowerCase() !== 'both' ? rawDomain.toUpperCase() as ObservabilityDomain : undefined;
       const sessionId = req.query.sessionId as string | undefined;
       const traceId = req.query.traceId as string | undefined;
-      const level = req.query.level as 'debug' | 'info' | 'warn' | 'error' | undefined;
+      const rawLevel = req.query.level as string | string[] | undefined;
+      const toArray = (v: string | string[] | undefined): string[] | undefined => {
+        if (v == null || v === '') return undefined;
+        return Array.isArray(v) ? v : v.split(',').map((s) => s.trim()).filter(Boolean);
+      };
+      const level = toArray(rawLevel) as ListLogsFilters['level'] | undefined;
       const scope = req.query.scope as string | undefined;
       const from = req.query.from as string | undefined;
       const to = req.query.to as string | undefined;
@@ -32,7 +39,7 @@ export function logsRouter(ctx: ObservabilityApiContext): Router {
       const limit = Number.isNaN(limitRaw) ? 100 : Math.min(Math.max(limitRaw, 1), 1000);
 
       let logs = await ctx.store.getLogs({
-        domain: domain && domain !== ('both' as string) ? domain : undefined,
+        domain,
         session_id: sessionId,
         trace_id: traceId,
         level,

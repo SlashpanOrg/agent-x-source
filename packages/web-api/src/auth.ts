@@ -125,7 +125,6 @@ function getToken(req: Request): string | undefined {
 export function syncDEKMiddleware(req: Request, _res: Response, next: NextFunction): void {
   const token = getToken(req);
   if (token) {
-    const handle = startAuthSpan('session_validate');
     const session = authManager.validateSession(token);
     if (session) {
       // Ensure engine state exists before setting DEK on it
@@ -133,11 +132,6 @@ export function syncDEKMiddleware(req: Request, _res: Response, next: NextFuncti
       getEngine();
       setEngineDEK(session.dek);
       req.agentxSession = session;
-      handle.span.setAttribute('auth.token_valid', true);
-      endAuthSpan(handle, true);
-    } else {
-      handle.span.setAttribute('auth.token_valid', false);
-      endAuthSpan(handle, false, 'invalid-session');
     }
   }
   next();
@@ -148,55 +142,50 @@ export function syncDEKMiddleware(req: Request, _res: Response, next: NextFuncti
  * Skips auth for health checks and auth endpoints themselves.
  */
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  const handle = startAuthSpan('middleware');
-  const { span, withContext } = handle;
+  // Public paths that don't require authentication (and shouldn't create auth noise)
+  const publicPaths = [
+    '/api/health',
+    '/api/auth/setup',
+    '/api/auth/login',
+    '/api/auth/status',
+    '/api/auth/check',
+    // OAuth providers redirect the user's browser here without an Agent-X
+    // session (popup opened with noopener; cookies may be absent). Security
+    // comes from the single-use, unguessable PKCE `state` parameter.
+    '/api/integrations/oauth/callback',
+  ];
 
-  withContext(() => {
-    // Public paths that don't require authentication
-    const publicPaths = [
-      '/api/health',
-      '/api/auth/setup',
-      '/api/auth/login',
-      '/api/auth/status',
-      '/api/auth/check',
-      // OAuth providers redirect the user's browser here without an Agent-X
-      // session (popup opened with noopener; cookies may be absent). Security
-      // comes from the single-use, unguessable PKCE `state` parameter.
-      '/api/integrations/oauth/callback',
-    ];
-
-    if (publicPaths.includes(req.path)) {
-      // Still try to sync DEK for public paths (e.g., status check with valid cookie)
-      syncDEKMiddleware(req, res, () => {});
-      span.setAttribute('auth.token_valid', true);
-      endAuthSpan(handle, true);
-      next();
-      return;
-    }
-
-    // Static files and SPA fallback
-    if (!req.path.startsWith('/api/')) {
-      span.setAttribute('auth.token_valid', true);
-      endAuthSpan(handle, true);
-      next();
-      return;
-    }
-
-    const token = getToken(req);
-    const tokenValid = !!token && authManager.isAuthenticated(token);
-    span.setAttribute('auth.token_valid', tokenValid);
-
-    if (!tokenValid) {
-      endAuthSpan(handle, false, 'unauthorized');
-      res.status(401).json({ error: 'unauthorized', message: 'Authentication required' });
-      return;
-    }
-
-    // Sync DEK and attach session info
-    syncDEKMiddleware(req, res, () => {});
-    endAuthSpan(handle, true);
+  // Static files and SPA fallback
+  if (!req.path.startsWith('/api/')) {
     next();
-  });
+    return;
+  }
+
+  if (publicPaths.includes(req.path)) {
+    next();
+    return;
+  }
+
+  const handle = startAuthSpan('middleware');
+  const { span } = handle;
+
+  const token = getToken(req);
+  const tokenValid = !!token && authManager.isAuthenticated(token);
+  span.setAttribute('auth.token_valid', tokenValid);
+
+  if (!tokenValid) {
+    endAuthSpan(handle, false, 'unauthorized');
+    res.status(401).json({ error: 'unauthorized', message: 'Authentication required' });
+    return;
+  }
+
+  // Sync DEK and attach session info
+  syncDEKMiddleware(req, res, () => {});
+  if (res.locals.httpSpan && req.agentxSession?.token) {
+    res.locals.httpSpan.setAttribute('session.id', req.agentxSession.token);
+  }
+  endAuthSpan(handle, true);
+  next();
 }
 
 /**

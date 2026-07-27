@@ -28,10 +28,17 @@ export function requestObservabilityMiddleware(req: Request, res: Response, next
     ...(userAgent ? { 'http.user_agent': userAgent } : {}),
   });
 
+  if (req.agentxSession?.token) {
+    span.setAttribute('session.id', req.agentxSession.token);
+  }
+
   // Make the span active so downstream handlers (e.g. the turn span) inherit it.
   withContext(() => next());
 
-  const finish = () => {
+  let spanEnded = false;
+  const endHttpSpan = () => {
+    if (spanEnded) return;
+    spanEnded = true;
     const durationSec = Number(process.hrtime.bigint() - start) / 1e9;
     const durationMs = Math.round(durationSec * 1000);
     const status = res.statusCode;
@@ -49,6 +56,11 @@ export function requestObservabilityMiddleware(req: Request, res: Response, next
     metricsRegistry.recordHistogram('http_request_duration_seconds', { method, status }, durationSec);
   };
 
-  res.on('finish', finish);
-  res.on('error', finish);
+  res.locals.httpSpan = span;
+  res.locals.endHttpSpan = endHttpSpan;
+
+  res.on('finish', () => {
+    if (res.locals.httpSpanAutoEnd !== false) endHttpSpan();
+  });
+  res.on('error', endHttpSpan);
 }

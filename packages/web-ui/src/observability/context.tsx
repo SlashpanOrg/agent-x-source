@@ -104,6 +104,13 @@ export function ObservabilityProvider({ children }: { children: ReactNode }): Re
     return () => clearInterval(timer);
   }, [refreshInterval]);
 
+  // On every refresh tick, slide non-custom time ranges forward to "now".
+  useEffect(() => {
+    if (timeRange.preset !== 'custom') {
+      setTimeRange(presetToRange(timeRange.preset));
+    }
+  }, [refreshTick, timeRange.preset]);
+
   // When preset changes (non-custom), recompute the range.
   useEffect(() => {
     if (timeRange.preset !== 'custom') {

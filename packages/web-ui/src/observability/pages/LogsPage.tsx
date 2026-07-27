@@ -47,7 +47,7 @@ export function LogsPage() {
         domain: domain === 'both' ? undefined : domain,
         sessionId: sessionId || undefined,
         traceId: traceId || undefined,
-        level: errorsOnly ? 'error' : (levelFilter.length === 1 ? levelFilter[0] : undefined),
+        level: errorsOnly ? 'error' : (levelFilter.length > 0 ? levelFilter.join(',') : undefined),
         scope: scopeFilter || undefined,
         from: timeRange.from,
         to: timeRange.to,

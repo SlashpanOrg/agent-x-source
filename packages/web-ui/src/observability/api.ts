@@ -66,13 +66,19 @@ export interface HealthResponse {
 }
 export interface PurgeResponse { purged: boolean }
 
+function normalizeDomain(d?: string): 'AGENT' | 'APP' | undefined {
+  if (d === 'agent') return 'AGENT';
+  if (d === 'app') return 'APP';
+  return undefined;
+}
+
 // ── Traces ────────────────────────────────────────────────────────────────────
 export function listTraces(params: {
   domain?: string; sessionId?: string; status?: string; kind?: string;
   from?: string; to?: string; q?: string; limit?: number; cursor?: string;
 } = {}): Promise<ListTracesResponse> {
   const qs = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
+  for (const [k, v] of Object.entries({ ...params, domain: normalizeDomain(params.domain) })) {
     if (v != null && v !== '') qs.set(k, String(v));
   }
   const q = qs.toString();
@@ -105,7 +111,7 @@ export function listLogs(params: {
   scope?: string; from?: string; to?: string; q?: string; limit?: number; cursor?: string;
 } = {}): Promise<ListLogsResponse> {
   const qs = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
+  for (const [k, v] of Object.entries({ ...params, domain: normalizeDomain(params.domain) })) {
     if (v != null && v !== '') qs.set(k, String(v));
   }
   const q = qs.toString();
@@ -117,7 +123,8 @@ export function getMetricSeries(params: {
   name: string; domain?: string; from?: string; to?: string; step?: string;
 }): Promise<MetricSeries> {
   const qs = new URLSearchParams({ name: params.name });
-  if (params.domain) qs.set('domain', params.domain);
+  const domain = normalizeDomain(params.domain);
+  if (domain) qs.set('domain', domain);
   if (params.from) qs.set('from', params.from);
   if (params.to) qs.set('to', params.to);
   if (params.step) qs.set('step', params.step);
@@ -125,7 +132,8 @@ export function getMetricSeries(params: {
 }
 
 export function listMetricNames(domain?: string): Promise<ListMetricNamesResponse> {
-  const qs = domain ? `?domain=${domain}` : '';
+  const d = normalizeDomain(domain);
+  const qs = d ? `?domain=${d}` : '';
   return fetchObs(`/metrics/names${qs}`);
 }
 

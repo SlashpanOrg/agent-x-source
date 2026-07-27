@@ -104,7 +104,7 @@ export interface ListLogsFilters {
   domain?: ObservabilityDomain;
   trace_id?: string;
   session_id?: string;
-  level?: 'debug' | 'info' | 'warn' | 'error';
+  level?: ('debug' | 'info' | 'warn' | 'error')[];
   scope?: string;
   from?: string;
   to?: string;
@@ -403,7 +403,10 @@ export class ObservabilityStore {
     if (filters.domain) { where.push(`domain = $${values.push(filters.domain) && values.length}`); }
     if (filters.trace_id) { where.push(`trace_id = $${values.push(filters.trace_id) && values.length}`); }
     if (filters.session_id) { where.push(`session_id = $${values.push(filters.session_id) && values.length}`); }
-    if (filters.level) { where.push(`level = $${values.push(filters.level) && values.length}`); }
+    if (filters.level && filters.level.length > 0) {
+      const placeholders = filters.level.map((v) => `$${values.push(v) && values.length}`).join(',');
+      where.push(`level IN (${placeholders})`);
+    }
     if (filters.scope) { where.push(`scope ILIKE $${values.push(`%${filters.scope}%`) && values.length}`); }
     if (filters.from) { where.push(`ts >= $${values.push(filters.from) && values.length}`); }
     if (filters.to) { where.push(`ts <= $${values.push(filters.to) && values.length}`); }
