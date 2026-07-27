@@ -10,6 +10,7 @@ export function GaugePanel({
   label,
   unit,
   zones = { green: 60, amber: 80 },
+  invert = false,
 }: {
   value: number;
   min?: number;
@@ -17,10 +18,12 @@ export function GaugePanel({
   label: string;
   unit?: string;
   zones?: { green: number; amber: number };
+  invert?: boolean;
 }) {
   const pct = Math.min(1, Math.max(0, (value - min) / (max - min)));
   const angle = pct * 180;
-  const color = pct * 100 < zones.green ? obs.accent.signal : pct * 100 < zones.amber ? obs.accent.amber : obs.accent.alert;
+  const evalPct = invert ? 1 - pct : pct;
+  const color = evalPct * 100 < zones.green ? obs.accent.signal : evalPct * 100 < zones.amber ? obs.accent.amber : obs.accent.alert;
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'center' }}>

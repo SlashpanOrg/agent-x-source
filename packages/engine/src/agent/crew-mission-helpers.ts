@@ -8,6 +8,7 @@ import { streamText } from 'ai';
 import type { Message, EngineEvent, AgentXConfig, CompletionMessage } from '@agentx/shared';
 import { generateMessageId, getLogger } from '@agentx/shared';
 import { createAiSdkModel } from './AiSdkBridge.js';
+import { withSpan } from '../observability/tracer.js';
 import type { CrewMember } from './CrewOrchestrator.js';
 import type { CrewMissionResult } from './CrewMissionOrchestrator.js';
 import type { ContextTracker } from './ContextTracker.js';
@@ -60,19 +61,28 @@ export async function superviseCrewMission(
 
   try {
     const model = createAiSdkModel(ctx.config, ctx.getApiKey());
-    const r = await streamText({
-      model,
-      messages: [
-        { role: 'system', content: reviewPrompt },
-        {
-          role: 'user',
-          content: `${turnCtx.block}\n\nUser request: ${turnCtx.mergedTask}\n\nMission success: ${mission.success}\n\nCrew outputs:\n${workerSummary}\n\nProvide your final supervised response:`,
-        },
-      ],
-      maxOutputTokens: 4096,
+    const messages = [
+      { role: 'system' as const, content: reviewPrompt },
+      {
+        role: 'user' as const,
+        content: `${turnCtx.block}\n\nUser request: ${turnCtx.mergedTask}\n\nMission success: ${mission.success}\n\nCrew outputs:\n${workerSummary}\n\nProvide your final supervised response:`,
+      },
+    ];
+    const text = await withSpan('llm.crew_supervisor', 'llm', async (span) => {
+      span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+      span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+      span.setAttribute('gen_ai.usage.total_cost', 0);
+      span.setAttribute('llm.input_messages', JSON.stringify(messages));
+      const r = await streamText({
+        model,
+        messages,
+        maxOutputTokens: 4096,
+      });
+      let content = '';
+      for await (const chunk of r.textStream) { content += chunk; }
+      span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content }]));
+      return content;
     });
-    let text = '';
-    for await (const chunk of r.textStream) { text += chunk; }
     if (text.trim()) {
       const msg: Message = {
         id: generateMessageId(),

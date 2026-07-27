@@ -15,7 +15,8 @@ export type TraceKind =
   | 'automation_run'
   | 'startup'
   | 'integration_call'
-  | 'job';
+  | 'job'
+  | 'internal';
 
 export type SpanKind =
   | 'llm'

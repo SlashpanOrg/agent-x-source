@@ -594,6 +594,7 @@ export {
   getCurrentSpanId,
   withSpan,
   getSpanExporter,
+  context,
   runWithTurnContext,
   getTurnContext,
   injectTraceparent,

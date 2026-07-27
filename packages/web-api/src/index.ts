@@ -7,12 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { getLogger, getDataDir, VERSION } from '@agentx/shared';
 import { getEngine, awaitEngineStorageReady, setAgentMetricsApi } from './engine.js';
 import { getObservabilityHandle } from '@agentx/engine';
-import { ensureLoginShellPath, configureHttpKeepAlive } from '@agentx/engine';
+import { ensureLoginShellPath, configureHttpKeepAlive, startAppSpan } from '@agentx/engine';
 import { authMiddleware, createAuthRouter } from './auth.js';
 import { errorHandler } from './middleware/error.js';
 import { requestIdMiddleware } from './middleware/request-id.js';
 import { requestLogger } from './middleware/request-logger.js';
 import { requestMetrics } from './middleware/request-metrics.js';
+import { requestObservabilityMiddleware } from './middleware/request-observability.js';
 import { setDefaultEmbeddingCacheDir } from '@agentx/engine';
 import { setupWebSocket, shutdownWebSocket } from './ws.js';
 import { setupVoiceWebSocket } from './voice-ws.js';
@@ -162,8 +163,8 @@ app.use(requestIdMiddleware);
 // Structured request logging
 app.use(requestLogger);
 
-// HTTP request metrics
-app.use(requestMetrics);
+// HTTP request observability (metrics + spans)
+app.use(requestObservabilityMiddleware);
 
 // Security headers
 app.use((_req, res, next) => {
@@ -254,10 +255,16 @@ attachWebSocketUpgradeRouter(server);
 export { app, server, registerEmbeddedPostgresController };
 
 export function startServer(port = PORT): ReturnType<typeof server.listen> {
-  // Enable keep-alive for all provider HTTP/HTTPS clients.
-  if (process.env['HTTP_KEEP_ALIVE'] !== '0') {
-    configureHttpKeepAlive();
-  }
+  const { span: startupSpan, withContext } = startAppSpan('app.startup', 'automation', 'startup', {
+    'startup.component': 'web-api',
+    'server.port': port,
+    'server.host': HOST,
+  });
+  return withContext(() => {
+    // Enable keep-alive for all provider HTTP/HTTPS clients.
+    if (process.env['HTTP_KEEP_ALIVE'] !== '0') {
+      configureHttpKeepAlive();
+    }
 
   const publicUrl = (process.env['AGENTX_PUBLIC_URL'] ?? `http://localhost:${port}`).replace(/\/$/, '');
   getEngine().integrationHub.setRedirectBaseUrl(publicUrl);
@@ -334,6 +341,8 @@ export function startServer(port = PORT): ReturnType<typeof server.listen> {
       getLogger().warn('STARTUP', `Knowledge base manager init failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     getLogger().info('SERVER', `Agent-X web API listening on ${HOST}:${port} (v${VERSION})`);
+    startupSpan.end();
+  });
   });
 }
 

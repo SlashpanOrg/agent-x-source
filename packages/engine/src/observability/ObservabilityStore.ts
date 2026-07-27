@@ -91,8 +91,8 @@ interface MetricInsert {
 export interface ListTracesFilters {
   domain?: ObservabilityDomain;
   session_id?: string;
-  status?: TraceSummary['status'];
-  kind?: TraceKind;
+  status?: TraceSummary['status'] | TraceSummary['status'][];
+  kind?: TraceKind | TraceKind[];
   from?: string;
   to?: string;
   q?: string;
@@ -330,8 +330,16 @@ export class ObservabilityStore {
     const values: unknown[] = [];
     if (filters.domain) { where.push(`domain = $${values.push(filters.domain) && values.length}`); }
     if (filters.session_id) { where.push(`session_id = $${values.push(filters.session_id) && values.length}`); }
-    if (filters.status) { where.push(`status = $${values.push(filters.status) && values.length}`); }
-    if (filters.kind) { where.push(`kind = $${values.push(filters.kind) && values.length}`); }
+    if (filters.status) {
+      const arr = Array.isArray(filters.status) ? filters.status : [filters.status];
+      const placeholders = arr.map((v) => `$${values.push(v) && values.length}`).join(',');
+      where.push(`status IN (${placeholders})`);
+    }
+    if (filters.kind) {
+      const arr = Array.isArray(filters.kind) ? filters.kind : [filters.kind];
+      const placeholders = arr.map((v) => `$${values.push(v) && values.length}`).join(',');
+      where.push(`kind IN (${placeholders})`);
+    }
     if (filters.from) { where.push(`started_at >= $${values.push(filters.from) && values.length}`); }
     if (filters.to) { where.push(`started_at <= $${values.push(filters.to) && values.length}`); }
     if (filters.q) { where.push(`(COALESCE(user_text,'') ILIKE $${values.push(`%${filters.q}%`) && values.length} OR COALESCE(error,'') ILIKE $${values.length})`); }

@@ -63,8 +63,8 @@ export function buildAgentMetricSource(api: AgentMetricsApi): MetricSource {
       push('agent.tool.latency.avg_ms', m.toolLatencyAvgMs);
       push('agent.tool.latency.p95_ms', m.toolLatencyP95Ms);
       push('agent.tool.call_count', m.toolCallCount);
-      push('agent.queue.depth', m.queueDepth);
-      push('agent.memory.cache_hit_rate', m.memoryCacheHitRate);
+      push('agentx_exporter_queue_depth', m.queueDepth);
+      push('agentx_memory_cache_hit_rate', m.memoryCacheHitRate);
       return out;
     },
   };

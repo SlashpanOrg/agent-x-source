@@ -2,6 +2,7 @@ import { generateText } from 'ai';
 import { getLogger } from '@agentx/shared';
 import type { AgentXConfig, SessionEvent } from '@agentx/shared';
 import { createAiSdkModel } from './AiSdkBridge.js';
+import { withSpan } from '../observability/tracer.js';
 import type { Agent } from './Agent.js';
 import type { TaskPlan } from './TaskExecutor.js';
 import { tryShellExec } from './task-executor-helpers.js';
@@ -94,14 +95,25 @@ export async function resolveGitConflicts(ctx: GitPipelineContext): Promise<bool
     const content = gitManager.getConflictContent?.(file);
     if (!content) continue;
 
-    const resolution = await generateText({
-      model,
-      system: `You are a merge conflict resolution expert. Given a file with merge conflicts, resolve them.
+    const messages = [
+      { role: 'system' as const, content: `You are a merge conflict resolution expert. Given a file with merge conflicts, resolve them.
 Output ONLY the resolved file content with conflict markers removed and a clean merge.
-Preserve all functionality from both sides.`,
-      prompt: `Resolve conflicts in file "${file}":\n\n${content.slice(0, 8000)}`,
-      temperature: 0.1,
-      maxRetries: 1,
+Preserve all functionality from both sides.` },
+      { role: 'user' as const, content: `Resolve conflicts in file "${file}":\n\n${content.slice(0, 8000)}` },
+    ];
+    const resolution = await withSpan('llm.resolve_conflict', 'llm', async (span) => {
+      span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+      span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+      span.setAttribute('llm.input_messages', JSON.stringify(messages));
+      span.setAttribute('session.id', ctx.sessionId);
+      const r = await generateText({
+        model,
+        messages,
+        temperature: 0.1,
+        maxRetries: 1,
+      });
+      span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+      return r;
     });
 
     if (resolution.text.trim()) {

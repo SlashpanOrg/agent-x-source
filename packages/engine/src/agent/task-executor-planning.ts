@@ -2,6 +2,7 @@ import { generateText } from 'ai';
 import { getLogger } from '@agentx/shared';
 import type { AgentXConfig } from '@agentx/shared';
 import { createAiSdkModel } from './AiSdkBridge.js';
+import { withSpan } from '../observability/tracer.js';
 import type { Agent } from './Agent.js';
 import type { TaskStep, TaskPlan, FailureRecord } from './TaskExecutor.js';
 import {
@@ -48,12 +49,22 @@ export async function analyzeProject(
       }
 
       const model = createAiSdkModel(ctx.config, ctx.apiKey);
-      const result = await generateText({
-        model,
-        system: ANALYSIS_SYSTEM_PROMPT,
-        prompt: `User goal: ${goal}\n\nProject context:\n${projectContext}\n\nAnalyze this project and the goal.`,
-        temperature: 0.2,
-        maxRetries: 1,
+      const messages = [
+        { role: 'system' as const, content: ANALYSIS_SYSTEM_PROMPT },
+        { role: 'user' as const, content: `User goal: ${goal}\n\nProject context:\n${projectContext}\n\nAnalyze this project and the goal.` },
+      ];
+      const result = await withSpan('llm.analyze_project', 'llm', async (span) => {
+        span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+        span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+        span.setAttribute('llm.input_messages', JSON.stringify(messages));
+        const r = await generateText({
+          model,
+          messages,
+          temperature: 0.2,
+          maxRetries: 1,
+        });
+        span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+        return r;
       });
 
       const parsed = extractJsonObject<{ projectType: string; techStack: string[]; conventions: string[]; keyFiles: string[]; risks: string[] }>(result.text);
@@ -78,12 +89,22 @@ export async function analyzeProject(
  */
 export async function decompose(ctx: PlanningContext, prompt: string): Promise<TaskStep[]> {
   const model = createAiSdkModel(ctx.config, ctx.apiKey);
-  const result = await generateText({
-    model,
-    system: PLAN_SYSTEM_PROMPT,
-    prompt,
-    temperature: 0.3,
-    maxRetries: 2,
+  const messages = [
+    { role: 'system' as const, content: PLAN_SYSTEM_PROMPT },
+    { role: 'user' as const, content: prompt },
+  ];
+  const result = await withSpan('llm.decompose', 'llm', async (span) => {
+    span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+    span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+    span.setAttribute('llm.input_messages', JSON.stringify(messages));
+    const r = await generateText({
+      model,
+      messages,
+      temperature: 0.3,
+      maxRetries: 2,
+    });
+    span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+    return r;
   });
 
   const parsed = extractJsonArray(result.text);
@@ -144,14 +165,24 @@ export async function midPlanReevaluation(ctx: PlanningContext, plan: TaskPlan, 
     `${i + 1}. ${s.description} — ${s.status}${s.result ? ': ' + s.result.slice(0, 100) : ''}`,
   ).join('\n');
 
-  const reEvalResult = await generateText({
-    model,
-    system: `You are a plan reviewer. Given the original goal, current progress, and remaining steps, determine if the plan needs adjustment.
+  const messages = [
+    { role: 'system' as const, content: `You are a plan reviewer. Given the original goal, current progress, and remaining steps, determine if the plan needs adjustment.
 Return JSON: { "needsAdjustment": boolean, "reason": "...", "suggestedChanges": ["..."] }
-If the plan is on track, return {"needsAdjustment": false}.`,
-    prompt: `Original goal: ${goal}\n\nProgress so far:\n${stepsSummary}\n\nRemaining steps:\n${plan.steps.slice(completedCount).map((s, i) => `${i + 1}. ${s.description}`).join('\n')}\n\nDoes the plan need adjustment?`,
-    temperature: 0.2,
-    maxRetries: 1,
+If the plan is on track, return {"needsAdjustment": false}.` },
+    { role: 'user' as const, content: `Original goal: ${goal}\n\nProgress so far:\n${stepsSummary}\n\nRemaining steps:\n${plan.steps.slice(completedCount).map((s, i) => `${i + 1}. ${s.description}`).join('\n')}\n\nDoes the plan need adjustment?` },
+  ];
+  const reEvalResult = await withSpan('llm.mid_plan_reevaluation', 'llm', async (span) => {
+    span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+    span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+    span.setAttribute('llm.input_messages', JSON.stringify(messages));
+    const r = await generateText({
+      model,
+      messages,
+      temperature: 0.2,
+      maxRetries: 1,
+    });
+    span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+    return r;
   });
 
   const parsed = extractJsonObject<{ needsAdjustment: boolean; reason: string; suggestedChanges: string[] }>(reEvalResult.text);
@@ -171,14 +202,24 @@ export async function generateAlternativeApproach(
   goal: string,
 ): Promise<string> {
   const model = createAiSdkModel(ctx.config, ctx.apiKey);
-  const altResult = await generateText({
-    model,
-    system: `You are a creative problem solver. The current approach to a step failed. Generate 1-2 alternative approaches.
+  const messages = [
+    { role: 'system' as const, content: `You are a creative problem solver. The current approach to a step failed. Generate 1-2 alternative approaches.
 Return JSON: { "approaches": [{"description": "...", "rationale": "..."}] }
-Focus on fundamentally different approaches — not minor tweaks.`,
-    prompt: `Goal: ${goal}\n\nFailed step: ${step.description}\nFailure: ${failureReason}\nLast attempt output: ${lastResult.slice(0, 1000)}\n\nWhat alternative approach should be tried next?`,
-    temperature: 0.5,
-    maxRetries: 1,
+Focus on fundamentally different approaches — not minor tweaks.` },
+    { role: 'user' as const, content: `Goal: ${goal}\n\nFailed step: ${step.description}\nFailure: ${failureReason}\nLast attempt output: ${lastResult.slice(0, 1000)}\n\nWhat alternative approach should be tried next?` },
+  ];
+  const altResult = await withSpan('llm.alternative_approach', 'llm', async (span) => {
+    span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+    span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+    span.setAttribute('llm.input_messages', JSON.stringify(messages));
+    const r = await generateText({
+      model,
+      messages,
+      temperature: 0.5,
+      maxRetries: 1,
+    });
+    span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+    return r;
   });
 
   const parsed = extractJsonObject<{ approaches: Array<{ description: string; rationale: string }> }>(altResult.text);
@@ -201,17 +242,27 @@ export async function suggestNewSubtasks(
   if (completedCount < 2) return [];
 
   const model = createAiSdkModel(ctx.config, ctx.apiKey);
-  const result = await generateText({
-    model,
-    system: `You are a project manager. Given the goal, current plan, and just-completed step, determine if new sub-tasks are needed.
+  const messages = [
+    { role: 'system' as const, content: `You are a project manager. Given the goal, current plan, and just-completed step, determine if new sub-tasks are needed.
 
 Return a JSON array of additional steps, or empty array if none needed.
 Each step: { "description": "...", "expectedOutcome": "..." }
 
-Only add steps that are genuinely necessary — don't over-engineer.`,
-    prompt: `Goal: ${goal}\n\nCompleted steps: ${plan.steps.filter(s => s.status === 'completed').map((s, idx) => `\n${idx + 1}. ${s.description}`).join('')}\n\nJust completed: ${step.description}\nResult: ${(step.result || '').slice(0, 500)}\n\nAre there any new sub-tasks that this step uncovered?`,
-    temperature: 0.2,
-    maxRetries: 1,
+Only add steps that are genuinely necessary — don't over-engineer.` },
+    { role: 'user' as const, content: `Goal: ${goal}\n\nCompleted steps: ${plan.steps.filter(s => s.status === 'completed').map((s, idx) => `\n${idx + 1}. ${s.description}`).join('')}\n\nJust completed: ${step.description}\nResult: ${(step.result || '').slice(0, 500)}\n\nAre there any new sub-tasks that this step uncovered?` },
+  ];
+  const result = await withSpan('llm.suggest_subtasks', 'llm', async (span) => {
+    span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+    span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+    span.setAttribute('llm.input_messages', JSON.stringify(messages));
+    const r = await generateText({
+      model,
+      messages,
+      temperature: 0.2,
+      maxRetries: 1,
+    });
+    span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+    return r;
   });
 
   const parsed = extractJsonArray(result.text);
@@ -369,12 +420,22 @@ export async function replan(
       ).join('\n')
     : '';
 
-  const replanResult = await generateText({
-    model,
-    system: PLAN_SYSTEM_PROMPT + '\n\nYou are re-planning because a previous step failed. Adjust the remaining steps to account for the failure. DO NOT repeat the same approach that already failed.\n\nWeb research is available — use research steps to investigate the failure and find solutions before re-attempting.',
-    prompt: `Goal: ${goal}\n\nFailed step: ${failedSteps[0]?.description}\nFailure reason: ${failureReason}\nPartial result: ${lastResult.slice(0, 1000)}${failureContext}\n\nRemaining steps to replan:\n${remainingDesc}\n\nProvide a revised plan (JSON array).`,
-    temperature: 0.4,
-    maxRetries: 2,
+  const messages = [
+    { role: 'system' as const, content: PLAN_SYSTEM_PROMPT + '\n\nYou are re-planning because a previous step failed. Adjust the remaining steps to account for the failure. DO NOT repeat the same approach that already failed.\n\nWeb research is available — use research steps to investigate the failure and find solutions before re-attempting.' },
+    { role: 'user' as const, content: `Goal: ${goal}\n\nFailed step: ${failedSteps[0]?.description}\nFailure reason: ${failureReason}\nPartial result: ${lastResult.slice(0, 1000)}${failureContext}\n\nRemaining steps to replan:\n${remainingDesc}\n\nProvide a revised plan (JSON array).` },
+  ];
+  const replanResult = await withSpan('llm.replan', 'llm', async (span) => {
+    span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+    span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+    span.setAttribute('llm.input_messages', JSON.stringify(messages));
+    const r = await generateText({
+      model,
+      messages,
+      temperature: 0.4,
+      maxRetries: 2,
+    });
+    span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+    return r;
   });
 
   const parsed = extractJsonArray(replanResult.text);

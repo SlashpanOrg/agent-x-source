@@ -39,7 +39,7 @@ type AuthSpanHandle = ReturnType<typeof startAppSpan> & {
  * Start an APP-domain span for an auth operation.
  *
  * Always sets `auth.operation` and `auth.provider`; `trace.domain='APP'`
- * and `trace.kind='auth_operation'` are set by `startAppSpan`. Additional
+ * and `trace.kind='auth'` are set by `startAppSpan`. Additional
  * structural attributes (e.g. `auth.method`) may be passed via `attrs`.
  */
 function startAuthSpan(
@@ -48,7 +48,7 @@ function startAuthSpan(
   attrs?: Record<string, string | number | boolean>,
 ): AuthSpanHandle {
   const start = process.hrtime.bigint();
-  const handle = startAppSpan(`auth.${operation}`, 'auth', 'auth_operation', {
+  const handle = startAppSpan(`auth.${operation}`, 'auth', 'auth', {
     'auth.operation': operation,
     'auth.provider': provider,
     ...(attrs ?? {}),

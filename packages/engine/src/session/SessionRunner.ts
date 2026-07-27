@@ -5,6 +5,7 @@ import type { AgentEventBus } from '../EventBus.js';
 import type { ToolRegistry } from '../tools/ToolRegistry.js';
 import type { ToolExecutor } from '../tools/ToolExecutor.js';
 import { createAiSdkModel, createAiSdkTools } from '../agent/AiSdkBridge.js';
+import { withSpan } from '../observability/tracer.js';
 import { normalizeAiSdkMessagesForProvider } from '../agent/context-profile.js';
 import { createAiSdkStreamHandler, type GitDiffProvider } from '../agent/AiSdkStreamHandler.js';
 import { SessionRunCoordinator, type RunState } from './SessionRunCoordinator.js';
@@ -72,7 +73,6 @@ export class SessionRunner {
 
       emit({ type: 'step_started', step: stepCount } as unknown as EngineEvent);
 
-      const tools = createAiSdkTools(toolRegistry, toolExecutor, sessionId, emit, waitForClarification, runSubAgent);
       const model = createAiSdkModel(config, apiKey);
       const contextWindow = (config as unknown as Record<string, number>)['contextWindow'] ?? 128000;
 
@@ -82,57 +82,74 @@ export class SessionRunner {
         this.options.onSessionEvent, contextWindow,
       );
 
+      const stepMessages = normalizeAiSdkMessagesForProvider(aiMessages, config.provider.activeProvider).map(m => ({
+        role: m.role as 'system' | 'user' | 'assistant' | 'tool',
+        content: m.content,
+        ...(m.toolCallId ? { toolCallId: m.toolCallId } : {}),
+      })) as ModelMessage[];
+
       try {
-        const result = streamText({
-          model,
-          messages: normalizeAiSdkMessagesForProvider(aiMessages, config.provider.activeProvider).map(m => ({
-            role: m.role as 'system' | 'user' | 'assistant' | 'tool',
-            content: m.content,
-            ...(m.toolCallId ? { toolCallId: m.toolCallId } : {}),
-          })) as ModelMessage[],
-          tools,
-          temperature: 0,
-          maxRetries: config.maxRetries ?? 2,
-          maxOutputTokens: resolveMaxOutputTokens(config.maxOutputTokens),
-          stopWhen: stepCountIs(100),
-          toolChoice: 'auto',
-          abortSignal,
-        });
+        const stepResult = await withSpan('llm.session_step', 'llm', async (span) => {
+          span.setAttribute('gen_ai.system', config.provider.activeProvider);
+          span.setAttribute('gen_ai.request.model', config.provider.activeModel);
+          span.setAttribute('gen_ai.usage.total_cost', 0);
+          span.setAttribute('llm.input_messages', JSON.stringify(stepMessages));
+          const stepTools = createAiSdkTools(toolRegistry, toolExecutor, sessionId, emit, waitForClarification, runSubAgent, undefined, span);
+          const result = streamText({
+            model,
+            messages: stepMessages,
+            tools: stepTools,
+            temperature: 0,
+            maxRetries: config.maxRetries ?? 2,
+            maxOutputTokens: resolveMaxOutputTokens(config.maxOutputTokens),
+            stopWhen: stepCountIs(100),
+            toolChoice: 'auto',
+            abortSignal,
+          });
 
-        const toolResults: ToolResultMessage[] = [];
-        let toolCallCount = 0;
+          const toolResults: ToolResultMessage[] = [];
+          let toolCallCount = 0;
 
-        for await (const chunk of result.fullStream) {
-          streamHandler.handleEvent(chunk);
-          if (chunk.type === 'tool-call') {
-            toolCallCount++;
-            toolCallLog?.push({ name: chunk.toolName, success: false, output: '', elapsed: 0 });
-          }
-          if (chunk.type === 'tool-result') {
-            const output = typeof chunk.output === 'string' ? chunk.output : JSON.stringify(chunk.output);
-            toolResults.push({ role: 'tool', content: output, toolCallId: chunk.toolCallId });
-            const entry = toolCallLog?.findLast(l => !l.success);
-            if (entry) {
-              entry.success = true;
-              entry.output = output.slice(0, 2000);
+          for await (const chunk of result.fullStream) {
+            streamHandler.handleEvent(chunk);
+            if (chunk.type === 'tool-call') {
+              toolCallCount++;
+              toolCallLog?.push({ name: chunk.toolName, success: false, output: '', elapsed: 0 });
+            }
+            if (chunk.type === 'tool-result') {
+              const output = typeof chunk.output === 'string' ? chunk.output : JSON.stringify(chunk.output);
+              toolResults.push({ role: 'tool', content: output, toolCallId: chunk.toolCallId });
+              const entry = toolCallLog?.findLast(l => !l.success);
+              if (entry) {
+                entry.success = true;
+                entry.output = output.slice(0, 2000);
+              }
             }
           }
-        }
 
-        // Check for doom loop: 3+ consecutive tool results with DOOM_LOOP
-        const hasDoomLoop = toolResults.some(t => /doom.?loop/i.test(t.content));
-        if (hasDoomLoop) {
-          consecutiveDoomLoops++;
-        } else {
-          consecutiveDoomLoops = 0;
-        }
-        if (consecutiveDoomLoops >= MAX_DOOM_LOOPS) {
-          getLogger().warn('SESSION_RUNNER', `Doom loop detected (${consecutiveDoomLoops}x). Breaking out.`);
-          return 'The tool execution entered a repetitive loop. Please rephrase your request or try a different approach.';
-        }
+          // Check for doom loop: 3+ consecutive tool results with DOOM_LOOP
+          const hasDoomLoop = toolResults.some(t => /doom.?loop/i.test(t.content));
+          if (hasDoomLoop) {
+            consecutiveDoomLoops++;
+          } else {
+            consecutiveDoomLoops = 0;
+          }
+          if (consecutiveDoomLoops >= MAX_DOOM_LOOPS) {
+            getLogger().warn('SESSION_RUNNER', `Doom loop detected (${consecutiveDoomLoops}x). Breaking out.`);
+            return { content: 'The tool execution entered a repetitive loop. Please rephrase your request or try a different approach.', toolResults: [] as ToolResultMessage[], toolCallCount: 0, breakOut: true };
+          }
 
-        const state = streamHandler.getState();
-        const content = state.accumulatedContent || '';
+          const state = streamHandler.getState();
+          const content = state.accumulatedContent || '';
+          span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content }]));
+          span.setAttribute('agent.tool_call_count', toolCallCount);
+          return { content, toolResults, toolCallCount, breakOut: false };
+        });
+
+        const { content, toolResults, toolCallCount, breakOut } = stepResult;
+        if (breakOut) {
+          return content;
+        }
 
         emit({ type: 'step_ended', step: stepCount } as unknown as EngineEvent);
 

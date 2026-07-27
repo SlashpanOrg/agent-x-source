@@ -90,7 +90,7 @@ import {
   usesNativeMcpStdioBrowserOAuth,
 } from './mcp-stdio-oauth-flow.js';
 import { runPreflightChecks, type PreflightContext } from './preflight.js';
-import { withSpan } from '../observability/index.js';
+import { withSpan } from '../observability/tracer.js';
 
 interface McpToolShape {
   name: string;
@@ -394,7 +394,15 @@ Rules:
 - pay/book/purchase/charge/transfer/delete/remove/cancel = critical risk, defaultDecision deny
 - unknown or potentially destructive = high risk, defaultDecision ask`;
     try {
-      const { text } = await generateText({ model, prompt, maxOutputTokens: 2048, temperature: 0.1 });
+      const messages = [{ role: 'user' as const, content: prompt }];
+      const { text } = await withSpan('llm.classify_mcp_tools', 'llm', async (span) => {
+        span.setAttribute('gen_ai.system', cfg.provider.activeProvider);
+        span.setAttribute('gen_ai.request.model', cfg.provider.activeModel);
+        span.setAttribute('llm.input_messages', JSON.stringify(messages));
+        const r = await generateText({ model, prompt, maxOutputTokens: 2048, temperature: 0.1 });
+        span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+        return r;
+      });
       const jsonStart = text.indexOf('{');
       const jsonEnd = text.lastIndexOf('}');
       if (jsonStart === -1 || jsonEnd === -1) throw new Error('No JSON object in LLM response');

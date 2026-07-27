@@ -14,6 +14,7 @@ import JSZip from 'jszip';
 import { getLogger } from '@agentx/shared';
 import { ConfigManager } from '../../config/ConfigManager.js';
 import { createAiSdkModel, modelSupportsVision } from '../../agent/AiSdkBridge.js';
+import { withSpan } from '../../observability/tracer.js';
 import { extractJsonObject } from '../../agent/task-executor-helpers.js';
 import { extractTemplatePlainText } from '../../templates/field-discover.js';
 import {
@@ -416,9 +417,18 @@ Rules:
     const visionMessages = hasVision && vision.messages
       ? [{ role: 'user' as const, content: [{ type: 'text' as const, text: prompt }, ...(vision.messages[0] as { content: unknown[] }).content.slice(1)] } as { role: 'user'; content: unknown[] }]
       : null;
-    const out = visionMessages
-      ? (await generateText({ model, messages: visionMessages as never, maxOutputTokens: 4096, temperature: 0.1 })).text
-      : (await generateText({ model, prompt, maxOutputTokens: 3072, temperature: 0.1 })).text;
+    const out = await withSpan('llm.analyze_layout', 'llm', async (span) => {
+      const config = new ConfigManager().load();
+      span.setAttribute('gen_ai.system', config.provider.activeProvider);
+      span.setAttribute('gen_ai.request.model', config.provider.activeModel);
+      const messages = visionMessages ?? [{ role: 'user' as const, content: prompt }];
+      span.setAttribute('llm.input_messages', JSON.stringify(messages));
+      const r = visionMessages
+        ? await generateText({ model, messages: visionMessages as never, maxOutputTokens: 4096, temperature: 0.1 })
+        : await generateText({ model, prompt, maxOutputTokens: 3072, temperature: 0.1 });
+      span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+      return r.text;
+    });
     const parsed = extractJsonObject<{
       documentType?: unknown; summary?: unknown; sections?: unknown; chrome?: unknown; variables?: LlmLayoutRow[]; layoutMap?: LlmLayoutMap;
     }>(out);
@@ -678,7 +688,16 @@ Return ONLY JSON:
 }`;
 
   try {
-    const { text: out } = await generateText({ model, prompt, maxOutputTokens: 3072, temperature: 0.1 });
+    const messages = [{ role: 'user' as const, content: prompt }];
+    const { text: out } = await withSpan('llm.analyze_standard', 'llm', async (span) => {
+      const config = new ConfigManager().load();
+      span.setAttribute('gen_ai.system', config.provider.activeProvider);
+      span.setAttribute('gen_ai.request.model', config.provider.activeModel);
+      span.setAttribute('llm.input_messages', JSON.stringify(messages));
+      const r = await generateText({ model, prompt, maxOutputTokens: 3072, temperature: 0.1 });
+      span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+      return r;
+    });
     const parsed = extractJsonObject<{ documentType?: unknown; summary?: unknown; requiredSections?: unknown; constraints?: unknown }>(out);
     const requiredSections: SectionOutline[] = Array.isArray(parsed?.requiredSections)
       ? (parsed!.requiredSections as Array<Record<string, unknown>>)

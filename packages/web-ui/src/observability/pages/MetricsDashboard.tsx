@@ -83,6 +83,8 @@ export function MetricsDashboard() {
 
       {error && <Alert severity="error">{error}</Alert>}
 
+      <KpiGrid />
+
       <Grid container spacing={1.5}>
         {panels.map((p) => (
           <Grid item xs={p.width ?? 6} key={p.title}>
@@ -148,6 +150,71 @@ const DASHBOARD_DEFS: Partial<Record<DashboardTab, PanelDef[]>> = {
     { title: 'Turn Duration + HTTP Latency', metric: 'agentx_turn_duration_seconds', type: 'line' },
   ],
 };
+
+const KPI_METRICS = [
+  { name: 'agentx_tokens_total', title: 'Token Budget', type: 'stat' as const },
+  { name: 'agentx_cost_usd_total', title: 'Cost Budget', type: 'stat' as const, unit: '$' },
+  { name: 'agentx_turn_duration_seconds', title: 'Latency', type: 'stat' as const, unit: 's' },
+  { name: 'agentx_turn_errors_total', title: 'Error Rate', type: 'stat' as const },
+  { name: 'agentx_exporter_queue_depth', title: 'Queue Depth', type: 'gauge' as const, max: 4096 },
+  { name: 'agentx_memory_cache_hit_rate', title: 'Cache Hit', type: 'gauge' as const, max: 100, unit: '%', invert: true, zones: { green: 20, amber: 50 } as const },
+];
+
+function KpiGrid() {
+  const { timeRange, refreshTick } = useObs();
+  const [series, setSeries] = useState<Record<string, MetricSeries | null>>({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    Promise.all(
+      KPI_METRICS.map((m) =>
+        getMetricSeries({ name: m.name, from: timeRange.from, to: timeRange.to })
+          .then((s) => ({ name: m.name, s }))
+          .catch(() => ({ name: m.name, s: null as MetricSeries | null }))
+      )
+    ).then((results) => {
+      if (cancelled) return;
+      const map: Record<string, MetricSeries | null> = {};
+      for (const r of results) map[r.name] = r.s;
+      setSeries(map);
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [timeRange.from, timeRange.to, refreshTick]);
+
+  return (
+    <Grid container spacing={1.5}>
+      {KPI_METRICS.map((m) => {
+        const s = series[m.name];
+        const last = s?.points[s.points.length - 1];
+        const value = last?.value ?? 0;
+        return (
+          <Grid item xs={6} md={4} key={m.name}>
+            <Box sx={{ height: 140 }}>
+              <ObsPanel>
+                <Box sx={{ height: '100%', p: 1 }}>
+                  {loading || !s ? (
+                    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+                      <CircularProgress size={18} sx={{ color: obs.accent.hud }} />
+                    </Box>
+                  ) : s.points.length === 0 ? (
+                    <Typography sx={{ ...obsMonoSx, fontSize: '0.62rem', color: obs.text.dim }}>No data.</Typography>
+                  ) : m.type === 'gauge' ? (
+                    <GaugePanel value={m.name === 'agentx_memory_cache_hit_rate' && value <= 1 ? value * 100 : value} max={m.max ?? 100} label={m.title} unit={m.unit} invert={m.invert} zones={m.zones} />
+                  ) : (
+                    <StatPanel value={value} label={m.title} unit={m.unit} data={s.points} />
+                  )}
+                </Box>
+              </ObsPanel>
+            </Box>
+          </Grid>
+        );
+      })}
+    </Grid>
+  );
+}
 
 function MetricPanelContent({
   def,

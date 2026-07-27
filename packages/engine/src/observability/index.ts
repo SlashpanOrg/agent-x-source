@@ -16,6 +16,7 @@ export {
   withSpan,
   getSpanExporter,
 } from './tracer.js';
+export { context } from '@opentelemetry/api';
 export { startAppSpan, endAppSpan } from './app-span.js';
 export type { AppSpan } from './app-span.js';
 export { runWithTurnContext, getTurnContext, injectTraceparent, extractTraceparent } from './context.js';

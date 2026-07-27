@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { trace, context, SpanStatusCode, type Span, type Tracer } from '@opentelemetry/api';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
@@ -76,9 +77,7 @@ function createOtlpProcessor(
   const headers = otlp.otlp_headers ?? {};
 
   // We use synchronous require because the OTLP packages are bundled by tsup.
-  // Dynamic import() would also work but require is simpler for the engine context.
-  const module = require('module');
-  const require_ = module.createRequire(import.meta.url);
+  const require_ = createRequire(import.meta.url);
 
   let exporter: unknown;
   if (protocol === 'grpc') {
@@ -138,10 +137,15 @@ function endSpanWithError(span: Span, err: unknown): void {
   span.end();
 }
 
-export function withSpan<T>(name: string, kind: string, fn: (span: Span) => T): T {
+export function withSpan<T>(
+  name: string,
+  kind: string,
+  fn: (span: Span) => T,
+  attributes?: Record<string, unknown>,
+): T {
   return getTracer().startActiveSpan(
     name,
-    { attributes: { 'span.kind': kind } },
+    { attributes: { 'span.kind': kind, ...attributes } },
     (span) => {
       try {
         const result = fn(span);

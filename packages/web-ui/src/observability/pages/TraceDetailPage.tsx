@@ -148,7 +148,7 @@ export function TraceDetailPage() {
           />
         )}
         <Box sx={{ flexGrow: 1 }} />
-        <TraceExportBar traceId={t.trace_id} capturePrompts={false} />
+        <TraceExportBar traceId={t.trace_id} trace={t} capturePrompts={false} />
       </Box>
 
       {/* Stats */}

@@ -1,5 +1,5 @@
 import type { Agent } from '@agentx/engine';
-import { applyWebSearchConfigFromAgentConfig, getPersonaStore, isWebSearchAvailableForChat } from '@agentx/engine';
+import { applyWebSearchConfigFromAgentConfig, getPersonaStore, isWebSearchAvailableForChat, context } from '@agentx/engine';
 import type { AgentPersonaConfig, AgentXConfig, ClientSituation, Message, StorageAdapter, StorableMessage, TurnAttachment } from '@agentx/shared';
 import { normalizeClientSituation } from '@agentx/shared';
 import { getEngine } from './engine.js';
@@ -314,7 +314,7 @@ export function runAgentTurnAsync(
     propagateTelegramConnectedToAgents(getEngine());
   } catch { /* best-effort */ }
 
-  void agent.sendMessage(fullText, {
+  void context.bind(context.active(), (text: string, options?: Parameters<Agent['sendMessage']>[1]) => agent.sendMessage(text, options))(fullText, {
     ...(instruction ? { instruction } : {}),
     ...(retry ? { retry: true } : {}),
     ...(delegateCrewIds?.length ? { delegateCrewIds } : {}),

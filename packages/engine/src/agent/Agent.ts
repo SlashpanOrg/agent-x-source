@@ -132,6 +132,7 @@ import { RunStateManager } from '../agent/RunStateManager.js';
 import { TurnStateManager, type TurnPhase } from './TurnStateManager.js';
 import { ToolLedger } from './ToolLedger.js';
 import { createAiSdkModel, createAiSdkTools } from './AiSdkBridge.js';
+import { withSpan } from '../observability/tracer.js';
 import { reconcileIntegrationHintWithActiveTools } from '../integrations/integration-tool-availability.js';
 import type { ThirdPartyTurnPolicy } from '../integrations/third-party-access.js';
 import { buildGoogleAiSdkProviderOptions } from '../providers/google/gemini-metadata.js';
@@ -1704,60 +1705,77 @@ export class Agent {
       callsign ? `The user's name/callsign is "${callsign}".` : '',
       'Reply with ONLY the message body — warm, concise, no markdown headers, no tool names, no meta commentary.',
     ].filter(Boolean).join(' ');
-    const r = await streamText({
-      model,
-      messages: [
-        { role: 'system', content: options?.systemHint ?? defaultSystem },
-        { role: 'user', content: userPrompt },
-      ],
-      maxOutputTokens: options?.maxTokens ?? 280,
+    const messages = [
+      { role: 'system' as const, content: options?.systemHint ?? defaultSystem },
+      { role: 'user' as const, content: userPrompt },
+    ];
+    const r = await withSpan('llm.outbound', 'llm', async (span) => {
+      span.setAttribute('gen_ai.system', this.config.provider.activeProvider);
+      span.setAttribute('gen_ai.request.model', this.config.provider.activeModel);
+      span.setAttribute('gen_ai.usage.total_cost', 0);
+      span.setAttribute('llm.input_messages', JSON.stringify(messages));
+      const result = await streamText({
+        model,
+        messages,
+        maxOutputTokens: options?.maxTokens ?? 280,
+      });
+      let text = '';
+      for await (const chunk of result.textStream) text += chunk;
+      const trimmed = text.trim();
+      span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: trimmed }]));
+      return trimmed;
     });
-    let text = '';
-    for await (const chunk of r.textStream) text += chunk;
-    const trimmed = text.trim();
-    if (!trimmed) throw new Error('Model returned an empty message');
-    return trimmed;
+    if (!r) throw new Error('Model returned an empty message');
+    return r;
   }
 
   async sendMessage(content: string, options?: { instruction?: string; userId?: string; channelId?: string; sourceChannel?: string; sourceMessageId?: string; retry?: boolean; delegateCrewIds?: string[]; crewSuggestionResolved?: boolean; crewIntakeFromPicker?: boolean; primaryCrewId?: string; forceWebSearch?: boolean; voiceTurn?: boolean; userMessagePersisted?: boolean; voiceContinuation?: boolean; voiceMergeIntoMessage?: { messageId: string; prefixContent: string }; resumeCrewIntake?: { originalUserText: string; intakeAnswer: string; delegateCrewIds: string[]; primaryCrewId?: string }; clientSituation?: ClientSituation | null; attachments?: import('@agentx/shared').TurnAttachment[]; /** How to treat leftover incomplete TASKS at turn start. */ todoDisposition?: 'continue' | 'skip' | 'defer' }): Promise<Message> {
-    // ─── Self-healing: reset stuck processing flag after 60s timeout ───
-    if (this.isProcessing) {
-      const reset = this.lifecycle.resetIfStuck(60000);
-      if (reset) {
-        this.scope = null;
-      } else {
-        throw new Error('Agent is already processing a message');
-      }
-    }
-
-    this.lifecycle.transition('receiving');
-    this.scope = new Scope();
-    this.clarificationStale = false;
-    this.userCancelledTurn = false;
-    this.subAgents.ingestBackgroundResultsForSession(this.sessionId);
-    this.toolExecutor?.setTurnAborted(false);
-
-    // ─── UNIFIED: Ensure single session run + enqueue for concurrency ───
-    try {
-      this.runStateMgr.ensureRunning(this.sessionId);
-    } catch (e) {
-      this.lifecycle.forceTransition('idle');
-      this.scope = null;
-      throw e;
-    }
-    void this.commandQueue.enqueue(this.sessionId, {
-      turnId: `turn-${Date.now()}`,
-      sessionId: this.sessionId,
-      channel: (options?.sourceChannel ?? 'api') as ChannelKind,
-      userId: options?.userId ?? 'user',
-      receivedAt: Date.now(),
-      text: content,
-      attachments: options?.attachments ?? [],
-      metadata: {},
-    });
     const startTime = Date.now();
-    this.currentTurnId = `turn-${startTime}`;
-    this.turnState.start(this.currentTurnId, 'receiving');
+    const turnId = `turn-${startTime}`;
+    this.currentTurnId = turnId;
+
+    return withSpan('agent.turn', 'agent', async (span) => {
+      span.setAttribute('trace.kind', 'turn');
+      span.setAttribute('trace.domain', 'AGENT');
+      span.setAttribute('session.id', this.sessionId);
+      span.setAttribute('turn.id', turnId);
+
+      // ─── Self-healing: reset stuck processing flag after 60s timeout ───
+      if (this.isProcessing) {
+        const reset = this.lifecycle.resetIfStuck(60000);
+        if (reset) {
+          this.scope = null;
+        } else {
+          throw new Error('Agent is already processing a message');
+        }
+      }
+
+      this.lifecycle.transition('receiving');
+      this.scope = new Scope();
+      this.clarificationStale = false;
+      this.userCancelledTurn = false;
+      this.subAgents.ingestBackgroundResultsForSession(this.sessionId);
+      this.toolExecutor?.setTurnAborted(false);
+
+      // ─── UNIFIED: Ensure single session run + enqueue for concurrency ───
+      try {
+        this.runStateMgr.ensureRunning(this.sessionId);
+      } catch (e) {
+        this.lifecycle.forceTransition('idle');
+        this.scope = null;
+        throw e;
+      }
+      void this.commandQueue.enqueue(this.sessionId, {
+        turnId,
+        sessionId: this.sessionId,
+        channel: (options?.sourceChannel ?? 'api') as ChannelKind,
+        userId: options?.userId ?? 'user',
+        receivedAt: startTime,
+        text: content,
+        attachments: options?.attachments ?? [],
+        metadata: {},
+      });
+      this.turnState.start(this.currentTurnId!, 'receiving');
     this.toolLedger.reset();
     this.partialTurnContent = '';
     this.stepCapExtra = 0;
@@ -2194,12 +2212,17 @@ export class Agent {
         ];
         try {
           const model = createAiSdkModel(this.config, this.getApiKey());
-          const streamPromise = (async () => {
+          const streamPromise = withSpan('llm.fast_reply', 'llm', async (span) => {
+            span.setAttribute('gen_ai.system', this.config.provider.activeProvider);
+            span.setAttribute('gen_ai.request.model', this.config.provider.activeModel);
+            span.setAttribute('gen_ai.usage.total_cost', 0);
+            span.setAttribute('llm.input_messages', JSON.stringify(fastMessages));
             const r = await streamText({ model, messages: fastMessages as ModelMessage[], maxOutputTokens: 256 });
             let text = '';
             for await (const chunk of r.textStream) { text += chunk; }
+            span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: text }]));
             return text;
-          })();
+          });
           const timeoutMs = this.options.channelSession ? 45_000 : 120_000;
           const text = await Promise.race([
             streamPromise,
@@ -2497,6 +2520,7 @@ export class Agent {
       this.runStateMgr.release(this.sessionId);
       this.commandQueue.release(this.sessionId);
     }
+    });
   }
 
   private completeTurnTelemetry(startTime: number): void {
@@ -2527,6 +2551,12 @@ export class Agent {
    * - Structured events for UI visualization
    */
   private async runCompletionLoop(startTime: number): Promise<Message> {
+    const lastUserMsg = [...this.messages].reverse().find((m) => m.role === 'user');
+    const lastUserText = typeof lastUserMsg?.content === 'string'
+      ? lastUserMsg.content.replace(/\n\[TURN[^\]]*\][^\n]*/g, '').trim()
+      : '';
+    return withSpan('llm.chat', 'llm', async (span) => {
+    span.setAttribute('gen_ai.usage.total_cost', 0);
     await this.reconcileSystemPrompt();
     await this.compactContext();
 
@@ -2536,10 +2566,6 @@ export class Agent {
     if (!registry) throw new Error('Tool registry not initialized');
     if (!executor) throw new Error('Tool executor not initialized');
 
-    const lastUserMsg = [...this.messages].reverse().find((m) => m.role === 'user');
-    const lastUserText = typeof lastUserMsg?.content === 'string'
-      ? lastUserMsg.content.replace(/\n\[TURN[^\]]*\][^\n]*/g, '').trim()
-      : '';
     let integrationHint: string | undefined;
     let integrationAccessPolicy: ThirdPartyTurnPolicy | undefined;
     if (this.options.prepareIntegrationTools && lastUserText) {
@@ -2577,6 +2603,7 @@ export class Agent {
         this.toolCallLogForReflection.push({ name: toolId, success, output, elapsed });
         this.turnState.touch();
       },
+      span,
     );
 
     if (this.options.promptProfile === 'crew_private' || deniesAutonomousCrewTools(this.options.contextKind, this.sessionId)) {
@@ -2651,6 +2678,9 @@ export class Agent {
         )
         : undefined;
       const sdkMessages = await this.buildSdkMessages(aiMessages);
+      span.setAttribute('llm.input_messages', JSON.stringify(sdkMessages.slice(-20)));
+      span.setAttribute('gen_ai.system', this.config.provider.activeProvider);
+      span.setAttribute('gen_ai.request.model', this.config.provider.activeModel);
       const result = streamText({
         model,
         messages: sdkMessages as unknown as ModelMessage[],
@@ -2794,30 +2824,40 @@ export class Agent {
                 : `[SYSTEM] The user said: "${aiMessages[aiMessages.length - 1]?.content?.slice(0, 500)}"\n\nUse the appropriate tools to answer. Prefer connected MCP integration tools when the request targets an external service — do not scan the local filesystem as a substitute. Do not return empty.`,
             },
           ];
-          const retryResult = streamText({
-            model: createAiSdkModel(this.config, this.getApiKey()),
-            messages: retryMessages,
-            ...(textOnlyRetry
-              ? {}
-              : {
-                tools: createAiSdkTools(
-                  this.toolRegistry!,
-                  this.toolExecutor!,
-                  this.sessionId,
-                  (e) => this.emit(e),
-                  async () => 'continue',
-                  (instruction, toolsList, timeout, background) =>
-                    this.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
-                ),
-                stopWhen: stepCountIs(50),
-                toolChoice: 'auto' as const,
-              }),
-            maxRetries: 1,
-            maxOutputTokens: turnMaxOutputTokens,
+          const retryText = await withSpan('llm.retry', 'llm', async (span) => {
+            span.setAttribute('gen_ai.system', this.config.provider.activeProvider);
+            span.setAttribute('gen_ai.request.model', this.config.provider.activeModel);
+            span.setAttribute('gen_ai.usage.total_cost', 0);
+            span.setAttribute('llm.input_messages', JSON.stringify(retryMessages));
+            const retryResult = streamText({
+              model: createAiSdkModel(this.config, this.getApiKey()),
+              messages: retryMessages,
+              ...(textOnlyRetry
+                ? {}
+                : {
+                  tools: createAiSdkTools(
+                    this.toolRegistry!,
+                    this.toolExecutor!,
+                    this.sessionId,
+                    (e) => this.emit(e),
+                    async () => 'continue',
+                    (instruction, toolsList, timeout, background) =>
+                      this.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
+                    undefined,
+                    span,
+                  ),
+                  stopWhen: stepCountIs(50),
+                  toolChoice: 'auto' as const,
+                }),
+              maxRetries: 1,
+              maxOutputTokens: turnMaxOutputTokens,
+            });
+            let retryOutput = '';
+            for await (const chunk of retryResult.fullStream) { streamHandler.handleEvent(chunk); }
+            retryOutput = (streamHandler.getState().accumulatedContent || '').trim();
+            span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: retryOutput }]));
+            return retryOutput;
           });
-          let retryText = '';
-          for await (const chunk of retryResult.fullStream) { streamHandler.handleEvent(chunk); }
-          retryText = (streamHandler.getState().accumulatedContent || '').trim();
           if (retryText) content = text.trim() ? text.trim() + '\n\n' + retryText : retryText;
         } catch (retryErr) {
           getLogger().warn(
@@ -2832,6 +2872,19 @@ export class Agent {
       }
 
       const usage = await result.usage;
+      if (usage) {
+        span.setAttribute('gen_ai.usage.input_tokens', usage.inputTokens ?? 0);
+        span.setAttribute('gen_ai.usage.output_tokens', usage.outputTokens ?? 0);
+      }
+      span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content }]));
+      span.setAttribute('agent.tool_call_count', this.toolCallLogForReflection.length);
+      void result.response?.then(
+        (res: { modelId?: string; finishReason?: string } | undefined) => {
+          if (res?.modelId) span.setAttribute('gen_ai.response.model', res.modelId);
+          if (res?.finishReason) span.setAttribute('gen_ai.response.finish_reason', res.finishReason);
+        },
+        () => { /* best-effort */ },
+      );
 
       this.sessionLogger?.log({
         type: 'llm_response',
@@ -2919,41 +2972,60 @@ export class Agent {
               { role: 'assistant', content: content || '(prior work in progress)' },
               { role: 'user', content: contPrompt },
             ];
-            const contResult = streamText({
-              model,
-              messages: contMessages as unknown as ModelMessage[],
-              tools,
-              abortSignal: this.abortSignal,
-              maxRetries: 1,
-              maxOutputTokens: turnMaxOutputTokens,
-              stopWhen: stepCountIs(Math.min(50, stepBudget)),
-              toolChoice: 'auto',
-              ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
-              prepareStep: async ({ stepNumber, messages }) => {
-                if (stepNumber === 0) return {};
-                const todosRev = this.todoManager.getRevision();
-                if (todosRev > this.lastTodosRevisionInjected && this.todoManager.getItems().length > 0) {
-                  this.lastTodosRevisionInjected = todosRev;
-                  return {
-                    messages: [
-                      ...messages,
-                      { role: 'user' as const, content: this.todoManager.formatActiveBlock({
-                        deferred: this.todoDispositionThisTurn === 'defer',
-                      }) },
-                    ],
-                  };
-                }
-                return {};
-              },
-            });
             const contentBefore = content;
-            for await (const chunk of contResult.fullStream) {
-              streamHandler.handleEvent(chunk);
-              if (chunk.type === 'text-delta') {
-                this.partialTurnContent = streamHandler.getState().accumulatedContent;
+            const contAccum = await withSpan('llm.continuation', 'llm', async (span) => {
+              span.setAttribute('gen_ai.system', this.config.provider.activeProvider);
+              span.setAttribute('gen_ai.request.model', this.config.provider.activeModel);
+              span.setAttribute('gen_ai.usage.total_cost', 0);
+              span.setAttribute('llm.input_messages', JSON.stringify(contMessages));
+              const contTools = createAiSdkTools(
+                this.toolRegistry!,
+                this.toolExecutor!,
+                this.sessionId,
+                (e) => this.emit(e),
+                async () => 'continue',
+                (instruction, toolsList, timeout, background) =>
+                  this.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
+                undefined,
+                span,
+              );
+              const contResult = streamText({
+                model,
+                messages: contMessages as unknown as ModelMessage[],
+                tools: contTools,
+                abortSignal: this.abortSignal,
+                maxRetries: 1,
+                maxOutputTokens: turnMaxOutputTokens,
+                stopWhen: stepCountIs(Math.min(50, stepBudget)),
+                toolChoice: 'auto',
+                ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+                prepareStep: async ({ stepNumber, messages }) => {
+                  if (stepNumber === 0) return {};
+                  const todosRev = this.todoManager.getRevision();
+                  if (todosRev > this.lastTodosRevisionInjected && this.todoManager.getItems().length > 0) {
+                    this.lastTodosRevisionInjected = todosRev;
+                    return {
+                      messages: [
+                        ...messages,
+                        { role: 'user' as const, content: this.todoManager.formatActiveBlock({
+                          deferred: this.todoDispositionThisTurn === 'defer',
+                        }) },
+                      ],
+                    };
+                  }
+                  return {};
+                },
+              });
+              for await (const chunk of contResult.fullStream) {
+                streamHandler.handleEvent(chunk);
+                if (chunk.type === 'text-delta') {
+                  this.partialTurnContent = streamHandler.getState().accumulatedContent;
+                }
               }
-            }
-            const contAccum = (streamHandler.getState().accumulatedContent || '').trim();
+              const output = (streamHandler.getState().accumulatedContent || '').trim();
+              span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: output }]));
+              return output;
+            });
             if (contAccum.length >= contentBefore.length) {
               // Handler accumulates across the turn — take the full buffer.
               content = contAccum;
@@ -3067,7 +3139,17 @@ export class Agent {
       this.toolExecutor?.setThirdPartyTurnPolicy(null);
       this.toolExecutor?.setKbDocumentTurnPolicy(null);
     }
-  }
+  }, {
+    'trace.domain': 'AGENT',
+    'trace.kind': 'turn',
+    'session.id': this.sessionId,
+    'turn.id': this.currentTurnId ?? `turn-${startTime}`,
+    'user.text': lastUserText,
+    'agent.id': this.currentTurnId ?? `turn-${startTime}`,
+    'gen_ai.system': this.config.provider.activeProvider,
+    'gen_ai.request.model': this.config.provider.activeModel,
+  });
+}
 
   /**
    * Execute a single plan step as a self-contained completion.

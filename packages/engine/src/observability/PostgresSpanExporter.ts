@@ -25,12 +25,43 @@ function mapStatus(span: ReadableSpan): 'ok' | 'error' | 'unset' {
 
 function mapSpanKind(span: ReadableSpan): SpanKind {
   const attrs = span.attributes;
+  const kindAttr = attrs['span.kind'];
+  if (kindAttr === 'llm') return 'llm';
+  if (kindAttr === 'tool') return 'tool';
+  if (kindAttr === 'tool_decision') return 'tool_decision';
+  if (kindAttr === 'agent') return 'agent';
+  if (kindAttr === 'journey_stage') return 'journey_stage';
+  if (kindAttr === 'retrieval') return 'retrieval';
+  if (kindAttr === 'http') return 'http';
+  if (kindAttr === 'ws') return 'ws';
+  if (kindAttr === 'auth') return 'auth';
+  if (kindAttr === 'db') return 'db';
+  if (kindAttr === 'channel') return 'channel';
+  if (kindAttr === 'automation' || kindAttr === 'automation_run') return 'automation';
+  if (kindAttr === 'integration' || kindAttr === 'integration_call') return 'integration';
+  if (kindAttr === 'job') return 'job';
   if (attrs['gen_ai.system']) return 'llm';
   if (attrs['tool.name']) return 'tool';
   if (attrs['openinference.span.kind'] === 'tool' && attrs['decision']) return 'tool_decision';
   if (attrs['journey.stage.id']) return 'journey_stage';
   if (attrs['agent.id']) return 'agent';
   if (attrs['retrieval.documents']) return 'retrieval';
+  return 'internal';
+}
+
+function inferTraceKind(spanName: string, attrs: Record<string, unknown>): TraceKind {
+  if (attrs['trace.kind']) return attrs['trace.kind'] as TraceKind;
+  const n = spanName.toLowerCase();
+  if (n.startsWith('http.')) return 'http_request';
+  if (n.startsWith('ws.')) return 'ws_connection';
+  if (n.startsWith('auth.')) return 'auth';
+  if (n.startsWith('db.')) return 'db_query';
+  if (n.startsWith('channel.')) return 'channel_event';
+  if (n.startsWith('automation.')) return 'automation_run';
+  if (n.startsWith('integration.')) return 'integration_call';
+  if (n.startsWith('job.')) return 'job';
+  if (n.startsWith('startup.')) return 'startup';
+  if (n.startsWith('turn.') || n === 'turn') return 'turn';
   return 'internal';
 }
 
@@ -151,7 +182,7 @@ export class PostgresSpanExporter implements SpanExporter {
         trace_id: span.spanContext().traceId,
         root_span_id: span.spanContext().spanId,
         domain: (attrs['trace.domain'] as ObservabilityDomain) ?? 'AGENT',
-        kind: (attrs['trace.kind'] as TraceKind) ?? 'turn',
+        kind: inferTraceKind(span.name, attrs),
         session_id: attrs['session.id'] ? String(attrs['session.id']) : undefined,
         turn_id: attrs['turn.id'] ? String(attrs['turn.id']) : undefined,
         user_text: attrs['user.text'] ? String(attrs['user.text']) : undefined,
@@ -185,6 +216,10 @@ export class PostgresSpanExporter implements SpanExporter {
     try {
       for (const t of traceRows) {
         const domain = t.domain;
+        const totalTokens = (t.input_tokens ?? 0) + (t.output_tokens ?? 0);
+        if (totalTokens > 0) {
+          spanMetricsSink.incrementCounter('agentx_tokens_total', { domain }, totalTokens);
+        }
         if (t.input_tokens && t.input_tokens > 0) {
           spanMetricsSink.incrementCounter('agentx_llm_tokens_input_total', { domain }, t.input_tokens);
         }
@@ -192,13 +227,16 @@ export class PostgresSpanExporter implements SpanExporter {
           spanMetricsSink.incrementCounter('agentx_llm_tokens_output_total', { domain }, t.output_tokens);
         }
         if (t.cost_usd && t.cost_usd > 0) {
-          spanMetricsSink.incrementCounter('agentx_llm_cost_usd_total', { domain }, t.cost_usd);
+          spanMetricsSink.incrementCounter('agentx_cost_usd_total', { domain }, t.cost_usd);
         }
         if (t.tool_call_count && t.tool_call_count > 0) {
           spanMetricsSink.incrementCounter('agentx_tool_calls_total', { domain }, t.tool_call_count);
         }
         if (t.kind === 'turn') {
           spanMetricsSink.incrementCounter('agentx_turns_total', { domain, status: t.status }, 1);
+          if (t.status === 'error') {
+            spanMetricsSink.incrementCounter('agentx_turn_errors_total', { domain }, 1);
+          }
           if (typeof t.duration_ms === 'number' && t.duration_ms >= 0) {
             spanMetricsSink.recordHistogram('agentx_turn_duration_seconds', { domain }, t.duration_ms / 1000);
           }

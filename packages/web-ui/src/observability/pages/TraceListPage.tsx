@@ -16,8 +16,12 @@ import Skeleton from '@mui/material/Skeleton';
 import Alert from '@mui/material/Alert';
 import ToggleButton from '@mui/material/ToggleButton';
 import TimelineIcon from '@mui/icons-material/Timeline';
-import { listTraces, type ListTracesResponse } from '../api';
-import type { TraceSummary } from '@agentx/shared';
+import { getTrace, listTraces, type ListTracesResponse } from '../api';
+import type { TraceSummary, TraceDetail, SpanNode } from '@agentx/shared';
+import Collapse from '@mui/material/Collapse';
+import IconButton from '@mui/material/IconButton';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
 import { useObs } from '../context';
 import { StatusBadge } from '../components/StatusBadge';
 import { DomainBadge } from '../components/DomainToggle';
@@ -34,7 +38,6 @@ type SortField = 'started_at' | 'duration_ms' | 'input_tokens' | 'output_tokens'
 type SortDir = 'asc' | 'desc';
 
 export function TraceListPage() {
-  const navigate = useNavigate();
   const { domain, timeRange, refreshTick } = useObs();
   const [data, setData] = useState<ListTracesResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,8 +63,8 @@ export function TraceListPage() {
       const res = await listTraces({
         domain: domain === 'both' ? undefined : domain,
         sessionId: sessionId || undefined,
-        status: errorsOnly ? 'error' : (statusFilter.length === 1 ? statusFilter[0] : undefined),
-        kind: kindFilter.length === 1 ? kindFilter[0] : undefined,
+        status: errorsOnly ? 'error' : (statusFilter.length > 0 ? statusFilter.join(',') : undefined),
+        kind: kindFilter.length > 0 ? kindFilter.join(',') : undefined,
         from: timeRange.from,
         to: timeRange.to,
         q: query || undefined,
@@ -164,6 +167,7 @@ export function TraceListPage() {
           <Table size="small">
             <TableHead>
               <TableRow>
+                <TableCell />{/* expand */}
                 <TableCell>Domain</TableCell>
                 <TableCell>Status</TableCell>
                 <TableCell>
@@ -187,14 +191,14 @@ export function TraceListPage() {
               {loading && allTraces.length === 0 ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <TableRow key={i}>
-                    {Array.from({ length: 9 }).map((_, j) => (
+                    {Array.from({ length: 10 }).map((_, j) => (
                       <TableCell key={j}><Skeleton height={18} sx={{ bgcolor: obs.bg.hud }} /></TableCell>
                     ))}
                   </TableRow>
                 ))
               ) : sortedTraces.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} align="center">
+                  <TableCell colSpan={10} align="center">
                     <Typography sx={{ ...obsMonoSx, fontSize: '0.68rem', color: obs.text.dim, py: 3 }}>
                       No traces found. Try adjusting filters.
                     </Typography>
@@ -202,50 +206,7 @@ export function TraceListPage() {
                 </TableRow>
               ) : (
                 sortedTraces.map((t) => (
-                  <TableRow
-                    key={t.trace_id}
-                    hover
-                    sx={{ cursor: 'pointer' }}
-                    onClick={() => navigate(`/trace/${t.trace_id}`)}
-                  >
-                    <TableCell><DomainBadge domain={t.domain} /></TableCell>
-                    <TableCell><StatusBadge status={t.status} /></TableCell>
-                    <TableCell sx={obsMonoSx} title={new Date(t.started_at).toISOString()}>
-                      {new Date(t.started_at).toLocaleTimeString()}
-                    </TableCell>
-                    <TableCell>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Box component="span" sx={{ ...obsMonoSx, fontSize: '0.68rem', minWidth: 46 }}>
-                          {t.duration_ms != null ? `${t.duration_ms}ms` : '—'}
-                        </Box>
-                        {t.duration_ms != null && (
-                          <Box sx={{ width: 40, height: 3, bgcolor: obs.border.default, borderRadius: 2, overflow: 'hidden' }}>
-                            <Box sx={{ width: `${(t.duration_ms / maxDuration) * 100}%`, height: '100%', bgcolor: obs.accent.hud }} />
-                          </Box>
-                        )}
-                      </Box>
-                    </TableCell>
-                    <TableCell sx={{ ...obsMonoSx, fontSize: '0.65rem' }}>{t.kind}</TableCell>
-                    <TableCell>
-                      {t.session_id ? (
-                        <Chip
-                          size="small"
-                          label={t.session_id.slice(0, 8)}
-                          onClick={(e) => { e.stopPropagation(); navigate(`/session/${t.session_id}`); }}
-                          sx={{ ...obsMonoSx, fontSize: '0.62rem', bgcolor: obs.bg.hud, border: `1px solid ${obs.border.default}` }}
-                        />
-                      ) : '—'}
-                    </TableCell>
-                    <TableCell sx={obsMonoSx}>{(t.input_tokens ?? 0) + (t.output_tokens ?? 0)}</TableCell>
-                    <TableCell sx={obsMonoSx}>{t.tool_call_count ?? 0}</TableCell>
-                    <TableCell>
-                      {t.status === 'error' && t.error ? (
-                        <Typography sx={{ ...obsMonoSx, fontSize: '0.62rem', color: obs.accent.alert, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {t.error}
-                        </Typography>
-                      ) : '—'}
-                    </TableCell>
-                  </TableRow>
+                  <TraceRow key={t.trace_id} trace={t} maxDuration={maxDuration} />
                 ))
               )}
             </TableBody>
@@ -267,5 +228,111 @@ export function TraceListPage() {
         </Typography>
       )}
     </Box>
+  );
+}
+
+function TraceRow({ trace, maxDuration }: { trace: TraceSummary; maxDuration: number }) {
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState<TraceDetail | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+
+  useEffect(() => {
+    if (!open || detail) return;
+    let cancelled = false;
+    setLoadingDetail(true);
+    getTrace(trace.trace_id)
+      .then((d) => { if (!cancelled) setDetail(d); })
+      .catch(() => { /* ignore — preview is best effort */ })
+      .finally(() => { if (!cancelled) setLoadingDetail(false); });
+    return () => { cancelled = true; };
+  }, [open, detail, trace.trace_id]);
+
+  const rootSpan = useMemo<SpanNode | null>(() => {
+    if (!detail) return null;
+    return detail.spans.find((s) => s.span_id === detail.root_span_id) ?? detail.spans[0] ?? null;
+  }, [detail]);
+
+  const childSpans = useMemo<SpanNode[]>(() => {
+    if (!rootSpan || !detail) return [];
+    return detail.spans
+      .filter((s) => s.parent_span_id === rootSpan.span_id)
+      .sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime())
+      .slice(0, 4);
+  }, [rootSpan, detail]);
+
+  return (
+    <>
+      <TableRow hover sx={{ cursor: 'pointer' }} onClick={() => navigate(`/trace/${trace.trace_id}`)}>
+        <TableCell>
+          <IconButton size="small" sx={{ color: obs.text.dim }} onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}>
+            {open ? <KeyboardArrowUpIcon fontSize="small" /> : <KeyboardArrowDownIcon fontSize="small" />}
+          </IconButton>
+        </TableCell>
+        <TableCell><DomainBadge domain={trace.domain} /></TableCell>
+        <TableCell><StatusBadge status={trace.status} /></TableCell>
+        <TableCell sx={obsMonoSx} title={new Date(trace.started_at).toISOString()}>{new Date(trace.started_at).toLocaleTimeString()}</TableCell>
+        <TableCell>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Box component="span" sx={{ ...obsMonoSx, fontSize: '0.68rem', minWidth: 46 }}>{trace.duration_ms != null ? `${trace.duration_ms}ms` : '—'}</Box>
+            {trace.duration_ms != null && (
+              <Box sx={{ width: 40, height: 3, bgcolor: obs.border.default, borderRadius: 2, overflow: 'hidden' }}>
+                <Box sx={{ width: `${(trace.duration_ms / maxDuration) * 100}%`, height: '100%', bgcolor: obs.accent.hud }} />
+              </Box>
+            )}
+          </Box>
+        </TableCell>
+        <TableCell sx={{ ...obsMonoSx, fontSize: '0.65rem' }}>{trace.kind}</TableCell>
+        <TableCell>
+          {trace.session_id ? (
+            <Chip size="small" label={trace.session_id.slice(0, 8)} onClick={(e) => { e.stopPropagation(); navigate(`/session/${trace.session_id}`); }} sx={{ ...obsMonoSx, fontSize: '0.62rem', bgcolor: obs.bg.hud, border: `1px solid ${obs.border.default}` }} />
+          ) : '—'}
+        </TableCell>
+        <TableCell sx={obsMonoSx}>{(trace.input_tokens ?? 0) + (trace.output_tokens ?? 0)}</TableCell>
+        <TableCell sx={obsMonoSx}>{trace.tool_call_count ?? 0}</TableCell>
+        <TableCell>
+          {trace.status === 'error' && trace.error ? (
+            <Typography sx={{ ...obsMonoSx, fontSize: '0.62rem', color: obs.accent.alert, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{trace.error}</Typography>
+          ) : '—'}
+        </TableCell>
+      </TableRow>
+      <TableRow>
+        <TableCell colSpan={10} sx={{ p: 0, borderBottom: 'none' }}>
+          <Collapse in={open} timeout="auto" unmountOnExit>
+            <Box sx={{ p: 1.5, bgcolor: alphaColor(obs.accent.hud, 0.04), borderBottom: `1px solid ${obs.border.subtle}` }}>
+              {loadingDetail && !detail ? (
+                <Typography sx={{ ...obsMonoSx, fontSize: '0.62rem', color: obs.text.dim }}>Loading span preview…</Typography>
+              ) : !detail ? (
+                <Typography sx={{ ...obsMonoSx, fontSize: '0.62rem', color: obs.text.dim }}>Click arrow to load preview.</Typography>
+              ) : (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                  {rootSpan ? (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+                      <Typography sx={{ ...obsMonoSx, fontSize: '0.58rem', color: obs.text.dim, letterSpacing: '1px' }}>ROOT</Typography>
+                      <Typography sx={{ ...obsMonoSx, fontSize: '0.72rem', color: obs.text.primary }}>{rootSpan.name}</Typography>
+                      <StatusBadge status={rootSpan.status} />
+                      <Typography sx={{ ...obsMonoSx, fontSize: '0.68rem', color: obs.text.secondary }}>{rootSpan.duration_ms != null ? `${rootSpan.duration_ms}ms` : '—'}</Typography>
+                    </Box>
+                  ) : (
+                    <Typography sx={{ ...obsMonoSx, fontSize: '0.62rem', color: obs.text.dim }}>No spans available.</Typography>
+                  )}
+                  {childSpans.length > 0 && (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.4, pl: 1.5, borderLeft: `1px solid ${obs.border.hud}` }}>
+                      {childSpans.map((s) => (
+                        <Box key={s.span_id} sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                          <Typography sx={{ ...obsMonoSx, fontSize: '0.68rem', color: obs.text.secondary }}>→ {s.name}</Typography>
+                          <StatusBadge status={s.status} />
+                          <Typography sx={{ ...obsMonoSx, fontSize: '0.62rem', color: obs.text.dim }}>{s.duration_ms != null ? `${s.duration_ms}ms` : '—'}</Typography>
+                        </Box>
+                      ))}
+                    </Box>
+                  )}
+                </Box>
+              )}
+            </Box>
+          </Collapse>
+        </TableCell>
+      </TableRow>
+    </>
   );
 }

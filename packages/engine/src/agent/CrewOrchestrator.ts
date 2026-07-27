@@ -11,6 +11,7 @@ import type { ToolExecutor } from '../tools/ToolExecutor.js';
 import type { ToolService } from '../services/tool/ToolService.js';
 import { streamText, stepCountIs, tool, jsonSchema } from 'ai';
 import { createAiSdkModel, createAiSdkTools } from './AiSdkBridge.js';
+import { withSpan } from '../observability/tracer.js';
 import { FiberSet } from '../concurrency/FiberSet.js';
 import type { SessionManager } from '../session/SessionManager.js';
 import { resolveCrewToolIds } from './crew-tools.js';
@@ -381,20 +382,6 @@ export class CrewOrchestrator {
       setToolOutputHandler: (handler: (output: string) => void) => baseExecutor.setToolOutputHandler(handler),
     } : baseExecutor;
 
-    const tools = createAiSdkTools(
-      filteredRegistry,
-      crewExecutor,
-      this.sessionId,
-      emit,
-      async (questionnaire: QuestionnairePayload) => {
-        if (!this.waitForClarification) {
-          return 'Proceed with your best judgment using available tools and context.';
-        }
-        return this.waitForClarification(questionnaire);
-      },
-      () => Promise.resolve({ success: false as const, output: 'Sub-agents not supported in crew mode.', elapsed: 0 }),
-    );
-
     const interCrewTool = tool<Record<string, unknown>, string>({
       description: 'Send a message to another crew member by callsign or ID. Use this to collaborate with other team members.',
       inputSchema: jsonSchema({
@@ -456,8 +443,6 @@ export class CrewOrchestrator {
       },
     });
 
-    const allTools = { ...tools, crew_message: interCrewTool, crew_response: crewResponseTool };
-
     const crewSystemPrompt = `${systemPrompt}
 
 ## TOOL USAGE RULES
@@ -468,39 +453,67 @@ You have access to filesystem and code tools. Use them ONLY when:
 
 Do NOT proactively scan folders, list files, or read code unless instructed. If a question can be answered from your knowledge alone, do that first.`;
 
-    const result = streamText({
-      model,
-      messages: [
-        { role: 'system', content: crewSystemPrompt },
-        { role: 'user', content: userMessage },
-      ],
-      tools: allTools,
-      temperature: 0,
-      maxOutputTokens: resolveMaxOutputTokens(this.config?.maxOutputTokens),
-      stopWhen: stepCountIs(20),
-      toolChoice: 'auto',
-    });
+    const crewMessages = [
+      { role: 'system' as const, content: crewSystemPrompt },
+      { role: 'user' as const, content: userMessage },
+    ];
 
-    let content = '';
-    for await (const chunk of result.fullStream) {
-      if (shouldAbort?.()) break;
-      switch (chunk.type) {
-        case 'text-delta': {
-          const delta = extractStreamTextDelta(chunk as Record<string, unknown>);
-          content = appendStreamText(content, delta);
-          onChunk?.(delta);
-          emit({ type: 'stream_chunk', content: delta, fullContent: content });
-          break;
-        }
-        case 'error': {
-          const errMsg = String(chunk.error || 'AI SDK error');
-          emit({ type: 'error', code: 'CREW_AI_SDK_ERROR', message: errMsg, recoverable: false } as unknown as EngineEvent);
-          break;
+    const generated = await withSpan('llm.crew', 'llm', async (span) => {
+      span.setAttribute('gen_ai.system', this.config!.provider.activeProvider);
+      span.setAttribute('gen_ai.request.model', this.config!.provider.activeModel);
+      span.setAttribute('gen_ai.usage.total_cost', 0);
+      span.setAttribute('llm.input_messages', JSON.stringify(crewMessages));
+      const crewTools = createAiSdkTools(
+        filteredRegistry,
+        crewExecutor,
+        this.sessionId,
+        emit,
+        async (questionnaire: QuestionnairePayload) => {
+          if (!this.waitForClarification) {
+            return 'Proceed with your best judgment using available tools and context.';
+          }
+          return this.waitForClarification(questionnaire);
+        },
+        () => Promise.resolve({ success: false as const, output: 'Sub-agents not supported in crew mode.', elapsed: 0 }),
+        undefined,
+        span,
+      );
+      const allTools = { ...crewTools, crew_message: interCrewTool, crew_response: crewResponseTool };
+      const result = streamText({
+        model,
+        messages: crewMessages,
+        tools: allTools,
+        temperature: 0,
+        maxOutputTokens: resolveMaxOutputTokens(this.config?.maxOutputTokens),
+        stopWhen: stepCountIs(20),
+        toolChoice: 'auto',
+      });
+
+      let content = '';
+      for await (const chunk of result.fullStream) {
+        if (shouldAbort?.()) break;
+        switch (chunk.type) {
+          case 'text-delta': {
+            const delta = extractStreamTextDelta(chunk as Record<string, unknown>);
+            content = appendStreamText(content, delta);
+            onChunk?.(delta);
+            emit({ type: 'stream_chunk', content: delta, fullContent: content });
+            break;
+          }
+          case 'error': {
+            const errMsg = String(chunk.error || 'AI SDK error');
+            emit({ type: 'error', code: 'CREW_AI_SDK_ERROR', message: errMsg, recoverable: false } as unknown as EngineEvent);
+            break;
+          }
         }
       }
-    }
 
-    if (!content) content = `${member.crew.name} was unable to generate a response.`;
+      span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content }]));
+      if (!content) content = `${member.crew.name} was unable to generate a response.`;
+      return content;
+    });
+
+    let content = generated;
 
     const elapsed = Date.now() - startTime;
     member.cpuTimeMs += elapsed;

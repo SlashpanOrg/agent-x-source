@@ -218,7 +218,7 @@ export function setupWebSocket(server: Server): void {
     const clientIdMatch = wsUrl.match(/[?&]clientId=([^&]+)/);
     const wsClientId = clientIdMatch ? decodeURIComponent(clientIdMatch[1]!) : '';
     const protocol = req.headers['sec-websocket-protocol'] ?? '';
-    const { span: connectSpan, withContext } = startAppSpan('ws.connection', 'websocket', 'websocket_connection', {
+    const { span: connectSpan, withContext } = startAppSpan('ws.connection', 'ws', 'ws_connection', {
       'ws.type': 'main',
       'ws.protocol': protocol,
       'ws.url': wsUrl,

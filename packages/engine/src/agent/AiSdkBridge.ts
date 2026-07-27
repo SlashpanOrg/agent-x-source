@@ -1,4 +1,6 @@
 import { tool, jsonSchema, streamText, stepCountIs, type ToolSet, type LanguageModel } from 'ai';
+import { context, trace, SpanStatusCode, type Span } from '@opentelemetry/api';
+import { withSpan } from '../observability/tracer.js';
 import { normalizeAiSdkMessagesForProvider } from './context-profile.js';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -275,9 +277,12 @@ export function createAiSdkTools(
   waitForClarification: (questionnaire: QuestionnairePayload) => Promise<string>,
   runSubAgent: (instruction: string, tools: string[] | undefined, timeout: number, background?: boolean) => Promise<{ success: boolean; output: string; elapsed: number; agentId?: string }>,
   onToolExecuted?: (toolId: string, success: boolean, output: string, elapsed: number, args?: Record<string, unknown>) => void,
+  parentSpan?: Span,
 ): ToolSet {
   const allTools = toolRegistry.list();
   const tools: ToolSet = {};
+  const toolCtx = parentSpan ? trace.setSpan(context.active(), parentSpan) : undefined;
+  const bindCtx = <F extends (...args: any[]) => any>(fn: F): F => (toolCtx ? context.bind(toolCtx, fn) : fn) as F;
   let filteredTools = allTools;
 
   if (toolExecutor.shouldDisclose?.(filteredTools.length) ?? shouldDisclose(filteredTools.length)) {
@@ -549,8 +554,15 @@ export function createAiSdkTools(
     tools[toolDef.id] = tool({
       description: toolDef.modelDescription,
       inputSchema: jsonSchema(schema),
-        async execute(args, options) {
-           if (toolExecutor.isTurnAborted()) {
+        execute: bindCtx(async (args, options) => {
+           return withSpan(`tool_decision.${toolDef.id}`, 'tool_decision', async (decisionSpan) => {
+             decisionSpan.setAttribute('trace.domain', 'AGENT');
+             decisionSpan.setAttribute('openinference.span.kind', 'tool');
+             decisionSpan.setAttribute('decision', true);
+             decisionSpan.setAttribute('tool.id', toolDef.id);
+             decisionSpan.setAttribute('tool.name', toolDef.name);
+             decisionSpan.setAttribute('tool.args', JSON.stringify(args).slice(0, 2000));
+             if (toolExecutor.isTurnAborted()) {
              const err = new Error('Turn aborted');
              err.name = 'AbortError';
              throw err;
@@ -574,7 +586,11 @@ export function createAiSdkTools(
                callId,
                message: `🚫 ${toolDef.name} blocked by guard`,
              });
-             return output;
+             decisionSpan.setAttribute('tool.success', false);
+            decisionSpan.setAttribute('tool.elapsed', elapsed);
+            decisionSpan.setAttribute('tool.guard', guard.error ?? 'blocked');
+            decisionSpan.setStatus({ code: SpanStatusCode.ERROR, message: guard.error ?? 'tool guard blocked' });
+            return output;
            }
 
            emit({ 
@@ -588,27 +604,37 @@ export function createAiSdkTools(
            });
 
            try {
-             const result: ToolResult = await toolExecutor.execute(toolDef.id, args as Record<string, unknown>, sessionId, { signal: options?.abortSignal });
-             const elapsed = Date.now() - startTime;
-             activeOutputCalls.delete(callId);
-             const reflectedOutput = reflectOutput(toolDef.id, result.output);
-             result.output = reflectedOutput;
-             recordCall(toolDef.id, args as Record<string, unknown>, reflectedOutput);
-             onToolExecuted?.(toolDef.id, result.success, reflectedOutput, elapsed, args as Record<string, unknown>);
-              emit({ 
-                type: 'tool_complete', 
-                tool: toolDef.id, 
-                result, 
-                elapsed, 
-                args: args as Record<string, unknown>, 
-                callId,
-                message: result.success ? `✅ ${toolDef.name} completed in ${elapsed}ms` : `❌ ${toolDef.name} failed`
-              });
-
+             return await withSpan(`tool.${toolDef.id}`, 'tool', async (span) => {
+               span.setAttribute('trace.domain', 'AGENT');
+               span.setAttribute('openinference.span.kind', 'tool');
+               span.setAttribute('tool.name', toolDef.id);
+               span.setAttribute('tool.args', JSON.stringify(args).slice(0, 2000));
+               span.setAttribute('session.id', sessionId);
+               const result: ToolResult = await toolExecutor.execute(toolDef.id, args as Record<string, unknown>, sessionId, { signal: options?.abortSignal });
+               const elapsed = Date.now() - startTime;
+               activeOutputCalls.delete(callId);
+               const reflectedOutput = reflectOutput(toolDef.id, result.output);
+               result.output = reflectedOutput;
+               recordCall(toolDef.id, args as Record<string, unknown>, reflectedOutput);
+               onToolExecuted?.(toolDef.id, result.success, reflectedOutput, elapsed, args as Record<string, unknown>);
+               emit({
+                 type: 'tool_complete',
+                 tool: toolDef.id,
+                 result,
+                 elapsed,
+                 args: args as Record<string, unknown>,
+                 callId,
+                 message: result.success ? `✅ ${toolDef.name} completed in ${elapsed}ms` : `❌ ${toolDef.name} failed`,
+               });
+               span.setAttribute('tool.success', result.success);
+               span.setAttribute('tool.output', reflectedOutput.slice(0, 2000));
+               span.setAttribute('tool.elapsed', elapsed);
                if (!result.success) {
+                 span.setStatus({ code: SpanStatusCode.ERROR, message: result.error ?? 'tool failed' });
                  return `[TOOL ERROR: ${result.error || 'Unknown'}] ${result.output}`;
                }
-             return reflectedOutput;
+               return reflectedOutput;
+             });
            } catch (err) {
              activeOutputCalls.delete(callId);
              const elapsed = Date.now() - startTime;
@@ -624,7 +650,8 @@ export function createAiSdkTools(
              });
              return `[TOOL ERROR] ${errorMsg}`;
            }
-         },
+         });
+         }),
     });
   }
 

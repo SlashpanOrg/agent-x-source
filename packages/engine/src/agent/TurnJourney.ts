@@ -7,6 +7,7 @@
  */
 
 import { getLogger } from '@agentx/shared';
+import { withSpan } from '../observability/tracer.js';
 import { getRAGEngineInstance } from '../commands/builtin/rag_index.js';
 import { getKnowledgeBaseService } from '../knowledge-base/global-manager.js';
 import type { MasterKind } from '../document-studio/types.js';
@@ -262,23 +263,27 @@ async function prefetchLocalKnowledge(userText: string): Promise<{
   const kb = getKnowledgeBaseService();
   if (kb) {
     try {
-      const kbResults = mentionedKb.length > 0
-        ? (
-          await Promise.all(
-            mentionedKb.map((m) =>
-              withPrefetchTimeout(
-                `Knowledge Base search (${m.sourceId})`,
-                kb.search(searchQuery, 8, m.sourceId),
-                [],
+      const kbResults = await withSpan('journey.local_knowledge', 'journey_stage', async (span) => {
+        span.setAttribute('journey.stage.id', 'local_knowledge');
+        span.setAttribute('journey.stage.name', 'knowledge_base');
+        return mentionedKb.length > 0
+          ? (
+            await Promise.all(
+              mentionedKb.map((m) =>
+                withPrefetchTimeout(
+                  `Knowledge Base search (${m.sourceId})`,
+                  kb.search(searchQuery, 8, m.sourceId),
+                  [],
+                ),
               ),
-            ),
-          )
-        ).flat()
-        : await withPrefetchTimeout(
-          'Knowledge Base search',
-          kb.search(searchQuery, 8),
-          [],
-        );
+            )
+          ).flat()
+          : await withPrefetchTimeout(
+            'Knowledge Base search',
+            kb.search(searchQuery, 8),
+            [],
+          );
+      });
       for (const r of kbResults) {
         hits.push({
           content: r.content,
@@ -323,7 +328,11 @@ async function prefetchLocalKnowledge(userText: string): Promise<{
   const rag = getRAGEngineInstance();
   if (rag?.isEnabled) {
     try {
-      const docs = await withPrefetchTimeout('Codebase RAG search', rag.search(searchQuery, 3), []);
+      const docs = await withSpan('journey.local_knowledge', 'journey_stage', async (span) => {
+        span.setAttribute('journey.stage.id', 'local_knowledge');
+        span.setAttribute('journey.stage.name', 'codebase_rag');
+        return await withPrefetchTimeout('Codebase RAG search', rag.search(searchQuery, 3), []);
+      });
       for (const d of docs) {
         hits.push({
           content: d.content,

@@ -14,7 +14,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import type { ObservabilityApiContext } from './index.js';
-import type { ObservabilityDomain } from '@agentx/shared';
+import type { ObservabilityDomain, TraceSummary, TraceKind } from '@agentx/shared';
 
 export function tracesRouter(ctx: ObservabilityApiContext): Router {
   const r = Router();
@@ -22,10 +22,11 @@ export function tracesRouter(ctx: ObservabilityApiContext): Router {
   // GET /traces — paginated list with filters.
   r.get('/', async (req: Request, res: Response) => {
     try {
-      const domain = req.query.domain as ObservabilityDomain | undefined;
+      const rawDomain = req.query.domain as string | undefined;
+      const domain = rawDomain && rawDomain !== 'both' ? (rawDomain.toUpperCase() as ObservabilityDomain) : undefined;
       const sessionId = req.query.sessionId as string | undefined;
-      const status = req.query.status as string | undefined;
-      const kind = req.query.kind as string | undefined;
+      const rawStatus = req.query.status as string | string[] | undefined;
+      const rawKind = req.query.kind as string | string[] | undefined;
       const from = req.query.from as string | undefined;
       const to = req.query.to as string | undefined;
       const q = req.query.q as string | undefined;
@@ -33,11 +34,16 @@ export function tracesRouter(ctx: ObservabilityApiContext): Router {
       const limitRaw = parseInt(req.query.limit as string, 10);
       const limit = Number.isNaN(limitRaw) ? 50 : Math.min(Math.max(limitRaw, 1), 200);
 
+      const toArray = (v: string | string[] | undefined): string[] | undefined => {
+        if (v == null || v === '') return undefined;
+        return Array.isArray(v) ? v : v.split(',').map((s) => s.trim()).filter(Boolean);
+      };
+
       const traces = await ctx.store.listTraces({
-        domain: domain && domain !== ('both' as string) ? domain : undefined,
+        domain,
         session_id: sessionId,
-        status: status as 'running' | 'ok' | 'error' | 'cancelled' | undefined,
-        kind: kind as never,
+        status: toArray(rawStatus) as TraceSummary['status'][] | undefined,
+        kind: toArray(rawKind) as TraceKind[] | undefined,
         from,
         to,
         q,

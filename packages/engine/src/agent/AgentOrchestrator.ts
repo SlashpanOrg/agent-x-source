@@ -1,5 +1,6 @@
 import { generateId } from '@agentx/shared';
 import type { EngineEvent } from '@agentx/shared';
+import { injectTraceparent, extractTraceparent } from '../observability/context.js';
 import type { AgentEventBus } from '../EventBus.js';
 import { SubAgentManager } from './SubAgentManager.js';
 import type { SubAgentTask } from './SubAgentManager.js';
@@ -46,6 +47,7 @@ export class AgentOrchestrator {
       status: 'planning',
     };
     this.plans.set(id, plan);
+    injectTraceparent(plan as unknown as Record<string, unknown>);
     this.emit({ type: 'processing_start', taskDescription: `Planning: ${goal}` });
     return plan;
   }
@@ -58,6 +60,7 @@ export class AgentOrchestrator {
     const plan = this.plans.get(planId);
     if (!plan) throw new Error(`Plan ${planId} not found`);
 
+    return extractTraceparent(plan as unknown as Record<string, unknown>, async () => {
     plan.status = 'executing';
     const startTime = Date.now();
 
@@ -122,6 +125,7 @@ export class AgentOrchestrator {
     });
 
     return plan;
+    });
   }
 
   /**

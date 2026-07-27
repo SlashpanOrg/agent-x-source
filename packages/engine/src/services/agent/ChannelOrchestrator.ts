@@ -2,6 +2,7 @@ import type { AgentXConfig } from '@agentx/shared';
 import { isMessagingChannel } from '@agentx/shared';
 import { registerChannelPermissionBridge } from '../../channels/channel-permission-bridge.js';
 import { createAiSdkModel } from '../../agent/AiSdkBridge.js';
+import { withSpan } from '../../observability/tracer.js';
 import { streamText } from 'ai';
 import type { ToolExecutor } from '../../tools/ToolExecutor.js';
 import type { PermissionManager } from '../../tools/permissions/PermissionManager.js';
@@ -114,17 +115,26 @@ export class ChannelOrchestrator {
       callsign ? `The user's name/callsign is "${callsign}".` : '',
       'Reply with ONLY the message body — warm, concise, no markdown headers, no tool names, no meta commentary.',
     ].filter(Boolean).join(' ');
-    const r = await streamText({
-      model,
-      messages: [
-        { role: 'system', content: options?.systemHint ?? defaultSystem },
-        { role: 'user', content: userPrompt },
-      ],
-      maxOutputTokens: options?.maxTokens ?? 280,
+    const messages = [
+      { role: 'system' as const, content: options?.systemHint ?? defaultSystem },
+      { role: 'user' as const, content: userPrompt },
+    ];
+    const trimmed = await withSpan('llm.outbound', 'llm', async (span) => {
+      span.setAttribute('gen_ai.system', this.host.config.provider.activeProvider);
+      span.setAttribute('gen_ai.request.model', this.host.config.provider.activeModel);
+      span.setAttribute('gen_ai.usage.total_cost', 0);
+      span.setAttribute('llm.input_messages', JSON.stringify(messages));
+      const r = await streamText({
+        model,
+        messages,
+        maxOutputTokens: options?.maxTokens ?? 280,
+      });
+      let text = '';
+      for await (const chunk of r.textStream) text += chunk;
+      const content = text.trim();
+      span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content }]));
+      return content;
     });
-    let text = '';
-    for await (const chunk of r.textStream) text += chunk;
-    const trimmed = text.trim();
     if (!trimmed) throw new Error('Model returned an empty message');
     return trimmed;
   }
