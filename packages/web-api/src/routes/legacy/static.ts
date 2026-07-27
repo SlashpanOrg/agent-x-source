@@ -11,7 +11,7 @@ export function createStaticRouter(): Router {
 
   // Serve static UI assets
   r.get('*', async (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/ws')) { next(); return; }
+    if (req.path.startsWith('/api') || req.path.startsWith('/ws') || req.path.startsWith('/observability')) { next(); return; }
 
     // Dev mode: proxy to Vite dev server
     if (process.env['AGENTX_SERVE_UI'] === 'proxy') {

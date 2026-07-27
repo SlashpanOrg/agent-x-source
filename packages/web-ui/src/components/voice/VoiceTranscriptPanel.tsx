@@ -285,10 +285,10 @@ export function VoiceTranscriptPanel({
 
       <Box
         ref={scrollerRef}
+        className="ax-scroll-y"
         sx={{
           flex: 1,
           minHeight: 0,
-          overflowY: 'auto',
           px: 1.15,
           py: 0.85,
           display: 'flex',

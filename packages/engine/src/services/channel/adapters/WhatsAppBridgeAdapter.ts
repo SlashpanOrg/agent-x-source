@@ -29,6 +29,8 @@ import type { WhatsAppSessionService } from '../../../whatsapp/WhatsAppSessionSe
 import type { WhatsAppIncomingMessage } from '../../../whatsapp/engine/IWhatsAppEngine.js';
 import { EngineStatus } from '../../../whatsapp/engine/IWhatsAppEngine.js';
 import { getLogger } from '@agentx/shared';
+import { withSpan } from '../../../observability/index.js';
+import { incrementChannelEvent } from '../../../observability/channel-metrics.js';
 
 export interface WhatsAppBridgeAdapterConfig {
   /** The WhatsAppSessionService that owns the engine + event bus. */
@@ -97,6 +99,14 @@ export class WhatsAppBridgeAdapter implements IChannelBridge {
 
   async start(onInbound: OnInboundCallback): Promise<void> {
     this.onInbound = onInbound;
+    incrementChannelEvent('whatsapp', 'connect');
+    void withSpan('channel.lifecycle', 'channel', (span) => {
+      span.setAttribute('trace.domain', 'APP');
+      span.setAttribute('trace.kind', 'channel_event');
+      span.setAttribute('channel.type', 'whatsapp');
+      span.setAttribute('channel.event', 'connect');
+      span.setAttribute('channel.status', 'connected');
+    });
 
     // Subscribe to inbound messages from the event bus.
     const handler = (msg: WhatsAppIncomingMessage) => {
@@ -111,7 +121,18 @@ export class WhatsAppBridgeAdapter implements IChannelBridge {
       this.messageUnsubscribe();
       this.messageUnsubscribe = null;
     }
+    const hadInbound = this.onInbound !== null;
     this.onInbound = null;
+    if (hadInbound) {
+      incrementChannelEvent('whatsapp', 'disconnect');
+      void withSpan('channel.lifecycle', 'channel', (span) => {
+        span.setAttribute('trace.domain', 'APP');
+        span.setAttribute('trace.kind', 'channel_event');
+        span.setAttribute('channel.type', 'whatsapp');
+        span.setAttribute('channel.event', 'disconnect');
+        span.setAttribute('channel.status', 'disconnected');
+      });
+    }
   }
 
   async send(message: OutboundMessage): Promise<void> {
@@ -130,17 +151,24 @@ export class WhatsAppBridgeAdapter implements IChannelBridge {
     // tool surface (Phase 6) which has richer send methods.
     const text = this.buildOutboundText(message);
     if (text) {
-      // Access the engine through the session service's internal reference.
-      // We use a typed cast here because the engine is not exposed publicly
-      // on the session service — the adapter is the only consumer that needs
-      // direct engine access for outbound sends.
-      const engine = (this.sessionService as unknown as { engine: { sendText: (chatId: string, text: string) => Promise<{ messageId: string }> } | null }).engine;
-      if (!engine) {
-        throw new Error('WhatsApp engine is not available — session may not be linked');
-      }
-      await engine.sendText(chatId, text);
-      this.outboundCount++;
-      this.lastOutbound = new Date().toISOString();
+      await withSpan('channel.outbound', 'channel', async (span) => {
+        span.setAttribute('trace.domain', 'APP');
+        span.setAttribute('trace.kind', 'channel_event');
+        span.setAttribute('channel.type', 'whatsapp');
+        span.setAttribute('channel.to', chatId);
+        span.setAttribute('channel.message_type', message.attachments && message.attachments.length > 0 ? 'mixed' : 'text');
+        // Access the engine through the session service's internal reference.
+        // We use a typed cast here because the engine is not exposed publicly
+        // on the session service — the adapter is the only consumer that needs
+        // direct engine access for outbound sends.
+        const engine = (this.sessionService as unknown as { engine: { sendText: (chatId: string, text: string) => Promise<{ messageId: string }> } | null }).engine;
+        if (!engine) {
+          throw new Error('WhatsApp engine is not available — session may not be linked');
+        }
+        await engine.sendText(chatId, text);
+        this.outboundCount++;
+        this.lastOutbound = new Date().toISOString();
+      });
     }
   }
 
@@ -187,6 +215,16 @@ export class WhatsAppBridgeAdapter implements IChannelBridge {
 
     this.inboundCount++;
     this.lastInbound = new Date().toISOString();
+    incrementChannelEvent('whatsapp', 'message');
+
+    void withSpan('channel.inbound', 'channel', (span) => {
+      span.setAttribute('trace.domain', 'APP');
+      span.setAttribute('trace.kind', 'channel_event');
+      span.setAttribute('channel.type', 'whatsapp');
+      span.setAttribute('channel.event', 'message');
+      span.setAttribute('channel.from', senderJid);
+      span.setAttribute('channel.message_id', msg.id);
+    });
 
     // Include the sender's saved contact name in the payload so the agent
     // and per-contact session routing can use it.

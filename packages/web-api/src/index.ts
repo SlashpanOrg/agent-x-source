@@ -5,7 +5,8 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getLogger, getDataDir, VERSION } from '@agentx/shared';
-import { getEngine, awaitEngineStorageReady } from './engine.js';
+import { getEngine, awaitEngineStorageReady, setAgentMetricsApi } from './engine.js';
+import { getObservabilityHandle } from '@agentx/engine';
 import { ensureLoginShellPath, configureHttpKeepAlive } from '@agentx/engine';
 import { authMiddleware, createAuthRouter } from './auth.js';
 import { errorHandler } from './middleware/error.js';
@@ -33,6 +34,8 @@ import { router as healthRouter } from './routes/health.js';
 import { router as metricsRouter } from './routes/metrics.js';
 import { router as legacyRouter } from './routes/legacy.js';
 import { router as knowledgeBaseRouter } from './routes/knowledge-base.js';
+import { observabilityRouter } from './routes/observability/index.js';
+import { devRouter } from './routes/observability/dev.js';
 import { DATA_DIR, SESSIONS_DIR, UPLOADS_DIR, UI_DIST } from './api-helpers.js';
 
 const PORT = Number(process.env['AGENTX_PORT'] || process.env['PORT']) || 3333;
@@ -109,6 +112,22 @@ if (startupErrors.length > 0) {
 }
 
 const api = createApiService();
+// Expose the ApiService's agent metrics to the observability MetricsSampler as
+// an AgentMetricsApi adapter (§8.2). Set before `storageReady` resolves so the
+// agent metric source is wired when `initObservability` runs in state.ts.
+setAgentMetricsApi({
+  getAgentMetrics: () => {
+    const m = api.getAgentMetrics();
+    return {
+      turnsTotal: m.turnsTotal,
+      toolLatencyAvgMs: m.toolLatencyAvg * 1000,
+      toolLatencyP95Ms: m.toolLatencyP95 * 1000,
+      toolCallCount: m.toolLatencyCount,
+      queueDepth: m.queueDepth,
+      memoryCacheHitRate: m.memoryCacheHitRate,
+    };
+  },
+});
 const app: Express = express();
 app.use(express.json({ limit: '50mb' }));
 
@@ -169,6 +188,60 @@ app.use('/api/jobs', jobsRouter({ api }));
 app.use('/', metricsRouter({ api }));
 app.use('/', legacyRouter({ api }));
 app.use('/api', knowledgeBaseRouter({ api }));
+
+// ── Observability API + UI (Phase 5) ────────────────────────────────────────
+// The data endpoints are gated by authMiddleware (above) + requireDeveloperMode
+// (inside the router). The dev-mode status/verify endpoints are NOT gated by
+// dev mode (they're needed to unlock it).
+//
+// NOTE: `initObservability` runs asynchronously inside the engine bootstrap
+// (after `storageReady` resolves in state.ts), so `getObservabilityHandle()`
+// returns undefined at module-eval time when these routes are mounted. We
+// therefore resolve the handle **lazily on each request** and build the
+// observability router on first hit after the handle is available. This lets
+// the dev-mode endpoints (status/verify/enable/disable — which don't touch the
+// store) work immediately, and the data endpoints light up once observability
+// finishes initializing. If observability never initializes (e.g. storage
+// deferred), data endpoints return 503 but dev endpoints still work.
+let obsRouter: express.Router | undefined;
+let obsRouterHandle: unknown = null;
+// Dev-only router used before observability initializes. devRouter ignores the
+// store/handle (it only touches authManager + session flags), so a stub context
+// is safe. Built once and cached.
+let devOnlyRouterCache: express.Router | undefined;
+app.use('/api/observability', (req, res, next) => {
+  const handle = getObservabilityHandle();
+  if (handle) {
+    if (!obsRouter || obsRouterHandle !== handle) {
+      obsRouter = observabilityRouter({ api, store: handle.store, handle });
+      obsRouterHandle = handle;
+    }
+    return obsRouter(req, res, next);
+  }
+  // Observability not initialized yet. The dev-mode endpoints don't need the
+  // store, so serve /dev/* from the dev-only router instead of returning 503.
+  if (req.path === '/dev' || req.path.startsWith('/dev/')) {
+    if (!devOnlyRouterCache) {
+      // devRouter ignores ctx (store/handle) — only authManager + session flags.
+      devOnlyRouterCache = devRouter({} as never);
+    }
+    return devOnlyRouterCache(req, res, next);
+  }
+  res.status(503).json({ error: 'observability-not-initialized', message: 'Observability is not initialized.' });
+});
+
+// Static-serve the observability UI at /observability (SPA fallback for deep links).
+// The build:observability script emits dist/observability/observability.html.
+const OBS_UI_DIST = join(UI_DIST, 'observability');
+const OBS_UI_HTML = join(OBS_UI_DIST, 'observability.html');
+if (existsSync(OBS_UI_DIST)) {
+  // Serve static assets; do not auto-serve index.html for directory requests.
+  app.use('/observability', express.static(OBS_UI_DIST, { index: false }));
+  // SPA fallback for /observability, /observability/, and all deep links.
+  app.get(/^\/observability(?:\/(.*))?$/, (_req, res) => {
+    res.sendFile(OBS_UI_HTML);
+  });
+}
 
 // Global error handler
 app.use(errorHandler);

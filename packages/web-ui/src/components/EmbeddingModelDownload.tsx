@@ -7,7 +7,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
-import { embeddingModels, type EmbeddingModelProgress, type EmbeddingModelStatus } from '../api';
+import Button from '@mui/material/Button';
+import { embeddingModels, type EmbeddingDownloadErrorKind, type EmbeddingModelProgress, type EmbeddingModelStatus } from '../api';
 import { colors, alphaColor } from '../theme';
 
 // ── Sci-fi status messages (rotate every 3% progress, non-repeating) ────────
@@ -54,6 +55,7 @@ interface ModelProgressState {
   totalMB: number;
   percentage: number;
   error?: string;
+  errorKind?: EmbeddingDownloadErrorKind;
 }
 
 function mapStatusModels(models: EmbeddingModelStatus[]): ModelProgressState[] {
@@ -68,6 +70,7 @@ function mapStatusModels(models: EmbeddingModelStatus[]): ModelProgressState[] {
     downloadedMB: m.sizeOnDiskMB,
     totalMB: m.approxSizeMB,
     percentage: m.percentage ?? (m.downloaded ? 100 : 0),
+    errorKind: m.errorKind,
   }));
 }
 
@@ -80,6 +83,7 @@ function mapProgressModels(models: EmbeddingModelProgress[]): ModelProgressState
     totalMB: m.totalMB,
     percentage: m.percentage,
     error: m.error,
+    errorKind: m.errorKind,
   }));
 }
 
@@ -90,49 +94,67 @@ interface EmbeddingModelDownloadProps {
   onSkip?: () => void;
   /** Fired when download reaches a terminal ready/error state. */
   onReadyChange?: (ready: boolean) => void;
+  /**
+   * Fired when the download fails because the model is no longer available
+   * from the HuggingFace endpoint (404 / gated / network-unreachable). The
+   * wizard uses this to offer a "Continue without Neural Core" path and
+   * silently leave the cortex in degraded mode.
+   */
+  onAvailabilityErrorChange?: (hasAvailabilityError: boolean) => void;
   /** Optional tier notice shown inside the Initializing Neural Core card. */
   banner?: { headline: string; body: string };
 }
 
-export function EmbeddingModelDownload({ onReadyChange, banner }: EmbeddingModelDownloadProps) {
+export function EmbeddingModelDownload({ onReadyChange, onAvailabilityErrorChange, banner }: EmbeddingModelDownloadProps) {
   const [models, setModels] = useState<ModelProgressState[]>([]);
   const [allComplete, setAllComplete] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [hasUnavailableError, setHasUnavailableError] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [statusMessage, setStatusMessage] = useState(STATUS_MESSAGES[0]!);
   const usedMessageIndices = useRef<Set<number>>(new Set([0]));
 
   // ── Start download + SSE progress stream ─────────────────────────────────
   const startDownload = useCallback(async () => {
+    setRetrying(true);
     try {
-      const status = await embeddingModels.status();
-      setModels(mapStatusModels(status.models));
-      if (status.allDownloaded) {
-        setAllComplete(true);
-        return;
-      }
-    } catch {}
+      try {
+        const status = await embeddingModels.status();
+        setModels(mapStatusModels(status.models));
+        if (status.allDownloaded) {
+          setAllComplete(true);
+          setHasError(false);
+          setHasUnavailableError(false);
+          return;
+        }
+      } catch {}
 
-    // Start the download for the RAM-recommended tier model(s).
-    try {
-      await embeddingModels.download();
-    } catch {
-      // Download may already be in progress — that's fine.
+      // Start the download for the RAM-recommended tier model(s).
+      try {
+        await embeddingModels.download({ force: true });
+      } catch {
+        // Download may already be in progress — that's fine.
+      }
+
+      // Open SSE stream.
+      const cleanup = embeddingModels.progressStream((data) => {
+        if (data.type === 'progress' && data.models) {
+          setModels(mapProgressModels(data.models));
+          setAllComplete(!!data.allComplete);
+          setHasError(!!data.hasError);
+          setHasUnavailableError(!!data.hasUnavailableError);
+        }
+        if (data.type === 'done' && data.hasError) {
+          // All retries exhausted — keep the page as-is so the user can read
+          // the error message. The wizard bottom-nav offers the appropriate
+          // continue/retry path based on errorKind.
+        }
+      });
+
+      return cleanup;
+    } finally {
+      setRetrying(false);
     }
-
-    // Open SSE stream.
-    const cleanup = embeddingModels.progressStream((data) => {
-      if (data.type === 'progress' && data.models) {
-        setModels(mapProgressModels(data.models));
-        setAllComplete(!!data.allComplete);
-        setHasError(!!data.hasError);
-      }
-      if (data.type === 'done' && data.hasError) {
-        // All retries exhausted — keep the page as-is so the user can read
-        // the error message. They can skip manually via the button below.
-      }
-    });
-
-    return cleanup;
   }, []);
 
   // Auto-start on mount.
@@ -145,6 +167,18 @@ export function EmbeddingModelDownload({ onReadyChange, banner }: EmbeddingModel
   useEffect(() => {
     onReadyChange?.(allComplete && !hasError);
   }, [allComplete, hasError, onReadyChange]);
+
+  useEffect(() => {
+    onAvailabilityErrorChange?.(hasUnavailableError && !allComplete);
+  }, [hasUnavailableError, allComplete, onAvailabilityErrorChange]);
+
+  const handleRetry = useCallback(() => {
+    // Reset terminal state before re-starting so the UI reflects the retry.
+    setHasError(false);
+    setHasUnavailableError(false);
+    setAllComplete(false);
+    void startDownload();
+  }, [startDownload]);
 
   // ── Overall percentage = total downloaded MB / total downloadable MB ──────
   const totalDownloadedMB = models.reduce((sum, m) => sum + m.downloadedMB, 0);
@@ -227,11 +261,11 @@ export function EmbeddingModelDownload({ onReadyChange, banner }: EmbeddingModel
             fontFamily: '"JetBrains Mono", monospace',
             fontSize: '2.5rem',
             fontWeight: 700,
-            color: allComplete ? colors.accent.green : hasError ? colors.accent.red : colors.accent.blue,
+            color: allComplete ? colors.accent.green : hasError ? (hasUnavailableError ? colors.accent.orange : colors.accent.red) : colors.accent.blue,
             transition: 'all 0.3s',
             lineHeight: 1,
           }}>
-            {allComplete ? '100' : hasError ? 'ERR' : overallPercentage}%
+            {allComplete ? '100' : hasError ? (hasUnavailableError ? 'PAUSED' : 'ERR') : overallPercentage}%
           </Typography>
         </Box>
 
@@ -244,12 +278,16 @@ export function EmbeddingModelDownload({ onReadyChange, banner }: EmbeddingModel
           <Typography sx={{
             fontFamily: '"JetBrains Mono", monospace',
             fontSize: '0.72rem',
-            color: allComplete ? colors.accent.green : hasError ? colors.accent.red : colors.accent.blue,
+            color: allComplete ? colors.accent.green : hasError ? (hasUnavailableError ? colors.accent.orange : colors.accent.red) : colors.accent.blue,
             opacity: 0.85,
             letterSpacing: 0.5,
             transition: 'opacity 0.3s',
           }}>
-            {hasError ? '◆ DOWNLOAD FAILED — PROCEED WITHOUT EMBEDDINGS OR RETRY LATER' : allComplete ? '◆ NEURAL CORE ONLINE — ALL SYSTEMS NOMINAL' : `◆ ${statusMessage}`}
+            {hasError
+              ? (hasUnavailableError
+                ? '◆ MODEL UNAVAILABLE FROM ENDPOINT — NEURAL CORE PAUSED · CONTINUE WHEN READY'
+                : '◆ DOWNLOAD FAILED — RESOLVE AND RETRY')
+              : allComplete ? '◆ NEURAL CORE ONLINE — ALL SYSTEMS NOMINAL' : `◆ ${statusMessage}`}
           </Typography>
         </Box>
 
@@ -267,12 +305,33 @@ export function EmbeddingModelDownload({ onReadyChange, banner }: EmbeddingModel
               <Typography key={m.id} sx={{
                 fontFamily: '"JetBrains Mono", monospace',
                 fontSize: '0.65rem',
-                color: colors.accent.red,
+                color: m.errorKind === 'unavailable' ? colors.accent.orange : colors.accent.red,
                 opacity: 0.8,
               }}>
                 ✗ {m.displayName}: {m.error || 'Unknown error'}
               </Typography>
             ))}
+            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
+              <Button
+                onClick={handleRetry}
+                disabled={retrying}
+                sx={{
+                  fontFamily: '"JetBrains Mono", monospace',
+                  fontSize: '0.7rem',
+                  letterSpacing: 1,
+                  color: colors.accent.blue,
+                  border: `1px solid ${alphaColor(colors.accent.blue, 0.5)}`,
+                  borderRadius: 1,
+                  px: 3,
+                  py: 0.8,
+                  textTransform: 'uppercase',
+                  '&:hover': { bgcolor: alphaColor(colors.accent.blue, 0.08), borderColor: colors.accent.blue },
+                  '&:disabled': { opacity: 0.5 },
+                }}
+              >
+                {retrying ? 'Retrying…' : '↻ Retry download'}
+              </Button>
+            </Box>
           </Box>
         )}
 

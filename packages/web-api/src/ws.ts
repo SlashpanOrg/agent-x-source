@@ -1,11 +1,12 @@
 import { WebSocketServer, WebSocket } from 'ws';
-import type { Server } from 'http';
+import type { Server, IncomingMessage } from 'http';
 import { getEngine } from './engine.js';
 import { validateWebSocketConnection } from './auth.js';
 import { registerWebSocketRoute } from './ws-upgrade-router.js';
 import { getLogger, stripToolNoise, appendStreamText, repairStreamTextGlitches, type MessagePart, attachDeepSearchPartsFromTools, attachChartPartsFromTools, deepSearchBundleFromMetadata, upsertDeepSearchPart } from '@agentx/shared';
 import type { DeepSearchProgress, EngineEvent, EventHandler, Message, MessageMetadata, NormalizedAttachment } from '@agentx/shared';
-import { MemoryFabric } from '@agentx/engine';
+import { MemoryFabric, startAppSpan } from '@agentx/engine';
+import { metricsRegistry } from './metrics/MetricsRegistry.js';
 
 interface PartRecord {
   type: string;
@@ -205,12 +206,31 @@ export function setupWebSocket(server: Server): void {
   const HEARTBEAT_INTERVAL_MS = 30000;
   const HEARTBEAT_TIMEOUT_MS = 10000;
 
-  wss.on('connection', (ws: WebSocket) => {
+  wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     let isAlive = true;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     let heartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
 
-    ws.send(JSON.stringify({ type: 'connected' }));
+    // Observability: open a root span for this WS connection (trace root).
+    const wsUrl = req.url ?? '';
+    const sessionIdMatch = wsUrl.match(/[?&]sessionId=([^&]+)/);
+    const wsSessionId = sessionIdMatch ? decodeURIComponent(sessionIdMatch[1]!) : '';
+    const clientIdMatch = wsUrl.match(/[?&]clientId=([^&]+)/);
+    const wsClientId = clientIdMatch ? decodeURIComponent(clientIdMatch[1]!) : '';
+    const protocol = req.headers['sec-websocket-protocol'] ?? '';
+    const { span: connectSpan, withContext } = startAppSpan('ws.connection', 'websocket', 'websocket_connection', {
+      'ws.type': 'main',
+      'ws.protocol': protocol,
+      'ws.url': wsUrl,
+      ...(wsSessionId ? { 'ws.session.id': wsSessionId } : {}),
+      ...(wsClientId ? { 'ws.client.id': wsClientId } : {}),
+    });
+    metricsRegistry.incrementCounter('ws_connections_total', { type: 'main' });
+
+    withContext(() => {
+      ws.send(JSON.stringify({ type: 'connected' }));
+      metricsRegistry.incrementCounter('ws_messages_total', { type: 'main', direction: 'outbound' });
+    });
 
     // Start heartbeat for this connection
     heartbeatTimer = setInterval(() => {
@@ -243,7 +263,12 @@ export function setupWebSocket(server: Server): void {
       }
     });
 
-    ws.on('close', () => {
+    // Observability: record errors on the root span
+    ws.on('error', (err: Error) => {
+      connectSpan.recordError(err.message);
+    });
+
+    ws.on('close', (code: number, reason: Buffer) => {
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
@@ -265,15 +290,29 @@ export function setupWebSocket(server: Server): void {
           getLogger().info('WS', `Client disconnected while agent was ${agent.lifecycle.getState()}. Events will be persisted for replay.`);
         }
       } catch { /* best-effort */ }
+      // Observability: end the root span with disconnect reason
+      const reasonText = reason.toString();
+      connectSpan.setAttribute('ws.disconnect.reason', `${code}${reasonText ? `: ${reasonText}` : ''}`);
+      connectSpan.end();
     });
 
     ws.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data.toString());
-        handleWsMessage(ws, msg);
-      } catch {
-        // ignore malformed
-      }
+      withContext(() => {
+        const rawSize = data.toString().length;
+        metricsRegistry.incrementCounter('ws_messages_total', { type: 'main', direction: 'inbound' });
+        const { span: msgSpan } = startAppSpan('ws.message', 'websocket', 'websocket_message', {
+          'ws.message.size': rawSize,
+        });
+        try {
+          const msg = JSON.parse(data.toString());
+          msgSpan.setAttribute('ws.message.type', msg.type ?? 'unknown');
+          handleWsMessage(ws, msg);
+        } catch {
+          // ignore malformed
+        } finally {
+          msgSpan.end();
+        }
+      });
     });
   });
 }
@@ -416,6 +455,7 @@ export function broadcast(data: Record<string, unknown>): void {
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(payload);
+      metricsRegistry.incrementCounter('ws_messages_total', { type: 'main', direction: 'outbound' });
     }
   });
 }

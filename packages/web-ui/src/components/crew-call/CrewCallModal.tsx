@@ -430,11 +430,10 @@ export function CrewCallModal({
             ref={transcriptBoxRef}
             tabIndex={-1}
             onKeyDown={ignoreSpaceActivation}
+            className="ax-scroll-y"
             sx={{
               flex: 1,
               minHeight: 0,
-              overflowY: 'auto',
-              overflowX: 'hidden',
               px: 1.25,
               py: 1,
               display: 'flex',

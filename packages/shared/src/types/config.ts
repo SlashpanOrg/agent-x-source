@@ -115,6 +115,21 @@ export interface AgentXConfig extends Record<string, unknown> {
     deniedTools?: string[];
     permissions?: PermissionRule[];
   }>;
+
+  /**
+   * Observability settings (traces, logs, metrics).
+   * The runtime config lives in the `observability.config` DB table and is
+   * managed via the Developer Tab or the /api/observability/config endpoint.
+   * This section is optional and only used for static config binding.
+   */
+  observability?: {
+    /** Retention period in days (default: 30, range: 1-90). */
+    retention_days?: number;
+    /** Capture prompt/response content in spans (default: true). */
+    capture_prompts?: boolean;
+    /** Enable observability collection (default: true). */
+    enabled?: boolean;
+  };
 }
 
 export interface DownloadedLocalModel {

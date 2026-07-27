@@ -141,7 +141,7 @@ export function DeepSearchResearchBoard({
         )}
       </Box>
 
-      <Box sx={searchResultsRowSx}>
+      <Box className="ax-scroll-x" sx={searchResultsRowSx}>
         {bundle.results.map((result, i) => (
           <DeepSearchResultCard key={result.id} result={result} rank={i + 1} />
         ))}

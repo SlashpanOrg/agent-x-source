@@ -100,7 +100,7 @@ export function DeepSearchShell({
       )}
 
       {results.length > 0 ? (
-        <Box sx={searchResultsRowSx}>
+        <Box className="ax-scroll-x" sx={searchResultsRowSx}>
           {results.map((result, i) => (
             <DeepSearchResultCard key={result.id} result={result} rank={i + 1} />
           ))}

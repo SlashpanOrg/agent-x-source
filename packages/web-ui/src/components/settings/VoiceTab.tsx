@@ -536,9 +536,17 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
                 '&:hover': engine !== 'stt_llm_tts' ? { borderColor: `${settingsTheme.accent.hud}88` } : {},
               }}
             >
-              <Typography sx={{ ...settingsMonoSx, fontSize: '0.72rem', color: settingsTheme.text.primary, mb: 0.5 }}>
-                Local STT + LLM + TTS
-              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.5 }}>
+                <Typography sx={{ ...settingsMonoSx, fontSize: '0.72rem', color: settingsTheme.text.primary }}>
+                  Local STT + LLM + TTS
+                </Typography>
+                {!loading && !kitReady && (
+                  <Box sx={settingsStatusBadgeSx('warn')}>Setup</Box>
+                )}
+                {!loading && kitReady && (
+                  <Box sx={settingsStatusBadgeSx('active')}>Ready</Box>
+                )}
+              </Box>
               <Typography sx={{ ...settingsHelperSx, fontSize: '0.58rem' }}>
                 Runs entirely on your machine with the Agent-X voice kit.
               </Typography>
@@ -563,6 +571,100 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
               </Typography>
             </Box>
           </Box>
+
+          {/* ─── Local engine setup prompt ─────────────────────────────────── */}
+          {/* When Local engine is selected but not installed, show a setup
+              section right here in the engine card — same UX as the Setup
+              Wizard. The user doesn't have to scroll down to find the button. */}
+          {!loading && engine === 'stt_llm_tts' && !kitReady && (
+            <Box sx={{
+              mt: 2,
+              p: 1.5,
+              borderRadius: 1,
+              border: `1px solid ${alphaColor(settingsTheme.accent.amber, '44')}`,
+              bgcolor: `${alphaColor(settingsTheme.accent.amber, '08')}`,
+            }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+                <Box sx={settingsStatusBadgeSx('warn')}>Setup Required</Box>
+                <Typography sx={{ ...settingsHelperSx, fontSize: '0.62rem', color: settingsTheme.text.secondary }}>
+                  Voice kit not installed — deploy STT, TTS, and VAD models to enable local voice.
+                </Typography>
+              </Box>
+
+              {missingRuntime ? (
+                <Typography sx={{ ...settingsHelperSx, fontSize: '0.58rem', color: settingsTheme.accent.alert }}>
+                  {!capabilities?.pythonAvailable
+                    ? 'Python 3.10+ is required before deploying voice.'
+                    : 'Bundled ffmpeg is missing. Reinstall Agent-X or install ffmpeg on PATH.'}
+                </Typography>
+              ) : (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => { void deployKit(); }}
+                  disabled={deploying}
+                  sx={settingsBtnPrimarySx}
+                >
+                  {deploying ? <CircularProgress size={12} sx={{ mr: 0.75, color: colors.bg.primary }} /> : null}
+                  {deploying ? 'Deploying…' : 'Initialize & Download'}
+                </Button>
+              )}
+
+              {/* Inline progress during deployment */}
+              {(deploying || (deployStatus && deployStatus.phase !== 'complete' && deployStatus.phase !== 'idle')) && deployStatus && (
+                <Box sx={{ mt: 1.5 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 1, mb: 0.75 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+                      <Box sx={settingsStatusBadgeSx('warn')}>{deployPhaseLabel(deployStatus.phase)}</Box>
+                      {deployStatus.step && (
+                        <Typography sx={{ ...settingsOverlineSx, mb: 0, fontSize: '0.55rem' }}>
+                          {deployStatus.step}
+                          {deployStatus.stepIndex != null && deployStatus.totalSteps != null
+                            ? ` · ${deployStatus.stepIndex}/${deployStatus.totalSteps}`
+                            : ''}
+                        </Typography>
+                      )}
+                    </Box>
+                    <Typography sx={{ ...settingsMonoSx, fontSize: '0.82rem', fontWeight: 700, color: settingsTheme.accent.hud }}>
+                      {Math.round(deployStatus.progress)}%
+                    </Typography>
+                  </Box>
+
+                  <Typography sx={{ ...settingsHelperSx, fontSize: '0.62rem', color: settingsTheme.text.primary, mb: 0.35 }}>
+                    {deployStatus.message}
+                  </Typography>
+
+                  {deployStatus.currentAssetName && deployStatus.phase === 'download' && (
+                    <Typography sx={{ ...settingsHelperSx, fontSize: '0.58rem', mb: 0.35 }}>
+                      Asset {deployStatus.assetIndex ?? '?'}/{deployStatus.totalAssets ?? '?'} · {deployStatus.currentAssetName}
+                      {deployStatus.assetProgress != null ? ` · ${Math.round(deployStatus.assetProgress)}%` : ''}
+                    </Typography>
+                  )}
+
+                  <LinearProgress
+                    variant="determinate"
+                    value={deployStatus.progress}
+                    sx={{
+                      height: 4,
+                      borderRadius: 1,
+                      bgcolor: settingsTheme.border.default,
+                      '& .MuiLinearProgress-bar': { bgcolor: settingsTheme.accent.hud },
+                    }}
+                  />
+                </Box>
+              )}
+            </Box>
+          )}
+
+          {/* ─── Local engine ready indicator ──────────────────────────────── */}
+          {!loading && engine === 'stt_llm_tts' && kitReady && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 1.5 }}>
+              <Box sx={settingsStatusBadgeSx('active')}>Ready</Box>
+              <Typography sx={{ ...settingsHelperSx, color: settingsTheme.accent.signal }}>
+                Voice kit deployed — STT, TTS, and VAD are operational.
+              </Typography>
+            </Box>
+          )}
 
           {engine === 'realtime_xai' ? (
           <>

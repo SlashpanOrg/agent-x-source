@@ -121,6 +121,20 @@ export class AuthManager {
   }
 
   /**
+   * Return the root username, or null if no root user has been created.
+   * Used by the observability dev-mode verify endpoint (§9.3) to look up
+   * the single root user without requiring the caller to know the username.
+   */
+  getRootUsername(): string | null {
+    if (!this.hasRootUser()) return null;
+    try {
+      return this.loadBundle().username;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Create the root user during initial setup.
    * 
    * This generates:

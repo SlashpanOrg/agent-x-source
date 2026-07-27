@@ -428,6 +428,8 @@ export function ProvidersPanel() {
       <Tabs
         value={modelsTab}
         onChange={(_, v) => setModelsTab(v)}
+        variant="scrollable"
+        scrollButtons={false}
         sx={{
           minHeight: 36, mb: 2,
           '& .MuiTab-root': {

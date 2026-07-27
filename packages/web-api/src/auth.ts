@@ -5,6 +5,13 @@
  * - Express middleware for session validation
  * - Auth endpoints (setup, login, logout, status)
  * - Secure cookie configuration
+ *
+ * All auth operations are wrapped in APP-domain observability spans
+ * (trace.domain='APP', trace.kind='auth_operation') and emit
+ * `auth_operations_total{operation,provider,success}` counters via the
+ * metrics registry. No credentials, tokens, passwords, or PII are recorded
+ * on spans — only structural metadata (operation, provider, success,
+ * failure reason, duration).
  */
 
 import type { Request, Response, NextFunction, Router } from 'express';
@@ -13,6 +20,63 @@ import express from 'express';
 import { authManager } from '@agentx/shared';
 import type { AuthSession } from '@agentx/shared';
 import { setEngineDEK, getEngine } from './engine.js';
+import { startAppSpan } from '@agentx/engine';
+import { metricsRegistry } from './metrics/MetricsRegistry.js';
+import { clearDevFlagsForToken } from './middleware/dev-mode.js';
+
+/**
+ * Handle returned by {@link startAuthSpan}. Extends the base app-span handle
+ * with the monotonic start timestamp and operation/provider labels so
+ * {@link endAuthSpan} can compute duration and emit the correct counter labels.
+ */
+type AuthSpanHandle = ReturnType<typeof startAppSpan> & {
+  start: bigint;
+  operation: string;
+  provider: string;
+};
+
+/**
+ * Start an APP-domain span for an auth operation.
+ *
+ * Always sets `auth.operation` and `auth.provider`; `trace.domain='APP'`
+ * and `trace.kind='auth_operation'` are set by `startAppSpan`. Additional
+ * structural attributes (e.g. `auth.method`) may be passed via `attrs`.
+ */
+function startAuthSpan(
+  operation: string,
+  provider = 'local',
+  attrs?: Record<string, string | number | boolean>,
+): AuthSpanHandle {
+  const start = process.hrtime.bigint();
+  const handle = startAppSpan(`auth.${operation}`, 'auth', 'auth_operation', {
+    'auth.operation': operation,
+    'auth.provider': provider,
+    ...(attrs ?? {}),
+  });
+  return { ...handle, start, operation, provider };
+}
+
+/**
+ * End an auth span: record `auth.success` and `auth.duration_ms`, optionally
+ * record an error (sets span status to ERROR, records the exception, and sets
+ * `auth.failure_reason`), end the span, and increment the
+ * `auth_operations_total{operation,provider,success}` counter.
+ */
+function endAuthSpan(handle: AuthSpanHandle, success: boolean, error?: string): void {
+  const durationMs = Math.round(Number(process.hrtime.bigint() - handle.start) / 1e6);
+  handle.span.setAttribute('auth.success', success);
+  handle.span.setAttribute('auth.duration_ms', durationMs);
+  if (!success && error) {
+    handle.span.setAttribute('auth.failure_reason', error);
+    handle.span.recordError(error);
+  }
+  handle.span.end();
+  metricsRegistry.incrementCounter('auth_operations_total', {
+    operation: handle.operation,
+    provider: handle.provider,
+    success: String(success),
+  });
+}
 
 function useSecureCookies(req?: Request): boolean {
   if (process.env['AGENTX_SECURE_COOKIES'] === 'true') return true;
@@ -61,6 +125,7 @@ function getToken(req: Request): string | undefined {
 export function syncDEKMiddleware(req: Request, _res: Response, next: NextFunction): void {
   const token = getToken(req);
   if (token) {
+    const handle = startAuthSpan('session_validate');
     const session = authManager.validateSession(token);
     if (session) {
       // Ensure engine state exists before setting DEK on it
@@ -68,6 +133,11 @@ export function syncDEKMiddleware(req: Request, _res: Response, next: NextFuncti
       getEngine();
       setEngineDEK(session.dek);
       req.agentxSession = session;
+      handle.span.setAttribute('auth.token_valid', true);
+      endAuthSpan(handle, true);
+    } else {
+      handle.span.setAttribute('auth.token_valid', false);
+      endAuthSpan(handle, false, 'invalid-session');
     }
   }
   next();
@@ -78,41 +148,55 @@ export function syncDEKMiddleware(req: Request, _res: Response, next: NextFuncti
  * Skips auth for health checks and auth endpoints themselves.
  */
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // Public paths that don't require authentication
-  const publicPaths = [
-    '/api/health',
-    '/api/auth/setup',
-    '/api/auth/login',
-    '/api/auth/status',
-    '/api/auth/check',
-    // OAuth providers redirect the user's browser here without an Agent-X
-    // session (popup opened with noopener; cookies may be absent). Security
-    // comes from the single-use, unguessable PKCE `state` parameter.
-    '/api/integrations/oauth/callback',
-  ];
+  const handle = startAuthSpan('middleware');
+  const { span, withContext } = handle;
 
-  if (publicPaths.includes(req.path)) {
-    // Still try to sync DEK for public paths (e.g., status check with valid cookie)
+  withContext(() => {
+    // Public paths that don't require authentication
+    const publicPaths = [
+      '/api/health',
+      '/api/auth/setup',
+      '/api/auth/login',
+      '/api/auth/status',
+      '/api/auth/check',
+      // OAuth providers redirect the user's browser here without an Agent-X
+      // session (popup opened with noopener; cookies may be absent). Security
+      // comes from the single-use, unguessable PKCE `state` parameter.
+      '/api/integrations/oauth/callback',
+    ];
+
+    if (publicPaths.includes(req.path)) {
+      // Still try to sync DEK for public paths (e.g., status check with valid cookie)
+      syncDEKMiddleware(req, res, () => {});
+      span.setAttribute('auth.token_valid', true);
+      endAuthSpan(handle, true);
+      next();
+      return;
+    }
+
+    // Static files and SPA fallback
+    if (!req.path.startsWith('/api/')) {
+      span.setAttribute('auth.token_valid', true);
+      endAuthSpan(handle, true);
+      next();
+      return;
+    }
+
+    const token = getToken(req);
+    const tokenValid = !!token && authManager.isAuthenticated(token);
+    span.setAttribute('auth.token_valid', tokenValid);
+
+    if (!tokenValid) {
+      endAuthSpan(handle, false, 'unauthorized');
+      res.status(401).json({ error: 'unauthorized', message: 'Authentication required' });
+      return;
+    }
+
+    // Sync DEK and attach session info
     syncDEKMiddleware(req, res, () => {});
+    endAuthSpan(handle, true);
     next();
-    return;
-  }
-
-  // Static files and SPA fallback
-  if (!req.path.startsWith('/api/')) {
-    next();
-    return;
-  }
-
-  const token = getToken(req);
-  if (!token || !authManager.isAuthenticated(token)) {
-    res.status(401).json({ error: 'unauthorized', message: 'Authentication required' });
-    return;
-  }
-
-  // Sync DEK and attach session info
-  syncDEKMiddleware(req, res, () => {});
-  next();
+  });
 }
 
 /**
@@ -126,8 +210,16 @@ export function createAuthRouter(): Router {
    * Check if auth is required (has root user been created?)
    */
   router.get('/auth/check', (_req, res) => {
-    const hasRootUser = authManager.hasRootUser();
-    res.json({ hasRootUser });
+    const handle = startAuthSpan('check');
+    try {
+      const hasRootUser = authManager.hasRootUser();
+      handle.span.setAttribute('auth.has_root_user', hasRootUser);
+      endAuthSpan(handle, true);
+      res.json({ hasRootUser });
+    } catch (e: unknown) {
+      endAuthSpan(handle, false, e instanceof Error ? e.message : 'check-failed');
+      res.status(500).json({ error: 'check-failed', message: 'Failed to check auth state' });
+    }
   });
 
   /**
@@ -135,13 +227,21 @@ export function createAuthRouter(): Router {
    * Get current authentication state.
    */
   router.get('/auth/status', (req, res) => {
-    const token = getToken(req);
-    const state = authManager.getAuthState(token);
-    // Expose session token for WebSocket auth (Electron may not attach cookies to WS upgrades).
-    res.json({
-      ...state,
-      sessionToken: state.isAuthenticated && token ? token : undefined,
-    });
+    const handle = startAuthSpan('status');
+    try {
+      const token = getToken(req);
+      const state = authManager.getAuthState(token);
+      handle.span.setAttribute('auth.authenticated', state.isAuthenticated);
+      endAuthSpan(handle, true);
+      // Expose session token for WebSocket auth (Electron may not attach cookies to WS upgrades).
+      res.json({
+        ...state,
+        sessionToken: state.isAuthenticated && token ? token : undefined,
+      });
+    } catch (e: unknown) {
+      endAuthSpan(handle, false, e instanceof Error ? e.message : 'status-failed');
+      res.status(500).json({ error: 'status-failed', message: 'Failed to get auth state' });
+    }
   });
 
   /**
@@ -149,63 +249,79 @@ export function createAuthRouter(): Router {
    * Create the root user (one-time setup).
    */
   router.post('/auth/setup', async (req, res) => {
-    try {
-      if (authManager.hasRootUser()) {
-        res.status(409).json({ error: 'already-configured', message: 'Root user already exists' });
-        return;
-      }
+    const handle = startAuthSpan('setup', 'local', { 'auth.method': 'password' });
+    const { withContext } = handle;
 
-      const { username, password } = req.body as { username?: string; password?: string };
+    await withContext(async () => {
+      try {
+        if (authManager.hasRootUser()) {
+          endAuthSpan(handle, false, 'already-configured');
+          metricsRegistry.incrementCounter('auth_failures_total', {});
+          res.status(409).json({ error: 'already-configured', message: 'Root user already exists' });
+          return;
+        }
 
-      if (!username || typeof username !== 'string' || username.length < 3) {
-        res.status(400).json({ error: 'invalid-username', message: 'Username must be at least 3 characters' });
-        return;
-      }
+        const { username, password } = req.body as { username?: string; password?: string };
 
-      if (!password || typeof password !== 'string' || password.length < 8) {
-        res.status(400).json({ error: 'invalid-password', message: 'Password must be at least 8 characters' });
-        return;
-      }
+        if (!username || typeof username !== 'string' || username.length < 3) {
+          endAuthSpan(handle, false, 'invalid-credentials');
+          metricsRegistry.incrementCounter('auth_failures_total', {});
+          res.status(400).json({ error: 'invalid-username', message: 'Username must be at least 3 characters' });
+          return;
+        }
 
-      // Enforce password complexity
-      const hasUpper = /[A-Z]/.test(password);
-      const hasLower = /[a-z]/.test(password);
-      const hasNumber = /[0-9]/.test(password);
-      const hasSpecial = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password);
+        if (!password || typeof password !== 'string' || password.length < 8) {
+          endAuthSpan(handle, false, 'invalid-credentials');
+          metricsRegistry.incrementCounter('auth_failures_total', {});
+          res.status(400).json({ error: 'invalid-password', message: 'Password must be at least 8 characters' });
+          return;
+        }
 
-      if (!hasUpper || !hasLower || !hasNumber || !hasSpecial) {
-        res.status(400).json({
-          error: 'weak-password',
-          message: 'Password must contain uppercase, lowercase, number, and special character',
+        // Enforce password complexity
+        const hasUpper = /[A-Z]/.test(password);
+        const hasLower = /[a-z]/.test(password);
+        const hasNumber = /[0-9]/.test(password);
+        const hasSpecial = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password);
+
+        if (!hasUpper || !hasLower || !hasNumber || !hasSpecial) {
+          endAuthSpan(handle, false, 'weak-password');
+          metricsRegistry.incrementCounter('auth_failures_total', {});
+          res.status(400).json({
+            error: 'weak-password',
+            message: 'Password must contain uppercase, lowercase, number, and special character',
+          });
+          return;
+        }
+
+        await authManager.createRootUser(username, password);
+
+        // Auto-login after setup
+        const token = await authManager.login(username, password);
+
+        // Set engine DEK for encrypted config access
+        const session = authManager.validateSession(token);
+        if (session) {
+          setEngineDEK(session.dek);
+        }
+
+        // Set secure session cookie
+        res.cookie('agentx_session', token, {
+          httpOnly: true,
+          secure: useSecureCookies(req),
+          sameSite: 'lax', // lax needed for same-origin page navigations
+          maxAge: 24 * 60 * 60 * 1000, // 24 hours
+          path: '/',
         });
-        return;
+
+        endAuthSpan(handle, true);
+        res.json({ ok: true, username, token });
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : 'Setup failed';
+        endAuthSpan(handle, false, 'setup-failed');
+        metricsRegistry.incrementCounter('auth_failures_total', {});
+        res.status(500).json({ error: 'setup-failed', message });
       }
-
-      await authManager.createRootUser(username, password);
-
-      // Auto-login after setup
-      const token = await authManager.login(username, password);
-
-      // Set engine DEK for encrypted config access
-      const session = authManager.validateSession(token);
-      if (session) {
-        setEngineDEK(session.dek);
-      }
-
-      // Set secure session cookie
-      res.cookie('agentx_session', token, {
-        httpOnly: true,
-        secure: useSecureCookies(req),
-        sameSite: 'lax', // lax needed for same-origin page navigations
-        maxAge: 24 * 60 * 60 * 1000, // 24 hours
-        path: '/',
-      });
-
-      res.json({ ok: true, username, token });
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : 'Setup failed';
-      res.status(500).json({ error: 'setup-failed', message });
-    }
+    });
   });
 
   /**
@@ -213,36 +329,46 @@ export function createAuthRouter(): Router {
    * Authenticate and create a session.
    */
   router.post('/auth/login', async (req, res) => {
-    try {
-      const { username, password } = req.body as { username?: string; password?: string };
+    const handle = startAuthSpan('login', 'local', { 'auth.method': 'password' });
+    const { withContext } = handle;
 
-      if (!username || !password) {
-        res.status(400).json({ error: 'missing-credentials', message: 'Username and password required' });
-        return;
+    await withContext(async () => {
+      try {
+        const { username, password } = req.body as { username?: string; password?: string };
+
+        if (!username || !password) {
+          endAuthSpan(handle, false, 'invalid-credentials');
+          metricsRegistry.incrementCounter('auth_failures_total', {});
+          res.status(400).json({ error: 'missing-credentials', message: 'Username and password required' });
+          return;
+        }
+
+        const token = await authManager.login(username, password);
+
+        // Set engine DEK for encrypted config access
+        const session = authManager.validateSession(token);
+        if (session) {
+          setEngineDEK(session.dek);
+        }
+
+        // Set secure session cookie
+        res.cookie('agentx_session', token, {
+          httpOnly: true,
+          secure: useSecureCookies(req),
+          sameSite: 'lax', // lax needed for same-origin page navigations
+          maxAge: 24 * 60 * 60 * 1000, // 24 hours
+          path: '/',
+        });
+
+        endAuthSpan(handle, true);
+        res.json({ ok: true, username, token });
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : 'Authentication failed';
+        endAuthSpan(handle, false, 'invalid-credentials');
+        metricsRegistry.incrementCounter('auth_failures_total', {});
+        res.status(401).json({ error: 'invalid-credentials', message });
       }
-
-      const token = await authManager.login(username, password);
-
-      // Set engine DEK for encrypted config access
-      const session = authManager.validateSession(token);
-      if (session) {
-        setEngineDEK(session.dek);
-      }
-
-      // Set secure session cookie
-      res.cookie('agentx_session', token, {
-        httpOnly: true,
-        secure: useSecureCookies(req),
-        sameSite: 'lax', // lax needed for same-origin page navigations
-        maxAge: 24 * 60 * 60 * 1000, // 24 hours
-        path: '/',
-      });
-
-      res.json({ ok: true, username, token });
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : 'Authentication failed';
-      res.status(401).json({ error: 'invalid-credentials', message });
-    }
+    });
   });
 
   /**
@@ -250,12 +376,24 @@ export function createAuthRouter(): Router {
    * Destroy the current session.
    */
   router.post('/auth/logout', (req, res) => {
-    const token = getToken(req);
-    if (token) {
-      authManager.logout(token);
+    const handle = startAuthSpan('logout');
+    try {
+      const token = getToken(req);
+      if (token) {
+        authManager.logout(token);
+        // Clear developer-mode + dev-verified flags for this token (§10.2).
+        clearDevFlagsForToken(token);
+        handle.span.setAttribute('auth.had_session', true);
+      } else {
+        handle.span.setAttribute('auth.had_session', false);
+      }
+      res.clearCookie('agentx_session', { path: '/' });
+      endAuthSpan(handle, true);
+      res.json({ ok: true });
+    } catch (e: unknown) {
+      endAuthSpan(handle, false, e instanceof Error ? e.message : 'logout-failed');
+      res.status(500).json({ error: 'logout-failed', message: 'Logout failed' });
     }
-    res.clearCookie('agentx_session', { path: '/' });
-    res.json({ ok: true });
   });
 
   /**
@@ -263,35 +401,49 @@ export function createAuthRouter(): Router {
    * Change the root user's password.
    */
   router.post('/auth/change-password', async (req, res) => {
-    const token = getToken(req);
-    if (!token || !authManager.isAuthenticated(token)) {
-      res.status(401).json({ error: 'unauthorized', message: 'Authentication required' });
-      return;
-    }
+    const handle = startAuthSpan('change_password', 'local', { 'auth.method': 'password' });
+    const { withContext } = handle;
 
-    try {
-      const { currentPassword, newPassword } = req.body as { currentPassword?: string; newPassword?: string };
-
-      if (!currentPassword || !newPassword) {
-        res.status(400).json({ error: 'missing-passwords', message: 'Current and new password required' });
+    await withContext(async () => {
+      const token = getToken(req);
+      if (!token || !authManager.isAuthenticated(token)) {
+        endAuthSpan(handle, false, 'unauthorized');
+        metricsRegistry.incrementCounter('auth_failures_total', {});
+        res.status(401).json({ error: 'unauthorized', message: 'Authentication required' });
         return;
       }
 
-      if (newPassword.length < 8) {
-        res.status(400).json({ error: 'invalid-password', message: 'New password must be at least 8 characters' });
-        return;
+      try {
+        const { currentPassword, newPassword } = req.body as { currentPassword?: string; newPassword?: string };
+
+        if (!currentPassword || !newPassword) {
+          endAuthSpan(handle, false, 'invalid-credentials');
+          metricsRegistry.incrementCounter('auth_failures_total', {});
+          res.status(400).json({ error: 'missing-passwords', message: 'Current and new password required' });
+          return;
+        }
+
+        if (newPassword.length < 8) {
+          endAuthSpan(handle, false, 'invalid-credentials');
+          metricsRegistry.incrementCounter('auth_failures_total', {});
+          res.status(400).json({ error: 'invalid-password', message: 'New password must be at least 8 characters' });
+          return;
+        }
+
+        await authManager.changePassword(currentPassword, newPassword);
+
+        // Clear all sessions — user must re-login
+        res.clearCookie('agentx_session', { path: '/' });
+
+        endAuthSpan(handle, true);
+        res.json({ ok: true });
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : 'Password change failed';
+        endAuthSpan(handle, false, 'change-failed');
+        metricsRegistry.incrementCounter('auth_failures_total', {});
+        res.status(400).json({ error: 'change-failed', message });
       }
-
-      await authManager.changePassword(currentPassword, newPassword);
-
-      // Clear all sessions — user must re-login
-      res.clearCookie('agentx_session', { path: '/' });
-
-      res.json({ ok: true });
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : 'Password change failed';
-      res.status(400).json({ error: 'change-failed', message });
-    }
+    });
   });
 
   return router;
@@ -306,29 +458,70 @@ function isLoopbackAddress(addr: string | undefined): boolean {
  * Validate WebSocket upgrade requests. Pre-setup allows loopback only; otherwise requires session cookie.
  */
 export function validateWebSocketConnection(req: IncomingMessage): boolean {
-  if (!authManager.hasRootUser()) {
-    return isLoopbackAddress(req.socket.remoteAddress);
+  const handle = startAuthSpan('session_validate');
+  try {
+    if (!authManager.hasRootUser()) {
+      handle.span.setAttribute('auth.setup_complete', false);
+      const allowed = isLoopbackAddress(req.socket.remoteAddress);
+      endAuthSpan(handle, allowed, allowed ? undefined : 'loopback-only-pre-setup');
+      return allowed;
+    }
+    handle.span.setAttribute('auth.setup_complete', true);
+    const token = extractSessionTokenFromCookie(req.headers.cookie);
+    if (!token) {
+      endAuthSpan(handle, false, 'missing-token');
+      return false;
+    }
+    const valid = authManager.isAuthenticated(token);
+    endAuthSpan(handle, valid, valid ? undefined : 'invalid-token');
+    return valid;
+  } catch (e: unknown) {
+    endAuthSpan(handle, false, e instanceof Error ? e.message : 'session-validate-failed');
+    return false;
   }
-  const token = extractSessionTokenFromCookie(req.headers.cookie);
-  if (!token) return false;
-  return authManager.isAuthenticated(token);
 }
 
 /** Voice WS accepts cookie auth, Bearer header, or ?token= query param (Electron fallback). */
 export function validateVoiceWebSocketConnection(req: IncomingMessage): boolean {
-  if (!authManager.hasRootUser()) {
-    return isLoopbackAddress(req.socket.remoteAddress);
+  const handle = startAuthSpan('session_validate');
+  try {
+    if (!authManager.hasRootUser()) {
+      handle.span.setAttribute('auth.setup_complete', false);
+      const allowed = isLoopbackAddress(req.socket.remoteAddress);
+      endAuthSpan(handle, allowed, allowed ? undefined : 'loopback-only-pre-setup');
+      return allowed;
+    }
+    handle.span.setAttribute('auth.setup_complete', true);
+
+    const cookieToken = extractSessionTokenFromCookie(req.headers.cookie);
+    if (cookieToken && authManager.isAuthenticated(cookieToken)) {
+      handle.span.setAttribute('auth.token_source', 'cookie');
+      endAuthSpan(handle, true);
+      return true;
+    }
+
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+      const bearer = authHeader.slice(7);
+      if (authManager.isAuthenticated(bearer)) {
+        handle.span.setAttribute('auth.token_source', 'bearer');
+        endAuthSpan(handle, true);
+        return true;
+      }
+    }
+
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const queryToken = url.searchParams.get('token');
+    if (queryToken && authManager.isAuthenticated(queryToken)) {
+      handle.span.setAttribute('auth.token_source', 'query');
+      endAuthSpan(handle, true);
+      return true;
+    }
+
+    endAuthSpan(handle, false, 'no-valid-token');
+    return false;
+  } catch (e: unknown) {
+    endAuthSpan(handle, false, e instanceof Error ? e.message : 'session-validate-failed');
+    return false;
   }
-  const cookieToken = extractSessionTokenFromCookie(req.headers.cookie);
-  if (cookieToken && authManager.isAuthenticated(cookieToken)) {
-    return true;
-  }
-  const authHeader = req.headers.authorization;
-  if (authHeader?.startsWith('Bearer ')) {
-    const bearer = authHeader.slice(7);
-    if (authManager.isAuthenticated(bearer)) return true;
-  }
-  const url = new URL(req.url ?? '/', 'http://localhost');
-  const queryToken = url.searchParams.get('token');
-  return Boolean(queryToken && authManager.isAuthenticated(queryToken));
 }

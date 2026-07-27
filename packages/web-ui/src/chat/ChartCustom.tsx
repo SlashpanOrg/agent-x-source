@@ -159,7 +159,7 @@ export function GanttChart({ spec, height }: { spec: ChartSpec; height: number }
   const max = Math.max(...ends, min + 1);
   const span = max - min || 1;
   return (
-    <Box sx={{ height, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 0.45 }} role="img" aria-label={spec.title ?? 'Gantt'}>
+    <Box className="ax-scroll-y" sx={{ height, display: 'flex', flexDirection: 'column', gap: 0.45 }} role="img" aria-label={spec.title ?? 'Gantt'}>
       {tasks.map((t, i) => {
         const s = toNum(t.start);
         const e = toNum(t.end);
@@ -189,7 +189,7 @@ export function TimelineChart({ spec, height }: { spec: ChartSpec; height: numbe
   const items = (spec.data ?? []).slice(0, 24);
   if (items.length === 0) return <FallbackNote label="Timeline needs data" />;
   return (
-    <Box sx={{ height, overflowY: 'auto', position: 'relative', pl: 1.5 }} role="img" aria-label={spec.title ?? 'Timeline'}>
+    <Box className="ax-scroll-y" sx={{ height, position: 'relative', pl: 1.5 }} role="img" aria-label={spec.title ?? 'Timeline'}>
       <Box sx={{ position: 'absolute', left: 6, top: 4, bottom: 4, width: 2, bgcolor: colors.border.subtle }} />
       {items.map((row, i) => (
         <Box key={i} sx={{ position: 'relative', mb: 1, pl: 1.25 }}>

@@ -172,7 +172,7 @@ export function CrewCallPhonebookModal({
             />
           </Box>
 
-          <Box sx={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+          <Box className="ax-scroll-y" sx={{ flex: 1, minHeight: 0 }}>
             {loading ? (
               <Box sx={{ py: 5, display: 'flex', justifyContent: 'center' }}>
                 <CircularProgress size={20} sx={{ color: colors.text.dim }} />
@@ -344,7 +344,7 @@ function PhonebookCrewDetail({
 
   return (
     <>
-      <Box sx={{ flex: 1, overflowY: 'auto', minHeight: 0, px: 2, py: 1.75 }}>
+      <Box className="ax-scroll-y" sx={{ flex: 1, minHeight: 0, px: 2, py: 1.75 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 1.5 }}>
           <Box sx={{
             width: 48, height: 48, borderRadius: '50%', flexShrink: 0,

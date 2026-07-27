@@ -318,8 +318,33 @@ async function openExternalLink(url: string): Promise<boolean> {
   }
 }
 
+function createObservabilityWindow(url: string): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 900,
+    minHeight: 600,
+    title: 'Agent-X Observability',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      preload: join(__dirname, 'preload.js'),
+    },
+  });
+  void win.loadURL(url);
+  return win;
+}
+
 function attachExternalLinkHandlers(win: BrowserWindow, appOrigin: string): void {
   win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.origin === appOrigin && parsed.pathname.startsWith('/observability')) {
+        createObservabilityWindow(url);
+        return { action: 'deny' };
+      }
+    } catch { /* invalid URL, fall through */ }
     if (isExternalHttpUrl(url)) {
       void openExternalLink(url);
     }

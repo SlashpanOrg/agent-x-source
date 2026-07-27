@@ -4,6 +4,8 @@
  * Prometheus is not used; this exposes a Prometheus-compatible text/plain
  * exposition endpoint with counters, histograms, and gauges.
  */
+import type { MetricSample } from '@agentx/shared';
+
 type Labels = Record<string, string | number>;
 
 interface MetricValue {
@@ -142,11 +144,11 @@ class MetricsRegistry {
       }
       h.buckets.forEach((count, i) => {
         lines.push(
-          `http_request_duration_seconds_bucket${formatLabels({ ...h.labels, le: h.bucketLabels[i] ?? 'unknown' })} ${count}`,
+          `${h.name}_bucket${formatLabels({ ...h.labels, le: h.bucketLabels[i] ?? 'unknown' })} ${count}`,
         );
       });
-      lines.push(`http_request_duration_seconds_sum${formatLabels(h.labels)} ${h.sum.toFixed(6)}`);
-      lines.push(`http_request_duration_seconds_count${formatLabels(h.labels)} ${h.count}`);
+      lines.push(`${h.name}_sum${formatLabels(h.labels)} ${h.sum.toFixed(6)}`);
+      lines.push(`${h.name}_count${formatLabels(h.labels)} ${h.count}`);
     }
     return lines;
   }
@@ -169,6 +171,62 @@ class MetricsRegistry {
     }
 
     return lines.join('\n') + '\n';
+  }
+
+  /**
+   * Snapshot all collected metrics as {@link MetricSample}s for the
+   * {@link MetricsSampler} to persist to the observability database.
+   *
+   * - Counters and gauges emit one sample per label-set with their current value.
+   * - Histograms emit a single sample whose `value` is an object with
+   *   `count`, `sum`, and `p50`/`p90`/`p99` quantiles — the sampler's
+   *   `downsampleHistogram` expands this into separate metric rows.
+   * - Process metrics (heap, event-loop lag) are included as gauges.
+   *
+   * All samples are tagged with `labels.domain='APP'` so the UI can filter
+   * app-domain metrics separately from agent-domain metrics.
+   */
+  snapshot(): MetricSample[] {
+    const out: MetricSample[] = [];
+    const domain = 'APP';
+
+    for (const { name, value, labels } of this.counters.values()) {
+      out.push({ name, value, labels: { ...labels, domain } });
+    }
+
+    for (const { name, value, labels } of this.gauges.values()) {
+      out.push({ name, value, labels: { ...labels, domain } });
+    }
+
+    for (const h of this.histograms.values()) {
+      // Reconstruct quantiles from bucket counts for the sampler.
+      const total = h.count || 1;
+      const bucketCounts = h.buckets;
+      const thresholds = HISTOGRAM_BUCKETS;
+      const quantile = (q: number): number => {
+        const target = q * total;
+        for (let i = 0; i < bucketCounts.length; i++) {
+          if ((bucketCounts[i] ?? 0) >= target) {
+            return thresholds[i] ?? 0;
+          }
+        }
+        return thresholds[thresholds.length - 1] ?? 0;
+      };
+      out.push({
+        name: h.name,
+        value: { count: h.count, sum: h.sum, p50: quantile(0.5), p90: quantile(0.9), p99: quantile(0.99) } as unknown as number,
+        labels: { ...h.labels, domain },
+      });
+    }
+
+    // Process metrics
+    const mem = process.memoryUsage();
+    out.push({ name: 'nodejs_heap_size_total_bytes', value: mem.heapTotal, labels: { domain } });
+    out.push({ name: 'nodejs_heap_size_used_bytes', value: mem.heapUsed, labels: { domain } });
+    out.push({ name: 'nodejs_external_memory_bytes', value: mem.external, labels: { domain } });
+    out.push({ name: 'nodejs_event_loop_lag_seconds', value: this.eventLoopLag, labels: { domain } });
+
+    return out;
   }
 }
 

@@ -90,6 +90,7 @@ import {
   usesNativeMcpStdioBrowserOAuth,
 } from './mcp-stdio-oauth-flow.js';
 import { runPreflightChecks, type PreflightContext } from './preflight.js';
+import { withSpan } from '../observability/index.js';
 
 interface McpToolShape {
   name: string;
@@ -1246,67 +1247,81 @@ Rules:
     }
 
     const readonly = isReadOnlyIntegrationTool(toolName, provider);
-    try {
-      await this.ensureFreshOAuthToken(connectionId);
-      const result = await active.session.callTool(toolName, args);
-      let output = formatMcpToolResult(result);
-      output = this.clarifyPackageSignInOutput(provider, toolName, output);
-      if (connection.providerId === 'google-maps') {
-        output = enhanceGoogleMapsToolOutput(toolName, output);
-      }
-      const failed = isMcpToolResultError(result, output);
-      const cleanedError = failed ? cleanMcpErrorMessage(output) : undefined;
-      const toolId = integrationToolId(connection.providerId, toolName);
-      const structured = parseIntegrationStructuredResult(toolId, output);
-      this.audit.append({
-        connectionId,
-        providerId: connection.providerId,
-        toolName,
-        toolId: parseIntegrationToolId(toolId)?.toolName ?? toolName,
-        readonly,
-        success: !failed,
-        argsSummary: summarizeArgs(args),
-        error: cleanedError,
-        input: JSON.stringify(args, null, 2),
-        output: output.slice(0, 10_000),
-      });
-      if (failed && cleanedError) {
-        this.recordRuntimeToolError(connection, toolName, cleanedError, readonly);
-      }
-      return {
-        success: !failed,
-        output: failed ? cleanedError ?? output : output,
-        error: failed ? 'INTEGRATION_TOOL_FAILED' : undefined,
-        metadata: {
+    const startedAt = Date.now();
+    return withSpan(`integration.${connection.providerId}.${toolName}`, 'integration_call', async (span) => {
+      span.setAttribute('trace.domain', 'APP');
+      span.setAttribute('trace.kind', 'integration_call');
+      span.setAttribute('integration.server', connection.providerId);
+      span.setAttribute('integration.tool', toolName);
+      span.setAttribute('integration.args', JSON.stringify(args));
+      try {
+        await this.ensureFreshOAuthToken(connectionId);
+        const result = await active.session.callTool(toolName, args);
+        let output = formatMcpToolResult(result);
+        output = this.clarifyPackageSignInOutput(provider, toolName, output);
+        if (connection.providerId === 'google-maps') {
+          output = enhanceGoogleMapsToolOutput(toolName, output);
+        }
+        const failed = isMcpToolResultError(result, output);
+        const cleanedError = failed ? cleanMcpErrorMessage(output) : undefined;
+        const toolId = integrationToolId(connection.providerId, toolName);
+        const structured = parseIntegrationStructuredResult(toolId, output);
+        this.audit.append({
+          connectionId,
           providerId: connection.providerId,
           toolName,
+          toolId: parseIntegrationToolId(toolId)?.toolName ?? toolName,
           readonly,
-          integrationStructured: structured ?? undefined,
-        },
-      };
-    } catch (error) {
-      const message = cleanMcpErrorMessage(error instanceof Error ? error.message : String(error));
-      this.audit.append({
-        connectionId,
-        providerId: connection.providerId,
-        toolName,
-        toolId: toolName,
-        readonly,
-        success: false,
-        argsSummary: summarizeArgs(args),
-        error: message,
-        input: JSON.stringify(args, null, 2),
-        output: message,
-      });
-      this.recordRuntimeToolError(connection, toolName, message, readonly);
-      const lower = message.toLowerCase();
-      if (lower.includes('not connected') || lower.includes('connection') || lower.includes('econnrefused') || lower.includes('closed')) {
-        getLogger().warn('INTEGRATION_TOOL_CONNECTION_LOST', `${connectionId}: ${message}`);
-        await this.closeSession(connectionId).catch(() => { /* ignore */ });
+          success: !failed,
+          argsSummary: summarizeArgs(args),
+          error: cleanedError,
+          input: JSON.stringify(args, null, 2),
+          output: output.slice(0, 10_000),
+        });
+        if (failed && cleanedError) {
+          this.recordRuntimeToolError(connection, toolName, cleanedError, readonly);
+        }
+        span.setAttribute('integration.output', output.slice(0, 2000));
+        span.setAttribute('integration.success', !failed);
+        span.setAttribute('integration.duration_ms', Date.now() - startedAt);
+        return {
+          success: !failed,
+          output: failed ? cleanedError ?? output : output,
+          error: failed ? 'INTEGRATION_TOOL_FAILED' : undefined,
+          metadata: {
+            providerId: connection.providerId,
+            toolName,
+            readonly,
+            integrationStructured: structured ?? undefined,
+          },
+        };
+      } catch (error) {
+        const message = cleanMcpErrorMessage(error instanceof Error ? error.message : String(error));
+        this.audit.append({
+          connectionId,
+          providerId: connection.providerId,
+          toolName,
+          toolId: toolName,
+          readonly,
+          success: false,
+          argsSummary: summarizeArgs(args),
+          error: message,
+          input: JSON.stringify(args, null, 2),
+          output: message,
+        });
+        this.recordRuntimeToolError(connection, toolName, message, readonly);
+        const lower = message.toLowerCase();
+        if (lower.includes('not connected') || lower.includes('connection') || lower.includes('econnrefused') || lower.includes('closed')) {
+          getLogger().warn('INTEGRATION_TOOL_CONNECTION_LOST', `${connectionId}: ${message}`);
+          await this.closeSession(connectionId).catch(() => { /* ignore */ });
+        }
+        const clarified = provider ? this.clarifyPackageSignInOutput(provider, toolName, message) : message;
+        span.setAttribute('integration.output', message.slice(0, 2000));
+        span.setAttribute('integration.success', false);
+        span.setAttribute('integration.duration_ms', Date.now() - startedAt);
+        return { success: false, output: cleanMcpErrorMessage(clarified), error: 'INTEGRATION_TOOL_FAILED' };
       }
-      const clarified = provider ? this.clarifyPackageSignInOutput(provider, toolName, message) : message;
-      return { success: false, output: cleanMcpErrorMessage(clarified), error: 'INTEGRATION_TOOL_FAILED' };
-    }
+    });
   }
 
   private recordRuntimeToolError(

@@ -344,11 +344,11 @@ export function CrewHubDialog({
             <>
               {!isSearching && (
                 <Box
+                  className="ax-scroll-y"
                   sx={{
                     width: 232,
                     flexShrink: 0,
                     borderRight: `1px solid ${crewTheme.border.subtle}`,
-                    overflowY: 'auto',
                     py: 1.25,
                     px: 0.75,
                     bgcolor: crewTheme.bg.inset,
@@ -381,10 +381,10 @@ export function CrewHubDialog({
 
               <Box
                 ref={gridScrollRef}
+                className="ax-scroll-y"
                 sx={{
                   flex: 1,
                   minWidth: 0,
-                  overflowY: 'auto',
                   px: 2.5,
                   py: 1.5,
                   display: 'flex',

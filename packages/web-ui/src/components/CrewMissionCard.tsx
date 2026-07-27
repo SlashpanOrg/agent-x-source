@@ -63,7 +63,7 @@ export function CrewMissionCard({
             </IconButton>
           </Box>
           <Collapse in={threadOpen}>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.35, maxHeight: 120, overflowY: 'auto' }}>
+            <Box className="ax-scroll-y" sx={{ display: 'flex', flexDirection: 'column', gap: 0.35, maxHeight: 120 }}>
               {interMessages.slice(-12).map((m) => (
                 <Typography key={m.id} sx={{
                   fontSize: '0.52rem', fontFamily: "'JetBrains Mono', monospace",

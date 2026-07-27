@@ -2067,6 +2067,8 @@ export const voice = {
   },
 };
 
+export type EmbeddingDownloadErrorKind = 'unavailable' | 'generic';
+
 export interface EmbeddingModelStatus {
   id: string;
   displayName: string;
@@ -2076,6 +2078,8 @@ export interface EmbeddingModelStatus {
   sizeOnDiskMB: number;
   downloadStatus: 'not_started' | 'pending' | 'downloading' | 'complete' | 'error';
   percentage: number;
+  /** Classified error kind — present when `downloadStatus === 'error'`. */
+  errorKind?: EmbeddingDownloadErrorKind;
 }
 
 export interface EmbeddingModelProgress {
@@ -2086,6 +2090,8 @@ export interface EmbeddingModelProgress {
   totalMB: number;
   percentage: number;
   error?: string;
+  /** Classified error kind — present when `status === 'error'`. */
+  errorKind?: EmbeddingDownloadErrorKind;
 }
 
 export interface NeuralCortexStatus {
@@ -2112,7 +2118,7 @@ export const embeddingModels = {
     }),
   purge: () =>
     request<{ ok: boolean; message: string; freedMB: number }>('/neural-cortex/embeddings', { method: 'DELETE' }),
-  progressStream: (onProgress: (data: { type: string; models?: EmbeddingModelProgress[]; allComplete?: boolean; hasError?: boolean; tier?: string }) => void): (() => void) => {
+  progressStream: (onProgress: (data: { type: string; models?: EmbeddingModelProgress[]; allComplete?: boolean; hasError?: boolean; hasUnavailableError?: boolean; tier?: string }) => void): (() => void) => {
     const url = `${BASE}/neural-cortex/embeddings/progress`;
     const es = new EventSource(url);
     es.onmessage = (ev) => {

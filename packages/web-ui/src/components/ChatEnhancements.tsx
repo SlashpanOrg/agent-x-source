@@ -208,6 +208,7 @@ export function SlashCommandMenu({
 
   return (
     <Box
+      className="ax-scroll-y"
       sx={{
         position: 'absolute',
         bottom: 'calc(100% + 6px)',
@@ -218,7 +219,6 @@ export function SlashCommandMenu({
         borderRadius: '10px',
         boxShadow: `0 8px 24px ${colors.shadow.heavy}`,
         maxHeight: 280,
-        overflowY: 'auto',
         zIndex: 100,
         py: 0.5,
         animation: 'agentx-fadeIn 0.15s ease-out',
@@ -317,6 +317,7 @@ export function CrewMentionMenu({
 
   return (
     <Box
+      className="ax-scroll-y"
       sx={{
         position: 'absolute',
         bottom: 'calc(100% + 6px)',
@@ -327,7 +328,6 @@ export function CrewMentionMenu({
         borderRadius: '10px',
         boxShadow: `0 8px 24px ${colors.shadow.heavy}`,
         maxHeight: 280,
-        overflowY: 'auto',
         zIndex: 100,
         py: 0.5,
         animation: 'agentx-fadeIn 0.15s ease-out',
@@ -451,7 +451,7 @@ export function SessionSearchModal({
           {loading && <CircularProgress size={12} sx={{ color: colors.accent.blue }} />}
           <IconButton size="small" onClick={onClose}><CloseIcon sx={{ fontSize: 16 }} /></IconButton>
         </Box>
-        <Box sx={{ maxHeight: 500, overflowY: 'auto', p: 1 }}>
+        <Box className="ax-scroll-y" sx={{ maxHeight: 500, p: 1 }}>
           {!q && (
             <Box sx={{ p: 3, textAlign: 'center' }}>
               <SearchIcon sx={{ fontSize: 36, color: colors.border.strong, mb: 1 }} />
@@ -598,6 +598,7 @@ export function ReasoningBlock({ text, streaming, durationMs }: { text: string; 
       </Box>
       <Collapse in={open}>
         <Box
+          className="ax-scroll-y"
           sx={{
             mt: 0.5, p: 1,
             borderRadius: 1,
@@ -610,7 +611,6 @@ export function ReasoningBlock({ text, streaming, durationMs }: { text: string; 
             lineHeight: 1.6,
             whiteSpace: 'pre-wrap',
             maxHeight: 280,
-            overflowY: 'auto',
           }}
         >
           {text}
@@ -677,7 +677,7 @@ export function CheckpointDrawer({
           <Box sx={{ flex: 1 }} />
           <IconButton size="small" onClick={onClose}><CloseIcon sx={{ fontSize: 16 }} /></IconButton>
         </Box>
-        <Box sx={{ maxHeight: 450, overflowY: 'auto', p: 1 }}>
+        <Box className="ax-scroll-y" sx={{ maxHeight: 450, p: 1 }}>
           {loading && <Box sx={{ p: 3, textAlign: 'center' }}><CircularProgress size={20} sx={{ color: colors.accent.blue }} /></Box>}
           {!loading && list.length === 0 && (
             <Box sx={{ p: 3, textAlign: 'center' }}>

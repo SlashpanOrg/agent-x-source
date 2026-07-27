@@ -269,3 +269,21 @@ export type {
   DeepSearchResultBundle,
   DeepSearchRequest,
 } from './types/deep-search.js';
+
+// Observability types (Phase 5+) — needed by the web-ui observability app.
+export type {
+  TraceKind,
+  SpanKind,
+  TraceSummary,
+  SpanNode,
+  ObservabilityLogEntry,
+  MetricPoint,
+  MetricSeries,
+  ObservabilityConfig,
+  TraceDetail,
+  DevVerifyRequest,
+  DevVerifyResponse,
+  TraceDiagnosis,
+  TraceExportBundle,
+} from './types/observability.js';
+export type { MetricSample, ObservabilityDomain } from './types/telemetry.js';

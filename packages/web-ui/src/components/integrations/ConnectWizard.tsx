@@ -123,7 +123,7 @@ export function ConnectWizard({ provider, onConnect, onOAuthStart, onCancel }: C
       </Typography>
 
       {hubOAuth && (
-        <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2, minHeight: 32 }}>
+        <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons={false} sx={{ mb: 2, minHeight: 32 }}>
           <Tab label="Sign in" sx={{ fontSize: '0.65rem', minHeight: 32, ...settingsMonoSx }} />
           <Tab label="Developer" sx={{ fontSize: '0.65rem', minHeight: 32, ...settingsMonoSx }} />
         </Tabs>

@@ -1,7 +1,7 @@
-import type { Server } from 'node:http';
+import type { Server, IncomingMessage } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { VoiceService, WebSocketVoiceTransport, mergeVoiceConfig, getPersonaStore } from '@agentx/engine';
+import { VoiceService, WebSocketVoiceTransport, mergeVoiceConfig, getPersonaStore, startAppSpan } from '@agentx/engine';
 import { XaiRealtimeEngine } from './voice/engines/XaiRealtimeEngine.js';
 import type { VoiceEngineSession } from './voice/engines/types.js';
 import { VoiceStreamSpeakPipeline, VoiceTurnTimingTracker } from './voice-turn-tts.js';
@@ -25,6 +25,7 @@ import {
 import { validateVoiceWebSocketConnection } from './auth.js';
 import { ensureSubscribed } from './ws.js';
 import { registerWebSocketRoute } from './ws-upgrade-router.js';
+import { metricsRegistry } from './metrics/MetricsRegistry.js';
 import { getEngine, createAgent, destroyAgent, setCurrentClientSituation, hydrateAgentRecentHistory } from './engine.js';
 import { runAgentTurnAsync, VOICE_TURN_TIMEOUT_MS, VOICE_TURN_MAX_MS, isCrewPrivateSessionRecord } from './chat-helpers.js';
 import { getVoiceService, resetVoiceService } from './voice-runtime.js';
@@ -385,16 +386,54 @@ export function setupVoiceWebSocket(_server: Server): void {
   });
   registerWebSocketRoute('/ws/voice', voiceWss);
 
-  voiceWss.on('connection', (ws) => {
+  voiceWss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+    // Observability: open a root span for this voice WS connection (trace root).
+    const wsUrl = req.url ?? '';
+    const sessionIdMatch = wsUrl.match(/[?&]sessionId=([^&]+)/);
+    const wsSessionId = sessionIdMatch ? decodeURIComponent(sessionIdMatch[1]!) : '';
+    const clientIdMatch = wsUrl.match(/[?&]clientId=([^&]+)/);
+    const wsClientId = clientIdMatch ? decodeURIComponent(clientIdMatch[1]!) : '';
+    const protocol = req.headers['sec-websocket-protocol'] ?? '';
+    const { span: connectSpan, withContext } = startAppSpan('ws.connection', 'websocket', 'websocket_connection', {
+      'ws.type': 'voice',
+      'ws.protocol': protocol,
+      'ws.url': wsUrl,
+      ...(wsSessionId ? { 'ws.session.id': wsSessionId } : {}),
+      ...(wsClientId ? { 'ws.client.id': wsClientId } : {}),
+    });
+    metricsRegistry.incrementCounter('ws_connections_total', { type: 'voice' });
+
     // Register handlers BEFORE sending connected — a client that sends
     // session_start on open can otherwise race and drop the first frame.
     ws.on('message', (data, isBinary) => {
-      void handleVoiceMessage(ws, data, isBinary);
+      withContext(() => {
+        const rawSize = data.toString().length;
+        metricsRegistry.incrementCounter('ws_messages_total', { type: 'voice', direction: 'inbound' });
+        const { span: msgSpan } = startAppSpan('ws.message', 'websocket', 'websocket_message', {
+          'ws.message.size': rawSize,
+          'ws.message.type': isBinary ? 'binary' : 'text',
+        });
+        try {
+          void handleVoiceMessage(ws, data, isBinary);
+        } finally {
+          msgSpan.end();
+        }
+      });
     });
-    ws.on('close', () => {
+    ws.on('error', (err: Error) => {
+      connectSpan.recordError(err.message);
+    });
+    ws.on('close', (code: number, reason: Buffer) => {
       cleanupSession(ws);
+      // Observability: end the root span with disconnect reason
+      const reasonText = reason.toString();
+      connectSpan.setAttribute('ws.disconnect.reason', `${code}${reasonText ? `: ${reasonText}` : ''}`);
+      connectSpan.end();
     });
-    ws.send(JSON.stringify({ type: 'connected' }));
+    withContext(() => {
+      ws.send(JSON.stringify({ type: 'connected' }));
+      metricsRegistry.incrementCounter('ws_messages_total', { type: 'voice', direction: 'outbound' });
+    });
   });
 }
 
@@ -1690,6 +1729,7 @@ function cleanupSession(ws: WebSocket): void {
 function sendError(ws: WebSocket, message: string): void {
   if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify({ type: 'error', message }));
+    metricsRegistry.incrementCounter('ws_messages_total', { type: 'voice', direction: 'outbound' });
   }
 }
 
@@ -1701,6 +1741,7 @@ function sendError(ws: WebSocket, message: string): void {
 function sendWarning(ws: WebSocket, message: string): void {
   if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify({ type: 'voice_warning', message }));
+    metricsRegistry.incrementCounter('ws_messages_total', { type: 'voice', direction: 'outbound' });
   }
 }
 
@@ -1708,6 +1749,7 @@ function sendWarning(ws: WebSocket, message: string): void {
 function notifyDuplexListening(ws: WebSocket): void {
   if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify({ type: 'agent_status', status: 'listening' }));
+    metricsRegistry.incrementCounter('ws_messages_total', { type: 'voice', direction: 'outbound' });
   }
 }
 

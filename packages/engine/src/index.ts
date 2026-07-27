@@ -315,7 +315,8 @@ export type { TelemetryBus, TelemetryEvent, TelemetryConfig } from '@agentx/shar
 
 // Phase 0: Storage adapter
 export { PostgresStorageAdapter, SessionPermissionStore, ensureDestinationSchema, transferPostgresStorage } from './storage/index.js';
-export type { PostgresConfig } from './storage/PostgresStorageAdapter.js';
+export { setDbMetricsSink } from './storage/PostgresStorageAdapter.js';
+export type { PostgresConfig, DbMetricsSink } from './storage/PostgresStorageAdapter.js';
 export type { StorageTransferResult } from './storage/pg-storage-transfer.js';
 export type { StorageAdapter, StorableSession, StorableMessage, StorableTokenLog, StorablePermission } from '@agentx/shared';
 
@@ -582,3 +583,44 @@ export type {
   DocumentStudioEvent,
   DocumentStudioEventName,
 } from './document-studio/index.js';
+
+// Observability — APP-domain spans, tracer, and observability lifecycle
+export {
+  startAppSpan,
+  endAppSpan,
+  getTracer,
+  getCurrentSpan,
+  getCurrentTraceId,
+  getCurrentSpanId,
+  withSpan,
+  getSpanExporter,
+  runWithTurnContext,
+  getTurnContext,
+  injectTraceparent,
+  extractTraceparent,
+  initObservability,
+  shutdownObservability,
+  getObservabilityHandle,
+  ObservabilityStore,
+  redactAttributes,
+  redactText,
+  incrementChannelEvent,
+  snapshotChannelMetrics,
+  channelMetricSource,
+  buildAgentMetricSource,
+  downsampleHistogram,
+  setSpanMetricsSink,
+} from './observability/index.js';
+export type {
+  AppSpan,
+  ObservabilityDeps,
+  ObservabilityHandle,
+  ListTracesFilters,
+  ListLogsFilters,
+  AgentMetricsApi,
+  AgentMetricsSnapshot,
+  MetricSource,
+  SpanMetricsSink,
+  ChannelType,
+  ChannelEvent,
+} from './observability/index.js';

@@ -178,6 +178,11 @@ export function SetupWizard() {
   const { showError, clearError } = useGlobalError();
   const [loading, setLoading] = useState(false);
   const [neuralReady, setNeuralReady] = useState(false);
+  // True when the embedding model download failed because the model is no
+  // longer available from the HuggingFace endpoint. In that case the wizard
+  // offers a "Continue without Neural Core" path and silently leaves the
+  // cortex in degraded mode (the app already runs without embeddings).
+  const [neuralUnavailable, setNeuralUnavailable] = useState(false);
 
   const goToStep = useCallback((stepIndex: number) => {
     if (!isStepSupported(stepIndex)) return;
@@ -1344,6 +1349,7 @@ export function SetupWizard() {
                 <WizardNeuralStep
                   totalMemoryGB={systemCaps?.totalMemoryGB}
                   onReadyChange={setNeuralReady}
+                  onAvailabilityErrorChange={setNeuralUnavailable}
                 />
               )}
 
@@ -1718,16 +1724,25 @@ export function SetupWizard() {
             </Button>
           )}
           {step === 6 && (
-            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', ml: 'auto' }}>
-              {!neuralReady && (
-                <Button onClick={next} sx={wizardSkipBtnSx}>
-                  Skip for now
-                </Button>
-              )}
-              <Button variant="contained" onClick={next} sx={wizardPrimaryBtnSx}>
-                {neuralReady ? 'Next' : 'Skip →'}
-              </Button>
-            </Box>
+            <Button
+              variant="contained"
+              onClick={() => {
+                // If the model is unavailable from the endpoint, silently pause
+                // the neural core: mark the step as handled (the cortex stays in
+                // degraded mode — the app already runs without embeddings) and
+                // continue. The user can retry the download later from settings.
+                if (neuralUnavailable && !neuralReady) setNeuralReady(true);
+                next();
+              }}
+              disabled={!neuralReady && !neuralUnavailable}
+              sx={wizardPrimaryBtnSx}
+            >
+              {neuralReady
+                ? 'Continue →'
+                : neuralUnavailable
+                  ? 'Continue without Neural Core →'
+                  : 'Continue →'}
+            </Button>
           )}
           {step === 7 && <Button variant="contained" onClick={handleCallsignNext} disabled={!callsign.trim()} sx={wizardPrimaryBtnSx}>Next</Button>}
           {step === 8 && <Button variant="contained" onClick={next} disabled={!personaName.trim()} sx={wizardPrimaryBtnSx}>Next</Button>}
@@ -1827,12 +1842,11 @@ export function SetupWizard() {
                 : 'Setup complete.'}
           </Typography>
           <Box
+            className="ax-scroll"
             ref={provisionModalMode === 'embedded-postgres' ? embeddedLogRef : cloudLogRef}
             sx={{
               minHeight: 200,
               maxHeight: 280,
-              overflowY: 'auto',
-              overflowX: 'auto',
               px: 1.5,
               py: 1.25,
               bgcolor: alphaColor(colors.ink, 0.06),
