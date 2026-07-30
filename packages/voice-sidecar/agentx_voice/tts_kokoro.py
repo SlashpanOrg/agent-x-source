@@ -61,21 +61,37 @@ class KokoroTts:
         if not text:
             raise ValueError("text is required")
 
+        t0 = time.perf_counter()
         kokoro = self._load()
+        t_load = time.perf_counter()
         voice_id = str(request.get("voiceId") or "kokoro-af")
         kokoro_voice = _map_voice_id(voice_id)
 
+        first_chunk_at = None
+        chunk_index = 0
         for sentence in _split_sentences(text):
             if cancel_check and cancel_check():
                 break
+            t_synth = time.perf_counter()
             samples, sample_rate = kokoro.create(
                 sentence, voice=kokoro_voice, speed=1.0, lang="en-us"
             )
             pcm = _float_audio_to_pcm16(samples)
+            t_emit = time.perf_counter()
+            if first_chunk_at is None:
+                first_chunk_at = t_emit
             yield {
                 "pcmBase64": base64.b64encode(pcm).decode("ascii"),
                 "sampleRate": sample_rate,
+                "timings": {
+                    "loadMs": round((t_load - t0) * 1000, 1),
+                    "firstChunkMs": round((first_chunk_at - t0) * 1000, 1) if first_chunk_at else None,
+                    "synthMs": round((t_emit - t_synth) * 1000, 1),
+                    "chunkIndex": chunk_index,
+                    "textChars": len(sentence),
+                },
             }
+            chunk_index += 1
 
     def _load(self):
         if self.pipeline is not None:

@@ -54,7 +54,11 @@ class FasterWhisperStt:
         return self._segments_to_response(segments_iter, info)
 
     def transcribe_pcm(self, request: dict[str, Any]) -> dict[str, Any]:
-        pcm = self._decode_pcm_request(request)
+        raw_pcm = request.get("_rawPcm")
+        if isinstance(raw_pcm, (bytes, bytearray)) and raw_pcm:
+            pcm = bytes(raw_pcm)
+        else:
+            pcm = self._decode_pcm_request(request)
         sample_rate = int(request.get("sampleRate", 16_000))
         return self._transcribe_pcm_bytes(
             pcm,
@@ -77,15 +81,19 @@ class FasterWhisperStt:
         finalize = bool(request.get("finalize") or request.get("final"))
         preview = bool(request.get("preview"))
 
-        vad_result: dict[str, Any] | None = None
-        if isinstance(pcm_b64, str) and pcm_b64:
+        # Support raw binary PCM (skip base64 decode) — Fix #2
+        raw_pcm = request.get("_rawPcm")
+        if isinstance(raw_pcm, (bytes, bytearray)) and raw_pcm:
+            pcm = bytes(raw_pcm)
+        elif isinstance(pcm_b64, str) and pcm_b64:
             pcm = base64.b64decode(pcm_b64)
+        else:
+            pcm = b""
+
+        vad_result: dict[str, Any] | None = None
+        if pcm:
             if preview:
-                # Never feed overlapping preview windows into stateful Silero —
-                # that keeps isSpeech stuck true after the user stops talking.
-                # Duplex endpointing calls /vad/detect on incremental chunks.
                 return self._preview_transcribe(pcm, sample_rate, request, None)
-            # Incremental stream chunks: VAD for speechEnd / isSpeech.
             if vad is not None and pcm:
                 vad_result = vad.detect({"pcm": pcm, "sampleRate": sample_rate})
             self._append_stream_pcm(pcm)
@@ -108,8 +116,8 @@ class FasterWhisperStt:
             result = self._transcribe_stream_buffer(
                 request,
                 partial=False,
-                vad_filter=True,
-                word_timestamps=True,
+                vad_filter=False,
+                word_timestamps=False,
             )
             response["text"] = result.get("text", "")
             response["segments"] = result.get("segments")
@@ -204,11 +212,17 @@ class FasterWhisperStt:
         if not pcm:
             return {"text": "", "segments": [], "language": None, "confidence": None}
 
+        import time as _time
+        t0 = _time.monotonic()
+
         model_id = str(request.get("modelId") or request.get("sttModelId") or "faster-distil-whisper-small.en")
         device = str(request.get("device") or request.get("sttDevice") or "auto")
         compute_type = str(request.get("computeType") or request.get("sttComputeType") or "int8")
         model = self._load(model_id, device, compute_type)
+        t_load = _time.monotonic()
+
         audio = self._pcm_to_float32(pcm)
+        t_convert = _time.monotonic()
 
         segments_iter, info = model.transcribe(
             audio,
@@ -218,7 +232,18 @@ class FasterWhisperStt:
             word_timestamps=word_timestamps,
             condition_on_previous_text=not partial,
         )
-        return self._segments_to_response(segments_iter, info)
+        response = self._segments_to_response(segments_iter, info)
+        t_infer = _time.monotonic()
+
+        response["timings"] = {
+            "loadMs": round((t_load - t0) * 1000, 1),
+            "convertMs": round((t_convert - t_load) * 1000, 1),
+            "inferMs": round((t_infer - t_convert) * 1000, 1),
+            "totalMs": round((t_infer - t0) * 1000, 1),
+            "audioBytes": len(pcm),
+            "audioSeconds": round(len(pcm) / (sample_rate * 2), 2),
+        }
+        return response
 
     def _append_stream_pcm(self, pcm: bytes) -> None:
         self._stream_buffer.extend(pcm)

@@ -1,3 +1,5 @@
+import { pickAckPhrase } from './voiceFillerPolicy.js';
+
 export type VoiceProgressStage =
   | 'ack'
   | 'thinking'
@@ -11,7 +13,7 @@ export interface VoiceProgressSessionOptions {
   speakToolProgress?: boolean;
   onSpeak?: (text: string, stage: VoiceProgressStage) => Promise<void>;
   throttleMs?: number;
-  /** Skip the instant "Got it." ack (greetings, mic checks, light chat). */
+  /** Skip the instant ack (greetings, mic checks, light chat). */
   skipInitialAck?: boolean;
   /** When ack is skipped, delay heartbeat fillers until the agent runs this long. */
   delayedProgressMs?: number;
@@ -45,7 +47,7 @@ export class VoiceProgressSession {
 
     if (type === 'loading_start') {
       if (this.skipInitialAck) return;
-      line = 'Got it.';
+      line = pickAckPhrase();
       stage = 'ack';
     } else if (type === 'tool_start' && this.speakToolProgress) {
       const tool = event.tool ?? 'tool';

@@ -70,10 +70,11 @@ export function useVoiceCommsSession({
   const voiceCtx = voiceContext !== undefined ? voiceContext : fallbackCtx;
   const envBlocked = voiceDisabledReason();
 
-  // xAI is always duplex (server-side VAD). Local is always push-to-talk —
-  // never inherit a stale duplex mode left in config from a prior xAI session.
+  // xAI is always duplex (server-side VAD). Local supports both PTT and duplex
+  // (local VAD via Silero). The mode is driven by VoiceConfig.mode.web.
   const engine = (voiceCtx?.voiceConfig?.engine ?? 'stt_llm_tts') as 'stt_llm_tts' | 'realtime_xai';
-  const isDuplex = engine === 'realtime_xai';
+  const configMode = voiceCtx?.voiceConfig?.mode?.web ?? 'push-to-talk';
+  const isDuplex = engine === 'realtime_xai' || configMode === 'duplex';
   const effectiveInputMode: VoiceInputMode = isDuplex ? 'duplex' : 'push-to-talk';
 
   const bootPhase = voiceCtx?.warmupPhase ?? 'idle';

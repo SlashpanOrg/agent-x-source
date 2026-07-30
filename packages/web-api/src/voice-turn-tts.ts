@@ -54,6 +54,8 @@ export interface VoiceTurnTimings {
   ttsMs: number;
   totalMs: number;
   firstAudioMs: number;
+  /** Client-side delay from button release to audio_end sent (PTT only). */
+  preSttMs?: number;
 }
 
 /** Incrementally speaks completed sentence units as agent text streams in. */
@@ -107,6 +109,11 @@ export class VoiceTurnTimingTracker {
   private firstAudioMs = 0;
   private agentStartedAt = 0;
   private firstAudioAt = 0;
+  private preSttMs = 0;
+
+  setPreSttMs(ms: number): void {
+    this.preSttMs = ms;
+  }
 
   markSttDone(): void {
     this.sttMs = Date.now() - this.startedAt;
@@ -139,6 +146,7 @@ export class VoiceTurnTimingTracker {
       ttsMs: this.ttsMs,
       totalMs,
       firstAudioMs: this.firstAudioMs,
+      ...(this.preSttMs > 0 ? { preSttMs: this.preSttMs } : {}),
     };
   }
 }

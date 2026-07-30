@@ -57,6 +57,8 @@ export interface VoiceTurnTimings {
   ttsMs: number;
   totalMs: number;
   firstAudioMs: number;
+  /** Client-side delay from button release to audio_end sent (PTT only). */
+  preSttMs?: number;
 }
 
 export interface VoiceSessionClientOptions extends VoiceSessionClientEvents {
@@ -101,6 +103,8 @@ export class VoiceSessionClient {
   private duplexAwaitingPlaybackEnd = false;
   private connectPromise: Promise<void> | null = null;
   private listenStartedAt = 0;
+  /** PTT: timestamp when the user released the button (for preSttMs timing). */
+  private pttReleaseAt = 0;
   /** PTT: mic graph is open but not streaming until armed. */
   private micPrepared = false;
   private captureArmed = false;
@@ -453,24 +457,29 @@ export class VoiceSessionClient {
     if (this.mode === 'duplex' && this.duplexActive) {
       return;
     }
+    this.pttReleaseAt = Date.now();
     if (this.mode === 'push-to-talk') {
       this.captureArmed = false;
       this.listenStartedAt = 0;
-      try {
-        const clientSituation = await collectClientSituation();
+      // Send audio_end FIRST so the server starts STT immediately.
+      // Refresh client_situation in parallel — the server already has the
+      // cached value from session_start, so this is a best-effort refresh.
+      const preSttMs = Date.now() - this.pttReleaseAt;
+      this.ws?.send(JSON.stringify({ type: 'audio_end', preSttMs }));
+      void collectClientSituation().then((clientSituation) => {
         this.ws?.send(JSON.stringify({ type: 'client_situation', clientSituation }));
-      } catch { /* best-effort */ }
-      this.ws?.send(JSON.stringify({ type: 'audio_end' }));
+      }).catch(() => { /* best-effort */ });
       this.setState('processing');
       return;
     }
     await this.stopCaptureOnly();
     this.listenStartedAt = 0;
-    try {
-      const clientSituation = await collectClientSituation();
+    // Same optimization for duplex — audio_end first, situation in parallel.
+    const preSttMs = Date.now() - this.pttReleaseAt;
+    this.ws?.send(JSON.stringify({ type: 'audio_end', preSttMs }));
+    void collectClientSituation().then((clientSituation) => {
       this.ws?.send(JSON.stringify({ type: 'client_situation', clientSituation }));
-    } catch { /* best-effort */ }
-    this.ws?.send(JSON.stringify({ type: 'audio_end' }));
+    }).catch(() => { /* best-effort */ });
     this.setState('processing');
   }
 

@@ -328,10 +328,10 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
     setXaiStatus('idle');
     setCapabilities(null);
     const isXai = nextEngine === 'realtime_xai';
-    // xAI → duplex. Local → always PTT (clear any leftover duplex setting).
-    const nextWeb = voiceConfig.enabled
-      ? (isXai ? 'duplex' : 'push-to-talk')
-      : (isXai ? voiceConfig.mode?.web : 'push-to-talk');
+    // xAI → always duplex. Local → keep existing mode (PTT or duplex).
+    const nextWeb = isXai
+      ? 'duplex'
+      : (voiceConfig.mode?.web === 'duplex' ? 'duplex' : 'push-to-talk');
     await persistVoice({
       ...voiceConfig,
       engine: nextEngine,
@@ -461,7 +461,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
               void persistVoice({
                 ...voiceConfig,
                 enabled: true,
-                mode: { ...voiceConfig.mode, web: isXai ? 'duplex' : 'push-to-talk' },
+                mode: { ...voiceConfig.mode, web: isXai ? 'duplex' : (voiceConfig.mode?.web ?? 'push-to-talk') },
               });
             }}
             sx={{
@@ -809,7 +809,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
         </SettingsCard>
 
         {engine === 'stt_llm_tts' && (
-        <SettingsCard title="Local voice settings" subtitle="TTS model, voice profile, and push-to-talk input">
+        <SettingsCard title="Local voice settings" subtitle="TTS model, voice profile, and input mode">
           <TtsModelRow
             name="Kokoro"
             description="Fast, natural local TTS. Installed with the voice kit and used for fillers."
@@ -913,20 +913,59 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
 
           <Box sx={{ mt: 2, pt: 2, borderTop: `1px solid ${settingsTheme.border.default}` }}>
             <Typography sx={{ ...settingsOverlineSx, mb: 1 }}>Voice input mode</Typography>
-            <Box
-              sx={{
-                p: 1.5,
-                borderRadius: 1,
-                border: `1.5px solid ${settingsTheme.accent.hud}`,
-                bgcolor: `${settingsTheme.accent.hud}14`,
-              }}
-            >
-              <Typography sx={{ fontSize: '0.72rem', color: settingsTheme.text.primary, ...settingsMonoSx, mb: 0.5 }}>
-                Push-to-Talk
-              </Typography>
-              <Typography sx={{ ...settingsHelperSx, fontSize: '0.6rem' }}>
-                Hold Space on the dashboard to speak. Release when done. Hands-free duplex is available with the xAI engine.
-              </Typography>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Box
+                onClick={() => {
+                  if (!kitReady) return;
+                  void persistVoice({
+                    ...voiceConfig,
+                    mode: { ...voiceConfig.mode, web: 'push-to-talk' },
+                  });
+                }}
+                sx={{
+                  flex: 1,
+                  p: 1.5,
+                  borderRadius: 1,
+                  border: `1.5px solid ${(voiceConfig.mode?.web ?? 'push-to-talk') === 'push-to-talk' ? settingsTheme.accent.hud : settingsTheme.border.default}`,
+                  bgcolor: (voiceConfig.mode?.web ?? 'push-to-talk') === 'push-to-talk' ? `${settingsTheme.accent.hud}14` : 'transparent',
+                  cursor: kitReady ? 'pointer' : 'default',
+                  transition: 'border-color 0.15s, background-color 0.15s',
+                  '&:hover': kitReady && (voiceConfig.mode?.web ?? 'push-to-talk') !== 'push-to-talk' ? { borderColor: `${settingsTheme.accent.hud}88` } : {},
+                }}
+              >
+                <Typography sx={{ fontSize: '0.72rem', color: settingsTheme.text.primary, ...settingsMonoSx, mb: 0.5 }}>
+                  Push-to-Talk
+                </Typography>
+                <Typography sx={{ ...settingsHelperSx, fontSize: '0.58rem' }}>
+                  Hold Space on the dashboard to speak. Release when done.
+                </Typography>
+              </Box>
+              <Box
+                onClick={() => {
+                  if (!kitReady) return;
+                  void persistVoice({
+                    ...voiceConfig,
+                    mode: { ...voiceConfig.mode, web: 'duplex' },
+                  });
+                }}
+                sx={{
+                  flex: 1,
+                  p: 1.5,
+                  borderRadius: 1,
+                  border: `1.5px solid ${voiceConfig.mode?.web === 'duplex' ? settingsTheme.accent.hud : settingsTheme.border.default}`,
+                  bgcolor: voiceConfig.mode?.web === 'duplex' ? `${settingsTheme.accent.hud}14` : 'transparent',
+                  cursor: kitReady ? 'pointer' : 'default',
+                  transition: 'border-color 0.15s, background-color 0.15s',
+                  '&:hover': kitReady && voiceConfig.mode?.web !== 'duplex' ? { borderColor: `${settingsTheme.accent.hud}88` } : {},
+                }}
+              >
+                <Typography sx={{ fontSize: '0.72rem', color: settingsTheme.text.primary, ...settingsMonoSx, mb: 0.5 }}>
+                  Hands-free (Duplex)
+                </Typography>
+                <Typography sx={{ ...settingsHelperSx, fontSize: '0.58rem' }}>
+                  Speak freely — local Silero VAD detects when you finish. No button needed.
+                </Typography>
+              </Box>
             </Box>
           </Box>
         </SettingsCard>

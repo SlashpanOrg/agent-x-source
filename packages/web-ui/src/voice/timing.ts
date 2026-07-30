@@ -4,6 +4,8 @@ export interface VoiceTurnTimings {
   ttsMs: number;
   totalMs: number;
   firstAudioMs: number;
+  /** Client-side delay from button release to audio_end sent (PTT only). */
+  preSttMs?: number;
 }
 
 export function formatVoiceTimingMs(ms: number): string {
@@ -18,8 +20,12 @@ export function parseVoiceTimings(msg: Record<string, unknown>): VoiceTurnTiming
   const ttsMs = Number(msg.ttsMs);
   const totalMs = Number(msg.totalMs);
   const firstAudioMs = Number(msg.firstAudioMs);
+  const preSttMs = Number(msg.preSttMs);
   if (![sttMs, thinkingMs, ttsMs, totalMs, firstAudioMs].every(Number.isFinite)) {
     return null;
   }
-  return { sttMs, thinkingMs, ttsMs, totalMs, firstAudioMs };
+  return {
+    sttMs, thinkingMs, ttsMs, totalMs, firstAudioMs,
+    ...(Number.isFinite(preSttMs) && preSttMs > 0 ? { preSttMs } : {}),
+  };
 }

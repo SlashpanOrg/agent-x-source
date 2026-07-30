@@ -7,6 +7,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from typing import Any, Literal
+from urllib.parse import urlparse, parse_qs
 from agentx_voice import __version__
 from agentx_voice.protocol import SidecarConfig, health_payload
 from agentx_voice.stt_faster_whisper import FasterWhisperStt
@@ -84,7 +85,21 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            request = self._read_json()
+            content_type = self.headers.get("content-type", "")
+            parsed_url = urlparse(self.path)
+            path = parsed_url.path
+
+            # Binary STT: raw PCM body with params in query string
+            if content_type == "application/octet-stream" and path in ("/stt/transcribe", "/stt/stream"):
+                request = self._read_binary_stt(parsed_url)
+            else:
+                request = self._read_json()
+
+            # TTS stream: NDJSON chunked response (Fix #6/#7)
+            if path == "/tts/stream":
+                self._handle_tts_stream(request)
+                return
+
             response = self._handle_post(request)
             self._send_json(response)
         except NotImplementedError as error:
@@ -95,29 +110,73 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_post(self, request: dict[str, Any]) -> dict[str, Any]:
-        if self.path == "/warm":
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/warm":
             return self.runtime.warm(request)
-        if self.path == "/stt/transcribe":
+        if path == "/stt/transcribe":
             if request.get("pcmBase64") or request.get("pcm"):
                 return self.runtime.stt.transcribe_pcm(request)
             return self.runtime.stt.transcribe(request)
-        if self.path == "/stt/stream":
+        if path == "/stt/stream":
             return self.runtime.stt.stream_transcribe(request, vad=self.runtime.vad)
-        if self.path == "/tts/synthesize":
+        if path == "/tts/synthesize":
             return self.runtime.kokoro.synthesize(request)
-        if self.path == "/tts/stream":
-            cancel_check = lambda: self.runtime.is_cancelled(str(request.get("requestId") or ""))
-            chunks = list(self.runtime.kokoro.synthesize_stream(request, cancel_check=cancel_check))
-            return {"chunks": chunks}
-        if self.path == "/cancel":
+        if path == "/cancel":
             return self.runtime.cancel(request)
-        if self.path == "/vad/detect":
+        if path == "/vad/detect":
             import base64
             payload = dict(request)
             if isinstance(payload.get("pcm"), str):
                 payload["pcm"] = base64.b64decode(payload["pcm"])
             return self.runtime.vad.detect(payload)
         raise ValueError("Unknown endpoint")
+
+    def _handle_tts_stream(self, request: dict[str, Any]) -> None:
+        """Stream TTS chunks as NDJSON (one JSON object per line) using chunked
+        transfer encoding. The client receives each chunk immediately as it is
+        synthesized, instead of waiting for all chunks to be collected."""
+        cancel_check = lambda: self.runtime.is_cancelled(str(request.get("requestId") or ""))
+        chunks_iter = self.runtime.kokoro.synthesize_stream(request, cancel_check=cancel_check)
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("content-type", "application/x-ndjson")
+        self.send_header("transfer-encoding", "chunked")
+        self.end_headers()
+
+        for chunk in chunks_iter:
+            line = json.dumps(chunk).encode("utf-8")
+            self.wfile.write(f"{len(line):x}\r\n".encode("ascii"))
+            self.wfile.write(line)
+            self.wfile.write(b"\r\n")
+            self.wfile.flush()
+
+        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
+
+    def _read_binary_stt(self, parsed_url) -> dict[str, Any]:
+        """Read raw PCM bytes from the HTTP body and construct a request dict
+        from query parameters. This avoids base64 encode/decode overhead."""
+        length = int(self.headers.get("content-length", "0"))
+        pcm = self.rfile.read(length) if length > 0 else b""
+
+        params = parse_qs(parsed_url.query)
+        request: dict[str, Any] = {}
+        if pcm:
+            request["_rawPcm"] = pcm   # sidecar reads this directly (skip base64)
+        if "sampleRate" in params:
+            request["sampleRate"] = int(params["sampleRate"][0])
+        if "modelId" in params:
+            request["modelId"] = params["modelId"][0]
+        if "reset" in params:
+            request["reset"] = params["reset"][0].lower() in ("true", "1")
+        if "finalize" in params:
+            request["finalize"] = params["finalize"][0].lower() in ("true", "1")
+        if "preview" in params:
+            request["preview"] = params["preview"][0].lower() in ("true", "1")
+        if "language" in params:
+            request["language"] = params["language"][0]
+        return request
 
     def _authorized(self) -> bool:
         token = self.runtime.config.auth_token

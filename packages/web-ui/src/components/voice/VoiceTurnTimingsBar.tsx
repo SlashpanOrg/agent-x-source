@@ -20,6 +20,12 @@ export function VoiceTurnTimingsBar({ timings, compact = false, mono }: VoiceTur
       letterSpacing: '0.3px',
       mt: compact ? 0.25 : 0.5,
     }}>
+      {!compact && timings.preSttMs != null && timings.preSttMs > 0 && (
+        <>
+          Pre {formatVoiceTimingMs(timings.preSttMs)}
+          {' · '}
+        </>
+      )}
       STT {formatVoiceTimingMs(timings.sttMs)}
       {' · '}
       Think {formatVoiceTimingMs(timings.thinkingMs)}

@@ -53,8 +53,10 @@ import { getCrewVoiceProfile } from './crew-voice-profiles.js';
 const SAMPLE_RATE = 16_000;
 /** Minimum interval between streaming STT preview passes (PTT + duplex). */
 const STT_PREVIEW_INTERVAL_MS = 200;
-/** Continuous silence after spoken words before auto-send in duplex mode. */
-export const DUPLEX_END_SILENCE_MS = 2_000;
+/** Continuous silence after spoken words before auto-send in duplex mode.
+ * Local engine uses Silero VAD which is fast and accurate — 900ms is enough.
+ * xAI realtime has server-side VAD with its own endpointing. */
+export const DUPLEX_END_SILENCE_MS = 900;
 /** Minimum gap between duplicate error frames to the client. */
 const DUPLEX_ERROR_COOLDOWN_MS = 8_000;
 /** PTT shorter than this is treated as accidental (mis-click). */
@@ -174,7 +176,7 @@ async function speakSystemLine(session: VoiceWsSession, line: string): Promise<v
       requestId: synthId,
       ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
     });
-    for (const chunk of stream.chunks) {
+    for await (const chunk of stream.chunks) {
       if (session.activeSynthId !== stream.requestId) break;
       const audio = Buffer.from(chunk.pcmBase64, 'base64');
       await sendSessionAudio(session, audio, chunk.sampleRate, false);
@@ -403,6 +405,26 @@ export function setupVoiceWebSocket(_server: Server): void {
     });
     metricsRegistry.incrementCounter('ws_connections_total', { type: 'voice' });
 
+    // WebSocket keepalive: send a ping every 20s. Without this, long xAI
+    // responses with brief audio gaps (thinking between sentences) can let
+    // the connection idle out at the OS/NAT level (~60-120s), causing the
+    // "reconnecting" symptom during long TTS playback.
+    let missedPongs = 0;
+    const pingTimer = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (missedPongs >= 3) {
+        getLogger().warn('VOICE_WS', 'Closing stale voice WebSocket (3 missed pongs)');
+        try { ws.terminate(); } catch { /* ignore */ }
+        return;
+      }
+      missedPongs += 1;
+      try { ws.ping(); } catch { /* ignore */ }
+    }, 20_000);
+    ws.on('pong', () => { missedPongs = 0; });
+    const clearPing = () => clearInterval(pingTimer);
+    ws.on('close', clearPing);
+    ws.on('error', clearPing);
+
     // Register handlers BEFORE sending connected — a client that sends
     // session_start on open can otherwise race and drop the first frame.
     ws.on('message', (data, isBinary) => {
@@ -514,7 +536,7 @@ async function handleVoiceMessage(ws: WebSocket, data: WebSocket.RawData, isBina
       }
       break;
     case 'audio_end':
-      if (session) await finishTurn(ws, session);
+      if (session) await finishTurn(ws, session, { preSttMs: Number(msg.preSttMs) || 0 });
       break;
     case 'audio_cancel':
       if (session) await discardAccidentalPttRecording(ws, session);
@@ -710,9 +732,12 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
     return;
   }
 
-  // Engine owns the mode: xAI is always duplex; Local is always PTT.
-  // Ignore stale client/config duplex leftovers after switching engines.
-  const mode = voiceConfig.engine === 'realtime_xai' ? 'duplex' : 'push-to-talk';
+  // xAI is always duplex (server-side VAD). Local supports both PTT and duplex
+  // (local VAD via Silero). The mode is driven by VoiceConfig.mode.web.
+  const configWebMode = voiceConfig.mode?.web ?? 'push-to-talk';
+  const mode = voiceConfig.engine === 'realtime_xai'
+    ? 'duplex'
+    : (configWebMode === 'duplex' ? 'duplex' : 'push-to-talk');
   const voiceOnly = Boolean(msg.voiceOnly);
   const chatSessionId = voiceOnly
     ? '__channel__:voice'
@@ -1014,7 +1039,7 @@ function isVoiceAgentBusy(session: VoiceWsSession): boolean {
   }
 }
 
-async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void> {
+async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preSttMs?: number } = {}): Promise<void> {
   if (session.turnFinishing) return;
   // Kickoff / prior reply still owns the agent — try to clear a stuck lock for PTT
   // so the operator's utterance is not silently discarded after a bad kickoff.
@@ -1083,15 +1108,16 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void>
   }
 
   const timings = new VoiceTurnTimingTracker();
+  if (opts.preSttMs) timings.setPreSttMs(opts.preSttMs);
   try {
     ws.send(JSON.stringify({ type: 'transcript_pending' }));
     let transcriptText = '';
+    let sttResponse: any = null;
     try {
-      const transcript = await enqueueSessionStt(session, async () => {
-        await service.streamTranscribeChunk(Buffer.alloc(0), SAMPLE_RATE, { reset: true });
-        return service.streamTranscribeChunk(pcm, SAMPLE_RATE, { finalize: true });
+      sttResponse = await enqueueSessionStt(session, async () => {
+        return service.streamTranscribeFinalize(pcm, SAMPLE_RATE);
       });
-      transcriptText = transcript.text?.trim() ?? '';
+      transcriptText = sttResponse.text?.trim() ?? '';
     } catch (sttErr) {
       // Streaming STT can fail after a preview race; fall back to one-shot PCM STT.
       getLogger().warn(
@@ -1100,8 +1126,16 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void>
       );
       const fallback = await service.transcribePcmBuffer(pcm, SAMPLE_RATE);
       transcriptText = fallback.text?.trim() ?? '';
+      sttResponse = fallback;
     }
     timings.markSttDone();
+    const sttTimings = sttResponse?.timings;
+    if (sttTimings) {
+      getLogger().info(
+        'VOICE',
+        `STT finalize: ${sttTimings.totalMs}ms (load=${sttTimings.loadMs}ms, convert=${sttTimings.convertMs}ms, infer=${sttTimings.inferMs}ms, audio=${sttTimings.audioSeconds}s) → "${transcriptText.slice(0, 60)}"`,
+      );
+    }
 
     // Prefer finalize text; if empty, keep the live partial the operator already saw.
     const text = transcriptText || previewFallback;
@@ -1234,7 +1268,7 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void>
         requestId: fillerId,
         ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
       });
-      for (const chunk of stream.chunks) {
+      for await (const chunk of stream.chunks) {
         if (session.activeSynthId !== stream.requestId) break;
         const audio = Buffer.from(chunk.pcmBase64, 'base64');
         await sendSessionAudio(session, audio, chunk.sampleRate, true);
@@ -1268,7 +1302,7 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void>
         requestId: synthId,
         ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
       });
-      for (const chunk of stream.chunks) {
+      for await (const chunk of stream.chunks) {
         if (session.activeSynthId !== stream.requestId) break;
         const audio = Buffer.from(chunk.pcmBase64, 'base64');
         await sendSessionAudio(session, audio, chunk.sampleRate, false);

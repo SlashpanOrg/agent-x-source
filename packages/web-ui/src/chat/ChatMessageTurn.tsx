@@ -30,6 +30,14 @@ import { WorkflowEntryCard } from './WorkflowEntryCard';
 import { usePersonaName } from '../hooks/usePersonaName';
 import { InlineToolCall, type InlineToolData } from '../components/InlineToolCall';
 import { FileEditCard, isFileEditTool } from '../components/chat/FileEditCard';
+import { ShellExecutionCard, isShellTool } from '../components/chat/ShellExecutionCard';
+import { CodeSearchCard, isCodeSearchTool } from '../components/chat/CodeSearchCard';
+import { WebSearchCard, isWebSearchTool } from '../components/chat/WebSearchCard';
+import { GitOperationCard, isGitTool } from '../components/chat/GitOperationCard';
+import { FileReadCard, isFileReadTool } from '../components/chat/FileReadCard';
+import { DirectoryListingCard, isDirectoryListTool } from '../components/chat/DirectoryListingCard';
+import { PlanRoadmapCard } from '../components/chat/PlanRoadmapCard';
+import { TodoChecklistCard } from '../components/chat/TodoChecklistCard';
 
 // Loaded only when the user opens a turn's workflow — chunk stays out of the
 // chat path and the modal DOM is destroyed on close.
@@ -367,15 +375,31 @@ function renderParts(
           </Box>
         );
       case 'tool':
-        // Running tools are shown inline during streaming so the user sees
-        // live progress. Done tools are collapsed into per-group summaries
-        // at their original chronological position (handled below).
-        // File edit tools (file_write/file_edit/file_patch) get a dedicated
-        // card with filename + content/diff — shown for both running and done states.
+        // Dedicated tool cards get their own rich UI — shown for both running
+        // and done states. These are NOT collapsed into CollapsedToolsSummary.
         if (!part.tool) return null;
         if (isFileEditTool(part.tool.name)) {
           return <FileEditCard key={part.id} tool={part.tool} />;
         }
+        if (isShellTool(part.tool.name)) {
+          return <ShellExecutionCard key={part.id} tool={part.tool} />;
+        }
+        if (isCodeSearchTool(part.tool.name)) {
+          return <CodeSearchCard key={part.id} tool={part.tool} />;
+        }
+        if (isWebSearchTool(part.tool.name)) {
+          return <WebSearchCard key={part.id} tool={part.tool} />;
+        }
+        if (isGitTool(part.tool.name)) {
+          return <GitOperationCard key={part.id} tool={part.tool} />;
+        }
+        if (isFileReadTool(part.tool.name)) {
+          return <FileReadCard key={part.id} tool={part.tool} />;
+        }
+        if (isDirectoryListTool(part.tool.name)) {
+          return <DirectoryListingCard key={part.id} tool={part.tool} />;
+        }
+        // Non-dedicated tools: running tools show inline, done tools get collapsed.
         if (showToolsInline && part.tool.status === 'running') {
           return <InlineToolCall key={part.id} tool={part.tool} />;
         }
@@ -405,8 +429,16 @@ function renderParts(
 
     for (const part of ordered) {
       if (part.type === 'tool' && part.tool && part.tool.status !== 'running') {
-        // File edit tools get their own card — don't collapse them.
-        if (part.tool && isFileEditTool(part.tool.name)) {
+        // Dedicated tool cards get their own card — don't collapse them.
+        if (part.tool && (
+          isFileEditTool(part.tool.name)
+          || isShellTool(part.tool.name)
+          || isCodeSearchTool(part.tool.name)
+          || isWebSearchTool(part.tool.name)
+          || isGitTool(part.tool.name)
+          || isFileReadTool(part.tool.name)
+          || isDirectoryListTool(part.tool.name)
+        )) {
           flushDoneTools();
           const node = renderMainPart(part);
           if (node) nodes.push(<React.Fragment key={part.id}>{node}</React.Fragment>);
@@ -608,6 +640,13 @@ function ChatMessageTurnComponent({ message, loadingSteps, onOpenChildSession, o
             />
           ))}
         </Box>
+      )}
+
+      {message.plan && message.plan.length > 0 && (
+        <PlanRoadmapCard steps={message.plan} />
+      )}
+      {message.todos && message.todos.length > 0 && (
+        <TodoChecklistCard todos={message.todos} />
       )}
 
       {hasParts || cleanContent || hasQuestionnaire ? contentBlock : null}

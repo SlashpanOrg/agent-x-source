@@ -194,11 +194,22 @@ export function VoiceTranscriptPanel({
   const liveAgentClean = sanitizeVoiceDisplayText(liveAgent || '');
 
   useEffect(() => {
-    if (liveUserClean) setPendingUser(liveUserClean);
+    if (liveUserClean) {
+      setPendingUser(liveUserClean);
+    } else {
+      // Live user text cleared (phase left recording) — drop the stale partial.
+      // The history reload will show the persisted user message if the turn succeeded.
+      setPendingUser('');
+    }
   }, [liveUserClean]);
 
   useEffect(() => {
-    if (liveAgentClean) setPendingAgent(liveAgentClean);
+    if (liveAgentClean) {
+      setPendingAgent(liveAgentClean);
+    } else {
+      // Live agent text cleared — drop the stale agent partial.
+      setPendingAgent('');
+    }
   }, [liveAgentClean]);
 
   // Avoid duplicate lines when history already includes the same utterance
