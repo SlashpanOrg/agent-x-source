@@ -847,7 +847,7 @@ export class BaileysEngine implements IWhatsAppEngine {
     const limit = opts?.limit ?? 100;
     const search = opts?.search?.toLowerCase().trim();
 
-    let entries: WhatsAppContactEntry[] = [];
+    const entries: WhatsAppContactEntry[] = [];
     for (const [jid, c] of this.contacts) {
       // Skip the user's own JID, group JIDs, and broadcast lists.
       if (jid === this.meJid) continue;

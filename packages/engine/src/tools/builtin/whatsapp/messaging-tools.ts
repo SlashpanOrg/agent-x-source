@@ -8,6 +8,7 @@
  * scope) and read+encode the file as base64 before passing to the engine.
  */
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
+import { basename } from 'node:path';
 import {
   requireEngine,
   requireEngineWithCapability,
@@ -163,7 +164,6 @@ export async function whatsappSendDocument(
     const resolvedPath = resolveFilePath(filePath, context.scopePath);
     const data = fileToBase64(resolvedPath);
     const mimetype = mimeFromPath(resolvedPath);
-    const { basename } = require('node:path') as typeof import('node:path');
     const name = fileName ?? basename(resolvedPath);
 
     const result = await resolved.engine.sendDocument(chatId, { data, mimetype, fileName: name, caption });

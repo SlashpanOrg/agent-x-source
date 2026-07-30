@@ -513,7 +513,7 @@ Do NOT proactively scan folders, list files, or read code unless instructed. If 
       return content;
     });
 
-    let content = generated;
+    const content = generated;
 
     const elapsed = Date.now() - startTime;
     member.cpuTimeMs += elapsed;

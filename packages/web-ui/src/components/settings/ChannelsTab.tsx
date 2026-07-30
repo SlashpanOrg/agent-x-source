@@ -20,7 +20,6 @@ import WhatsAppIcon from '@mui/icons-material/WhatsApp';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
-import PhoneIcon from '@mui/icons-material/Phone';
 import PauseCircleIcon from '@mui/icons-material/PauseCircle';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import type { NotificationChannelsConfig } from '@agentx/shared/browser';
@@ -108,7 +107,7 @@ const CHANNELS: ChannelMeta[] = [
     icon: <WhatsAppIcon sx={{ fontSize: 16 }} />,
     instructions: [
       'Enable WhatsApp and click Connect to start the linking flow.',
-      'Scan the QR code with WhatsApp → Settings → Linked Devices → Link a Device, or use a pairing code.',
+      'Scan the QR code with WhatsApp → Settings → Linked Devices → Link a Device.',
       '⚠️ Using unofficial WhatsApp integrations carries a risk of account ban. Link a number you can afford to lose.',
     ],
   },
@@ -364,8 +363,6 @@ function WhatsAppFields() {
   const [qrOpen, setQrOpen] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [linking, setLinking] = useState(false);
-  const [pairingPhone, setPairingPhone] = useState('');
-  const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [pollTimer, setPollTimer] = useState<ReturnType<typeof setInterval> | null>(null);
@@ -467,23 +464,6 @@ function WhatsAppFields() {
       await fetchStatus();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to unlink');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handlePairingCode = async () => {
-    if (!pairingPhone.trim()) {
-      setError('Enter a phone number first');
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await bridges.whatsapp.pairingCode(pairingPhone.trim());
-      setPairingCode(result.pairingCode);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to request pairing code');
     } finally {
       setLoading(false);
     }
@@ -621,50 +601,6 @@ function WhatsAppFields() {
           Unlink
         </Button>
       </Box>
-
-      {/* Pairing code alternative */}
-      {!isConnected && (
-        <Box sx={{
-          border: `1px solid ${settingsTheme.border.subtle}`,
-          borderRadius: '4px', p: 1.25,
-        }}>
-          <Typography sx={{ ...settingsOverlineSx, fontSize: '0.5rem', mb: 0.75 }}>
-            Pairing Code (Alternative to QR)
-          </Typography>
-          <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end' }}>
-            <TextField
-              size="small"
-              placeholder="15551234567"
-              value={pairingPhone}
-              onChange={(e) => setPairingPhone(e.target.value)}
-              sx={{ ...settingsTextFieldSx, flex: 1 }}
-            />
-            <Button
-              size="small"
-              startIcon={<PhoneIcon sx={{ fontSize: 14 }} />}
-              onClick={handlePairingCode}
-              disabled={loading || !pairingPhone.trim()}
-              sx={settingsBtnGhostSx}
-            >
-              Get Code
-            </Button>
-          </Box>
-          {pairingCode && (
-            <Box sx={{
-              mt: 1, p: 1, bgcolor: settingsTheme.bg.void, borderRadius: '4px',
-              border: `1px solid ${settingsTheme.border.subtle}`,
-              display: 'flex', alignItems: 'center', gap: 1,
-            }}>
-              <Typography sx={{ fontSize: '0.7rem', fontWeight: 700, ...settingsMonoSx, letterSpacing: '2px' }}>
-                {pairingCode}
-              </Typography>
-              <Typography sx={{ fontSize: '0.55rem', color: settingsTheme.text.dim }}>
-                Enter this in WhatsApp → Linked Devices → Link a Device
-              </Typography>
-            </Box>
-          )}
-        </Box>
-      )}
 
       {/* QR Code Modal */}
       <Dialog

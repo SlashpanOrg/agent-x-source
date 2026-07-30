@@ -517,7 +517,7 @@ export function createCategoryOverlaySection(ctx: SectionContext): PromptSection
     layer: 'category',
     load: () => {
       const category = ctx.getTurnCategory().primary;
-      return overlays[category]?.join('\n') ?? overlays.general.join('\n');
+      return overlays[category]?.join('\n') ?? overlays.general?.join('\n') ?? '';
     },
     render: (text) => text,
     diff: (previous, current) => (previous === current ? null : current),

@@ -237,7 +237,7 @@ export class PromptAssembly {
           baselineText,
         });
       } catch {
-        results.push({ key: section.key, unavailable: true, value: null, snapshot: { value: null }, baselineText: undefined });
+        results.push({ key: section.key, layer: section.layer ?? 'dynamic', unavailable: true, value: null, snapshot: { value: null }, baselineText: undefined });
       }
     }
     return results;

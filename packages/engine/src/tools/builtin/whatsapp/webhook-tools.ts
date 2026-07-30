@@ -13,7 +13,7 @@
  * no separate REST CRUD routes.
  */
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes, createCipheriv } from 'node:crypto';
 import { requireSessionService, runTool, requireString, optionalString, optionalNumber } from './helpers.js';
 import { getWhatsAppSessionServiceInstance } from '../../../services/ServiceContext.js';
 
@@ -26,9 +26,8 @@ interface EncryptedSecret {
 }
 
 function encryptSecret(plaintext: string, dek: Buffer): EncryptedSecret {
-  const crypto = require('node:crypto') as typeof import('node:crypto');
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', dek, iv);
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', dek, iv);
   const enc = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
   return { enc: enc.toString('base64'), iv: iv.toString('base64'), tag: tag.toString('base64') };

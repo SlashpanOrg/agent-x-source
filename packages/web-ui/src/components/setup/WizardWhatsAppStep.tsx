@@ -1,14 +1,12 @@
 /**
  * WhatsApp setup step for the first-run wizard.
  *
- * Reuses the same QR modal + pairing-code pattern from the Channels settings
- * page, but wrapped in the wizard step shell to match the Telegram step's
- * visual style.
+ * Reuses the same QR modal pattern from the Channels settings page, but
+ * wrapped in the wizard step shell to match the Telegram step's visual style.
  */
 import { useEffect, useState } from 'react';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
-import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import CircularProgress from '@mui/material/CircularProgress';
 import Dialog from '@mui/material/Dialog';
@@ -17,12 +15,11 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import WhatsAppIcon from '@mui/icons-material/WhatsApp';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
-import PhoneIcon from '@mui/icons-material/Phone';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { bridges } from '../../api';
 import type { WhatsAppSessionStatusResponse } from '../../api';
 import { WizardStatusLine, WizardStepShell } from './wizard-step-shell';
-import { wizardPrimaryBtnSx, wizardTextFieldSlotProps, wizardTheme, WIZARD_MONO } from './wizard-theme';
+import { wizardPrimaryBtnSx, wizardTheme, WIZARD_MONO } from './wizard-theme';
 import { colors, alphaColor } from '../../theme';
 
 export interface WizardWhatsAppLinkMeta {
@@ -48,7 +45,7 @@ export function WizardWhatsAppStep({
     <WizardStepShell
       codename="MODULE · WHATSAPP LINK"
       title="WhatsApp Field Link"
-      subtitle="Link a WhatsApp number via QR scan or pairing code. ⚠️ Unofficial integrations carry a risk of account ban — use a number you can afford to lose."
+      subtitle="Link a WhatsApp number via QR scan. ⚠️ Unofficial integrations carry a risk of account ban — use a number you can afford to lose."
       icon={<WhatsAppIcon sx={{ fontSize: 24 }} />}
     >
       <WizardWhatsAppFields
@@ -75,8 +72,6 @@ export function WizardWhatsAppFields({
   const [qrOpen, setQrOpen] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [linking, setLinking] = useState(false);
-  const [pairingPhone, setPairingPhone] = useState('');
-  const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [pollTimer, setPollTimer] = useState<ReturnType<typeof setInterval> | null>(null);
@@ -167,20 +162,6 @@ export function WizardWhatsAppFields({
     }
   };
 
-  const handlePairingCode = async () => {
-    if (!pairingPhone.trim()) {
-      setError('Enter a phone number first');
-      return;
-    }
-    setError(null);
-    try {
-      const result = await bridges.whatsapp.pairingCode(pairingPhone.trim());
-      setPairingCode(result.pairingCode);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to request pairing code');
-    }
-  };
-
   const runtimeStatus = sessionStatus?.status ?? 'unknown';
   const isConnected = linked || runtimeStatus === 'ready';
   const isPaused = sessionStatus?.paused === true;
@@ -244,7 +225,7 @@ export function WizardWhatsAppFields({
     <Box sx={{ position: 'relative', zIndex: 1 }}>
       <WizardStatusLine label="PROTOCOL" value="WhatsApp Multi-Device" />
         <WizardStatusLine label="INBOUND" value="Text · media · voice notes" />
-        <WizardStatusLine label="REQUIREMENT" value="QR scan or pairing code" ok={isConnected} />
+        <WizardStatusLine label="REQUIREMENT" value="QR scan" ok={isConnected} />
 
         {/* Status indicator */}
         <Box sx={{
@@ -293,59 +274,6 @@ export function WizardWhatsAppFields({
               {linking ? <CircularProgress size={14} sx={{ mr: 1 }} /> : null}
               Connect via QR
             </Button>
-          </Box>
-        )}
-
-        {/* Pairing code alternative */}
-        {!isConnected && (
-          <Box sx={{
-            p: 1.5, borderRadius: 1,
-            border: `1px solid ${wizardTheme.panelBorder}`,
-            mb: 2,
-          }}>
-            <Typography sx={{ fontSize: '0.52rem', fontFamily: WIZARD_MONO, color: wizardTheme.textDim, letterSpacing: '0.5px', mb: 1 }}>
-              PAIRING CODE (ALTERNATIVE TO QR)
-            </Typography>
-            <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end' }}>
-              <TextField
-                size="small"
-                placeholder="15551234567"
-                value={pairingPhone}
-                onChange={(e) => setPairingPhone(e.target.value)}
-                sx={{ flex: 1 }}
-                slotProps={wizardTextFieldSlotProps}
-              />
-              <Button
-                size="small"
-                startIcon={<PhoneIcon sx={{ fontSize: 14 }} />}
-                onClick={handlePairingCode}
-                disabled={!pairingPhone.trim()}
-                sx={{
-                  fontFamily: WIZARD_MONO,
-                  fontSize: '0.6rem',
-                  color: wizardTheme.textSecondary,
-                  borderColor: wizardTheme.panelBorder,
-                  '&:hover': { borderColor: wizardTheme.accentOk },
-                }}
-                variant="outlined"
-              >
-                Get Code
-              </Button>
-            </Box>
-            {pairingCode && (
-              <Box sx={{
-                mt: 1, p: 1, borderRadius: 1,
-                bgcolor: alphaColor(colors.ink, 0.03),
-                border: `1px solid ${wizardTheme.panelBorder}`,
-              }}>
-                <Typography sx={{ fontSize: '0.7rem', fontWeight: 700, fontFamily: WIZARD_MONO, letterSpacing: '2px', color: wizardTheme.accentOk }}>
-                  {pairingCode}
-                </Typography>
-                <Typography sx={{ fontSize: '0.52rem', color: wizardTheme.textDim, mt: 0.5 }}>
-                  Enter in WhatsApp → Linked Devices → Link a Device
-                </Typography>
-              </Box>
-            )}
           </Box>
         )}
 

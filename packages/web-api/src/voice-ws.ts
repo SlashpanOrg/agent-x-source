@@ -411,7 +411,7 @@ export function setupVoiceWebSocket(_server: Server): void {
     // "reconnecting" symptom during long TTS playback.
     let missedPongs = 0;
     const pingTimer = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
+      if (ws.readyState !== 1 /* WebSocket.OPEN */) return;
       if (missedPongs >= 3) {
         getLogger().warn('VOICE_WS', 'Closing stale voice WebSocket (3 missed pongs)');
         try { ws.terminate(); } catch { /* ignore */ }

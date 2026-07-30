@@ -59,8 +59,7 @@ export function tracesRouter(ctx: ObservabilityApiContext): Router {
       res.json({ traces, nextCursor });
     } catch (err) {
       res.status(500).json({ error: 'internal', message: 'Failed to list traces' });
-      ctx.handle.store; // touch to avoid unused — error path
-      void err;
+      void err; // acknowledge error without leaking details
     }
   });
 

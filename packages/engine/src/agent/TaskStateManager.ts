@@ -1,5 +1,5 @@
 import { getLogger } from '@agentx/shared';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { getConfigDir } from '@agentx/shared';
 
@@ -335,7 +335,6 @@ export class TaskStateManager {
   loadLastTask(): TaskState | null {
     try {
       if (!existsSync(this.checkpointDir)) return null;
-      const { readdirSync } = require('node:fs') as typeof import('node:fs');
       const files = readdirSync(this.checkpointDir).filter((f) => f.endsWith('.json'));
       if (files.length === 0) return null;
 

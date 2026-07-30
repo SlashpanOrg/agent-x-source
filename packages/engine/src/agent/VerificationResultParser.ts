@@ -77,7 +77,7 @@ export class VerificationResultParser {
     return { ran: true, success, command, output, errorType, errorSummary };
   }
 
-  private extractCommand(toolId: string, args?: Record<string, unknown>): string {
+  private extractCommand(_toolId: string, args?: Record<string, unknown>): string {
     if (!args) return '';
     const cmd = typeof args['command'] === 'string' ? args['command']
       : typeof args['cmd'] === 'string' ? args['cmd']
@@ -117,7 +117,6 @@ export class VerificationResultParser {
   }
 
   private classifyError(command: string, output: string): VerificationResult['errorType'] {
-    const lower = output.toLowerCase();
     if (/error\s+TS\d+/.test(output) || /tsc\b/i.test(command)) return 'typecheck';
     if (/eslint|ruff|flake8|pylint/i.test(command)) return 'lint';
     if (/jest|vitest|pytest|mocha|cargo\s+test|go\s+test|npm\s+test/i.test(command)) return 'test';

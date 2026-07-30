@@ -391,7 +391,7 @@ export class Agent {
     // while preventing the 52-96 iteration search loops seen in failing sessions.
     const stepCap = 40;
 
-    let result: { choice: 'auto' | 'none' | 'required'; allowedIds: string[] | undefined; stepCap: number } = {
+    const result: { choice: 'auto' | 'none' | 'required'; allowedIds: string[] | undefined; stepCap: number } = {
       choice: 'auto',
       allowedIds: undefined, // undefined = ALL tools available
       stepCap,

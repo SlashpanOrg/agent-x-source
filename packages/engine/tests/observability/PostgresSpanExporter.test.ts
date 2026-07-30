@@ -91,7 +91,7 @@ describe.runIf(await isPgAvailable())('PostgresSpanExporter', () => {
     await exporter.shutdown();
     const { rows } = await pool.query("SELECT attributes FROM observability.spans WHERE name = 'llm.chat' LIMIT 1");
     const attrs = rows[0]!.attributes as Record<string, unknown>;
-    expect(attrs['llm.input_messages']).toBe('[redacted:35]');
+    expect(attrs['llm.input_messages']).toBe('[redacted:36]');
     expect(attrs['gen_ai.usage.input_tokens']).toBe(100);
   });
 

@@ -13,6 +13,9 @@
  * on the actual operation logic.
  */
 import type { ToolResult } from '@agentx/shared';
+import { readFileSync } from 'node:fs';
+import { resolve, isAbsolute } from 'node:path';
+import { isAgentInternalPath } from '@agentx/shared';
 import { getWhatsAppSessionServiceInstance } from '../../../services/ServiceContext.js';
 import type { IWhatsAppEngine } from '../../../whatsapp/engine/IWhatsAppEngine.js';
 import { EngineStatus } from '../../../whatsapp/engine/IWhatsAppEngine.js';
@@ -161,7 +164,6 @@ export async function runTool(
 
 /** Read a file and return base64-encoded content. Used by media-sending tools. */
 export function fileToBase64(filePath: string): string {
-  const { readFileSync } = require('node:fs') as typeof import('node:fs');
   const content = readFileSync(filePath);
   return content.toString('base64');
 }
@@ -201,8 +203,6 @@ export function mimeFromPath(filePath: string): string {
 
 /** Resolve a file path relative to the agent scope (same logic as channel-send.ts). */
 export function resolveFilePath(filePath: string, scopePath: string): string {
-  const { resolve, isAbsolute } = require('node:path') as typeof import('node:path');
-  const { isAgentInternalPath } = require('@agentx/shared') as typeof import('@agentx/shared');
   if (isAbsolute(filePath) && isAgentInternalPath(filePath)) {
     return filePath;
   }

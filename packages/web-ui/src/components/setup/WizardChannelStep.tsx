@@ -116,7 +116,7 @@ export function WizardChannelStep({
               )}
             </Box>
             <Typography sx={{ fontSize: '0.58rem', color: wizardTheme.textSecondary }}>
-              {whatsappLinked ? 'Connected' : 'QR scan or pairing code'}
+              {whatsappLinked ? 'Connected' : 'QR scan'}
             </Typography>
           </Box>
         </Box>

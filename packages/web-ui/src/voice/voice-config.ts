@@ -150,8 +150,8 @@ export function applyVoicePreset(config: VoiceConfig): VoiceConfig {
   return mergeVoiceConfig({
     ...config,
     enabled: true,
-    // xAI → duplex; Local → push-to-talk (never preserve a stale duplex setting).
-    mode: { ...config.mode, web: isXai ? 'duplex' : 'push-to-talk' },
+    // xAI → duplex; Local → preserve user's choice (push-to-talk or duplex).
+    mode: { ...config.mode, web: isXai ? 'duplex' : (config.mode?.web === 'duplex' ? 'duplex' : 'push-to-talk') },
     stt: { modelId: 'faster-distil-whisper-small.en', computeType: 'int8', device: 'auto' },
     tts: {
       engine: 'kokoro',
