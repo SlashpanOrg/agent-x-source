@@ -26,6 +26,7 @@
 import * as WAWebModule from 'whatsapp-web.js';
 import type { Message, Client as ClientType } from 'whatsapp-web.js';
 import { getLogger } from '@agentx/shared';
+import { engineSupportsCapability } from './capability-matrix.js';
 
 const WA = (WAWebModule as any).default ?? (WAWebModule as any);
 const { Client, LocalAuth, MessageMedia, Location: WWebLocation, Poll, Events } = WA;
@@ -192,28 +193,7 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
   }
 
   supportsCapability(capability: EngineCapability): boolean {
-    switch (capability) {
-      case 'rejectCall':
-        // wwebjs's rejectCall is a no-op (see implementation); not truly supported.
-        return false;
-      case 'labels':
-      case 'catalog':
-      case 'statusStories':
-      case 'channels':
-      case 'chatHistoryFetch':
-      case 'messageReactionsQuery':
-      case 'groupManagement':
-        // whatsapp-web.js *could* expose these via the real WhatsApp Web UI,
-        // but this engine adapter does not currently implement the optional
-        // IWhatsAppEngine methods for them (getMessageHistory, getReactions,
-        // createGroup, etc.). Claiming support without implementing the methods
-        // would let tools pass the capability gate and then hit a NOT_SUPPORTED
-        // guard — a contradiction. Be honest: return false until the methods
-        // are actually wired up here.
-        return false;
-      default:
-        return false;
-    }
+    return engineSupportsCapability(this.name, capability);
   }
 
   // ─── Messaging ──────────────────────────────────────────────────────────

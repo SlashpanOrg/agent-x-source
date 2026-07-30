@@ -102,7 +102,7 @@ vi.mock('whatsapp-web.js', () => {
   class MockClient {
     constructor(_opts?: unknown) { return mockClient; }
   }
-  return {
+  const mocked = {
     Client: MockClient,
     LocalAuth: MockLocalAuth,
     MessageMedia: MockMessageMedia,
@@ -134,6 +134,7 @@ vi.mock('whatsapp-web.js', () => {
       CONTACT_CARD: 'vcard', POLL_CREATION: 'poll_creation', REVOKED: 'revoked',
     },
   };
+  return { ...mocked, default: mocked };
 });
 
 vi.mock('qrcode', () => ({

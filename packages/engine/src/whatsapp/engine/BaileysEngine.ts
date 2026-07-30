@@ -35,6 +35,7 @@ import {
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import { getLogger } from '@agentx/shared';
+import { engineSupportsCapability } from './capability-matrix.js';
 
 import {
   WhatsAppCredsStore,
@@ -303,23 +304,7 @@ export class BaileysEngine implements IWhatsAppEngine {
   }
 
   supportsCapability(capability: EngineCapability): boolean {
-    switch (capability) {
-      case 'rejectCall':
-      case 'groupManagement':
-      case 'chatHistoryFetch':
-      case 'messageReactionsQuery':
-      case 'statusStories':
-      case 'channels':
-        // All implemented against the Baileys multi-device socket API.
-        return true;
-      case 'labels':
-      case 'catalog':
-        // Labels and catalog are WhatsApp Business API / wwebjs features.
-        // Baileys multi-device does not expose them — require the wwebjs fallback.
-        return false;
-      default:
-        return false;
-    }
+    return engineSupportsCapability(this.name, capability);
   }
 
   // ─── Messaging ──────────────────────────────────────────────────────────

@@ -668,28 +668,33 @@ export async function consumeStreamWithWatchdog<T>(
   const iterator = stream[Symbol.asyncIterator]();
   for (;;) {
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
-    const idle = new Promise<'idle'>((resolve) => {
-      idleTimer = setTimeout(() => resolve('idle'), idleTimeoutMs);
-    });
-    const next = iterator.next()
-      .then((result) => ({ kind: 'chunk' as const, result }))
-      .catch(() => ({ kind: 'chunk' as const, result: { done: true, value: undefined } as IteratorResult<T> }));
-    const raced = await Promise.race([next, idle]);
-    clearTimeout(idleTimer);
+    let next: Promise<IteratorResult<T>> | undefined;
+    try {
+      const idle = new Promise<'idle'>((resolve) => {
+        idleTimer = setTimeout(() => resolve('idle'), idleTimeoutMs);
+      });
+      next = iterator.next();
+      const raced = await Promise.race([next, idle]);
 
-    if (raced === 'idle') {
-      // Best-effort, fire-and-forget cleanup: a generator suspended on an
-      // unresolvable await (e.g. a dead network stream) will never actually
-      // settle a `.return()` call either, so we must NOT await it here — that
-      // would just trade one infinite hang for another. Let it resolve (or
-      // never resolve) in the background; we've already given up on this stream.
-      void iterator.return?.(undefined)?.catch(() => { /* ignore */ });
-      return { stalled: true };
+      if (raced === 'idle') {
+        // Best-effort, fire-and-forget cleanup: a generator suspended on an
+        // unresolvable await (e.g. a dead network stream) will never actually
+        // settle a `.return()` call either, so we must NOT await it here — that
+        // would just trade one infinite hang for another. Let it resolve (or
+        // never resolve) in the background; we've already given up on this stream.
+        void iterator.return?.(undefined)?.catch(() => { /* ignore */ });
+        return { stalled: true };
+      }
+      if (raced.done) {
+        return { stalled: false };
+      }
+      onChunk(raced.value);
+    } finally {
+      clearTimeout(idleTimer);
+      // Avoid unhandled rejections when the idle timer wins the race and the
+      // pending .next() later rejects.
+      next?.catch(() => { /* ignored */ });
     }
-    if (raced.result.done) {
-      return { stalled: false };
-    }
-    onChunk(raced.result.value);
   }
 }
 
