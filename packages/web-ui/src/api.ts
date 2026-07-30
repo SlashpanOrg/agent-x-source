@@ -158,8 +158,8 @@ export const providers = {
   available: () => request<{ providers: ProviderInfo[] }>('/providers/available').then(r => r.providers),
   configured: () => request<{ active: string; providers: ConfiguredProvider[] }>('/providers').then(r => r.providers),
   active: () => request<{ active: string; providers: ConfiguredProvider[] }>('/providers').then(r => r.active),
-  validate: (provider: string, apiKey?: string, baseUrl?: string) => request<{ valid: boolean; error?: string }>('/provider/validate', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl }) }),
-  configure: (provider: string, apiKey?: string, baseUrl?: string, profileName?: string) => request<{ ok: boolean }>('/provider/configure', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl, profileName }) }),
+  validate: (provider: string, apiKey?: string, baseUrl?: string, apiType?: string, displayName?: string) => request<{ valid: boolean; error?: string }>('/provider/validate', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl, apiType, displayName }) }),
+  configure: (provider: string, apiKey?: string, baseUrl?: string, profileName?: string, apiType?: string, modelId?: string) => request<{ ok: boolean }>('/provider/configure', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl, profileName, apiType, modelId }) }),
   models: (provider: string) => request<ModelInfo[]>('/provider/models?provider=' + provider),
   switch: async (provider: string) => {
     const result = await request<{ ok: boolean; provider: string; model: string }>('/provider/switch', { method: 'POST', body: JSON.stringify({ provider }) });
@@ -167,7 +167,7 @@ export const providers = {
     emitRuntimeConfigChanged({ kind: 'provider', provider });
     return result;
   },
-  createProfile: (provider: string, label: string, apiKey: string, baseUrl?: string, setActive?: boolean) => request<{ ok: boolean; provider: string; profileId: string }>('/provider/profile', { method: 'POST', body: JSON.stringify({ provider, profileId: label, label, apiKey, baseUrl, setActive }) }),
+  createProfile: (provider: string, label: string, apiKey: string, baseUrl?: string, setActive?: boolean, apiType?: string, modelId?: string) => request<{ ok: boolean; provider: string; profileId: string }>('/provider/profile', { method: 'POST', body: JSON.stringify({ provider, profileId: label, label, apiKey, baseUrl, setActive, apiType, modelId }) }),
   switchProfile: async (providerId: string, profileId: string) => {
     const result = await request<{ ok: boolean }>('/provider/profile/switch', { method: 'POST', body: JSON.stringify({ providerId, profileId }) });
     const { emitRuntimeConfigChanged } = await import('./runtime-config-sync.js');
@@ -1481,7 +1481,7 @@ export interface ProviderSettings {
   baseUrl?: string;
   configured?: boolean;
   activeProfile?: string;
-  profiles?: Record<string, { label: string; apiKey: string; baseUrl?: string }>;
+  profiles?: Record<string, { label: string; apiKey: string; baseUrl?: string; apiType?: string; modelId?: string }>;
 }
 
 export interface ProviderInfo {
@@ -1499,6 +1499,7 @@ export interface ConfiguredProvider {
   name: string;
   configured: boolean;
   activeProfile?: string;
+  profiles?: Array<{ id: string; label: string; apiKeyConfigured?: boolean; baseUrl?: string; apiType?: string; modelId?: string }>;
 }
 
 export interface ModelInfo {
@@ -2670,12 +2671,12 @@ export interface IntegrationHubSettings {
 }
 
 export const integrations = {
-  catalog: (includeCandidates?: boolean) =>
+  catalog: () =>
     request<{
       providers: IntegrationProvider[];
       settings?: IntegrationHubSettings;
       stats?: Record<'active' | 'candidate' | 'testing' | 'deprecated', number>;
-    }>(`/integrations/catalog${includeCandidates ? '?includeCandidates=true' : ''}`),
+    }>(`/integrations/catalog`),
   connections: () => request<{ connections: IntegrationConnection[] }>('/integrations/connections'),
   analytics: () => request<{ analytics: IntegrationAnalytics }>('/integrations/analytics'),
   maintain: () => request<{ ok: boolean }>('/integrations/maintain', { method: 'POST' }),

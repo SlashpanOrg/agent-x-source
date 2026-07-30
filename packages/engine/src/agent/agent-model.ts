@@ -108,7 +108,6 @@ export interface SwitchModelContext {
   config: { provider: { activeProvider: string; activeModel: string } };
   cachedModelInfo: Map<string, { id: string; name: string; providerId: string; contextWindow?: number; capabilities: string[]; outputTokenLimit?: number }>;
   tokenTracker: { setTotal(n: number): void; tokensTotal: number };
-  setPromptEngine(ctx: number): void;
   sessionManager: { persistSessionFields?(sessionId: string, fields: Record<string, unknown>): void } | null;
   sessionId: string;
   rebuildPromptAssembly(): void;
@@ -137,7 +136,6 @@ export function switchModel(ctx: SwitchModelContext, modelId: string, contextWin
       contextWindow: ctxWin,
       capabilities: [],
     });
-    ctx.setPromptEngine(ctxWin);
     try {
       ctx.sessionManager?.persistSessionFields?.(ctx.sessionId, { tokenAvailable: ctxWin });
     } catch { /* best-effort */ }

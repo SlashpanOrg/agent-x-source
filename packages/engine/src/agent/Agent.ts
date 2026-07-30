@@ -83,8 +83,13 @@ import { setUserCommandRegistryInstance } from '../commands/builtin/commands.js'
 import { getRAGEngineInstance, setIndexerEventBus } from '../commands/builtin/rag_index.js';
 import type { UserCommandConfig } from '../commands/UserCommandRegistry.js';
 import { UserCommandRegistry } from '../commands/UserCommandRegistry.js';
-import { PromptEngine } from '../prompt/PromptEngine.js';
-import type { IntentResult } from '../prompt/PromptEngine.js';
+import { buildRagContext } from '../prompt/PromptEngine.js';
+import { CategoryDetector, deriveReasoningMode, type CategoryResult } from '../prompt/CategoryDetector.js';
+import { CodebaseContextDetector, type CodebaseContext } from '../prompt/CodebaseContextDetector.js';
+import { CodingTurnGuard } from './CodingTurnGuard.js';
+import { TaskStateManager } from './TaskStateManager.js';
+import { TurnFeedbackLogger, type TurnOutcome } from './TurnFeedbackLogger.js';
+import { CACHE_BOUNDARY_MARKER } from '../communication/prompt/PromptComposer.js';
 import { DecisionEngine } from './DecisionEngine.js';
 import type { DecisionResult } from './DecisionEngine.js';
 import { parseKbMentionSourceIds, runTurnJourney } from './TurnJourney.js';
@@ -136,7 +141,7 @@ import { withSpan } from '../observability/tracer.js';
 import { reconcileIntegrationHintWithActiveTools } from '../integrations/integration-tool-availability.js';
 import type { ThirdPartyTurnPolicy } from '../integrations/third-party-access.js';
 import { buildGoogleAiSdkProviderOptions } from '../providers/google/gemini-metadata.js';
-import { createAiSdkStreamHandler } from './AiSdkStreamHandler.js';
+import { createAiSdkStreamHandler, consumeStreamWithWatchdog, STREAM_IDLE_TIMEOUT_MS } from './AiSdkStreamHandler.js';
 import type { PartPersistFn } from './AiSdkStreamHandler.js';
 import { streamText, stepCountIs, type ModelMessage } from 'ai';
 import {
@@ -148,7 +153,7 @@ import {
   type WebSearchTurnPolicy,
 } from '../search/web-search-policy.js';
 import { SessionRunner } from '../session/SessionRunner.js';
-import { getLoadingSteps, generateDiff, modelMessageContentToText as modelMessageContentToTextHelper, estimateToolSchemaChars as estimateToolSchemaCharsHelper, toFriendlyError as toFriendlyErrorHelper, detectTaskType as detectTaskTypeHelper, checkConnectivity as checkConnectivityHelper, buildIdentityBlock as buildIdentityBlockHelper, simpleComplete as simpleCompleteHelper, endSession as endSessionHelper, getHealth as getHealthHelper, initializeDiagnosticsAsync as initializeDiagnosticsAsyncHelper, research as researchHelper, compactContext as compactContextHelper, tagCrewPrivateAssistant as tagCrewPrivateAssistantHelper, buildLinkedContextPromptBlock as buildLinkedContextPromptBlockHelper, getProviderCredentials as getProviderCredentialsHelper, getUserTimezone as getUserTimezoneHelper, getUtcOffset as getUtcOffsetHelper, type ConnectivityContext, type SimpleCompleteContext, type SessionLifecycleContext, type HealthContext, type DiagnosticsContext, type ResearchContext, type CompactContext, type CrewPrivateContext, type LinkedContextContext, type ProviderCredentialsContext, type TimezoneContext } from './agent-helpers.js';
+import { getLoadingSteps, generateDiff, modelMessageContentToText as modelMessageContentToTextHelper, estimateToolSchemaChars as estimateToolSchemaCharsHelper, toFriendlyError as toFriendlyErrorHelper, detectTaskType as detectTaskTypeHelper, checkConnectivity as checkConnectivityHelper, buildIdentityBlock as buildIdentityBlockHelper, simpleComplete as simpleCompleteHelper, endSession as endSessionHelper, getHealth as getHealthHelper, initializeDiagnosticsAsync as initializeDiagnosticsAsyncHelper, research as researchHelper, compactContext as compactContextHelper, tagCrewPrivateAssistant as tagCrewPrivateAssistantHelper, buildLinkedContextPromptBlock as buildLinkedContextPromptBlockHelper, getProviderCredentials as getProviderCredentialsHelper, getProviderFactoryOptions as getProviderFactoryOptionsHelper, getUserTimezone as getUserTimezoneHelper, getUtcOffset as getUtcOffsetHelper, type ConnectivityContext, type SimpleCompleteContext, type SessionLifecycleContext, type HealthContext, type DiagnosticsContext, type ResearchContext, type CompactContext, type CrewPrivateContext, type LinkedContextContext, type ProviderCredentialsContext, type TimezoneContext } from './agent-helpers.js';
 
 import {
   superviseCrewMission as superviseCrewMissionHelper,
@@ -244,6 +249,8 @@ export interface AgentOptions {
   prepareIntegrationTools?: (userText: string) => Promise<
     string | { hint?: string; policy?: import('../integrations/third-party-access.js').ThirdPartyTurnPolicy } | undefined
   >;
+  /** Skip the empty-response self-healing retry for benchmark/headless callers. */
+  skipEmptyResponseRetry?: boolean;
 }
 
 export class Agent {
@@ -321,10 +328,77 @@ export class Agent {
   private diagnosticsSystem: AutonomousDiagnosticsSystem;
 
   // ─── Prompt & Decision Engines
-  private promptEngine: PromptEngine;
   private decisionEngine: DecisionEngine;
+  private categoryDetector: CategoryDetector;
   private currentDecision: DecisionResult | null = null;
-  private currentIntent: IntentResult | null = null;
+  private currentCategory: CategoryResult | null = null;
+  private currentUserMessage = '';
+
+  private logTurnOutcome(startTime: number, success: boolean, _userMessage: string): void {
+    const taskState = this.taskStateManager.getCurrent();
+    if (!taskState) return;
+    const toolPolicy = this.getToolPolicy();
+    const outcome: TurnOutcome = {
+      sessionId: this.sessionId,
+      turnId: `turn-${startTime}`,
+      category: taskState.category,
+      sub: taskState.sub,
+      phase: taskState.phase,
+      toolChoice: toolPolicy.choice,
+      allowedTools: toolPolicy.allowedIds,
+      stepCap: toolPolicy.stepCap,
+      toolsUsed: taskState.toolsUsed,
+      toolCallCount: this.toolLedger.getEntries().length,
+      filesRead: taskState.filesRead.length,
+      filesWritten: taskState.filesWritten.length,
+      buildsRun: taskState.buildsRun,
+      buildsPassed: taskState.buildsPassed,
+      buildsFailed: taskState.buildsFailed,
+      testsRun: taskState.testsRun,
+      testsPassed: taskState.testsPassed,
+      testsFailed: taskState.testsFailed,
+      success,
+      durationMs: Date.now() - startTime,
+      timestamp: Date.now(),
+    };
+    this.turnFeedbackLogger.log(outcome);
+  }
+
+  private getToolPolicy(): { choice: 'auto' | 'none' | 'required'; allowedIds: string[] | undefined; stepCap: number } {
+    if (!this.toolRegistry) {
+      return { choice: 'auto', allowedIds: undefined, stepCap: 50 };
+    }
+
+    const primary = this.currentCategory?.primary ?? 'general';
+    const sub = this.currentCategory?.sub;
+
+    // Feedback-driven adjustments are evaluated for telemetry but no longer
+    // override tool policy — all tools are always available.
+    void this.turnFeedbackLogger?.getAutoAppliedAdjustment(primary, sub);
+    void this.turnFeedbackLogger?.getSuggestedAdjustments();
+
+    // ─── Tool Policy ───
+    // The MoE category overlay guides the model's BEHAVIOR via prompt instructions.
+    // It does NOT restrict which tools are available. Tool restriction caused
+    // catastrophic failures: models couldn't find file_write and substituted with
+    // web_search loops (96 useless searches for "save_to_markdown" as a web query).
+    //
+    // ALL tools are available to ALL categories. The category overlay in the system
+    // prompt tells the model which tools to prefer. The model decides.
+    //
+    // stepCap is a safety net against infinite loops, not a task limiter.
+    // 40 steps is enough for complex multi-tool tasks (search → read → write → verify)
+    // while preventing the 52-96 iteration search loops seen in failing sessions.
+    const stepCap = 40;
+
+    let result: { choice: 'auto' | 'none' | 'required'; allowedIds: string[] | undefined; stepCap: number } = {
+      choice: 'auto',
+      allowedIds: undefined, // undefined = ALL tools available
+      stepCap,
+    };
+
+    return result;
+  }
 
   // ─── RAG / Turn Journey
   private lastRagResults: Array<{ content: string; score?: number; metadata?: Record<string, unknown> }> = [];
@@ -389,6 +463,11 @@ export class Agent {
   private userCancelledTurn = false;
   private turnState = new TurnStateManager();
   public toolLedger = new ToolLedger();
+  public codingTurnGuard: CodingTurnGuard;
+  public taskStateManager: TaskStateManager;
+  public turnFeedbackLogger: TurnFeedbackLogger;
+  private codebaseContextDetector: CodebaseContextDetector;
+  private codebaseContext: CodebaseContext | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   public partialTurnContent = '';
   private currentTurnId: string | null = null;
@@ -1183,13 +1262,19 @@ export class Agent {
       options.config.provider.activeProvider,
       this.getApiKey(),
       this.getBaseUrl(),
+      getProviderFactoryOptionsHelper(this._providerCredentialsCtx()),
     );
 
     // Soft concurrency from Settings → Performance (overrides hardcoded defaults).
     this.unregisterPerformanceTune = registerPerformanceTuneTarget(this);
 
-    // Initialize prompt engine for token-efficient prompting
-    this.promptEngine = new PromptEngine(this.getContextWindow());
+    // Initialize category detector and task state for MoE prompt assembly
+    this.categoryDetector = new CategoryDetector();
+    this.taskStateManager = new TaskStateManager();
+    this.turnFeedbackLogger = new TurnFeedbackLogger(this.sessionId, this.config.provider.activeModel);
+    this.codebaseContextDetector = new CodebaseContextDetector();
+    this.codebaseContext = this.codebaseContextDetector.detect(this.scopePath);
+    this.codingTurnGuard = new CodingTurnGuard(this.toolLedger, (e) => this.emit(e), this.taskStateManager);
 
     // Initialize decision engine for message classification and routing
     this.decisionEngine = new DecisionEngine();
@@ -1777,6 +1862,7 @@ export class Agent {
       });
       this.turnState.start(this.currentTurnId!, 'receiving');
     this.toolLedger.reset();
+    this.codingTurnGuard?.resetForTurn();
     this.partialTurnContent = '';
     this.stepCapExtra = 0;
     this.startTurnHeartbeat('receiving');
@@ -2270,9 +2356,19 @@ export class Agent {
     });
 
     // ─── SMART PROMPTING & RAG ───
-    // Detect intent for dynamic tool selection and reasoning mode
-    this.currentIntent = this.promptEngine.detectIntent(content);
-    this.emit({ type: 'intent_detected', intent: this.currentIntent.intent, confidence: this.currentIntent.confidence });
+    // Category detection drives tool selection, prompt overlay, and reasoning mode
+    this.currentCategory = this.categoryDetector.detect(content);
+    const reasoningMode = deriveReasoningMode(this.currentCategory.primary, content);
+    this.taskStateManager.startTask(content, this.currentCategory.primary, this.currentCategory.sub);
+    this.emit({ type: 'intent_detected', intent: this.currentCategory.primary, confidence: this.currentCategory.confidence });
+    this.emit({
+      type: 'category_detected',
+      primary: this.currentCategory.primary,
+      sub: this.currentCategory.sub,
+      confidence: this.currentCategory.confidence,
+      reasoningMode,
+      relevantToolCategories: [],
+    });
 
     // ─── TURN JOURNEY: default research pipeline (chat + voice)
     // Prefetch local knowledge + inject stage order so users need not direct tools.
@@ -2350,7 +2446,7 @@ export class Agent {
       }
 
       // ─── UNIFIED: Tree of Thoughts trigger ───
-      const shouldUseToT = this.currentIntent?.reasoningMode === 'tree';
+      const shouldUseToT = reasoningMode === 'tree';
 
       // Tree of Thoughts reasoning mode
       if (shouldUseToT) {
@@ -2425,12 +2521,19 @@ export class Agent {
       this.turnState.complete();
       this.emitTurnState('done');
       this.emit({ type: 'loading_end' });
+
+      // Log turn outcome for feedback loop
+      this.logTurnOutcome(startTime, true, content);
+
       return assistantMessage;
     } catch (error) {
       this.stopTurnHeartbeat();
       this.turnState.cancel();
       this.emitTurnState('cancelled');
       this.emit({ type: 'loading_end' });
+
+      // Log failed turn outcome
+      this.logTurnOutcome(startTime, false, content);
 
       // ─── UNIFIED: Classify error via ErrorClassifier ───
       const classified = this.errorClassifier.classify(error);
@@ -2557,6 +2660,7 @@ export class Agent {
       : '';
     return withSpan('llm.chat', 'llm', async (span) => {
     span.setAttribute('gen_ai.usage.total_cost', 0);
+    this.currentUserMessage = lastUserText;
     await this.reconcileSystemPrompt();
     await this.compactContext();
 
@@ -2584,6 +2688,15 @@ export class Agent {
     }
 
     const compact = this.usesCompactContext();
+    const toolPolicy = this.getToolPolicy();
+    this.emit({
+      type: 'tool_policy_applied',
+      choice: toolPolicy.choice,
+      allowedIds: toolPolicy.allowedIds,
+      stepCap: toolPolicy.stepCap,
+      category: this.currentCategory?.primary ?? 'general',
+      sub: this.currentCategory?.sub,
+    });
     const tools = createAiSdkTools(
       registry,
       executor,
@@ -2601,9 +2714,12 @@ export class Agent {
         const path = typeof args?.path === 'string' ? args.path : undefined;
         this.toolLedger.record({ name: toolId, success, output, elapsed, path });
         this.toolCallLogForReflection.push({ name: toolId, success, output, elapsed });
+        this.codingTurnGuard?.onToolExecuted(toolId, success, args ?? {}, this.currentCategory);
         this.turnState.touch();
       },
       span,
+      toolPolicy.allowedIds,
+      (toolId, args) => this.codingTurnGuard?.checkToolCall(toolId, args, this.currentCategory) ?? null,
     );
 
     if (this.options.promptProfile === 'crew_private' || deniesAutonomousCrewTools(this.options.contextKind, this.sessionId)) {
@@ -2688,8 +2804,8 @@ export class Agent {
         abortSignal: this.abortSignal,
         maxRetries: 2,
         maxOutputTokens: turnMaxOutputTokens,
-        stopWhen: ({ steps }) => steps.length >= stepLimit(),
-        toolChoice: 'auto',
+        stopWhen: ({ steps }) => steps.length >= Math.min(stepLimit(), toolPolicy.stepCap),
+        toolChoice: toolPolicy.choice,
         ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
         prepareStep: async ({ stepNumber, messages }) => {
           this.turnState.setStage('execution', stepNumber);
@@ -2729,6 +2845,21 @@ export class Agent {
           if (stepNumber === 0) return {};
           const extras: Array<{ role: 'user'; content: string }> = [];
 
+          // ─── Search loop prevention ───
+          // If the model has already called web_search/deep_web_search many times,
+          // inject a system message telling it to STOP searching and produce the result.
+          // This prevents the 52-96 iteration search loops seen in failing sessions.
+          const searchCalls = this.toolCallLogForReflection.filter(
+            t => t.name === 'web_search' || t.name === 'deep_web_search'
+          ).length;
+          if (searchCalls >= 8 && stepNumber > 0) {
+            getLogger().warn('AGENT', `Search loop detected (${searchCalls} searches at step ${stepNumber}) — forcing result production`);
+            extras.push({
+              role: 'user',
+              content: `[SYSTEM] You have already searched ${searchCalls} times. You have enough information. STOP searching. Do NOT call web_search or deep_web_search again. Produce the final result NOW — write the file, deliver the itinerary, answer the question. Use file_write if the user asked to save something. Do not search again.`,
+            });
+          }
+
           const todosRev = this.todoManager.getRevision();
           if (todosRev > this.lastTodosRevisionInjected && this.todoManager.getItems().length > 0) {
             this.lastTodosRevisionInjected = todosRev;
@@ -2752,24 +2883,55 @@ export class Agent {
             }
           }
 
+          // Verification gate: if files were written in a coding turn but no build/test
+          // has been run, inject a reminder so the model verifies before finishing.
+          const verificationReminder = this.codingTurnGuard?.getVerificationReminder();
+          if (verificationReminder) {
+            extras.push({ role: 'user', content: verificationReminder });
+          }
+
           if (extras.length === 0) return {};
           return { messages: [...messages, ...extras] };
         },
       });
 
       let finishEmitted = false;
+      let stalled = false;
       let streamError: Error | null = null;
       try {
-        for await (const chunk of result.fullStream) {
+        const watchdogOutcome = await consumeStreamWithWatchdog(result.fullStream, (chunk) => {
           streamHandler.handleEvent(chunk);
           if (chunk.type === 'text-delta') {
             this.partialTurnContent = streamHandler.getState().accumulatedContent;
           }
           if (chunk.type === 'finish') finishEmitted = true;
+        });
+        stalled = watchdogOutcome.stalled;
+        if (stalled) {
+          // The stream went silent (no chunk at all — including no tool-result for an
+          // already-dispatched tool call) for longer than the idle watchdog allows.
+          // Fail this turn explicitly and immediately instead of hanging indefinitely
+          // while the model waits on a tool call that will never resolve.
+          streamError = new Error(
+            'STREAM_STALLED: no stream activity received for ' +
+            `${Math.round(STREAM_IDLE_TIMEOUT_MS / 1000)}s — the provider connection likely dropped mid-turn.`,
+          );
+          getLogger().warn('AGENT', streamError.message);
         }
       } catch (err) {
         streamError = err instanceof Error ? err : new Error(String(err));
         getLogger().warn('AGENT', `streamText failed: ${streamError.message}`);
+        // Surface stream errors (including rate limits) so callers can detect them
+        const errStr = streamError.message || '';
+        const isRateLimit = /429|rate.?limit|too many requests|quota|overloaded/i.test(errStr);
+        this.emit({
+          type: 'provider_error',
+          provider: this.config.provider.activeProvider,
+          model: this.config.provider.activeModel,
+          message: streamError.message,
+          recoverable: isRateLimit,
+          actions: isRateLimit ? [{ type: 'retry', label: 'Retry' }] : undefined,
+        });
         if (streamError.name === 'AbortError') {
           throw streamError;
         }
@@ -2779,7 +2941,9 @@ export class Agent {
       if (!finishEmitted) {
         const state = streamHandler.getState();
         if (state.accumulatedContent || state.toolCallCount > 0) {
-          streamHandler.handleEvent({ type: 'finish', usage: await result.usage });
+          // Do not await result.usage when the watchdog already gave up on the stream;
+          // the usage promise can stay pending forever and deadlock sendMessage.
+          streamHandler.handleEvent({ type: 'finish', usage: stalled ? undefined : await result.usage });
         }
       }
 
@@ -2803,7 +2967,8 @@ export class Agent {
       // Generic self-healing: if response is essentially empty (whitespace or <3 chars),
       // or the tool loop crashed (e.g. malformed tool-call arguments), retry once.
       // When tools already ran, retry WITHOUT tools to force a plain-text summary.
-      if (content.length < 3 || streamError) {
+      // Benchmark callers can opt out to fail fast instead of retrying a stalled provider.
+      if (!this.options.skipEmptyResponseRetry && (content.length < 3 || streamError)) {
         const toolSummary = this.toolCallLogForReflection
           .map(t => `- ${t.name}: ${t.success ? 'OK' : 'FAILED'} — ${t.output.slice(0, 300)}`)
           .join('\n');
@@ -2829,6 +2994,7 @@ export class Agent {
             span.setAttribute('gen_ai.request.model', this.config.provider.activeModel);
             span.setAttribute('gen_ai.usage.total_cost', 0);
             span.setAttribute('llm.input_messages', JSON.stringify(retryMessages));
+            const retryPolicy = this.getToolPolicy();
             const retryResult = streamText({
               model: createAiSdkModel(this.config, this.getApiKey()),
               messages: retryMessages,
@@ -2845,15 +3011,17 @@ export class Agent {
                       this.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
                     undefined,
                     span,
+                    retryPolicy.allowedIds,
+                    (toolId, args) => this.codingTurnGuard?.checkToolCall(toolId, args, this.currentCategory) ?? null,
                   ),
-                  stopWhen: stepCountIs(50),
-                  toolChoice: 'auto' as const,
+                  stopWhen: stepCountIs(Math.min(stepBudget, 40)),
+                  toolChoice: retryPolicy.choice,
                 }),
               maxRetries: 1,
               maxOutputTokens: turnMaxOutputTokens,
             });
             let retryOutput = '';
-            for await (const chunk of retryResult.fullStream) { streamHandler.handleEvent(chunk); }
+            await consumeStreamWithWatchdog(retryResult.fullStream, (chunk) => streamHandler.handleEvent(chunk));
             retryOutput = (streamHandler.getState().accumulatedContent || '').trim();
             span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: retryOutput }]));
             return retryOutput;
@@ -2867,11 +3035,201 @@ export class Agent {
         }
       }
 
+      // ─── Transition-phrase continuation ───
+      // If the model stopped with text that promises a question/choice but never
+      // actually called ask_clarification, force a continuation so the model
+      // actually calls the tool instead of just narrating its intent.
+      if (!this.userCancelledTurn && !this.options.delegatedWorker && !streamError) {
+        const transitionPhrases = [
+          'one quick choice', 'let me ask', 'let me clarify', 'quick question',
+          'before i', 'so i can build', 'so i can prepare', 'so i can create',
+          'let me know', 'which would you prefer', 'would you prefer',
+          'i\'ll ask', 'i will ask', 'need to know', 'a few questions',
+        ];
+        const lowerContent = content.toLowerCase();
+        const hasTransition = transitionPhrases.some(p => lowerContent.includes(p));
+        const calledClarify = this.toolCallLogForReflection.some(t => t.name === 'ask_clarification');
+        const calledAnyTool = this.toolCallLogForReflection.length > 0;
+
+        if (hasTransition && !calledClarify && !this.options.skipEmptyResponseRetry) {
+          getLogger().warn(
+            'AGENT',
+            `Transition-phrase detected (${content.length} chars, ${toolExecs} tools, no ask_clarification) — forcing continuation to call ask_clarification`,
+          );
+          try {
+            const contMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
+              ...aiMessages,
+              { role: 'assistant', content: content || '(prior work)' },
+              {
+                role: 'user',
+                content: `[SYSTEM] You just said you would ask the user a question or present choices, but you did NOT call the ask_clarification tool. You MUST call ask_clarification NOW with a single_choice or multi_choice question. Do not output any text — just call the tool. The user is waiting for your structured questionnaire.`,
+              },
+            ];
+            const contText = await withSpan('llm.transition_retry', 'llm', async (span) => {
+              span.setAttribute('gen_ai.system', this.config.provider.activeProvider);
+              span.setAttribute('gen_ai.request.model', this.config.provider.activeModel);
+              span.setAttribute('gen_ai.usage.total_cost', 0);
+              span.setAttribute('llm.input_messages', JSON.stringify(contMessages));
+              const contPolicy = this.getToolPolicy();
+              const contTools = createAiSdkTools(
+                this.toolRegistry!,
+                this.toolExecutor!,
+                this.sessionId,
+                (e) => this.emit(e),
+                async () => 'continue',
+                (instruction, toolsList, timeout, background) =>
+                  this.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
+                undefined,
+                span,
+                contPolicy.allowedIds,
+                (toolId, args) => this.codingTurnGuard?.checkToolCall(toolId, args, this.currentCategory) ?? null,
+              );
+              const contResult = streamText({
+                model,
+                messages: contMessages as unknown as ModelMessage[],
+                tools: contTools,
+                abortSignal: this.abortSignal,
+                maxRetries: 1,
+                maxOutputTokens: turnMaxOutputTokens,
+                stopWhen: stepCountIs(Math.min(stepBudget, 40)),
+                toolChoice: contPolicy.choice,
+                ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+              });
+              await consumeStreamWithWatchdog(contResult.fullStream, (chunk) => streamHandler.handleEvent(chunk));
+              return (streamHandler.getState().accumulatedContent || '').trim();
+            });
+            if (contText) content = contText;
+            // Update tool exec count after continuation
+            const newToolExecs = streamHandler.getState().toolExecutions || [];
+            if (newToolExecs.length > 0) {
+              this.toolCallLogForReflection.push(...newToolExecs.map(t => ({ name: t.tool, success: t.success, output: t.output, elapsed: t.elapsed })));
+            }
+          } catch (contErr) {
+            if (contErr instanceof Error && contErr.name === 'AbortError') throw contErr;
+            getLogger().warn('AGENT', `Transition-phrase continuation failed: ${contErr instanceof Error ? contErr.message : String(contErr)}`);
+          }
+        }
+
+        // Also: if the model ran tools but produced no meaningful text and no
+        // questionnaire, force a text continuation so the user gets a response.
+        if (calledAnyTool && content.length < 20 && !calledClarify && !this.options.skipEmptyResponseRetry) {
+          getLogger().warn('AGENT', `Tools ran (${toolExecs}) but response is too short (${content.length} chars) — forcing text continuation`);
+          try {
+            const toolSummary = this.toolCallLogForReflection
+              .map(t => `- ${t.name}: ${t.success ? 'OK' : 'FAILED'} — ${(t.output || '').slice(0, 300)}`)
+              .join('\n');
+            const contMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
+              ...aiMessages,
+              { role: 'assistant', content: '(executed tools, no text response)' },
+              {
+                role: 'user',
+                content: `[SYSTEM] You just ran these tools:\n${toolSummary}\n\nNow respond to the user based on these results. If you need to ask a structured question, call ask_clarification. Otherwise, provide a complete answer. Do not return empty or just a transition phrase.`,
+              },
+            ];
+            const contText = await withSpan('llm.text_continuation', 'llm', async (span) => {
+              span.setAttribute('gen_ai.system', this.config.provider.activeProvider);
+              span.setAttribute('gen_ai.request.model', this.config.provider.activeModel);
+              span.setAttribute('gen_ai.usage.total_cost', 0);
+              span.setAttribute('llm.input_messages', JSON.stringify(contMessages));
+              const contPolicy = this.getToolPolicy();
+              const contResult = streamText({
+                model: createAiSdkModel(this.config, this.getApiKey()),
+                messages: contMessages,
+                tools: createAiSdkTools(
+                  this.toolRegistry!,
+                  this.toolExecutor!,
+                  this.sessionId,
+                  (e) => this.emit(e),
+                  async () => 'continue',
+                  (instruction, toolsList, timeout, background) =>
+                    this.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
+                  undefined,
+                  span,
+                  contPolicy.allowedIds,
+                  (toolId, args) => this.codingTurnGuard?.checkToolCall(toolId, args, this.currentCategory) ?? null,
+                ),
+                stopWhen: stepCountIs(Math.min(stepBudget, 40)),
+                toolChoice: contPolicy.choice,
+              });
+              await consumeStreamWithWatchdog(contResult.fullStream, (chunk) => streamHandler.handleEvent(chunk));
+              return (streamHandler.getState().accumulatedContent || '').trim();
+            });
+            if (contText) content = contText;
+          } catch (contErr) {
+            if (contErr instanceof Error && contErr.name === 'AbortError') throw contErr;
+            getLogger().warn('AGENT', `Text continuation failed: ${contErr instanceof Error ? contErr.message : String(contErr)}`);
+          }
+        }
+
+        // ─── Action transition phrase detection ───
+        // If the model says "writing now" or "saving it" but never called file_write,
+        // force a continuation to actually call the tool.
+        const actionPhrases = [
+          'writing the full', 'writing the complete', 'writing your', 'writing the itinerary',
+          'writing the plan', 'writing the surprise', 'writing the mission',
+          'saving it', 'saving the', 'saving your', 'save it to', 'save this',
+          'building the full', 'building the complete', 'building your',
+          'locking the', 'locking in the', 'putting together the',
+        ];
+        const hasActionTransition = actionPhrases.some(p => lowerContent.includes(p));
+        const calledFileWrite = this.toolCallLogForReflection.some(t => t.name === 'file_write' || t.name === 'save_to_markdown');
+        if (hasActionTransition && !calledFileWrite && !this.options.skipEmptyResponseRetry) {
+          getLogger().warn(
+            'AGENT',
+            `Action transition detected (${content.length} chars, no file_write) — forcing continuation to write the file`,
+          );
+          try {
+            const contMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
+              ...aiMessages,
+              { role: 'assistant', content: content || '(prior work)' },
+              {
+                role: 'user',
+                content: `[SYSTEM] You just said you would write or save something, but you did NOT call file_write or save_to_markdown. You MUST call file_write NOW with the full content. Do not search again. Do not output transition text. Call file_write with the complete itinerary/plan content.`,
+              },
+            ];
+            const contText = await withSpan('llm.action_retry', 'llm', async (span) => {
+              span.setAttribute('gen_ai.system', this.config.provider.activeProvider);
+              span.setAttribute('gen_ai.request.model', this.config.provider.activeModel);
+              span.setAttribute('gen_ai.usage.total_cost', 0);
+              span.setAttribute('llm.input_messages', JSON.stringify(contMessages));
+              const contPolicy = this.getToolPolicy();
+              const contResult = streamText({
+                model,
+                messages: contMessages as unknown as ModelMessage[],
+                tools: createAiSdkTools(
+                  this.toolRegistry!,
+                  this.toolExecutor!,
+                  this.sessionId,
+                  (e) => this.emit(e),
+                  async () => 'continue',
+                  (instruction, toolsList, timeout, background) =>
+                    this.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
+                  undefined,
+                  span,
+                  contPolicy.allowedIds,
+                  (toolId, args) => this.codingTurnGuard?.checkToolCall(toolId, args, this.currentCategory) ?? null,
+                ),
+                stopWhen: stepCountIs(Math.min(stepBudget, 40)),
+                toolChoice: contPolicy.choice,
+                ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+              });
+              await consumeStreamWithWatchdog(contResult.fullStream, (chunk) => streamHandler.handleEvent(chunk));
+              return (streamHandler.getState().accumulatedContent || '').trim();
+            });
+            if (contText) content = contText;
+          } catch (contErr) {
+            if (contErr instanceof Error && contErr.name === 'AbortError') throw contErr;
+            getLogger().warn('AGENT', `Action transition continuation failed: ${contErr instanceof Error ? contErr.message : String(contErr)}`);
+          }
+        }
+      }
+
       if (!content) {
         content = 'I was unable to generate a response. This model may not support function calling — switch to a tool-capable model and try again.';
       }
 
-      const usage = await result.usage;
+      // Avoid awaiting the usage promise when the stream was stalled; it may never resolve.
+      const usage = stalled ? undefined : await result.usage;
       if (usage) {
         span.setAttribute('gen_ai.usage.input_tokens', usage.inputTokens ?? 0);
         span.setAttribute('gen_ai.usage.output_tokens', usage.outputTokens ?? 0);
@@ -2914,7 +3272,7 @@ export class Agent {
             return `### Sub-agent ${t.id.slice(0, 8)} [${status}]\n${body}`;
           });
         if (summaries.length > 0) {
-          content = `${content.trim()}\n\n---\n\n## Sub-agent results\n\n${summaries.join('\n\n')}`.trim();
+          content = `${content.trim()}\n\n## Sub-agent results\n\n${summaries.join('\n\n')}`.trim();
         }
       };
       await mergeOutstandingSubAgents();
@@ -2978,6 +3336,7 @@ export class Agent {
               span.setAttribute('gen_ai.request.model', this.config.provider.activeModel);
               span.setAttribute('gen_ai.usage.total_cost', 0);
               span.setAttribute('llm.input_messages', JSON.stringify(contMessages));
+              const contPolicy = this.getToolPolicy();
               const contTools = createAiSdkTools(
                 this.toolRegistry!,
                 this.toolExecutor!,
@@ -2988,6 +3347,8 @@ export class Agent {
                   this.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
                 undefined,
                 span,
+                contPolicy.allowedIds,
+                (toolId, args) => this.codingTurnGuard?.checkToolCall(toolId, args, this.currentCategory) ?? null,
               );
               const contResult = streamText({
                 model,
@@ -2996,8 +3357,8 @@ export class Agent {
                 abortSignal: this.abortSignal,
                 maxRetries: 1,
                 maxOutputTokens: turnMaxOutputTokens,
-                stopWhen: stepCountIs(Math.min(50, stepBudget)),
-                toolChoice: 'auto',
+                stopWhen: stepCountIs(Math.min(stepBudget, 40)),
+                toolChoice: contPolicy.choice,
                 ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
                 prepareStep: async ({ stepNumber, messages }) => {
                   if (stepNumber === 0) return {};
@@ -3016,12 +3377,12 @@ export class Agent {
                   return {};
                 },
               });
-              for await (const chunk of contResult.fullStream) {
+              await consumeStreamWithWatchdog(contResult.fullStream, (chunk) => {
                 streamHandler.handleEvent(chunk);
                 if (chunk.type === 'text-delta') {
                   this.partialTurnContent = streamHandler.getState().accumulatedContent;
                 }
-              }
+              });
               const output = (streamHandler.getState().accumulatedContent || '').trim();
               span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: output }]));
               return output;
@@ -3210,6 +3571,10 @@ export class Agent {
     return {
       getProviderId: () => this.config.provider.activeProvider,
       getModelId: () => this.config.provider.activeModel,
+      getUserMessage: () => this.currentUserMessage,
+      getTurnCategory: () => this.currentCategory ?? { primary: 'general', sub: undefined, confidence: 0 },
+      getCodebaseContext: () => this.codebaseContext,
+      getTaskStateBlock: () => this.taskStateManager.formatStatusBlock(),
       buildIdentityBlock: () => this.buildIdentityBlock(),
       scopePath: this.scopePath,
       telegramConnected: this._telegramConnected,
@@ -3272,26 +3637,20 @@ export class Agent {
   private async reconcileSystemPrompt(): Promise<void> {
     if (!this.promptAssembly || !this.promptSnapshot) return;
 
-    const result = await this.promptAssembly.reconcile(this.promptSnapshot);
-
-    if (result.tag === 'unchanged') return;
-
-    if (result.tag === 'updated') {
-      this.promptSnapshot = result.update.snapshot;
-      this.messages.push({
-        role: 'system' as const,
-        content: result.update.text,
-      });
-    } else if (result.tag === 'replacement-needed') {
-      this.promptSnapshot = result.generation.snapshot;
-      this.setSystemPrompt(result.generation.baseline);
-    }
-    // replacement-blocked: skip, keep old snapshot
+    // MoE Prompt Assembler is the only prompt system — always use it.
+    const gen = await this.promptAssembly.assemble();
+    this.emit({
+      type: 'prompt_section_inventory',
+      sections: gen.sections,
+    });
+    const dynamicAndCategory = [gen.dynamicSuffix, gen.categoryOverlay].filter(Boolean).join('\n\n');
+    const prompt = [gen.staticPrefix, CACHE_BOUNDARY_MARKER, dynamicAndCategory].filter(Boolean).join('');
+    this.setSystemPrompt(prompt);
   }
 
-  switchProvider(providerId: ProviderId, apiKey?: string, baseUrl?: string): void {
+  switchProvider(providerId: ProviderId, apiKey?: string, baseUrl?: string, options?: { apiType?: string; displayName?: string }): void {
     const wasCompact = this.usesCompactContext();
-    this.provider = ProviderFactory.create(providerId, apiKey, baseUrl);
+    this.provider = ProviderFactory.create(providerId, apiKey, baseUrl, options);
     this.config.provider.activeProvider = providerId;
     if (wasCompact !== this.usesCompactContext()) {
       this.rebuildPromptAssembly();
@@ -3305,7 +3664,6 @@ export class Agent {
         config: this.config,
         cachedModelInfo: this.cachedModelInfo,
         tokenTracker: this.tokenTracker,
-        setPromptEngine: (ctx) => { this.promptEngine = new PromptEngine(ctx); },
         sessionManager: this.sessionManager,
         sessionId: this.sessionId,
         rebuildPromptAssembly: () => this.rebuildPromptAssembly(),
@@ -3616,7 +3974,7 @@ export class Agent {
             docParts.push(a.content);
           } else {
             docParts.push(
-              `--- Attached workspace folder: ${a.name} ---\nExplore this directory with filesystem tools for the user's request.`,
+              `[Attached workspace folder: ${a.name}]\nExplore this directory with filesystem tools for the user's request.`,
             );
           }
           continue;
@@ -3629,7 +3987,7 @@ export class Agent {
           text = await service.extractTextForAgent(a.storageId);
         }
         if (text && text.length > 0) {
-          docParts.push(`--- Attachment: ${a.name} ---\n${text}`);
+          docParts.push(`[Attachment: ${a.name}]\n${text}`);
           continue;
         }
         const isPdf = (a.mimeType === 'application/pdf') || /\.pdf$/i.test(a.name);
@@ -3640,7 +3998,7 @@ export class Agent {
             if (abs) pathHint = abs;
           }
           docParts.push(
-            `--- Attachment: ${a.name} ---\n`
+            `[Attachment: ${a.name}]\n`
             + `[Could not extract PDF text into the prompt. Use the pdf_read tool with path "${pathHint}". `
             + `Do NOT use file_read on PDF files — it returns binary garbage.]`,
           );
@@ -3701,7 +4059,7 @@ export class Agent {
 
     if (this.lastRagResults.length > 0) {
       const hits = opts.compact ? this.lastRagResults.slice(0, 3) : this.lastRagResults;
-      const ragCtx = this.promptEngine.buildRagContext(hits);
+      const ragCtx = buildRagContext(hits);
       const userIdx = aiMessages.findLastIndex(m => m.role === 'user');
       const userMsg = userIdx >= 0 ? aiMessages[userIdx] : null;
       if (userMsg) {
@@ -4065,7 +4423,7 @@ export class Agent {
         text = await service.extractTextForAgent(a.storageId);
       }
       if (text && text.length > 0) {
-        parts.push(`--- Attachment: ${a.name} ---\n${text}`);
+        parts.push(`[Attachment: ${a.name}]\n${text}`);
         continue;
       }
       const isPdf = (a.mimeType === 'application/pdf') || /\.pdf$/i.test(a.name);
@@ -4076,7 +4434,7 @@ export class Agent {
           if (abs) pathHint = abs;
         }
         parts.push(
-          `--- Attachment: ${a.name} ---\n`
+          `[Attachment: ${a.name}]\n`
           + `[Text was not pre-extracted. Use the pdf_read tool with path "${pathHint}". `
           + `Do NOT use file_read on PDF files.]`,
         );

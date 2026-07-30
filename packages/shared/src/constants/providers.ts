@@ -145,6 +145,14 @@ export const PROVIDERS: Record<string, ProviderConfig> = {
     baseUrlConfigurable: true,
     defaultBaseUrl: 'https://opencode.ai/zen/v1',
   },
+  custom: {
+    id: 'custom',
+    name: 'Custom Provider',
+    type: 'cloud',
+    apiKeyRequired: true,
+    baseUrlConfigurable: true,
+    defaultBaseUrl: '',
+  },
 } as const;
 
 export const PROVIDER_IDS = Object.keys(PROVIDERS) as string[];

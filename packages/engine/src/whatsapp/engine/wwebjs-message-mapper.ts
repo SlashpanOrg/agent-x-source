@@ -11,9 +11,12 @@
  * (see `index.d.ts`), not copied from any reference project. Message-type
  * mapping is an inherent property of the WhatsApp protocol vocabulary.
  */
-import type { Message, MessageMedia } from 'whatsapp-web.js';
-import { MessageAck } from 'whatsapp-web.js';
+import type { Message, MessageMedia, MessageAck } from 'whatsapp-web.js';
+import * as WAWebModule from 'whatsapp-web.js';
 import type { WhatsAppIncomingMessage, WhatsAppMessageType, WhatsAppMessageStatus } from './IWhatsAppEngine.js';
+
+const WA = (WAWebModule as any).default ?? (WAWebModule as any);
+const { MessageAck: MessageAckV } = WA;
 
 /** `whatsapp-web.js` `MessageTypes` enum value → our neutral vocabulary. */
 const TYPE_MAP: Partial<Record<string, WhatsAppMessageType>> = {
@@ -39,16 +42,16 @@ function mapType(type: string): WhatsAppMessageType {
 /** `whatsapp-web.js` `MessageAck` → our neutral ack status. */
 export function ackStatusFromWWebJs(ack: MessageAck): WhatsAppMessageStatus {
   switch (ack) {
-    case MessageAck.ACK_ERROR:
+    case MessageAckV.ACK_ERROR:
       return 'failed';
-    case MessageAck.ACK_PENDING:
+    case MessageAckV.ACK_PENDING:
       return 'pending';
-    case MessageAck.ACK_SERVER:
+    case MessageAckV.ACK_SERVER:
       return 'sent';
-    case MessageAck.ACK_DEVICE:
+    case MessageAckV.ACK_DEVICE:
       return 'delivered';
-    case MessageAck.ACK_READ:
-    case MessageAck.ACK_PLAYED:
+    case MessageAckV.ACK_READ:
+    case MessageAckV.ACK_PLAYED:
       return 'read';
     default:
       return 'pending';

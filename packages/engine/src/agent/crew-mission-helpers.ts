@@ -54,7 +54,7 @@ export async function superviseCrewMission(
   const systemContent = typeof systemMsg?.content === 'string' ? systemMsg.content : '';
   const workerSummary = mission.workers.map((w) =>
     `@${w.callsign} (${w.crewName}) [${w.success ? 'ok' : 'failed'}]:\n${w.output.slice(0, 2000)}`,
-  ).join('\n\n---\n\n');
+  ).join('\n\n');
 
   const turnCtx = ctx.prepareTurnContext(cleanContent);
   const reviewPrompt = `${systemContent}\n\n[CREW SUPERVISOR]\nYou are Agent-X, the project manager supervising a crew mission. Review worker outputs, resolve conflicts, and deliver the final cohesive answer to the user. If the mission failed or needs user input, say so clearly and concisely.\n[/CREW SUPERVISOR]`;

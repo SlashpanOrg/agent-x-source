@@ -19,24 +19,23 @@ import {
 } from '@agentx/shared';
 
 describe('action-classifier', () => {
-  const slack = getIntegrationProvider('slack');
+  const github = getIntegrationProvider('github');
 
   it('classifies read tools as readonly', () => {
-    expect(isReadOnlyIntegrationTool('list_channels', slack)).toBe(true);
-    expect(integrationToolRiskLevel('list_channels', slack)).toBe('low');
+    expect(isReadOnlyIntegrationTool('list_issues', github)).toBe(true);
+    expect(integrationToolRiskLevel('list_issues', github)).toBe('low');
   });
 
   it('classifies write tools as confirm-first', () => {
-    expect(isReadOnlyIntegrationTool('send_message', slack)).toBe(false);
-    expect(integrationToolRiskLevel('send_message', slack)).toBe('high');
+    expect(isReadOnlyIntegrationTool('create_issue', github)).toBe(false);
+    expect(integrationToolRiskLevel('create_issue', github)).toBe('medium');
   });
 
-  it('classifies booking.com status and search tools as readonly', () => {
-    const booking = getIntegrationProvider('booking-com')!;
-    expect(isReadOnlyIntegrationTool('booking_status', booking)).toBe(true);
-    expect(isReadOnlyIntegrationTool('booking_login_status', booking)).toBe(true);
-    expect(isReadOnlyIntegrationTool('booking_search', booking)).toBe(true);
-    expect(isReadOnlyIntegrationTool('booking_login', booking)).toBe(false);
+  it('classifies shopify search tools as readonly', () => {
+    const shopify = getIntegrationProvider('shopify')!;
+    expect(isReadOnlyIntegrationTool('search_products', shopify)).toBe(true);
+    expect(isReadOnlyIntegrationTool('get_order', shopify)).toBe(true);
+    expect(isReadOnlyIntegrationTool('create_order', shopify)).toBe(false);
   });
 
   it('round-trips integration tool ids', () => {
@@ -68,11 +67,10 @@ describe('tool-adapter', () => {
 
 describe('action-preview', () => {
   it('builds structured preview for integration write tools', () => {
-    const provider = getIntegrationProvider('slack')!;
-    const tool = adaptMcpTool(provider, { name: 'send_message', description: 'Send a message' });
-    const preview = buildIntegrationActionPreview(tool.id, { channel: 'general', text: 'hello' }, tool);
-    expect(preview?.providerName).toBe('Slack');
-    expect(preview?.resultType).toBe('message');
+    const provider = getIntegrationProvider('github')!;
+    const tool = adaptMcpTool(provider, { name: 'create_issue', description: 'Create an issue' });
+    const preview = buildIntegrationActionPreview(tool.id, { repo: 'org/repo', title: 'bug' }, tool);
+    expect(preview?.providerName).toBe('GitHub');
     expect(preview?.parameters.length).toBeGreaterThan(0);
   });
 });
@@ -98,14 +96,13 @@ describe('catalog', () => {
     expect(categories.has('travel')).toBe(true);
   });
 
-  it('has a verified catalog with real candidates', () => {
+  it('has a verified catalog of shipped providers', () => {
     const stats = getCatalogStats();
     expect(stats.active).toBeGreaterThanOrEqual(20);
-    expect(stats.candidate).toBeGreaterThanOrEqual(20);
-    const all = listCatalogProviders({ includeCandidates: true });
-    expect(all.length).toBeGreaterThanOrEqual(40);
-    const activeOnly = listCatalogProviders({ includeCandidates: false });
-    expect(activeOnly.every((p) => p.catalogStatus !== 'candidate')).toBe(true);
+    expect(stats.candidate).toBe(0);
+    const all = listCatalogProviders();
+    expect(all.length).toBeGreaterThanOrEqual(20);
+    expect(all.every((p) => p.catalogStatus !== 'candidate')).toBe(true);
   });
 
   it('expands HOME in stdio args', () => {
@@ -116,7 +113,6 @@ describe('catalog', () => {
   it('formats npx ENOENT as an actionable install message', () => {
     const message = formatStdioSpawnError(new Error('spawn npx ENOENT'), 'npx');
     expect(message).toContain('Node.js/npx was not found');
-    expect(message).toContain('Booking.com');
   });
 
   it('resolves absolute stdio commands unchanged', () => {
@@ -126,18 +122,18 @@ describe('catalog', () => {
 
 describe('hub browser oauth', () => {
   it('enables browser sign-in for remote MCP OAuth servers', () => {
-    const atlassian = getIntegrationProvider('atlassian')!;
-    const stay = getIntegrationProvider('1stay')!;
-    expect(canUseHubBrowserOAuth(atlassian)).toBe(true);
-    expect(canUseHubBrowserOAuth(stay)).toBe(true);
-    expect(requiresRemoteUrlForHubOAuth(atlassian)).toBe(false);
-    expect(resolveProviderOAuthConfig(atlassian).resource).toBe('https://mcp.atlassian.com/v1/mcp/authv2');
+    const notion = getIntegrationProvider('notion')!;
+    const linear = getIntegrationProvider('linear')!;
+    expect(canUseHubBrowserOAuth(notion)).toBe(true);
+    expect(canUseHubBrowserOAuth(linear)).toBe(true);
+    expect(requiresRemoteUrlForHubOAuth(notion)).toBe(false);
+    expect(resolveProviderOAuthConfig(notion).resource).toBe('https://mcp.notion.com/mcp');
   });
 
-  it('does not offer hub OAuth for stdio booking.com community server', () => {
-    const booking = getIntegrationProvider('booking-com')!;
-    expect(canUseHubBrowserOAuth(booking)).toBe(false);
-    expect(booking.server.type).toBe('stdio');
+  it('does not offer hub OAuth for stdio filesystem server', () => {
+    const filesystem = getIntegrationProvider('filesystem')!;
+    expect(canUseHubBrowserOAuth(filesystem)).toBe(false);
+    expect(filesystem.server.type).toBe('stdio');
   });
 
   it('uses MCP stdio auth for google-drive instead of hub OAuth', () => {

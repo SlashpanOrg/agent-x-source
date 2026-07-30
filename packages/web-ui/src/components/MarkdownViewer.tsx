@@ -6,7 +6,7 @@ import CircularProgress from '@mui/material/CircularProgress';
 import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
 import type { MarkdownDocumentRecord } from '@agentx/shared';
 import { MarkdownContent } from '../markdown/MarkdownContent';
-import { exportElementToPdfBlob, savePdfBlob } from '../markdown/markdown-export';
+import { exportMarkdownToPdfBlob, savePdfBlob } from '../markdown/markdown-export';
 import { colors } from '../theme';
 
 interface Props {
@@ -25,10 +25,16 @@ export function MarkdownViewer({ document, contentMarkdown }: Props) {
 
   const handleExportPdf = useCallback(async () => {
     const root = rootRef.current;
-    if (!root || exporting) return;
+    if (exporting) return;
     setExporting(true);
     try {
-      const blob = await exportElementToPdfBlob(root);
+      // Primary: vector PDF via Chromium print engine (markdown → HTML → PDF).
+      // Fallback: html2canvas rasterization if print engine is unavailable.
+      const blob = await exportMarkdownToPdfBlob(
+        contentMarkdown ?? '',
+        document.title,
+        root,
+      );
       const safeTitle = document.title.replace(/[^\w\s-]/g, '').trim().slice(0, 80) || 'markdown';
       const saved = await savePdfBlob(blob, { defaultFilename: `${safeTitle}-${document.id.slice(-8)}.pdf` });
       if (saved) {
@@ -39,7 +45,7 @@ export function MarkdownViewer({ document, contentMarkdown }: Props) {
     } finally {
       setExporting(false);
     }
-  }, [document.id, document.title, exporting]);
+  }, [contentMarkdown, document.id, document.title, exporting]);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>

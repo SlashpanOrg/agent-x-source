@@ -8,15 +8,17 @@ import { MIN_OUTPUT_TOKENS } from '@agentx/shared';
 import type { ProviderInterface } from './ProviderInterface.js';
 
 export class AnthropicProvider implements ProviderInterface {
-  readonly id: ProviderId = 'anthropic';
-  readonly name = 'Anthropic';
+  readonly id: ProviderId;
+  readonly name: string;
 
   private apiKey: string;
   private baseUrl: string;
 
-  constructor(apiKey: string, baseUrl?: string) {
+  constructor(apiKey: string, baseUrl?: string, id?: ProviderId, name?: string) {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl ?? 'https://api.anthropic.com';
+    this.id = id ?? 'anthropic';
+    this.name = name ?? 'Anthropic';
   }
 
   async validate(): Promise<boolean> {
@@ -61,7 +63,7 @@ export class AnthropicProvider implements ProviderInterface {
       .map((m): ModelInfo => ({
         id: m.id,
         name: m.display_name ?? m.id,
-        providerId: 'anthropic',
+        providerId: this.id,
         contextWindow: 200000,
         capabilities: ['text', 'vision', 'function_calling', 'streaming'],
       }))

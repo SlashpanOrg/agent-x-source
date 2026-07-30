@@ -179,8 +179,7 @@ export function buildIncompleteTurnFooter(incomplete: IncompleteTodo[]): string 
   const lines = incomplete.map((t) => `- #${t.id} ${t.title} (${t.status})`);
   return [
     '',
-    '---',
-    `⚠️ Checklist still open (${incomplete.length} item(s)). Send **continue** to finish:`,
+    `[WARNING] Checklist still open (${incomplete.length} item(s)). Send **continue** to finish:`,
     ...lines,
   ].join('\n');
 }

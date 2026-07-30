@@ -23,9 +23,12 @@
  * (`Client`, `ClientOptions`, `Events`, `Message`, `MessageAck`) — not copied
  * from any reference project.
  */
-import { Client, LocalAuth, MessageMedia, Location as WWebLocation, Poll, Events } from 'whatsapp-web.js';
-import type { Message } from 'whatsapp-web.js';
+import * as WAWebModule from 'whatsapp-web.js';
+import type { Message, Client as ClientType } from 'whatsapp-web.js';
 import { getLogger } from '@agentx/shared';
+
+const WA = (WAWebModule as any).default ?? (WAWebModule as any);
+const { Client, LocalAuth, MessageMedia, Location: WWebLocation, Poll, Events } = WA;
 
 import { toNeutralJid, phoneFromNeutralJid } from '../identity/wa-id.js';
 import { mapWWebJsMessage, ackStatusFromWWebJs, mediaFromWWebJs } from './wwebjs-message-mapper.js';
@@ -72,7 +75,7 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
 
   private status: EngineStatus = EngineStatus.DISCONNECTED;
   private callbacks: WhatsAppEngineCallbacks = {};
-  private client: Client | null = null;
+  private client: ClientType | null = null;
   private currentQr: string | null = null;
   private intentionallyStopped = false;
   private initializing = false;
@@ -102,7 +105,7 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
     this.setStatus(EngineStatus.INITIALIZING);
 
     try {
-      this.client = new Client({
+      const client = new Client({
         puppeteer: {
           browserURL: this.cdpEndpoint,
         },
@@ -111,10 +114,11 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
         }),
         deviceName: this.deviceName,
       });
+      this.client = client;
       this.wireEvents();
       // `initialize()` resolves once the client is ready (or throws on auth
       // failure / timeout). QR events fire during initialization.
-      await this.client.initialize();
+      await client.initialize();
     } catch (err) {
       this.initializing = false;
       this.setStatus(EngineStatus.FAILED);
@@ -521,7 +525,7 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
 
   // ─── Internal: helpers ──────────────────────────────────────────────────
 
-  private requireClient(): Client {
+  private requireClient(): ClientType {
     if (!this.client) {
       throw new Error('ElectronWebJsEngine: client not initialized — call initialize() first');
     }

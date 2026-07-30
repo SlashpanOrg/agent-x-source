@@ -1,11 +1,9 @@
 import type { IntegrationCatalogStatus, IntegrationCategory, IntegrationProvider } from '@agentx/shared';
 import { isChannelCoveredMcpIntegration } from '@agentx/shared';
 import { SHIPPED_PROVIDERS } from './shipped.js';
-import { CATALOG_CANDIDATES } from './candidates.js';
 import { withProviderHighlights } from './provider-highlights.js';
 
 export interface CatalogListOptions {
-  includeCandidates?: boolean;
   includeDeprecated?: boolean;
   status?: IntegrationCatalogStatus | IntegrationCatalogStatus[];
 }
@@ -17,14 +15,14 @@ function matchesStatus(provider: IntegrationProvider, options: CatalogListOption
     const allowed = Array.isArray(options.status) ? options.status : [options.status];
     return allowed.includes(status);
   }
-  if (status === 'candidate' && !options.includeCandidates) return false;
   return true;
 }
 
-/** Full catalog: shipped + candidates (+ remote overrides applied in loader). */
+/** Full catalog: shipped providers only. Candidates were removed — only
+ *  Tier-1 (product-powered) and Tier-2 (modelcontextprotocol-powered) clients
+ *  are kept in the store. */
 export const INTEGRATION_CATALOG: IntegrationProvider[] = [
   ...SHIPPED_PROVIDERS,
-  ...CATALOG_CANDIDATES,
 ];
 
 export function listCatalogProviders(options: CatalogListOptions = {}): IntegrationProvider[] {
@@ -39,7 +37,7 @@ export function getCatalogProvider(id: string): IntegrationProvider | undefined 
 }
 
 export function listIntegrationCategories(): IntegrationCategory[] {
-  return [...new Set(listCatalogProviders({ includeCandidates: true }).map((provider) => provider.category))];
+  return [...new Set(listCatalogProviders().map((provider) => provider.category))];
 }
 
 export function getCatalogStats(): Record<IntegrationCatalogStatus, number> {
@@ -57,12 +55,12 @@ export function getCatalogStats(): Record<IntegrationCatalogStatus, number> {
 }
 
 /** @deprecated Use listCatalogProviders */
-export const INTEGRATION_PROVIDERS = listCatalogProviders({ includeCandidates: false });
+export const INTEGRATION_PROVIDERS = listCatalogProviders();
 
 export function getIntegrationProvider(id: string): IntegrationProvider | undefined {
   return getCatalogProvider(id);
 }
 
 export function listIntegrationProviders(): IntegrationProvider[] {
-  return listCatalogProviders({ includeCandidates: false });
+  return listCatalogProviders();
 }

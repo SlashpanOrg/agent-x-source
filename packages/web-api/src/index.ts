@@ -37,6 +37,9 @@ import { router as legacyRouter } from './routes/legacy.js';
 import { router as knowledgeBaseRouter } from './routes/knowledge-base.js';
 import { observabilityRouter } from './routes/observability/index.js';
 import { devRouter } from './routes/observability/dev.js';
+import { loadGlobalDevMode } from './middleware/dev-mode.js';
+import { createPromptBenchmarkRouter } from './routes/prompt-benchmark.js';
+import { createStaticRouter } from './routes/legacy/static.js';
 import { DATA_DIR, SESSIONS_DIR, UPLOADS_DIR, UI_DIST } from './api-helpers.js';
 
 const PORT = Number(process.env['AGENTX_PORT'] || process.env['PORT']) || 3333;
@@ -187,6 +190,7 @@ registerMarkdownRoutes(app);
 
 // New route modules
 app.use('/', healthRouter({ api }));
+app.use('/api', createPromptBenchmarkRouter());
 app.use('/api/jobs', jobsRouter({ api }));
 app.use('/', metricsRouter({ api }));
 app.use('/', legacyRouter({ api }));
@@ -226,7 +230,7 @@ app.use('/api/observability', (req, res, next) => {
   if (req.path === '/dev' || req.path.startsWith('/dev/')) {
     if (!devOnlyRouterCache) {
       // devRouter ignores ctx (store/handle) — only authManager + session flags.
-      devOnlyRouterCache = devRouter({} as never);
+      devOnlyRouterCache = devRouter({ api } as never);
     }
     return devOnlyRouterCache(req, res, next);
   }
@@ -245,6 +249,9 @@ if (existsSync(OBS_UI_DIST)) {
     res.sendFile(OBS_UI_HTML);
   });
 }
+
+// Main web UI SPA fallback/static assets. Must be after API/ws/observability routes.
+app.use(createStaticRouter());
 
 // Global error handler
 app.use(errorHandler);
@@ -314,6 +321,7 @@ export function startServer(port = PORT): ReturnType<typeof server.listen> {
     // others (e.g. automation service initialization).
     try {
       await awaitEngineStorageReady();
+      loadGlobalDevMode(api.getConfigManager().load().developer?.devMode ?? false);
     } catch (e) {
       getLogger().warn('STARTUP', `Engine storage ready failed: ${e instanceof Error ? e.message : String(e)}`);
     }

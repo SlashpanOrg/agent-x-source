@@ -198,12 +198,12 @@ export function renderTraceBundleMarkdown(bundle: TraceExportBundle): string {
 
 function statusEmoji(status: string): string {
   switch (status) {
-    case 'ok': return '🟢';
-    case 'error': return '🔴';
-    case 'cancelled': return '🟡';
-    case 'running': return '🔵';
-    case 'unset': return '⚪';
-    default: return '⚪';
+    case 'ok': return '[OK]';
+    case 'error': return '[ERROR]';
+    case 'cancelled': return '[CANCELLED]';
+    case 'running': return '[RUNNING]';
+    case 'unset': return '[UNSET]';
+    default: return '[UNSET]';
   }
 }
 

@@ -693,9 +693,21 @@ export function createSessionsRouter(): Router {
         try {
           const store = eng.sessionManager.getStorageAdapter?.();
           const allParts = store?.getParts?.(sessionId) ?? [];
+          // Build a set of persisted message IDs so we can identify parts
+          // whose message_id doesn't belong to any persisted message (i.e.
+          // the assistant message for the current turn hasn't been saved yet
+          // but the stream handler already persisted parts with a generated
+          // message_id).
+          const persistedMessageIds = new Set(
+            messages.map((m) => String((m as { id?: string }).id ?? '')).filter(Boolean),
+          );
           orphanedActiveParts = allParts.filter((p) => {
             const mid = p['message_id'] ?? p['messageId'];
-            return mid == null || mid === '';
+            if (mid == null || mid === '') return true;
+            // Also include parts whose message_id doesn't match any persisted
+            // message — these belong to the in-progress turn whose assistant
+            // message hasn't been saved to the DB yet.
+            return !persistedMessageIds.has(String(mid));
           });
         } catch { /* best-effort */ }
         if (agent) {

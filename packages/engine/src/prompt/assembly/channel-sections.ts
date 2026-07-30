@@ -89,7 +89,7 @@ export function createSlackMessagingSection(): PromptSection<null> {
       'FORMATTING:',
       '- Use Slack mrkdwn: *bold*, _italic_, ~strikethrough~, `inline code`, ```code blocks```, <url|link text>.',
       '- Max 3000 characters per message block. The bridge uses Block Kit for structured content.',
-      '- Use --- on its own line to indicate a visual divider between sections.',
+      '- Use blank lines to separate sections. Do NOT use --- or -- as dividers.',
       '',
       'STYLE:',
       '- Use *bold headers* to separate sections — makes messages scannable in Slack.',

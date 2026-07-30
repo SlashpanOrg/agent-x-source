@@ -8,6 +8,7 @@ import type { ToolRegistry } from '../tools/ToolRegistry.js';
 import { EnhancedToolExecutor } from '../tools/EnhancedToolExecutor.js';
 import type { CrewMissionContext } from './CrewMissionContext.js';
 import type { PartPersistFn } from './AiSdkStreamHandler.js';
+import { evaluateSubAgentVerification, applySubAgentVerificationGuard } from './subagent-verification.js';
 import { randomUUID } from 'node:crypto';
 
 const logger = getLogger();
@@ -113,6 +114,28 @@ export class SmartSubAgent {
           }
           const childExecutor = new EnhancedToolExecutor(toolRegistry, scopePath);
           childExecutor.copyExecutionPolicyFrom(parentExecutor);
+          // copyExecutionPolicyFrom only copies permission policy/hooks — it does NOT
+          // copy the handler function map. A freshly constructed EnhancedToolExecutor
+          // starts with zero registered handlers, so without this every tool call the
+          // sub-agent makes would fail with NO_HANDLER regardless of which tools were
+          // allow-listed above. Copy the actual executable handlers across too.
+          for (const [name, handler] of parentExecutor.getHandlers()) {
+            childExecutor.registerHandler(name, handler);
+          }
+          // Self-test: any allow-listed tool that still has no matching handler would
+          // silently produce NO_HANDLER for every call the sub-agent makes with it.
+          // Drop those tool definitions from the child's registry now (with a loud log)
+          // instead of letting the sub-agent discover it 20 failed tool calls later.
+          const unusable = toolRegistry.list().filter((def) => !childExecutor.hasHandler(def.id));
+          if (unusable.length > 0) {
+            logger.warn(
+              'no-handler-guard',
+              `Sub-agent ${this.sessionId}: dropping ${unusable.length} tool(s) with no registered handler: ${unusable.map((d) => d.id).join(', ')}`,
+            );
+            for (const def of unusable) {
+              toolRegistry.unregister(def.id);
+            }
+          }
           // Override inbound channel context with values captured at spawn time.
           // For background sub-agents the parent executor's inbound source may have
           // been reset by the time the background task actually runs.
@@ -239,7 +262,7 @@ export class SmartSubAgent {
       await subAgent.sendMessage(this.instruction);
 
       const lastMessage = subAgent.getMessageHistory().find((m) => m.role === 'assistant');
-      const output = lastMessage?.content ?? '';
+      const output = this.applyVerificationGuard(lastMessage?.content ?? '');
 
       return {
         success: true,
@@ -298,5 +321,21 @@ ${restrictedNote}
 
 ${this.allowedTools.length > 0 ? `Available tools: ${this.allowedTools.join(', ')}` : 'All tools available.'}
 [/MISSION]`;
+  }
+
+  /**
+   * Guards against relaying a hallucinated success report to the parent agent
+   * (and from there, to the user) — see subagent-verification.ts for the
+   * ground-truth check against this sub-agent's own tool-call log.
+   */
+  private applyVerificationGuard(output: string): string {
+    const verification = evaluateSubAgentVerification(this.toolCallsLog, this.allowedTools);
+    if (!verification.verified) {
+      logger.warn(
+        'SmartSubAgent',
+        `Sub-agent ${this.sessionId} reported completion but ${verification.reason} — flagging as unverified.`,
+      );
+    }
+    return applySubAgentVerificationGuard(output, this.toolCallsLog, this.allowedTools);
   }
 }

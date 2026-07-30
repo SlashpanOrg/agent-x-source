@@ -1,11 +1,13 @@
 import type { MessagePart } from './message-parts.js';
 
-/** Lift render_chart tool metadata into dedicated chart message parts. */
+/** Lift render_chart tool metadata into dedicated chart message parts.
+ *  Charts are placed immediately after their corresponding tool call to
+ *  preserve chronological ordering. */
 export function attachChartPartsFromTools(
   parts: MessagePart[],
   toolCalls?: Array<{ id: string; name: string; metadata?: Record<string, unknown>; result?: string }>,
 ): MessagePart[] {
-  const next = [...parts];
+  let next = [...parts];
   const seen = new Set(next.filter((p) => p.type === 'chart').map((p) => p.id));
 
   const consider = (id: string, name: string, metadata?: Record<string, unknown>, result?: string) => {
@@ -20,7 +22,15 @@ export function attachChartPartsFromTools(
     }
     if (!chartJson) return;
     seen.add(id);
-    next.push({ type: 'chart', id, chartJson });
+    const chartPart: MessagePart = { type: 'chart', id, chartJson };
+    // Insert chart immediately after its corresponding tool call to preserve
+    // chronological ordering. If the tool isn't found in parts, append at end.
+    const toolIdx = next.findIndex((p) => p.type === 'tool' && (p.tool?.id === id || p.id === id));
+    if (toolIdx >= 0) {
+      next = [...next.slice(0, toolIdx + 1), chartPart, ...next.slice(toolIdx + 1)];
+    } else {
+      next.push(chartPart);
+    }
   };
 
   for (const p of parts) {

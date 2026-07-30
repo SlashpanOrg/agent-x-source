@@ -222,10 +222,19 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
   const [currentModel, setCurrentModel] = useState('');
   const [currentProvider, setCurrentProvider] = useState('');
   const [currentProviderId, setCurrentProviderId] = useState('');
-  const [providerList, setProviderList] = useState<Array<{ id: string; label: string; providerId: string }>>([]);
+  const [providerList, setProviderList] = useState<Array<{ id: string; label: string; providerId: string; providerName?: string }>>([]);
   const [modelList, setModelList] = useState<ModelInfo[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [configLoaded, setConfigLoaded] = useState(false);
+
+  // ─── Provider switch modal state ───
+  // When the user switches provider, force them to pick a cleared model before
+  // the switch is committed. Prevents cross-provider setup (provider-A + model-B).
+  const [providerSwitchPending, setProviderSwitchPending] = useState<{
+    profileId: string;
+    providerId: string;
+    providerLabel: string;
+  } | null>(null);
 
   // ─── Token state, context data, refresh logic (extracted to useChatTokens) ───
   const {
@@ -490,6 +499,25 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
   }, []);
 
   /**
+   * Initiate a provider switch — opens the modal to force model selection.
+   * The actual switch APIs are only called after the user confirms a model.
+   */
+  const initiateProviderSwitch = useCallback(async (profileId: string) => {
+    const profile = providerListRef.current.find((p) => p.id === profileId);
+    if (!profile) return;
+    setProviderSwitchPending({
+      profileId: profile.id,
+      providerId: profile.providerId,
+      providerLabel: profile.label || profile.providerName || profile.providerId,
+    });
+  }, []);
+
+  /** Cancel the provider switch — close the modal without changing anything. */
+  const cancelProviderSwitch = useCallback(() => {
+    setProviderSwitchPending(null);
+  }, []);
+
+  /**
    * Re-read active provider/model from the server.
    * Required because Chat stays mounted (hidden) while Settings changes config.
    */
@@ -519,6 +547,30 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     }
   }, [reloadClearedModelList]);
 
+  /**
+   * Confirm the provider switch with a selected model — calls the switch APIs
+   * and updates local state. Only called after the user picks a cleared model.
+   */
+  const confirmProviderSwitch = useCallback(async (modelId: string, contextWindow?: number) => {
+    const pending = providerSwitchPending;
+    if (!pending) return;
+    setProviderSwitchPending(null);
+    try {
+      // Switch the provider profile first
+      await providers.switchProfile(pending.providerId, pending.profileId);
+      // Then switch the model
+      await models.switch(modelId, { contextWindow, providerId: pending.providerId });
+      // Update local state
+      setCurrentProvider(pending.profileId);
+      setCurrentProviderId(pending.providerId);
+      setCurrentModel(modelId);
+      void reloadClearedModelList(pending.profileId, pending.providerId, modelId);
+    } catch {
+      // If the switch fails, sync from server to restore correct state
+      void syncRuntimeSelection();
+    }
+  }, [providerSwitchPending, reloadClearedModelList, syncRuntimeSelection]);
+
   // Load model, provider, crew, session settings
   useEffect(() => {
     void syncRuntimeSelection().finally(() => { setConfigLoaded(true); });
@@ -527,15 +579,15 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     // Load configured provider profiles
     fetch('/api/providers', { credentials: 'include' })
       .then(r => r.json())
-      .then((data: { active?: string; providers?: Array<{ id: string; activeProfile?: string; profiles?: Array<{ id: string; label: string }> }> }) => {
+      .then((data: { active?: string; providers?: Array<{ id: string; name?: string; activeProfile?: string; profiles?: Array<{ id: string; label: string }> }> }) => {
         if (data.providers) {
-          const allProfiles: Array<{ id: string; label: string; providerId: string }> = [];
+          const allProfiles: Array<{ id: string; label: string; providerId: string; providerName?: string }> = [];
           data.providers.forEach(p => {
             if (p.profiles && p.profiles.length > 0) {
-              p.profiles.forEach(prof => allProfiles.push({ id: prof.id, label: prof.label, providerId: p.id }));
+              p.profiles.forEach(prof => allProfiles.push({ id: prof.id, label: prof.label, providerId: p.id, providerName: p.name }));
             } else {
-              // Fallback: single default profile
-              allProfiles.push({ id: p.id + '-default', label: p.id, providerId: p.id });
+              // Fallback: single default profile — use the provider's display name, not the raw id
+              allProfiles.push({ id: p.id + '-default', label: p.name || p.id, providerId: p.id, providerName: p.name });
             }
           });
           setProviderList(allProfiles);
@@ -752,7 +804,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
   const {
     executeSend, runCrewSuggestionGate,
     handleSend, handleResend, handleStopAndSend, handleAddToQueue, handleSteer,
-    handleCrewRosterPickerSubmit, handleCrewRosterPickerSkip, handleQuestionnaireRespond,
+    handleCrewRosterPickerSubmit, handleCrewRosterPickerSkip, handleQuestionnaireRespond, handleQuestionnaireCancel,
     handleFileSelect, handleRemoveAttachment,
   } = useChatSend({
     messages, streaming, attachments, currentProvider, currentModel,
@@ -760,6 +812,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     coreSession,
     setMessages, setAttachments, setWarnings, setCrewList,
     setTurnActivity, setLoadingSteps, setStreaming,
+    setPermissionPrompt, setPendingPermissionCount,
     beginTurnUi, endTurnUi, ensureSession, scrollMessagesToBottom,
     rateLimitSeenRef,
     outgoingTurnRef, activeTurnIdRef, resendInProgressRef,
@@ -770,6 +823,21 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
 
 
   const handleCancel = useCallback(async () => {
+    // Mark all pending questionnaires/crew-roster-pickers as expired so the
+    // UI disables their submit buttons immediately. When a turn is stopped,
+    // any pending interaction prompts are no longer actionable.
+    setMessages((prev) => prev.map((m) => ({
+      ...m,
+      parts: m.parts?.map((p) => {
+        if (p.type === 'questionnaire' && p.questionnaire?.status === 'pending') {
+          return { ...p, questionnaire: { ...p.questionnaire, status: 'expired' } };
+        }
+        if (p.type === 'crew_roster_picker' && p.crewRosterPicker?.status === 'pending') {
+          return { ...p, crewRosterPicker: { ...p.crewRosterPicker, status: 'expired' } };
+        }
+        return p;
+      }),
+    })));
     endTurnUi();
     setPermissionPrompt(null);
     setPendingPermissionCount(0);
@@ -816,6 +884,9 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     currentModel, setCurrentModel, currentProvider, setCurrentProvider,
     currentProviderId, setCurrentProviderId, providerList, setProviderList,
     modelList, setModelList, loadingModels, setLoadingModels, configLoaded, setConfigLoaded,
+
+    // Provider switch modal (forces model selection on provider change)
+    providerSwitchPending, initiateProviderSwitch, confirmProviderSwitch, cancelProviderSwitch,
 
     // Crew state
     crewList, setCrewList,
@@ -864,7 +935,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     handleSend, handleResend, handleCancel, handleStopAndSend, handleAddToQueue, handleSteer,
     handleFileSelect, handleRemoveAttachment, handleShowSessions, handleSelectSession,
     handleNewSession, handleArchiveSession, handleDeleteSessionContent, handleDeleteSession,
-    handleQuestionnaireRespond,
+    handleQuestionnaireRespond, handleQuestionnaireCancel,
     handleCrewRosterPickerSubmit, handleCrewRosterPickerSkip,
     handleTurnFeedback, handleSaveMarkdown, handleViewCrewDossier, handleViewCrewByCallsign,
     openChildSession,

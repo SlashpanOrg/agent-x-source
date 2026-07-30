@@ -25,7 +25,16 @@ export type ProviderId =
   | 'cohere'
   | 'commandcode'
   | 'opencode'
-  | 'opencode-zen';
+  | 'opencode-zen'
+  | 'custom';
+
+/**
+ * Selectable wire protocol for a custom provider profile.
+ * - `openai-compatible` — standard OpenAI `/chat/completions` format (default).
+ * - `anthropic` — Anthropic Messages API (`/v1/messages`).
+ * - `google` — Google Gemini `generateContent` format.
+ */
+export type CustomApiType = 'openai-compatible' | 'anthropic' | 'google';
 
 export type ReasoningEffortLevel = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 

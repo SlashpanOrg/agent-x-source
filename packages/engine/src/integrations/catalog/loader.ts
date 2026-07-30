@@ -81,10 +81,9 @@ export function saveIntegrationHubSettings(next: IntegrationHubSettings, baseDir
   return settings;
 }
 
-export function listAllProviders(options?: { includeCandidates?: boolean }): IntegrationProvider[] {
-  const includeCandidates = options?.includeCandidates ?? true;
+export function listAllProviders(): IntegrationProvider[] {
   const byId = new Map<string, IntegrationProvider>();
-  for (const provider of listCatalogProviders({ includeCandidates })) {
+  for (const provider of listCatalogProviders()) {
     byId.set(provider.id, provider);
   }
   return enrichCatalogProviders([...byId.values()]);

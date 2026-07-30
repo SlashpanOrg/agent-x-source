@@ -88,9 +88,15 @@ const SERVICE_INTENTS: ReadonlyArray<{
     category: 'github',
     providerIds: ['github'],
     reason: 'GitHub remote request — requires GitHub MCP',
+    // NOTE: deliberately does NOT match a bare mention of "github" (e.g. "I was
+    // building a github project", "push this to github") — that's local git/shell
+    // work the agent already has tools for. Only match when the user is asking for
+    // something that actually needs the GitHub *API* (issues, PRs, notifications,
+    // gists, account info) rather than plain git operations on a local repo.
     patterns: [
-      /\b(?:my\s+)?github\b/i,
-      /\bgithub\s+(?:repo|issue|pr|pull\s+request|notification)s?\b/i,
+      /\b(?:check|list|show|read|open|create|close|merge|review|reply\s+to)\s+(?:my\s+)?github\s+(?:issue|pr|pull\s+request|notification|gist|repo)s?\b/i,
+      /\bmy\s+github\s+(?:issues|prs|pull\s+requests|notifications|profile|account|stars?|followers?|gists?|repos?)\b/i,
+      /\bgithub\s+(?:notification|gist)s?\b/i,
     ],
   },
   {
@@ -380,7 +386,12 @@ export function resolveThirdPartyAccess(opts: ResolveThirdPartyAccessOpts): Thir
     ]),
   ];
 
-  if (providerIds.length === 0 && !genericExternal && !serviceIntent) {
+  // A bare catalog-name substring match (mentionedIds) is NOT sufficient on its own
+  // to block local exploration — that would false-positive on any incidental mention
+  // of a service name (e.g. "I was building a github project", "slack" as an English
+  // word). Only proceed when there's an actual service intent (action + service) or
+  // "my/our ... account/workspace" language pairing the mention with account access.
+  if (!serviceIntent && !genericExternal) {
     return {};
   }
 

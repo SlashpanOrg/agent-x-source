@@ -125,7 +125,7 @@ Only include specialists that are actually needed for this task.`;
 
   // Synthesize results
   const parts = subResults.map((r) =>
-    `--- ${r.specialist.toUpperCase()} (${r.elapsed}ms) ---\n${r.output.slice(0, 2000)}`
+    `[${r.specialist.toUpperCase()} (${r.elapsed}ms)]\n${r.output.slice(0, 2000)}`
   );
   const synthesisPrompt = `Synthesize these specialist reports into a single coherent response:\n\n${parts.join('\n\n')}\n\nConsolidated response:`;
 

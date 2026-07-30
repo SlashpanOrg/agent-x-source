@@ -118,6 +118,8 @@ export class ToolExecutor implements ToolPermissionHost {
   private turnAborted = false;
   private permissionPromptHook?: PermissionPromptHook;
   private permissionService: ToolPermissionService;
+  /** Per-session file read cache keyed by resolved absolute path. */
+  private fileReadCachePerSession = new Map<string, Map<string, { content: string; mtimeMs: number; size: number }>>();
   /** Attachments collected from tool handlers during a turn. */
   private collectedAttachments: TurnAttachment[] = [];
 
@@ -266,6 +268,15 @@ export class ToolExecutor implements ToolPermissionHost {
 
   clearCollectedAttachments(): void {
     this.collectedAttachments = [];
+  }
+
+  private getFileReadCache(sessionId: string): Map<string, { content: string; mtimeMs: number; size: number }> {
+    let cache = this.fileReadCachePerSession.get(sessionId);
+    if (!cache) {
+      cache = new Map<string, { content: string; mtimeMs: number; size: number }>();
+      this.fileReadCachePerSession.set(sessionId, cache);
+    }
+    return cache;
   }
 
   getInboundSourceChannel(): string | null {
@@ -518,6 +529,7 @@ export class ToolExecutor implements ToolPermissionHost {
       ...(this.inboundSourceChannel ? { sourceChannel: this.inboundSourceChannel } : {}),
       ...(this.inboundSourceThreadId ? { sourceThreadId: this.inboundSourceThreadId } : {}),
       ...(this.inboundSourceMessageId ? { sourceMessageId: this.inboundSourceMessageId } : {}),
+      fileReadCache: this.getFileReadCache(sessionId),
       onOutput: onToolOutput,
       signal: abortController.signal,
       registerAttachment: async (opts) => {

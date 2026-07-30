@@ -27,6 +27,8 @@ interface AgentXDesktopBridge {
   checkMicrophoneAccess: () => Promise<{ granted: boolean; state: string }>;
   requestMicrophoneAccess: () => Promise<{ granted: boolean }>;
   openMicrophoneSettings: () => Promise<void>;
+  /** Render an HTML string to a vector PDF via Chromium's native print engine. */
+  printToPdf: (html: string) => Promise<{ ok: boolean; data?: Uint8Array; error?: string }>;
 }
 
 declare global {

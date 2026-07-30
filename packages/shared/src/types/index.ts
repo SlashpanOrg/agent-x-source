@@ -32,6 +32,7 @@ export * from './channel-render.js';
 export * from './knowledge.js';
 export * from './neural-cortex.js';
 export * from './knowledge-base-events.js';
+export * from './prompt-category.js';
 export * from './templates.js';
 export * from './attachments.js';
 export type { TurnAttachment, NormalizedAttachment } from './communication.js';

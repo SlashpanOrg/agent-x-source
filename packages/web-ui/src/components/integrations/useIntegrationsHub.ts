@@ -45,7 +45,7 @@ export function useIntegrationsHub() {
     try {
       await integrations.maintain().catch(() => { /* best effort — stale status is still usable */ });
       const [catalog, list, stats] = await Promise.all([
-        integrations.catalog(true),
+        integrations.catalog(),
         integrations.connections(),
         integrations.analytics().catch(() => null),
       ]);

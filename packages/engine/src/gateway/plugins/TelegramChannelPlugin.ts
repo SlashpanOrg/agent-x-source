@@ -294,7 +294,7 @@ export class TelegramChannelPlugin implements ChannelPlugin {
     forAutomation?: boolean;
     integrationPreview?: import('@agentx/shared').IntegrationActionPreview;
   }): string {
-    const riskEmoji = details.riskLevel === 'high' ? '🔴' : details.riskLevel === 'medium' ? '🟡' : '🟢';
+    const riskEmoji = details.riskLevel === 'high' ? '[HIGH]' : details.riskLevel === 'medium' ? '[MED]' : '[LOW]';
     const preview = details.integrationPreview;
     const previewLines = preview
       ? [
@@ -335,7 +335,7 @@ export class TelegramChannelPlugin implements ChannelPlugin {
       }
       const pCfg = cfg.provider.providers[foundProviderId];
       if (!pCfg) return;
-      this.agent.switchProvider(foundProviderId as ProviderId, pCfg.profiles?.[profileId]?.apiKey ?? pCfg.apiKey, pCfg.profiles?.[profileId]?.baseUrl ?? pCfg.baseUrl);
+      this.agent.switchProvider(foundProviderId as ProviderId, pCfg.profiles?.[profileId]?.apiKey ?? pCfg.apiKey, pCfg.profiles?.[profileId]?.baseUrl ?? pCfg.baseUrl, foundProviderId === 'custom' ? { apiType: pCfg.profiles?.[profileId]?.apiType, displayName: pCfg.profiles?.[profileId]?.label } : undefined);
       void this.bridge.sendToChat(chatId, `✅ Switched to ${profileId}\nUse /models to pick a model.`);
     });
 
@@ -908,7 +908,7 @@ export class TelegramChannelPlugin implements ChannelPlugin {
         if (!foundProviderId) return `❌ Profile "${profileId}" not found. Use /profiles to list.`;
         const pCfg = cfg.provider.providers[foundProviderId];
         if (!pCfg) return `❌ Provider "${foundProviderId}" not configured.`;
-        this.agent.switchProvider(foundProviderId as ProviderId, pCfg.profiles?.[profileId]?.apiKey ?? pCfg.apiKey, pCfg.profiles?.[profileId]?.baseUrl ?? pCfg.baseUrl);
+        this.agent.switchProvider(foundProviderId as ProviderId, pCfg.profiles?.[profileId]?.apiKey ?? pCfg.apiKey, pCfg.profiles?.[profileId]?.baseUrl ?? pCfg.baseUrl, foundProviderId === 'custom' ? { apiType: pCfg.profiles?.[profileId]?.apiType, displayName: pCfg.profiles?.[profileId]?.label } : undefined);
         return `✅ Switched to profile: ${profileId} (${foundProviderId})\nUse /models to pick a model.`;
       }
 

@@ -9,13 +9,16 @@ import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
+import { createRequire } from 'node:module';
+import { getLogger } from '@agentx/shared';
+
+const require = createRequire(import.meta.url);
+const {
   PostgresLifecycleManager,
   RedisLifecycleManager,
   DEFAULT_EMBEDDED_PG_PORT,
   resolveDefaultServerDataDir,
-} from '@agentx/runtime';
-import { getLogger } from '@agentx/shared';
+} = require('@agentx/runtime');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

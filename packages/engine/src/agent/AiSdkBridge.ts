@@ -155,6 +155,26 @@ export function createAiSdkModel(config: AgentXConfig, explicitApiKey?: string):
       });
       return compat(modelId);
     }
+    case 'custom': {
+      // Wire protocol is chosen per-profile via ProviderProfile.apiType.
+      const apiType = (providerCfg?.profiles?.[providerCfg.activeProfile ?? '']?.apiType
+        ?? providerCfg?.profiles?.[Object.keys(providerCfg?.profiles ?? {})[0] ?? '']?.apiType
+        ?? 'openai-compatible') as string;
+      if (apiType === 'anthropic') {
+        const anthropic = createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) });
+        return anthropic(modelId);
+      }
+      if (apiType === 'google') {
+        const google = createGoogleGenerativeAI({ apiKey, baseURL: baseURL });
+        return google(modelId);
+      }
+      const compat = createOpenAICompatible({
+        name: 'custom',
+        apiKey,
+        baseURL: baseURL || 'https://api.openai.com/v1',
+      });
+      return compat(modelId);
+    }
     default: {
       const resolvedUrl = baseURL || DEFAULT_BASE_URLS[activeProvider] || 'https://api.openai.com/v1';
       const compat = createOpenAICompatible({
@@ -278,14 +298,30 @@ export function createAiSdkTools(
   runSubAgent: (instruction: string, tools: string[] | undefined, timeout: number, background?: boolean) => Promise<{ success: boolean; output: string; elapsed: number; agentId?: string }>,
   onToolExecuted?: (toolId: string, success: boolean, output: string, elapsed: number, args?: Record<string, unknown>) => void,
   parentSpan?: Span,
+  filteredToolIds?: string[],
+  preToolCallCheck?: (toolId: string, args: Record<string, unknown>) => string | null,
 ): ToolSet {
   const allTools = toolRegistry.list();
   const tools: ToolSet = {};
   const toolCtx = parentSpan ? trace.setSpan(context.active(), parentSpan) : undefined;
   const bindCtx = <F extends (...args: any[]) => any>(fn: F): F => (toolCtx ? context.bind(toolCtx, fn) : fn) as F;
-  let filteredTools = allTools;
+  // An empty array means "no tools allowed" (deliberate restriction); undefined means
+  // "all tools allowed". Treat both correctly.
+  let filteredTools = filteredToolIds !== undefined
+    ? allTools.filter((t) => filteredToolIds.includes(t.id))
+    : allTools;
 
-  if (toolExecutor.shouldDisclose?.(filteredTools.length) ?? shouldDisclose(filteredTools.length)) {
+  // Even when the policy restricts tools, always include ask_clarification so the model
+  // can surface structured questionnaires, and bridge tools so the model can discover
+  // more tools via tool_search when progressive disclosure is active.
+  if (filteredToolIds !== undefined && filteredToolIds.length > 0) {
+    const clarifyTool = allTools.find((t) => t.id === 'ask_clarification');
+    if (clarifyTool && !filteredTools.some((t) => t.id === 'ask_clarification')) {
+      filteredTools.push(clarifyTool);
+    }
+  }
+
+  if (filteredTools.length > 0 && (toolExecutor.shouldDisclose?.(filteredTools.length) ?? shouldDisclose(filteredTools.length))) {
     // Progressive disclosure hides the large builtin catalog behind tool_search, but
     // connected MCP integrations must stay directly callable — otherwise the model is
     // told Maps/Gmail/etc. are "not in the active toolset" and falls back to web search.
@@ -328,11 +364,18 @@ export function createAiSdkTools(
     return o.includes('<!doctype html>') || o.includes('<html') || o.includes('</html>');
   }
 
+  const CONSECUTIVE_FAILURE_THRESHOLD = 5;
+  let consecutiveFailures = 0;
+
   function guardTool(toolId: string, args: Record<string, unknown>): { error: string; message: string } | null {
     const now = Date.now();
     // prune old entries (older than 5 minutes)
     while (recentCalls.length > 0 && now - recentCalls[0]!.timestamp > 300_000) {
       recentCalls.shift();
+    }
+
+    if (consecutiveFailures >= CONSECUTIVE_FAILURE_THRESHOLD) {
+      return { error: 'CIRCUIT_BREAKER', message: `${consecutiveFailures} consecutive tool calls have failed in this turn. Stop invoking more tools, summarize the failures for the user, and ask how they would like to proceed.` };
     }
 
     const key = toolCallKey(toolId, args);
@@ -350,10 +393,15 @@ export function createAiSdkTools(
     return null;
   }
 
-  function recordCall(toolId: string, args: Record<string, unknown>, output: string): void {
+  function recordCall(toolId: string, args: Record<string, unknown>, output: string, success: boolean): void {
     const key = toolCallKey(toolId, args);
     recentCalls.push({ id: toolId, key, argsSummary: JSON.stringify(args).slice(0, 200), outputSummary: output.slice(0, 200), timestamp: Date.now() });
     if (recentCalls.length > MAX_RECENT_CALLS) recentCalls.shift();
+    if (success) {
+      consecutiveFailures = 0;
+    } else {
+      consecutiveFailures += 1;
+    }
   }
 
   function reflectOutput(toolId: string, output: string): string {
@@ -518,10 +566,16 @@ export function createAiSdkTools(
               emit({ type: 'tool_complete', tool: toolDef.id, result: { success: false, output }, elapsed: Date.now() - startTime, args: args as Record<string, unknown>, callId });
               return output;
             }
+            const bridgeCodingGuard = preToolCallCheck?.(targetId, resolved.resolvedArgs) ?? null;
+            if (bridgeCodingGuard) {
+              const output = `[TOOL GUARD: CODING_TURN_GUARD] ${bridgeCodingGuard}`;
+              emit({ type: 'tool_complete', tool: toolDef.id, result: { success: false, output }, elapsed: Date.now() - startTime, args: args as Record<string, unknown>, callId });
+              return output;
+            }
             const result = await toolExecutor.execute(targetId, resolved.resolvedArgs, sessionId, { signal: options?.abortSignal });
             const reflectedOutput = reflectOutput(targetId, result.output);
             result.output = reflectedOutput;
-            recordCall(targetId, resolved.resolvedArgs, reflectedOutput);
+            recordCall(targetId, resolved.resolvedArgs, reflectedOutput, result.success);
             onToolExecuted?.(targetId, result.success, reflectedOutput, Date.now() - startTime, resolved.resolvedArgs);
             emit({ type: 'tool_complete', tool: toolDef.id, result, elapsed: Date.now() - startTime, args: args as Record<string, unknown>, callId });
             return result.success ? reflectedOutput : `[TOOL ERROR: ${result.error || 'Unknown'}] ${result.output}`;
@@ -593,6 +647,28 @@ export function createAiSdkTools(
             return output;
            }
 
+           // CodingTurnGuard pre-execution check (read-before-write, safety gate)
+           const codingGuard = preToolCallCheck?.(toolDef.id, args as Record<string, unknown>) ?? null;
+           if (codingGuard) {
+             activeOutputCalls.delete(callId);
+             const elapsed = Date.now() - startTime;
+             const output = `[TOOL GUARD: CODING_TURN_GUARD] ${codingGuard}`;
+             emit({
+               type: 'tool_complete',
+               tool: toolDef.id,
+               result: { success: false, output },
+               elapsed,
+               args: args as Record<string, unknown>,
+               callId,
+               message: `🚫 ${toolDef.name} blocked by coding turn guard`,
+             });
+             decisionSpan.setAttribute('tool.success', false);
+             decisionSpan.setAttribute('tool.elapsed', elapsed);
+             decisionSpan.setAttribute('tool.guard', 'CODING_TURN_GUARD');
+             decisionSpan.setStatus({ code: SpanStatusCode.ERROR, message: 'coding turn guard blocked' });
+             return output;
+           }
+
            emit({ 
              type: 'tool_executing', 
              tool: toolDef.id, 
@@ -615,7 +691,7 @@ export function createAiSdkTools(
                activeOutputCalls.delete(callId);
                const reflectedOutput = reflectOutput(toolDef.id, result.output);
                result.output = reflectedOutput;
-               recordCall(toolDef.id, args as Record<string, unknown>, reflectedOutput);
+               recordCall(toolDef.id, args as Record<string, unknown>, reflectedOutput, result.success);
                onToolExecuted?.(toolDef.id, result.success, reflectedOutput, elapsed, args as Record<string, unknown>);
                emit({
                  type: 'tool_complete',
@@ -648,6 +724,7 @@ export function createAiSdkTools(
                callId,
                message: `❌ ${toolDef.name} errored: ${errorMsg}`
              });
+             recordCall(toolDef.id, args as Record<string, unknown>, errorMsg, false);
              return `[TOOL ERROR] ${errorMsg}`;
            }
          });

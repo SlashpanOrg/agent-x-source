@@ -26,7 +26,7 @@ router.post('/integrations/maintain', async (_req: Request, res: Response) => {
 router.get('/integrations/catalog', (_req: Request, res: Response) => {
   const eng = getEngine();
   res.json({
-    providers: eng.integrationHub.listCatalog({ includeCandidates: true }),
+    providers: eng.integrationHub.listCatalog(),
     settings: eng.integrationHub.getSettings(),
     stats: eng.integrationHub.getCatalogStats(),
   });

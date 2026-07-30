@@ -392,6 +392,8 @@ function TaskHeading({ title, done, ongoing }: { title: string; done: boolean; o
       sx={{
         flex: 1,
         minWidth: 0,
+        display: 'flex',
+        alignItems: 'center',
         overflow: 'hidden',
         whiteSpace: 'nowrap',
         '@keyframes agentx-task-marquee': {
@@ -403,13 +405,16 @@ function TaskHeading({ title, done, ongoing }: { title: string; done: boolean; o
       <Typography
         component="span"
         sx={{
-          display: 'inline-block',
+          display: 'inline-flex',
+          alignItems: 'center',
           fontSize: '0.55rem',
-          lineHeight: 1.3,
+          lineHeight: '12px',
+          height: '12px',
           color: done ? colors.text.dim : colors.text.secondary,
           fontWeight: ongoing ? 600 : 400,
           textDecoration: done ? 'line-through' : 'none',
           whiteSpace: 'nowrap',
+          verticalAlign: 'middle',
           ...(hover
             ? {
                 animation: 'agentx-task-marquee 7s linear infinite',

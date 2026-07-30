@@ -42,7 +42,7 @@ function makeMockStore(): ObservabilityStore {
       return arr.slice(0, filters.limit ?? 50);
     }),
     getTrace: vi.fn(async (id) => traces.get(id)),
-    insertTrace: vi.fn(async (row) => { traces.set(row.trace_id, row); }),
+    insertTrace: vi.fn(async (row) => { traces.set(row.trace_id, row); return true; }),
     getLogs: vi.fn(async () => ({ logs, nextCursor: undefined })),
     getMetricSeries: vi.fn(async (name) => ({ name, labels: {}, points: [] })),
     listMetricNames: vi.fn(async () => [...metrics.keys()]),

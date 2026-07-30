@@ -180,7 +180,7 @@ function resolveCredentials(body: {
   profileId?: string;
   apiKey?: string;
   baseUrl?: string;
-}): { apiKey?: string; baseUrl?: string } {
+}): { apiKey?: string; baseUrl?: string; apiType?: string; displayName?: string } {
   if (body.apiKey || body.baseUrl) {
     return { apiKey: body.apiKey, baseUrl: body.baseUrl };
   }
@@ -190,12 +190,12 @@ function resolveCredentials(body: {
     const creds = cfg.provider.providers[body.providerId];
     if (!creds) return {};
     if (body.profileId && creds.profiles?.[body.profileId]) {
-      const prof = creds.profiles[body.profileId] as { apiKey?: string; baseUrl?: string };
-      return { apiKey: prof.apiKey, baseUrl: prof.baseUrl };
+      const prof = creds.profiles[body.profileId] as { apiKey?: string; baseUrl?: string; apiType?: string; label?: string };
+      return { apiKey: prof.apiKey, baseUrl: prof.baseUrl, apiType: prof.apiType, displayName: prof.label };
     }
     if (creds.activeProfile && creds.profiles?.[creds.activeProfile]) {
-      const active = creds.profiles[creds.activeProfile] as { apiKey?: string; baseUrl?: string };
-      return { apiKey: active.apiKey, baseUrl: active.baseUrl };
+      const active = creds.profiles[creds.activeProfile] as { apiKey?: string; baseUrl?: string; apiType?: string; label?: string };
+      return { apiKey: active.apiKey, baseUrl: active.baseUrl, apiType: active.apiType, displayName: active.label };
     }
     return { apiKey: creds.apiKey, baseUrl: creds.baseUrl };
   } catch {
@@ -281,7 +281,7 @@ router.post('/model-benchmark/start', async (req, res) => {
     }
 
     const creds = resolveCredentials(body);
-    const provider = ProviderFactory.create(body.providerId as ProviderId, creds.apiKey, creds.baseUrl);
+    const provider = ProviderFactory.create(body.providerId as ProviderId, creds.apiKey, creds.baseUrl, body.providerId === 'custom' ? { apiType: creds.apiType, displayName: creds.displayName } : undefined);
 
     const runId = crypto.randomUUID();
     const run: ActiveRun = { runId, events: [], listeners: new Set(), done: false };

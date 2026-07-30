@@ -101,4 +101,6 @@ export interface ToolExecutionContext {
     buffer?: Uint8Array | ArrayBuffer | Buffer;
     source?: string;
   }) => Promise<TurnAttachment>;
+  /** Session-level file read cache used to avoid redundant re-reads of unchanged files. */
+  fileReadCache?: Map<string, { content: string; mtimeMs: number; size: number }>;
 }

@@ -50,7 +50,7 @@ function inferPreflight(provider: IntegrationProvider, template: SetupWizardTemp
   if (template === 'folder_sandbox') {
     checks.push('folder_readable', 'folder_writable');
   }
-  if (provider.id === 'obsidian' || provider.id === 'home-assistant') {
+  if (provider.id === 'home-assistant') {
     checks.push('local_port_reachable');
   }
   return [...new Set(checks)];
@@ -66,7 +66,7 @@ export function inferCredentialPreflight(provider: IntegrationProvider): SetupPr
 
 function inferOsPermissions(provider: IntegrationProvider, template: SetupWizardTemplate): ProviderSetupWizardSpec['osPermissions'] {
   if (template === 'folder_sandbox' || provider.id === 'filesystem') return ['folder_access'];
-  if (provider.id === 'home-assistant' || provider.id === 'mqtt') return ['local_network'];
+  if (provider.id === 'home-assistant') return ['local_network'];
   return undefined;
 }
 
@@ -112,18 +112,6 @@ const PROVIDER_SETUP_COPY: Record<string, ProviderSetupCopy> = {
       { title: 'Sign in with Linear', body: 'Authorise Agent-X in the browser window. Choose the workspace you want to connect.' },
     ],
   },
-  slack: {
-    highlights: [
-      'Read channels, search messages, and post updates',
-      'Summarise long threads and catch up in seconds',
-      'Send reminders and notifications from your agent',
-    ],
-    connectGuide: [
-      { title: 'Create a Slack app', body: 'Go to the Slack API dashboard, create an app, and add a Bot Token (starts with xoxb-).', link: 'https://api.slack.com/apps' },
-      { title: 'Add scopes', body: 'Under OAuth & Permissions add channels:read, chat:write, and search:read, then install to your workspace.' },
-      { title: 'Paste the token', body: 'Copy the Bot User OAuth Token and paste it below.' },
-    ],
-  },
   github: {
     highlights: [
       'Search repos, read issues and PRs, and manage code',
@@ -157,45 +145,6 @@ const PROVIDER_SETUP_COPY: Record<string, ProviderSetupCopy> = {
       { title: 'Choose a folder', body: 'Pick the single folder Agent-X may read and write. You can change it later by reconnecting.' },
     ],
   },
-  trello: {
-    highlights: [
-      'Create cards, move them across lists, and track boards',
-      'Turn chat requests into Trello tasks instantly',
-    ],
-    connectGuide: [
-      { title: 'Get your API key', body: 'Open the Trello power-up admin page and copy your API key.', link: 'https://trello.com/power-ups/admin' },
-      { title: 'Generate a token', body: 'Click the token link next to your key to authorise access, then copy the token.' },
-    ],
-  },
-  monday: {
-    highlights: [
-      'Manage boards, items, and updates in monday.com',
-      'Automate status changes and follow-ups from chat',
-    ],
-    connectGuide: [
-      { title: 'Get an API token', body: 'In monday.com open your avatar → Developers → My access tokens and copy a token.', link: 'https://monday.com' },
-    ],
-  },
-  clickup: {
-    highlights: ['Create and track ClickUp tasks from chat', 'Manage lists, spaces, and due dates hands-free'],
-    connectGuide: [
-      { title: 'Get an API token', body: 'ClickUp → Settings → Apps → Generate to create a personal API token.', link: 'https://app.clickup.com' },
-    ],
-  },
-  discord: {
-    highlights: ['Read and post messages in your Discord servers', 'Summarise channels and send announcements'],
-    connectGuide: [
-      { title: 'Create a bot', body: 'In the Discord Developer Portal create an application and add a Bot, then copy its token.', link: 'https://discord.com/developers/applications' },
-      { title: 'Invite the bot', body: 'Use the OAuth2 URL generator to invite the bot to your server with message permissions.' },
-    ],
-  },
-  telegram: {
-    highlights: ['Send and receive Telegram messages', 'Push notifications and updates to a chat'],
-    connectGuide: [
-      { title: 'Talk to BotFather', body: 'Message @BotFather on Telegram, run /newbot, and follow the prompts to get a bot token.', link: 'https://t.me/BotFather' },
-      { title: 'Paste the token', body: 'Copy the token BotFather gives you and paste it below.' },
-    ],
-  },
   'google-maps': {
     highlights: ['Places, directions, and travel search', 'Plan trips and find nearby options'],
     connectGuide: [
@@ -224,12 +173,6 @@ const PROVIDER_SETUP_COPY: Record<string, ProviderSetupCopy> = {
       { title: 'Create app credentials', body: 'In the PayPal Developer dashboard create an app and copy the client ID/secret.', link: 'https://developer.paypal.com/dashboard/' },
     ],
   },
-  'yahoo-finance': {
-    highlights: ['Live quotes, charts, and market data', 'No account required — easiest finance setup'],
-    connectGuide: [
-      { title: 'Nothing to configure', body: 'Runs locally via npx. Click Continue and test the connection.' },
-    ],
-  },
   'home-assistant': {
     highlights: ['Control lights, switches, and scenes', 'Monitor sensors across your smart home'],
     connectGuide: [
@@ -255,18 +198,6 @@ const PROVIDER_SETUP_COPY: Record<string, ProviderSetupCopy> = {
       { title: 'Database file', body: 'Provide the path to your .db/.sqlite file. Choose a file you trust.' },
     ],
   },
-  'booking-com': {
-    highlights: ['Search stays and check availability', 'Browser sign-in handled inside setup'],
-    connectGuide: [
-      { title: 'Browser sign-in', body: 'After the connection test, a login window opens so you can sign in to Booking.com.' },
-    ],
-  },
-  '1stay': {
-    highlights: ['Find and book stays via 1Stay', 'Sign in securely — no tokens to copy'],
-    connectGuide: [
-      { title: 'Sign in', body: 'Authorise Agent-X in the browser window to connect your 1Stay account.' },
-    ],
-  },
   puppeteer: {
     highlights: ['Automate a real browser for scraping and testing', 'Downloads a Chromium build on first run'],
     connectGuide: [
@@ -286,26 +217,6 @@ const PROVIDER_SETUP_COPY: Record<string, ProviderSetupCopy> = {
       { title: 'Paste the token', body: 'Copy the token (starts with sntrys_) and paste it below.' },
     ],
   },
-  supabase: {
-    highlights: ['Query Supabase tables and run read-only SQL', 'Explore project data without opening the dashboard'],
-    connectGuide: [
-      { title: 'Get an access token', body: 'In Supabase → Account → Access Tokens, generate a personal token.', link: 'https://supabase.com/dashboard/account/tokens' },
-      { title: 'Read-only recommended', body: 'Use a read-only token or enable read-only mode when connecting.' },
-    ],
-  },
-  atlassian: {
-    highlights: ['Search Jira issues and Confluence pages', 'Sign in with your Atlassian account'],
-    connectGuide: [
-      { title: 'Sign in with Atlassian', body: 'Authorise Agent-X in the browser window to access your Jira and Confluence workspace.' },
-    ],
-  },
-  obsidian: {
-    highlights: ['Search and read notes in your Obsidian vault', 'Requires the Obsidian MCP plugin running locally'],
-    connectGuide: [
-      { title: 'Install the plugin', body: 'Install the Obsidian MCP community plugin and start its local server.', link: 'https://obsidian.md' },
-      { title: 'Local URL', body: 'Enter the plugin MCP endpoint URL (usually http://127.0.0.1:PORT/mcp).' },
-    ],
-  },
   gmail: {
     highlights: [
       'Search and read messages in your inbox',
@@ -319,102 +230,11 @@ const PROVIDER_SETUP_COPY: Record<string, ProviderSetupCopy> = {
       { title: 'Sign in with Google', body: 'After saving credentials, click Sign in — a browser window opens for one-time Gmail authorization.' },
     ],
   },
-  twilio: {
-    highlights: ['Send SMS and check Twilio account data', 'Automate notifications from your agent'],
-    connectGuide: [
-      { title: 'Get credentials', body: 'From Twilio Console copy your Account SID and Auth Token.', link: 'https://console.twilio.com' },
-    ],
-  },
-  zoom: {
-    highlights: ['List meetings and calendar events', 'Sign in with your Zoom account'],
-    connectGuide: [
-      { title: 'Sign in with Zoom', body: 'Authorise Agent-X in the browser window to access your Zoom workspace.' },
-    ],
-  },
-  zendesk: {
-    highlights: ['Search tickets and help-center content', 'Triage support requests from chat'],
-    connectGuide: [
-      { title: 'Create an API token', body: 'In Zendesk Admin → Apps and integrations → APIs → Zendesk API, enable token access and create a token.', link: 'https://www.zendesk.com' },
-    ],
-  },
-  whatsapp: {
-    highlights: ['Send WhatsApp Business messages', 'Requires Meta Business API setup'],
-    connectGuide: [
-      { title: 'Business API token', body: 'From Meta Business Suite create a WhatsApp Business app and copy the access token.', link: 'https://business.facebook.com' },
-    ],
-  },
-  travelcode: {
-    highlights: ['Search flights and hotels via TravelCode', 'OAuth auth required before connecting'],
-    connectGuide: [
-      { title: 'Authenticate locally', body: 'Run npx mcp-travelcode-auth auth in a terminal first, then connect here.', link: 'https://travel-code.com' },
-    ],
-  },
-  quickbooks: {
-    highlights: ['Invoices, expenses, and accounting data', 'Sign in with your Intuit account'],
-    connectGuide: [
-      { title: 'Sign in with QuickBooks', body: 'Authorise Agent-X in the browser window to access your QuickBooks company.' },
-    ],
-  },
-  xero: {
-    highlights: ['Accounting, invoices, and contacts', 'Sign in with your Xero organisation'],
-    connectGuide: [
-      { title: 'Sign in with Xero', body: 'Authorise Agent-X in the browser window to access your Xero data.' },
-    ],
-  },
-  coinbase: {
-    highlights: ['Coinbase Developer Platform wallets and trading', 'Use CDP API keys only'],
-    connectGuide: [
-      { title: 'Create CDP keys', body: 'In Coinbase Developer Platform create an API key and download the private key.', link: 'https://portal.cdp.coinbase.com' },
-    ],
-  },
-  'alpha-vantage': {
-    highlights: ['Market data, forex, and crypto quotes', 'Free tier available from Alpha Vantage'],
-    connectGuide: [
-      { title: 'Get an API key', body: 'Sign up at Alpha Vantage and copy your API key from the dashboard.', link: 'https://www.alphavantage.co/support/#api-key' },
-    ],
-  },
   shopify: {
     highlights: ['Products, orders, and store analytics', 'Works with your Shopify Admin API token'],
     connectGuide: [
       { title: 'Create an app token', body: 'In Shopify Admin → Settings → Apps → Develop apps, create an app and generate an Admin API access token.', link: 'https://admin.shopify.com' },
       { title: 'Store domain', body: 'Enter your store domain (e.g. your-store.myshopify.com) below.' },
-    ],
-  },
-  amazon: {
-    highlights: ['Seller catalog and orders via SP-API', 'Complex setup — use restricted credentials'],
-    connectGuide: [
-      { title: 'SP-API credentials', body: 'In Seller Central create SP-API credentials and copy the refresh token.', link: 'https://sellercentral.amazon.com' },
-    ],
-  },
-  ebay: {
-    highlights: ['Listings, orders, and inventory', 'Sign in with your eBay developer account'],
-    connectGuide: [
-      { title: 'Sign in with eBay', body: 'Authorise Agent-X in the browser window to access your eBay seller account.' },
-    ],
-  },
-  woocommerce: {
-    highlights: ['Products and orders from your WooCommerce store', 'Uses REST API keys from your site'],
-    connectGuide: [
-      { title: 'Generate REST keys', body: 'In WordPress → WooCommerce → Settings → Advanced → REST API, create read keys.', link: 'https://woocommerce.com' },
-      { title: 'Site URL', body: 'Enter your store URL if required by the MCP package.' },
-    ],
-  },
-  walmart: {
-    highlights: ['Walmart Marketplace items and orders', 'Requires Marketplace API credentials'],
-    connectGuide: [
-      { title: 'Marketplace credentials', body: 'From Walmart Seller Center copy your Client ID and secret.', link: 'https://marketplace.walmart.com' },
-    ],
-  },
-  target: {
-    highlights: ['Target product search and cart helpers', 'No API key required — runs locally'],
-    connectGuide: [
-      { title: 'Nothing to configure', body: 'Runs locally via npx. Browser sign-in may be required after connecting.' },
-    ],
-  },
-  mqtt: {
-    highlights: ['Publish and subscribe to MQTT topics', 'Connect to your IoT broker'],
-    connectGuide: [
-      { title: 'Broker URL', body: 'Enter your MQTT broker URL, e.g. mqtt://localhost:1883 or mqtts://broker.example.com:8883.' },
     ],
   },
 };

@@ -27,12 +27,12 @@ import BadgeIcon from '@mui/icons-material/Badge';
 import StorageIcon from '@mui/icons-material/Storage';
 import CloudIcon from '@mui/icons-material/Cloud';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import { providers as provApi, models as modelsApi, config, settings, voice, personaApi, type DbConnectionTestResult, type DbExtensionCheck } from '../api';
+import { providers as provApi, models as modelsApi, config, settings, voice, personaApi, modelBenchmark, type DbConnectionTestResult, type DbExtensionCheck } from '../api';
 import { useApp } from '../store/AppContext';
 import { useGlobalError } from '../components/ErrorBand';
 import { LocalModelStep } from '../components/LocalModelStep';
 import type { ActiveDownload } from '../components/DownloadIndicator';
-import type { ProviderInfo, ModelInfo, AgentXConfig, BenchmarkRunResult } from '../api';
+import type { ProviderInfo, ModelInfo, AgentXConfig, BenchmarkRunResult, BenchmarkGrade } from '../api';
 import { useLocalModelSupported, useSystemCapabilities } from '../hooks/useSystemCapabilities';
 import { ModelBenchmarkRunner, BenchmarkGradeAck, canProceedWithBenchmarkGrade } from '../components/settings/ModelBenchmarkRunner';
 import { WizardVoiceStep } from '../components/setup/WizardVoiceStep';
@@ -199,9 +199,13 @@ export function SetupWizard() {
   const [baseUrl, setBaseUrl] = useState('');
   const [localHost, setLocalHost] = useState('localhost');
   const [localPort, setLocalPort] = useState('11434');
+  const [customApiType, setCustomApiType] = useState<'openai-compatible' | 'anthropic' | 'google'>('openai-compatible');
+  const [customModelId, setCustomModelId] = useState('');
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState('');
+  /** Models that already have a passing benchmark on disk for the current provider. */
+  const [clearedModels, setClearedModels] = useState<Map<string, { grade: BenchmarkGrade; percent: number }>>(new Map());
   const [callsign, setCallsign] = useState('');
   const [profileName, setProfileName] = useState('');
   const [personaName, setPersonaName] = useState(PERSONA_PRESETS[0]!.name);
@@ -593,6 +597,7 @@ export function SetupWizard() {
   const selectedProviderInfo = availableProviders.find(p => p.id === selectedProvider);
   const isLocal = selectedProviderInfo?.type === 'local';
   const isAzure = selectedProvider === 'azure';
+  const isCustom = selectedProvider === 'custom';
 
   const selectProvider = (providerId: string) => {
     if (providerId === selectedProvider) return;
@@ -606,6 +611,8 @@ export function SetupWizard() {
     setSelectedReasoningEffort('');
     setAvailableModels([]);
     setBenchmarkResult(null);
+    setCustomApiType('openai-compatible');
+    setCustomModelId('');
     const info = availableProviders.find((p) => p.id === providerId);
     if (info?.type === 'local') {
       const ep = parseLocalEndpoint(info.defaultBaseUrl, providerId);
@@ -617,6 +624,24 @@ export function SetupWizard() {
       setLocalPort(defaultLocalPort(providerId));
     }
   };
+
+  // Fetch cleared (benchmarked) models when the provider changes so we can
+  // mark them in the model picker and skip the benchmark step if already passed.
+  useEffect(() => {
+    if (!selectedProvider) { setClearedModels(new Map()); return; }
+    let cancelled = false;
+    modelBenchmark.cleared(selectedProvider)
+      .then((data) => {
+        if (cancelled) return;
+        const map = new Map<string, { grade: BenchmarkGrade; percent: number }>();
+        for (const m of data.models) {
+          map.set(m.modelId, { grade: m.grade, percent: m.percent });
+        }
+        setClearedModels(map);
+      })
+      .catch(() => { if (!cancelled) setClearedModels(new Map()); });
+    return () => { cancelled = true; };
+  }, [selectedProvider]);
 
   const handleProviderNext = () => {
     if (!selectedProvider) { showError('Select a provider'); return; }
@@ -636,6 +661,7 @@ export function SetupWizard() {
     if (!profileName.trim()) { showError('Enter a profile name'); return; }
     if (!isLocal && !apiKey.trim() && !apiKeyConfigured) { showError('Enter your API key'); return; }
     if (isAzure && !baseUrl.trim()) { showError('Azure requires a resource endpoint URL'); return; }
+    if (isCustom && !baseUrl.trim()) { showError('Custom provider requires a base URL'); return; }
     if (isLocal && !localPort.trim()) { showError('Enter the local server port'); return; }
     setLoading(true);
     try {
@@ -646,7 +672,7 @@ export function SetupWizard() {
 
       // Revisit with key already on file — re-validate via stored creds, skip configure
       // so we never wipe the server-side key with an empty body.
-      if (!isLocal && apiKeyConfigured && !apiKey.trim()) {
+      if (!isLocal && !isCustom && apiKeyConfigured && !apiKey.trim()) {
         const r = await provApi.validate(selectedProvider, undefined, resolvedBaseUrl);
         if (!r.valid) { showError(r.error ?? 'Invalid credentials'); setLoading(false); return; }
         if (availableModels.length === 0) {
@@ -658,12 +684,62 @@ export function SetupWizard() {
       }
 
       const keyForRequest = isLocal ? 'no-key-needed' : apiKey.trim();
-      const r = await provApi.validate(selectedProvider, keyForRequest, resolvedBaseUrl);
+      const r = await provApi.validate(
+        selectedProvider,
+        keyForRequest,
+        resolvedBaseUrl,
+        isCustom ? customApiType : undefined,
+        isCustom ? profileName.trim() : undefined,
+      );
       if (!r.valid) { showError(r.error ?? 'Invalid credentials'); setLoading(false); return; }
-      await provApi.configure(selectedProvider, keyForRequest, resolvedBaseUrl, profileName.trim());
+      await provApi.configure(
+        selectedProvider,
+        keyForRequest,
+        resolvedBaseUrl,
+        profileName.trim(),
+        isCustom ? customApiType : undefined,
+        isCustom ? customModelId.trim() : undefined,
+      );
       if (!isLocal) setApiKeyConfigured(true);
-      const ml = await provApi.models(selectedProvider);
-      setAvailableModels(ml); next();
+
+      // For custom providers, try listing models from the endpoint first.
+      // Only fall back to the user-supplied model id if /models is unsupported.
+      if (isCustom) {
+        try {
+          const ml = await provApi.models(selectedProvider);
+          if (ml.length > 0) {
+            setAvailableModels(ml);
+          } else if (customModelId.trim()) {
+            // Endpoint returned an empty list — use the manually supplied model id.
+            setAvailableModels([{
+              id: customModelId.trim(),
+              name: customModelId.trim(),
+              providerId: 'custom',
+              contextWindow: 0,
+              capabilities: ['text', 'streaming', 'function_calling'],
+            }]);
+          } else {
+            setAvailableModels([]);
+          }
+        } catch {
+          // Endpoint doesn't support /models — use the manually supplied model id if any.
+          if (customModelId.trim()) {
+            setAvailableModels([{
+              id: customModelId.trim(),
+              name: customModelId.trim(),
+              providerId: 'custom',
+              contextWindow: 0,
+              capabilities: ['text', 'streaming', 'function_calling'],
+            }]);
+          } else {
+            setAvailableModels([]);
+          }
+        }
+      } else {
+        const ml = await provApi.models(selectedProvider);
+        setAvailableModels(ml);
+      }
+      next();
     } catch (err) { showError(err instanceof Error ? err.message : 'Validation failed'); }
     finally { setLoading(false); }
   };
@@ -677,6 +753,24 @@ export function SetupWizard() {
         reasoningEffort: selectedReasoningEffort || undefined,
       });
     } catch {}
+
+    // If this model already has a passing benchmark on disk, load the cached
+    // result and skip the benchmark step (step 5) entirely.
+    const cleared = clearedModels.get(selectedModel);
+    if (cleared && canProceedWithBenchmarkGrade(cleared.grade)) {
+      try {
+        const latest = await modelBenchmark.latest(selectedProvider, selectedModel);
+        if (latest.result) {
+          setBenchmarkResult(latest.result);
+          // Skip step 5 (benchmark) — advance two steps instead of one.
+          setStep((s) => moveStep(moveStep(s, 1), 1));
+          return;
+        }
+      } catch {
+        // Fall through to normal benchmark flow if cache read fails.
+      }
+    }
+
     next();
   };
 
@@ -1141,14 +1235,34 @@ export function SetupWizard() {
                   <WizardStepHeader codename="MODULE · PROVIDER" title="Choose AI Provider" />
                   <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', color: wizardTheme.textDim, mb: 2, fontFamily: WIZARD_MONO, letterSpacing: '1px' }}>CLOUD</Typography>
                   <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 1.5, mb: 2 }}>
-                    {availableProviders.filter(Boolean).filter(p => p.type === 'cloud').map(p => (
+                    {availableProviders.filter(Boolean).filter(p => p.type === 'cloud' && p.id !== 'custom').map(p => (
                       <Box key={p.id} onClick={() => selectProvider(p.id)} sx={wizardTileSx(selectedProvider === p.id)}>
                         <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8rem', color: wizardTheme.text }}>{p.name}</Typography>
                       </Box>
                     ))}
                   </Box>
+                  {availableProviders.some(p => p.id === 'custom') && (
+                    <Box
+                      onClick={() => selectProvider('custom')}
+                      sx={{
+                        ...wizardTileSx(selectedProvider === 'custom'),
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 0.5,
+                        py: 1.5,
+                        px: 2,
+                        width: '100%',
+                        mb: 2,
+                      }}
+                    >
+                      <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8rem', color: wizardTheme.text }}>Custom Provider</Typography>
+                      <Typography variant="caption" sx={{ display: 'block', fontSize: '0.55rem', fontFamily: WIZARD_MONO, color: wizardTheme.accentSignal, letterSpacing: '0.5px' }}>BRING YOUR OWN · OPENAI-COMPATIBLE / ANTHROPIC / GEMINI</Typography>
+                    </Box>
+                  )}
                   <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', color: wizardTheme.textDim, mb: 1.5, fontFamily: WIZARD_MONO, letterSpacing: '1px' }}>LOCAL</Typography>
-                  <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 1.5 }}>
+                  <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 1.5, mb: 2 }}>
                     {availableProviders.filter(Boolean).filter(p => p.type === 'local').map(p => (
                       <Box key={p.id} onClick={() => selectProvider(p.id)} sx={wizardTileSx(selectedProvider === p.id)}>
                         <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8rem', color: wizardTheme.text }}>{p.name}</Typography>
@@ -1163,8 +1277,8 @@ export function SetupWizard() {
                 <Box sx={{ maxWidth: 520, mx: 'auto' }}>
                   <WizardStepHeader
                     codename="MODULE · PROFILE"
-                    title={isLocal ? 'Name Your Local Profile' : isAzure ? 'Azure Profile' : 'Configure Profile'}
-                    subtitle={isLocal ? `Connecting to ${selectedProviderInfo?.name ?? 'local provider'}. No API key needed.` : isAzure ? 'Enter your Azure endpoint and API key' : `Set up your ${selectedProviderInfo?.name ?? ''} connection`}
+                    title={isLocal ? 'Name Your Local Profile' : isAzure ? 'Azure Profile' : isCustom ? 'Custom Provider' : 'Configure Profile'}
+                    subtitle={isLocal ? `Connecting to ${selectedProviderInfo?.name ?? 'local provider'}. No API key needed.` : isAzure ? 'Enter your Azure endpoint and API key' : isCustom ? 'Bring your own OpenAI-compatible, Anthropic, or Gemini endpoint' : `Set up your ${selectedProviderInfo?.name ?? ''} connection`}
                   />
 
                   <TextField label="Profile Name" value={profileName} onChange={e => setProfileName(e.target.value)} fullWidth
@@ -1172,13 +1286,42 @@ export function SetupWizard() {
                     sx={{ mb: !isLocal ? 2 : 1.5 }}
                     slotProps={wizardTextFieldSlotProps} />
 
-                  {isAzure && (
+                  {isCustom && (
+                    <FormControl fullWidth sx={{ mb: 2 }}>
+                      <InputLabel sx={{ fontSize: '0.75rem', fontFamily: WIZARD_MONO }}>API Type</InputLabel>
+                      <Select
+                        value={customApiType}
+                        label="API Type"
+                        onChange={(e) => setCustomApiType(e.target.value as 'openai-compatible' | 'anthropic' | 'google')}
+                        sx={{ fontSize: '0.8rem', fontFamily: WIZARD_MONO }}
+                      >
+                        <MenuItem value="openai-compatible" sx={{ fontSize: '0.8rem', fontFamily: WIZARD_MONO }}>OpenAI-Compatible</MenuItem>
+                        <MenuItem value="anthropic" sx={{ fontSize: '0.8rem', fontFamily: WIZARD_MONO }}>Anthropic Messages</MenuItem>
+                        <MenuItem value="google" sx={{ fontSize: '0.8rem', fontFamily: WIZARD_MONO }}>Google Gemini</MenuItem>
+                      </Select>
+                    </FormControl>
+                  )}
+
+                  {(isAzure || isCustom) && (
                     <TextField
-                      label="Azure Endpoint"
+                      label={isCustom ? 'Base URL' : 'Azure Endpoint'}
                       value={baseUrl}
                       onChange={(e) => setBaseUrl(e.target.value)}
                       fullWidth
-                      placeholder="https://YOUR_RESOURCE.openai.azure.com"
+                      placeholder={isCustom ? 'https://api.your-provider.com/v1' : 'https://YOUR_RESOURCE.openai.azure.com'}
+                      sx={{ mb: 2 }}
+                      slotProps={wizardTextFieldSlotProps}
+                    />
+                  )}
+
+                  {isCustom && (
+                    <TextField
+                      label="Model ID (optional)"
+                      value={customModelId}
+                      onChange={(e) => setCustomModelId(e.target.value)}
+                      fullWidth
+                      placeholder="e.g. gpt-4o, claude-sonnet-4, gemini-2.5-pro"
+                      helperText="Leave blank if your endpoint lists models via /models. Enter a model ID only if the endpoint doesn't support model listing."
                       sx={{ mb: 2 }}
                       slotProps={wizardTextFieldSlotProps}
                     />
@@ -1256,7 +1399,9 @@ export function SetupWizard() {
                     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, py: 4 }}><CircularProgress size={16} sx={{ color: wizardTheme.text }} /><Typography variant="body2" sx={{ color: wizardTheme.textDim }}>Loading models...</Typography></Box>
                   ) : (
                     <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 1.5 }}>
-                      {availableModels.filter(Boolean).map(m => (
+                      {availableModels.filter(Boolean).map(m => {
+                        const cleared = clearedModels.get(m.id);
+                        return (
                         <Box key={m.id} onClick={() => handleWizardModelSelect(m)} sx={wizardTileSx(selectedModel === m.id)}>
                           <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8rem', color: wizardTheme.text, mb: 0.5, wordBreak: 'break-word' }}>{m.name}</Typography>
                           <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
@@ -1268,8 +1413,22 @@ export function SetupWizard() {
                               </Typography>
                             )}
                           </Box>
+                          {cleared && (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
+                              <Typography component="span" sx={{ fontSize: '0.5rem', fontFamily: WIZARD_MONO, fontWeight: 700, color: cleared.grade === 'ELITE' || cleared.grade === 'CLEARED' ? wizardTheme.accentSignal : wizardTheme.accentWarn, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                {cleared.grade}
+                              </Typography>
+                              <Typography component="span" sx={{ fontSize: '0.5rem', fontFamily: WIZARD_MONO, color: wizardTheme.textDim }}>
+                                · {cleared.percent}%
+                              </Typography>
+                              <Typography component="span" sx={{ fontSize: '0.45rem', fontFamily: WIZARD_MONO, color: wizardTheme.textDim, ml: 0.3 }}>
+                                ✓ cleared
+                              </Typography>
+                            </Box>
+                          )}
                         </Box>
-                      ))}
+                        );
+                      })}
                     </Box>
                   )}
                   {selectedModel && !modelsLoading && (
@@ -1712,7 +1871,7 @@ export function SetupWizard() {
               Next
             </Button>
           )}
-          {step === 4 && <Button variant="contained" onClick={handleModelNext} disabled={!selectedModel} sx={wizardPrimaryBtnSx}>Next</Button>}
+          {step === 4 && <Button variant="contained" onClick={handleModelNext} disabled={!selectedModel} sx={wizardPrimaryBtnSx}>{selectedModel && clearedModels.get(selectedModel) && canProceedWithBenchmarkGrade(clearedModels.get(selectedModel)!.grade) ? 'Next (skip scan)' : 'Next'}</Button>}
           {step === 5 && (
             <Button
               variant="contained"

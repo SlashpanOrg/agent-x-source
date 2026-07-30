@@ -75,7 +75,14 @@ function eventBelongsToTask(ev: TelemetryEvent, taskId: string): boolean {
 }
 
 function telemetryToLogEntry(ev: TelemetryEvent): OpsLogEntry | null {
-  const ts = Date.now();
+  // Use the event's timestamp if available (server-persisted logs include
+  // one). Fall back to Date.now() only for live events that lack a timestamp.
+  const rawTs = (ev as { timestamp?: string | number }).timestamp;
+  const ts = typeof rawTs === 'number'
+    ? rawTs
+    : typeof rawTs === 'string' && rawTs
+      ? Date.parse(rawTs) || Date.now()
+      : Date.now();
   const id = `${ts}-${Math.random().toString(36).slice(2, 8)}`;
   switch (ev.type) {
     case 'automation_run_triggered':
@@ -348,13 +355,12 @@ export function AutomationPanel() {
     };
   }, [selectedId, loadLogs]);
 
-  useEffect(() => {
-    if (!selectedId || !selectedRunning || !pageVisible) return;
-    const t = setInterval(() => {
-      if (document.visibilityState === 'visible') void loadLogs(selectedId);
-    }, 2500);
-    return () => clearInterval(t);
-  }, [selectedId, selectedRunning, loadLogs, pageVisible]);
+  // NOTE: We intentionally do NOT poll loadLogs while a task is running.
+  // The live SSE subscription (subscribeOptimizedTelemetry) delivers events
+  // in real-time with stable timestamps. Periodic reloads would replace
+  // client-side entries with server-persisted versions that have different
+  // timestamps, causing all displayed timestamps to jump every cycle.
+  // Logs are loaded only on task selection and when a run ends.
 
   useEffect(() => {
     if (!selectedId) return;

@@ -1,11 +1,13 @@
 /**
  * Developer Mode auth gating (§9.3).
  *
- * Dev mode is a per-session flag that gates access to the observability data
- * endpoints (`/api/observability/*`). It is unlocked by verifying the root
- * password via `POST /api/observability/dev/verify`. The flag lives in memory
- * keyed by the auth session token — it is NOT persisted (a restart clears it,
- * forcing re-verification) and is separate from the regular auth session.
+ * Dev mode can be:
+ * 1. Enabled globally in the `developer.devMode` config flag (persisted in the
+ *    Agent-X config file, survives app restarts and reinstalls).
+ * 2. Enabled per-session by verifying the root password and toggling it on.
+ *
+ * `requireDeveloperMode` allows access when either global mode is on OR the
+ * current session token is in the in-memory dev-mode token set.
  */
 import type { Request, Response, NextFunction } from 'express';
 import { authManager } from '@agentx/shared';
@@ -16,6 +18,9 @@ const devModeTokens = new Set<string>();
 /** Tokens that have verified the root password (but may not have enabled dev mode yet). */
 const devVerifiedTokens = new Set<string>();
 
+/** Global developer mode flag loaded from persisted config. */
+let globalDevMode = false;
+
 /** Tracks failed verify attempts per IP for rate limiting (5 attempts / 5 min). */
 interface RateLimitEntry {
   count: number;
@@ -24,6 +29,24 @@ interface RateLimitEntry {
 const verifyAttempts = new Map<string, RateLimitEntry>();
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * Hydrate the global dev mode flag from the config file at startup.
+ * Called by web-api once the engine config manager is ready.
+ */
+export function loadGlobalDevMode(enabled: boolean): void {
+  globalDevMode = enabled;
+}
+
+/** Set the global dev mode flag (does NOT persist — caller must save config). */
+export function setGlobalDevMode(enabled: boolean): void {
+  globalDevMode = enabled;
+}
+
+/** Check the current global dev mode flag. */
+export function isGlobalDevMode(): boolean {
+  return globalDevMode;
+}
 
 /**
  * Extract the auth token from a request (cookie, Authorization header, or query for SSE).
@@ -41,7 +64,7 @@ function extractToken(req: Request): string | undefined {
   const cookie = req.headers.cookie;
   if (cookie) {
     const match = cookie.match(/(?:^|;\s*)agentx_session=([^;]+)/);
-    if (match?.[1]) return decodeURIComponent(match[1]);
+    if (match?.[1]) return decodeURIComponent(match?.[1]);
   }
   const queryToken = req.query.token;
   if (typeof queryToken === 'string') return queryToken;
@@ -50,16 +73,17 @@ function extractToken(req: Request): string | undefined {
 
 /**
  * Express middleware: require developer mode for the matched route.
- * Returns `403 { error: 'developer-mode-required' }` if the session has not
- * unlocked dev mode. Must run AFTER `authMiddleware` so the token is validated.
+ * Returns `403 { error: 'developer-mode-required' }` if neither global dev mode
+ * nor the session token has unlocked dev mode. Must run AFTER `authMiddleware`
+ * so the token is validated.
  */
 export function requireDeveloperMode(req: Request, res: Response, next: NextFunction): void {
   const token = extractToken(req);
-  if (!token || !devModeTokens.has(token)) {
-    res.status(403).json({ error: 'developer-mode-required', message: 'Developer mode is required to access observability data.' });
+  if (globalDevMode || (token && devModeTokens.has(token))) {
+    next();
     return;
   }
-  next();
+  res.status(403).json({ error: 'developer-mode-required', message: 'Developer mode is required to access observability data.' });
 }
 
 /**
@@ -79,6 +103,7 @@ export function setDevMode(req: Request, enabled: boolean): void {
 
 /** Check whether the session (by token) has unlocked developer mode. */
 export function isDevMode(req: Request): boolean {
+  if (globalDevMode) return true;
   const token = extractToken(req);
   return !!token && devModeTokens.has(token);
 }
@@ -157,4 +182,5 @@ export function clearDevModeTokens(): void {
   devModeTokens.clear();
   devVerifiedTokens.clear();
   verifyAttempts.clear();
+  globalDevMode = false;
 }

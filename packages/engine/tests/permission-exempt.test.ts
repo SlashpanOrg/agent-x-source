@@ -16,11 +16,11 @@ describe('permission-exempt web tools', () => {
   });
 
   it('includes readonly integration MCP tools', () => {
-    const provider = getIntegrationProvider('booking-com')!;
-    const tool = adaptMcpTool(provider, { name: 'booking_search', description: 'Search hotels' });
-    expect(tool.id).toBe(integrationToolId('booking-com', 'booking_search'));
+    const provider = getIntegrationProvider('github')!;
+    const tool = adaptMcpTool(provider, { name: 'list_issues', description: 'List issues' });
+    expect(tool.id).toBe(integrationToolId('github', 'list_issues'));
     expect(isPermissionExemptTool(tool.id)).toBe(true);
-    expect(isPermissionExemptTool(integrationToolId('booking-com', 'booking_login'))).toBe(false);
+    expect(isPermissionExemptTool(integrationToolId('github', 'create_issue'))).toBe(false);
   });
 
   it('does not prompt permission for exempt tools', async () => {

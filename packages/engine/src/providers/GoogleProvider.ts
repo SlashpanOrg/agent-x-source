@@ -19,14 +19,16 @@ function extractReasoningContent(value: unknown): string | undefined {
 }
 
 export class GoogleProvider implements ProviderInterface {
-  readonly id: ProviderId = 'google';
-  readonly name = 'Google';
+  readonly id: ProviderId;
+  readonly name: string;
   private apiKey: string;
   private baseUrl: string;
 
-  constructor(apiKey: string, baseUrl?: string) {
+  constructor(apiKey: string, baseUrl?: string, id?: ProviderId, name?: string) {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl ?? GEMINI_OPENAI_BASE;
+    this.id = id ?? 'google';
+    this.name = name ?? 'Google';
   }
 
   async validate(): Promise<boolean> {

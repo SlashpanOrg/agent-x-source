@@ -500,7 +500,7 @@ export async function runTurnJourney(input: TurnJourneyInput): Promise<TurnJourn
 
   const stages: TurnJourneyStageReport[] = [];
   // Always prefetch local knowledge on the standard path (chat + voice), even for
-  // compact models — users should not need to ask for RAG. Cap size in PromptEngine.
+  // compact models — users should not need to ask for RAG. Cap size in buildRagContext.
   const local = await prefetchLocalKnowledge(input.userText);
   const ragResults = local.hits;
   stages.push(...local.stages);

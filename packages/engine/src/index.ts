@@ -52,8 +52,9 @@ export { SmartSubAgent } from './agent/SmartSubAgent.js';
 export type { SmartSubAgentOptions, SmartSubAgentResult } from './agent/SmartSubAgent.js';
 export { DecisionEngine } from './agent/DecisionEngine.js';
 export type { MessageClass, ExecutionPath, DecisionResult } from './agent/DecisionEngine.js';
-export { PromptEngine } from './prompt/PromptEngine.js';
-export type { IntentResult, PromptBudget } from './prompt/PromptEngine.js';
+export { buildRagContext } from './prompt/PromptEngine.js';
+export { PromptBenchmarkService } from './prompt/PromptBenchmarkService.js';
+export * from './prompt/benchmark/types.js';
 export { AgentEventBus } from './EventBus.js';
 export type { EventBus, EngineEvent, EventHandler, SessionEvent } from './events/EventBus.js';
 export type { AgentEvent } from './events/AgentEvent.js';
@@ -82,7 +83,7 @@ export {
 export { AttachmentService, getAttachmentService } from './attachments/index.js';
 
 export { ProviderFactory } from './providers/index.js';
-export type { ProviderInterface } from './providers/index.js';
+export type { ProviderInterface, ProviderFactoryOptions } from './providers/index.js';
 export { OpenAIProvider } from './providers/OpenAIProvider.js';
 export { AnthropicProvider } from './providers/AnthropicProvider.js';
 export { OllamaProvider } from './providers/OllamaProvider.js';

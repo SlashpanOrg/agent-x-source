@@ -27,7 +27,7 @@ export async function executeStep(agent: Agent, step: TaskStep, goal: string): P
   let stepPrompt = `Continuing the task: "${goal}"\n\nCurrent step: ${step.description}\nExpected outcome: ${step.expectedOutcome}\n\nExecute this step now.`;
   if (step.repoPath) {
     const repoContext = await tryShellExec(agent,
-      `ls "${step.repoPath}/" 2>/dev/null && echo "--- repo exists ---" || echo "--- cloning ---" && git clone "$(git remote get-url origin 2>/dev/null)" "${step.repoPath}" 2>/dev/null && echo "--- done ---" || echo "--- using existing ---"`,
+      `ls "${step.repoPath}/" 2>/dev/null && echo "[repo exists]" || echo "[cloning]" && git clone "$(git remote get-url origin 2>/dev/null)" "${step.repoPath}" 2>/dev/null && echo "[done]" || echo "[using existing]"`,
     );
     stepPrompt = `Working in repo: ${step.repoPath}\n${repoContext.slice(0, 500)}\n\n${stepPrompt}\n\nEnsure all file operations use the absolute path "${step.repoPath}".`;
   }

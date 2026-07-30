@@ -19,6 +19,7 @@ export const providerIdSchema = z.enum([
   'commandcode',
   'opencode',
   'opencode-zen',
+  'custom',
 ]);
 
 export const permissionDecisionSchema = z.enum([

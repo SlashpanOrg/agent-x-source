@@ -115,7 +115,7 @@ export class OrchestrationPlanner {
     );
     if (unassigned.length > 0) {
       const list = unassigned.map((t) => `- ${t.description} [needs: ${t.skills.join(', ')}]`).join('\n');
-      results.push(`\n\n---\n\n**Pending tasks** (no matching crew available):\n\n${list}`);
+      results.push(`\n\n**Pending tasks** (no matching crew available):\n\n${list}`);
     }
 
     return results.join('\n\n');

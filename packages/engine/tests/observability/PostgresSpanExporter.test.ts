@@ -123,7 +123,7 @@ describe.runIf(await isPgAvailable())('PostgresSpanExporter', () => {
 
 describe('PostgresSpanExporter (unit, no PG)', () => {
   it('export after shutdown returns SUCCESS without inserting', () => {
-    const mockStore = { insertSpan: vi.fn(), insertTrace: vi.fn() } as unknown as ObservabilityStore;
+    const mockStore = { insertSpan: vi.fn(), insertTrace: vi.fn().mockResolvedValue(true), insertSpans: vi.fn() } as unknown as ObservabilityStore;
     const exporter = new PostgresSpanExporter(mockStore, { ringBufferSize: 10 });
     // Simulate shutdown.
     exporter.shutdown();

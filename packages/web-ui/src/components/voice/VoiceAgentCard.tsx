@@ -22,6 +22,7 @@ import { voice as voiceApi, providers as providersApi, models as modelsApi, mode
 import type { ConfiguredProvider, ModelInfo, VoiceConfig } from '../../api';
 import { KOKORO_VOICE_PROFILES } from '../../voice/voice-config';
 import { usePersonaName } from '../../hooks/usePersonaName';
+import { ProviderSwitchModal } from '../chat/ProviderSwitchModal';
 
 const VOICE_SESSION_ID = '__channel__:voice';
 
@@ -542,6 +543,8 @@ export function VoiceAgentHeaderControls({
   const [modelAnchor, setModelAnchor] = useState<HTMLElement | null>(null);
   const [voiceAnchor, setVoiceAnchor] = useState<HTMLElement | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
+  // Provider switch modal state — forces model selection when switching providers (local engine only)
+  const [providerSwitchPending, setProviderSwitchPending] = useState<{ providerId: string; providerLabel: string } | null>(null);
 
   const engine = voiceCfg?.engine ?? 'stt_llm_tts';
   const voiceProvider = voiceCfg?.provider?.activeProvider ?? null;
@@ -618,9 +621,30 @@ export function VoiceAgentHeaderControls({
 
   const handleProviderSelect = async (providerId: string) => {
     setProviderAnchor(null);
+    if (engine === 'stt_llm_tts' && providerId) {
+      // Local engine: force model selection via modal before committing the switch
+      const profile = configuredProviders.find((p) => p.id === providerId);
+      const label = profile?.name || providerId;
+      setProviderSwitchPending({ providerId, providerLabel: label });
+      return;
+    }
+    // Realtime xAI engine: no model selection needed (uses realtime API)
     try {
-      await voiceApi.updateConfig({ provider: { activeProvider: providerId || undefined } } as VoiceConfig);
+      await voiceApi.updateConfig({ provider: { activeProvider: providerId || undefined, activeModel: undefined } } as VoiceConfig);
     } catch { /* ignore */ }
+  };
+
+  const confirmVoiceProviderSwitch = async (modelId: string) => {
+    if (!providerSwitchPending) return;
+    const { providerId } = providerSwitchPending;
+    setProviderSwitchPending(null);
+    try {
+      await voiceApi.updateConfig({ provider: { activeProvider: providerId, activeModel: modelId } } as VoiceConfig);
+    } catch { /* ignore */ }
+  };
+
+  const cancelVoiceProviderSwitch = () => {
+    setProviderSwitchPending(null);
   };
 
   const handleModelSelect = async (modelId: string) => {
@@ -849,6 +873,15 @@ export function VoiceAgentHeaderControls({
           )}
         </Box>
       </Popover>
+
+      {/* Provider switch modal — forces model selection when switching providers (local engine) */}
+      <ProviderSwitchModal
+        open={!!providerSwitchPending}
+        providerId={providerSwitchPending?.providerId ?? ''}
+        providerLabel={providerSwitchPending?.providerLabel ?? ''}
+        onConfirm={confirmVoiceProviderSwitch}
+        onCancel={cancelVoiceProviderSwitch}
+      />
     </Box>
   );
 }

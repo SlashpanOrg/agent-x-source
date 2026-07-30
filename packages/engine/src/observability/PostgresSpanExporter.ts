@@ -65,6 +65,15 @@ function inferTraceKind(spanName: string, attrs: Record<string, unknown>): Trace
   return 'internal';
 }
 
+// Suppress noisy infrastructure traces from the trace list while still recording
+// HTTP metrics and logging. Spans are dropped for these traces too.
+const SKIP_TRACE_PREFIXES = ['/api/observability/', '/api/auth/', '/api/health'];
+function shouldSkipTrace(attrs: Record<string, unknown>): boolean {
+  const route = attrs['http.route'] ? String(attrs['http.route']) : undefined;
+  if (!route) return false;
+  return route === '/api/health' || SKIP_TRACE_PREFIXES.some((p) => route.startsWith(p));
+}
+
 export interface PostgresSpanExporterOptions {
   /** Ring-buffer capacity; when full the oldest spans are dropped. */
   ringBufferSize?: number;
@@ -174,9 +183,14 @@ export class PostgresSpanExporter implements SpanExporter {
     }));
 
     const traceRows: TraceInsert[] = [];
+    const skipTraceIds = new Set<string>();
     for (const span of spans) {
       if (span.parentSpanContext?.spanId) continue;
       const attrs = span.attributes;
+      if (shouldSkipTrace(attrs)) {
+        skipTraceIds.add(span.spanContext().traceId);
+        continue;
+      }
       const error = span.status.code === SpanStatusCode.ERROR;
       traceRows.push({
         trace_id: span.spanContext().traceId,
@@ -204,9 +218,70 @@ export class PostgresSpanExporter implements SpanExporter {
       });
     }
 
+    // Drop spans belonging to noisy infrastructure traces (health, observability UI, auth).
+    const exportedSpanRows = spanRows.filter((s) => !skipTraceIds.has(s.trace_id));
+
+    // Ensure every trace_id in the span batch has a corresponding trace row.
+    // Root spans create real trace rows above, but child spans may arrive without
+    // their root span (dropped from ring buffer due to backpressure, or root span
+    // already exported in a previous batch whose insertTrace failed silently).
+    // Without a trace row, the spans.trace_id FK constraint fails.
+    const traceIdsWithRoot = new Set(traceRows.map((t) => t.trace_id));
+    const stubTraceRows: TraceInsert[] = [];
+    const seenStubIds = new Set<string>();
+    for (const span of exportedSpanRows) {
+      if (traceIdsWithRoot.has(span.trace_id) || seenStubIds.has(span.trace_id)) continue;
+      seenStubIds.add(span.trace_id);
+      // Find the earliest span for this trace to use as a reference for the stub.
+      const traceSpans = spans.filter((s) => s.spanContext().traceId === span.trace_id);
+      const earliest = traceSpans.sort((a, b) => {
+        const aMs = hrToMs(a.startTime as [number, number]);
+        const bMs = hrToMs(b.startTime as [number, number]);
+        return aMs - bMs;
+      })[0];
+      const attrs = earliest?.attributes ?? {};
+      const hasError = traceSpans.some((s) => s.status.code === SpanStatusCode.ERROR);
+      stubTraceRows.push({
+        trace_id: span.trace_id,
+        root_span_id: span.span_id,
+        domain: (attrs['trace.domain'] as ObservabilityDomain) ?? 'AGENT',
+        kind: inferTraceKind(earliest?.name ?? 'internal', attrs),
+        session_id: attrs['session.id'] ? String(attrs['session.id']) : undefined,
+        turn_id: attrs['turn.id'] ? String(attrs['turn.id']) : undefined,
+        user_text: attrs['user.text'] ? String(attrs['user.text']) : undefined,
+        status: hasError ? 'error' : 'ok',
+        error: undefined,
+        started_at: span.started_at,
+        ended_at: undefined,
+        duration_ms: undefined,
+        provider: attrs['gen_ai.system'] ? String(attrs['gen_ai.system']) : undefined,
+        model: attrs['gen_ai.response.model']
+          ? String(attrs['gen_ai.response.model'])
+          : attrs['gen_ai.request.model']
+            ? String(attrs['gen_ai.request.model'])
+            : undefined,
+        input_tokens: undefined,
+        output_tokens: undefined,
+        tool_call_count: 0,
+        cost_usd: 0,
+      });
+    }
+
     // Insert trace rows BEFORE spans so the spans.trace_id FK is satisfied.
-    await Promise.all(traceRows.map((t) => this.store.insertTrace(t)));
-    await this.store.insertSpans(spanRows);
+    // insertTrace returns false on failure (non-throwing); track which trace_ids
+    // failed so we can skip their spans to avoid FK violations.
+    const failedTraceIds = new Set<string>();
+    for (const t of [...traceRows, ...stubTraceRows]) {
+      const ok = await this.store.insertTrace(t);
+      if (!ok) failedTraceIds.add(t.trace_id);
+    }
+    // Drop spans whose trace row insertion failed to avoid FK violations.
+    const safeSpanRows = failedTraceIds.size > 0
+      ? exportedSpanRows.filter((s) => !failedTraceIds.has(s.trace_id))
+      : exportedSpanRows;
+    if (safeSpanRows.length > 0) {
+      await this.store.insertSpans(safeSpanRows);
+    }
 
     // Span-derived metrics (§8.2): publish counters/histograms so the
     // Prometheus `/api/metrics` endpoint and the MetricsSampler both see
@@ -244,6 +319,7 @@ export class PostgresSpanExporter implements SpanExporter {
       }
       // Per-tool counters from tool spans (tool.name + tool.success).
       for (const span of spans) {
+        if (skipTraceIds.has(span.spanContext().traceId)) continue;
         if (span.attributes['tool.name'] && span.ended) {
           const toolName = String(span.attributes['tool.name']);
           const success = span.status.code !== SpanStatusCode.ERROR;

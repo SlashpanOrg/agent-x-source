@@ -17,7 +17,7 @@
 import type { Request, Response, NextFunction, Router } from 'express';
 import type { IncomingMessage } from 'node:http';
 import express from 'express';
-import { authManager } from '@agentx/shared';
+import { authManager, getLogger } from '@agentx/shared';
 import type { AuthSession } from '@agentx/shared';
 import { setEngineDEK, getEngine } from './engine.js';
 import { startAppSpan } from '@agentx/engine';
@@ -128,9 +128,16 @@ export function syncDEKMiddleware(req: Request, _res: Response, next: NextFuncti
     const session = authManager.validateSession(token);
     if (session) {
       // Ensure engine state exists before setting DEK on it
-      // (getEngine() is lazily created by route handlers — middleware runs first)
-      getEngine();
-      setEngineDEK(session.dek);
+      // (getEngine() is lazily created by route handlers — middleware runs first).
+      // In keyring-less/headless environments this can fail; don't break auth.
+      try {
+        getEngine();
+        setEngineDEK(session.dek);
+      } catch (e) {
+        getLogger().warn('AUTH', 'Failed to initialize engine DEK; encrypted data may be unavailable', {
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
       req.agentxSession = session;
     }
   }

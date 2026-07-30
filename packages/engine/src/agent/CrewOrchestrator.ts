@@ -777,7 +777,7 @@ Do NOT proactively scan folders, list files, or read code unless instructed. If 
 
           this.emit({ type: 'tool_executing', tool: 'crew_member', description: `${p.crew.name} is reviewing peers...` });
 
-          const critiquePrompt = `Review the following responses from other team members. Provide your critique, identify any issues, and refine your own position:\n\n${others.map(r => `[${r.member}]:\n${r.content}`).join('\n\n---\n\n')}\n\nYour refined response:`;
+          const critiquePrompt = `Review the following responses from other team members. Provide your critique, identify any issues, and refine your own position:\n\n${others.map(r => `[${r.member}]:\n${r.content}`).join('\n\n')}\n\nYour refined response:`;
           try {
             const { content } = await this.callCrew(p, critiquePrompt, mainSystemPrompt);
             return { member: p.crew.name, content };
@@ -945,7 +945,7 @@ Do NOT proactively scan folders, list files, or read code unless instructed. If 
     responses: Array<{ member: string; content: string }>,
     mainSystemPrompt: string
   ): Promise<string> {
-    const responseSummary = responses.map(r => `[${r.member}]:\n${r.content}`).join('\n\n---\n\n');
+    const responseSummary = responses.map(r => `[${r.member}]:\n${r.content}`).join('\n\n');
 
     const synthesisPrompt = `${mainSystemPrompt}\n\n[ORCHESTRATOR ROLE]\nYou are synthesizing responses from multiple crew members into a cohesive, unified answer.\nDo NOT repeat everything — extract the best insights from each, resolve any conflicts, and present a clear final answer.\nAttribute key insights to the crew member who provided them when relevant.`;
 

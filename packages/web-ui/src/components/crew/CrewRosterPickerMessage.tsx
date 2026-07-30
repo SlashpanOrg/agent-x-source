@@ -13,7 +13,7 @@ import { CrewRecruitCard } from './CrewRecruitCard';
 
 export interface CrewRosterPickerRecord {
   id: string;
-  status: 'pending' | 'answered' | 'skipped';
+  status: 'pending' | 'answered' | 'skipped' | 'expired';
   evaluation: CrewSuggestionEvaluation;
   pendingUserText: string;
   selectedCandidateIds?: string[];

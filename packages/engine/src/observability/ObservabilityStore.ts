@@ -115,10 +115,25 @@ export interface ListLogsFilters {
 export class ObservabilityStore {
   /** Cached capture_prompts value — updated on getConfig/updateConfig; defaults to true. */
   private cachedCapturePrompts = true;
+  /**
+   * Circuit breaker: once a "relation does not exist" error is hit, all
+   * subsequent write/read attempts are short-circuited to avoid log spam.
+   * The migration runner (doConnect → migrate) is responsible for creating
+   * the observability schema; this flag just prevents cascading errors if
+   * the schema is missing (e.g. running an older packaged build).
+   */
+  private schemaMissing = false;
 
   constructor(private pool: Pool) {}
 
-  async insertTrace(row: TraceInsert): Promise<void> {
+  /** Returns true if the error is a "relation does not exist" PG error. */
+  private isMissingRelationError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    return /relation "observability\.\w+" does not exist/i.test(msg);
+  }
+
+  async insertTrace(row: TraceInsert): Promise<boolean> {
+    if (this.schemaMissing) return false;
     const sql = `
       INSERT INTO observability.traces (
         trace_id, root_span_id, domain, kind, session_id, turn_id, user_text,
@@ -144,6 +159,8 @@ export class ObservabilityStore {
         tool_call_count = EXCLUDED.tool_call_count,
         cost_usd = EXCLUDED.cost_usd
     `;
+    // Non-throwing: returns false on failure so callers can skip dependent
+    // writes (e.g. spans with this trace_id) to avoid FK violations.
     try {
       await this.pool.query(sql, [
         row.trace_id,
@@ -165,13 +182,17 @@ export class ObservabilityStore {
         row.tool_call_count ?? 0,
         row.cost_usd ?? 0,
       ]);
+      return true;
     } catch (err) {
+      if (this.isMissingRelationError(err)) this.schemaMissing = true;
       logger.error('OBSERVABILITY_STORE', err instanceof Error ? err : new Error('insertTrace failed'), { method: 'insertTrace' });
+      return false;
     }
   }
 
   async insertSpans(rows: SpanInsert[]): Promise<void> {
     if (rows.length === 0) return;
+    if (this.schemaMissing) return;
     const values: unknown[] = [];
     const placeholders: string[] = [];
     let idx = 1;
@@ -202,6 +223,7 @@ export class ObservabilityStore {
     try {
       await this.pool.query(sql, values);
     } catch (err) {
+      if (this.isMissingRelationError(err)) this.schemaMissing = true;
       logger.error('OBSERVABILITY_STORE', err instanceof Error ? err : new Error('insertSpans failed'), { method: 'insertSpans' });
     }
   }
@@ -212,6 +234,7 @@ export class ObservabilityStore {
 
   async insertLogs(rows: LogInsert[]): Promise<void> {
     if (rows.length === 0) return;
+    if (this.schemaMissing) return;
     const values: unknown[] = [];
     const placeholders: string[] = [];
     let idx = 1;
@@ -233,12 +256,14 @@ export class ObservabilityStore {
     try {
       await this.pool.query(sql, values);
     } catch (err) {
+      if (this.isMissingRelationError(err)) this.schemaMissing = true;
       logger.error('OBSERVABILITY_STORE', err instanceof Error ? err : new Error('insertLogs failed'), { method: 'insertLogs' });
     }
   }
 
   async insertMetricSamples(rows: MetricInsert[]): Promise<void> {
     if (rows.length === 0) return;
+    if (this.schemaMissing) return;
     const values: unknown[] = [];
     const placeholders: string[] = [];
     let idx = 1;
@@ -250,6 +275,7 @@ export class ObservabilityStore {
     try {
       await this.pool.query(sql, values);
     } catch (err) {
+      if (this.isMissingRelationError(err)) this.schemaMissing = true;
       logger.error('OBSERVABILITY_STORE', err instanceof Error ? err : new Error('insertMetricSamples failed'), { method: 'insertMetricSamples' });
     }
   }
@@ -716,7 +742,7 @@ export class ObservabilityStore {
       const path = this.pathToSpan(spans, rootCauseSpan.span_id);
       for (const s of path) {
         const dur = s.duration_ms != null ? ` (${s.duration_ms}ms)` : '';
-        const statusIcon = s.status === 'error' ? '🔴' : s.status === 'ok' ? '🟢' : '⚪';
+        const statusIcon = s.status === 'error' ? '[ERROR]' : s.status === 'ok' ? '[OK]' : '[PENDING]';
         chainOfEvents.push(`${statusIcon} [${s.kind}] ${s.name}${dur} ${s.status}`);
       }
     }

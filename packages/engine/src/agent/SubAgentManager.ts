@@ -705,8 +705,8 @@ export class SubAgentManager {
 
     // Try LLM-based merging
     if (this.provider && this.config) {
-      const parts = tasks.map((t, i) => `--- Task ${i + 1}: ${t.instruction} ---\n${t.result ?? '(empty)'}`);
-      const mergePrompt = `Consolidate the following parallel research/analysis results into a single coherent summary. Remove redundancy, combine related information, and present it in a well-organized format. Do not include the "--- Task N ---" separators in your output.
+      const parts = tasks.map((t, i) => `[Task ${i + 1}: ${t.instruction}]\n${t.result ?? '(empty)'}`);
+      const mergePrompt = `Consolidate the following parallel research/analysis results into a single coherent summary. Remove redundancy, combine related information, and present it in a well-organized format. Do not include the "[Task N]" separators in your output.
 
 ${parts.join('\n\n')}
 
@@ -729,7 +729,7 @@ Consolidated summary:`;
           }
         }
         return merged.trim() || tasks.map((t, i) =>
-          `--- Result ${i + 1}: ${t.instruction} ---\n${t.result ?? '(empty)'}`
+          `[Result ${i + 1}: ${t.instruction}]\n${t.result ?? '(empty)'}`
         ).join('\n\n');
       } catch {
         // Fall through to concatenation
@@ -738,7 +738,7 @@ Consolidated summary:`;
 
     // Simple concatenation fallback
     return tasks.map((t, i) =>
-      `--- Result ${i + 1}: ${t.instruction} ---\n${t.result ?? '(empty)'}`
+      `[Result ${i + 1}: ${t.instruction}]\n${t.result ?? '(empty)'}`
     ).join('\n\n');
   }
 }

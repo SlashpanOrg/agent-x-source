@@ -38,6 +38,17 @@ describe('third-party-access', () => {
     expect(result.policy).toBeUndefined();
   });
 
+  it('does not block local exploration for an incidental "github" mention even when github is in the catalog', () => {
+    const catalogWithGithub = [...catalog, { id: 'github', name: 'GitHub' }];
+    const result = resolveThirdPartyAccess({
+      userText: "I was building a github project called 'argus'. I want you to scan the directory and understand what was planned.",
+      snapshot: emptySnapshot,
+      catalog: catalogWithGithub,
+    });
+    expect(result.policy).toBeUndefined();
+    expect(result.promptHint).toBeUndefined();
+  });
+
   it('degrades when handlers exist but registry has no integration tools', () => {
     const result = resolveThirdPartyAccess({
       userText: 'check my gmail inbox',

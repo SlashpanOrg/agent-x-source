@@ -130,6 +130,12 @@ export interface AgentXConfig extends Record<string, unknown> {
     /** Enable observability collection (default: true). */
     enabled?: boolean;
   };
+
+  /** Developer mode settings. */
+  developer?: {
+    /** Whether developer mode is enabled; persists across app restarts and reinstalls. */
+    devMode?: boolean;
+  };
 }
 
 export interface DownloadedLocalModel {
@@ -170,6 +176,14 @@ export interface ProviderProfile {
   apiKey?: string;
   baseUrl?: string;
   createdAt?: string;
+  /**
+   * Wire protocol for custom provider profiles. Only meaningful when the
+   * owning provider id is `custom`. Defaults to `openai-compatible` when
+   * omitted. See {@link CustomApiType}.
+   */
+  apiType?: string;
+  /** User-supplied model id for custom profiles whose endpoint may not list models. */
+  modelId?: string;
 }
 
 // Backwards-compatible provider credentials structure with

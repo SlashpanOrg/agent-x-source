@@ -40,6 +40,7 @@ import InputAdornment from '@mui/material/InputAdornment';
 import LockIcon from '@mui/icons-material/Lock';
 import SettingsIcon from '@mui/icons-material/Settings';
 import MonitorHeartIcon from '@mui/icons-material/MonitorHeart';
+import ChatIcon from '@mui/icons-material/Chat';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
@@ -51,7 +52,7 @@ import {
   purgeAll, getHealth,
   type HealthResponse,
 } from '../../observability/api';
-import { setDevMode as persistDevMode } from '../../utils/client-storage';
+import { getDevMode, setDevMode as persistDevMode } from '../../utils/client-storage';
 import type { ObservabilityConfig } from '@agentx/shared';
 import { alphaColor } from '../../theme';
 import {
@@ -70,12 +71,14 @@ import {
 } from '../../styles/settings-theme';
 import { SettingsCard } from './SettingsCard';
 import { SettingsSectionHeader } from './SettingsSectionHeader';
+import { PromptBenchmarkPage } from './PromptBenchmarkPage';
 
-type DevSubPage = 'general' | 'observability';
+type DevSubPage = 'general' | 'observability' | 'prompt';
 
 const NAV_ITEMS: { id: DevSubPage; label: string; icon: React.ReactNode }[] = [
   { id: 'general', label: 'General', icon: <SettingsIcon sx={{ fontSize: 14 }} /> },
   { id: 'observability', label: 'Observability', icon: <MonitorHeartIcon sx={{ fontSize: 14 }} /> },
+  { id: 'prompt', label: 'Prompt', icon: <ChatIcon sx={{ fontSize: 14 }} /> },
 ];
 
 // Fixed retention intervals (in days). The slider operates on their indices
@@ -156,7 +159,7 @@ function sidebarItemSx(active: boolean, disabled: boolean): object {
 }
 
 export function DeveloperTab() {
-  const [devMode, setDevMode] = useState(false);
+  const [devMode, setDevMode] = useState(getDevMode);
   const [pwdOpen, setPwdOpen] = useState(false);
   const [password, setPassword] = useState('');
   const [pwdError, setPwdError] = useState('');
@@ -335,6 +338,8 @@ export function DeveloperTab() {
               saveConfig={saveConfig}
               setPurgeOpen={setPurgeOpen}
             />
+          ) : subPage === 'prompt' ? (
+            <PromptBenchmarkPage />
           ) : null}
         </Box>
       </Box>

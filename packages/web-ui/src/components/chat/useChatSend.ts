@@ -4,7 +4,7 @@
 // High coupling: needs many state values, setters, and refs from the orchestrator.
 
 import React, { useCallback, useEffect, useRef } from 'react';
-import { chat, agent, attachments as attachmentApi, crews, crewSuggestions, type Crew, type CrewSuggestionEvaluation, type CrewMatchCandidate } from '../../api';
+import { chat, agent, attachments as attachmentApi, crews, crewSuggestions, type Crew, type CrewSuggestionEvaluation, type CrewMatchCandidate, type IntegrationActionPreview } from '../../api';
 import type { TurnAttachment } from '@agentx/shared';
 import { collectClientSituation } from '../../client-situation.js';
 import { sanitizeForJson } from '../../chat/utils';
@@ -52,6 +52,8 @@ export interface UseChatSendInputs {
   setWarnings: React.Dispatch<React.SetStateAction<string[]>>;
   setCrewList: React.Dispatch<React.SetStateAction<Crew[]>>;
   setTurnActivity: React.Dispatch<React.SetStateAction<{ stage: string; step: number; elapsedMs: number } | null>>;
+  setPermissionPrompt: React.Dispatch<React.SetStateAction<{ requestId: string; tool: string; path: string; riskLevel: string; integrationPreview?: IntegrationActionPreview; forAutomation?: boolean } | null>>;
+  setPendingPermissionCount: React.Dispatch<React.SetStateAction<number>>;
   setLoadingSteps: React.Dispatch<React.SetStateAction<Array<{ id: string; label: string; status: string }> | null>>;
   setStreaming: React.Dispatch<React.SetStateAction<boolean>>;
   setCrewSuggestionRequested: React.Dispatch<React.SetStateAction<boolean>>;
@@ -78,6 +80,7 @@ export function useChatSend({
   coreSession,
   setMessages, setAttachments, setWarnings, setCrewList,
   setTurnActivity, setLoadingSteps, setStreaming, setCrewSuggestionRequested,
+  setPermissionPrompt, setPendingPermissionCount,
   beginTurnUi, endTurnUi, ensureSession, scrollMessagesToBottom,
   rateLimitSeenRef,
   outgoingTurnRef, activeTurnIdRef, resendInProgressRef,
@@ -681,6 +684,18 @@ export function useChatSend({
 
     try {
       markAnswered();
+      // Insert a user message showing the questionnaire submission so the user
+      // can see their own answers in the chat flow. Without this, the questionnaire
+      // card silently changes to "answered" but the submission is invisible.
+      const submissionMsg: UIMessage = {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: `📋 **Questionnaire Response**\n\n${response}`,
+        streaming: false,
+      };
+      const placeholderId = crypto.randomUUID();
+      setMessages((prev) => [...prev, submissionMsg, { id: placeholderId, role: 'assistant', content: '', streaming: true }]);
+      requestAnimationFrame(() => scrollMessagesToBottom('smooth'));
       const result = await agent.respondToClarification(response, currentSessionIdRef.current ?? undefined);
       if (result.ok) {
         setStreaming(true);
@@ -688,7 +703,34 @@ export function useChatSend({
     } catch (err) {
       setWarnings((prev) => replaceWarning(prev, err instanceof Error ? err.message : 'Failed to send questionnaire response'));
     }
-  }, [setMessages, setStreaming, setWarnings, currentSessionIdRef]);
+  }, [setMessages, setStreaming, setWarnings, currentSessionIdRef, scrollMessagesToBottom]);
+
+  // ─── handleQuestionnaireCancel ───
+  // Marks the questionnaire as cancelled in the UI and stops the active turn.
+  // Unlike "Skip" (which sends a response and lets the agent continue), cancel
+  // aborts the turn entirely — no response is sent to the agent.
+  const handleQuestionnaireCancel = useCallback(async (messageId: string) => {
+    setMessages((prev) => prev.map((m) => {
+      if (m.id !== messageId || !m.parts) return m;
+      return {
+        ...m,
+        parts: m.parts.map((p) => {
+          if (p.type !== 'questionnaire' || !p.questionnaire) return p;
+          return {
+            ...p,
+            questionnaire: {
+              ...p.questionnaire,
+              status: 'cancelled' as const,
+            },
+          };
+        }),
+      };
+    }));
+    endTurnUi();
+    setPermissionPrompt(null);
+    setPendingPermissionCount(0);
+    try { await chat.cancel(); } catch { /* ignore */ }
+  }, [setMessages, endTurnUi, setPermissionPrompt, setPendingPermissionCount]);
 
   // ─── handleStopAndSend ───
   const handleStopAndSend = useCallback(async (text: string) => {
@@ -829,6 +871,7 @@ export function useChatSend({
     handleCrewRosterPickerSubmit,
     handleCrewRosterPickerSkip,
     handleQuestionnaireRespond,
+    handleQuestionnaireCancel,
     handleFileSelect,
     handleRemoveAttachment,
   };

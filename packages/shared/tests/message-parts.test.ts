@@ -201,6 +201,52 @@ describe('message-parts', () => {
     expect(fromMeta.parts?.some((p) => p.type === 'subagent' && p.agent?.id === 'child-2')).toBe(true);
   });
 
+  it('preserves chronological order when partsTextExceedsContent (no cross-turn corruption)', () => {
+    // Simulate the live streaming case: parts have interleaved text/tools in
+    // chronological order, but the combined text length slightly exceeds the
+    // canonical content field (common due to streaming accumulation differences).
+    // The fix should preserve the stored parts' chronological ordering instead
+    // of rebuilding from canonical (which would merge all text into one block).
+    const text1 = 'Let me check that for you.';
+    const text2 = 'Here are the results.';
+    const result = normalizeMessageForUi({
+      role: 'assistant',
+      content: text2, // canonical content is shorter than combined parts text
+      parts: [
+        { type: 'text', id: 't1', content: text1 },
+        { type: 'tool', id: 'tool1', tool: { id: 'tool1', name: 'web_search', status: 'done' } },
+        { type: 'text', id: 't2', content: text2 },
+      ],
+      toolCalls: [{ id: 'tool1', name: 'web_search', status: 'done' }],
+    }, []);
+    // Parts should be preserved in chronological order: text, tool, text
+    // NOT rebuilt as a single text block + tools.
+    const types = (result.parts ?? []).map((p) => p.type);
+    expect(types).toEqual(['text', 'tool', 'text']);
+    expect(result.parts?.[0]?.content).toBe(text1);
+    expect(result.parts?.[2]?.content).toBe(text2);
+  });
+
+  it('preserves chronological order from DB rows when partsTextExceedsContent', () => {
+    // Simulate the hard refresh case: DB rows are chronological, but the
+    // combined text from rows exceeds the canonical content field.
+    // The fix should preserve the DB rows' chronological ordering.
+    const result = normalizeMessageForUi(
+      {
+        role: 'assistant',
+        content: 'Final summary.', // shorter than combined text from rows
+      },
+      [
+        { type: 'text-delta', content: 'Starting analysis. ' },
+        { type: 'tool-call', tool_call_id: 't1', tool_name: 'shell_exec', tool_args: '{}' },
+        { type: 'tool-result', tool_call_id: 't1', tool_result: 'ok', tool_success: 1 },
+        { type: 'text-delta', content: 'Final summary.' },
+      ],
+    );
+    const types = (result.parts ?? []).map((p) => p.type);
+    expect(types).toEqual(['text', 'tool', 'text']);
+  });
+
   it('merges mid-sentence thinking instead of splitting into a new Thought', () => {
     let parts = appendThinkingDeltaToParts([], 'The');
     parts = sealTrailingThinkingPart(parts); // incomplete → stays unsealed

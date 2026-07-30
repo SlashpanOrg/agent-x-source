@@ -2,9 +2,9 @@
  * Developer Mode endpoints (§9.2, §9.3).
  *
  *   GET  /api/observability/dev/status   — { enabled: boolean } (NOT gated by dev mode)
- *   POST /api/observability/dev/verify   — { password } → verify root password, set dev flag
+ *   POST /api/observability/dev/verify   — { password } → verify root password, set devVerified flag
  *   POST /api/observability/dev/enable   — toggle dev mode on (requires prior verify)
- *   POST /api/observability/dev/disable  — toggle dev mode off, clear the session flag
+ *   POST /api/observability/dev/disable  — toggle dev mode off
  *
  * These endpoints are NOT gated by `requireDeveloperMode` — they're needed to
  * unlock dev mode in the first place. They ARE gated by `authMiddleware`
@@ -20,11 +20,22 @@ import {
   isDevVerified,
   setDevMode,
   setDevVerified,
+  setGlobalDevMode,
   verifyRootPassword,
 } from '../../middleware/dev-mode.js';
 
-export function devRouter(_ctx: ObservabilityApiContext): Router {
+export function devRouter(ctx: ObservabilityApiContext): Router {
   const r = Router();
+  const configManager = ctx.api?.getConfigManager();
+
+  const persistDevMode = (enabled: boolean) => {
+    setGlobalDevMode(enabled);
+    if (configManager) {
+      const config = configManager.load();
+      config.developer = { ...(config.developer ?? {}), devMode: enabled };
+      configManager.save(config);
+    }
+  };
 
   // GET /dev/status — { enabled, verified }. Does NOT require dev mode.
   r.get('/status', (req: Request, res: Response) => {
@@ -71,12 +82,14 @@ export function devRouter(_ctx: ObservabilityApiContext): Router {
       return;
     }
     setDevMode(req, true);
+    persistDevMode(true);
     res.json({ enabled: true });
   });
 
   // POST /dev/disable — toggle dev mode off, clear both flags.
   r.post('/disable', (req: Request, res: Response) => {
-    setDevMode(req, false); // also clears devVerified via setDevMode
+    setDevMode(req, false);
+    persistDevMode(false);
     res.json({ enabled: false });
   });
 

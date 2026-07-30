@@ -145,7 +145,7 @@ type CrewRosterPickerPartLike = {
   id?: string;
   crewRosterPicker?: {
     id?: string;
-    status?: 'pending' | 'answered' | 'skipped';
+    status?: 'pending' | 'answered' | 'skipped' | 'expired';
     selectedCandidateIds?: string[];
   };
 };

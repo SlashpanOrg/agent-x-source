@@ -490,9 +490,8 @@ Rules:
     return this.oauthRedirectUri();
   }
 
-  listCatalog(options?: { includeCandidates?: boolean }): IntegrationProvider[] {
-    const includeCandidates = options?.includeCandidates ?? true;
-    return listAllProviders({ includeCandidates });
+  listCatalog(): IntegrationProvider[] {
+    return listAllProviders();
   }
 
   getCatalogStats() {

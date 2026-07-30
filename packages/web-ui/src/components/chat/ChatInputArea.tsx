@@ -13,6 +13,7 @@ import { ChatInputBar } from '../ChatInputBar';
 import { WebSearchGlobeToggle } from '../WebSearchGlobeToggle';
 import { CrewSuggestionToggle } from '../CrewSuggestionToggle';
 import { ChatToolbar } from './ChatToolbar';
+import { ProviderSwitchModal } from './ProviderSwitchModal';
 import { PermissionBanner } from './PermissionBanner';
 import { PendingTodosBanner, type TodoDisposition } from './PendingTodosBanner';
 import type { ComposerFileHit, ComposerFolderHit } from '../ComposerMentionMenu';
@@ -41,7 +42,7 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
   const { bypassPermissions } = useChatBypassPermissionsContext();
   const {
     currentModel, currentProvider, currentProviderId, providerList, modelList,
-    loadingModels,
+    loadingModels, providerSwitchPending, initiateProviderSwitch, confirmProviderSwitch, cancelProviderSwitch,
   } = useChatModelDataContext();
   const { providerMenuAnchor, modelMenuAnchor } = useChatModelMenuContext();
   const { questionnairePending, sendBlocked, sendBlockedReason } = useChatInputGateContext();
@@ -353,6 +354,7 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
             providerMenuAnchor={providerMenuAnchor}
             setProviderMenuAnchor={setProviderMenuAnchor}
             setCurrentProvider={setCurrentProvider}
+            onProviderSwitch={initiateProviderSwitch}
             setCurrentModel={setCurrentModel}
             setModelList={setModelList}
             modelMenuAnchor={modelMenuAnchor}
@@ -366,6 +368,15 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
           />
         </Box>
       </Box>
+
+      {/* Provider switch modal — forces model selection when switching providers */}
+      <ProviderSwitchModal
+        open={!!providerSwitchPending}
+        providerId={providerSwitchPending?.providerId ?? ''}
+        providerLabel={providerSwitchPending?.providerLabel ?? ''}
+        onConfirm={confirmProviderSwitch}
+        onCancel={cancelProviderSwitch}
+      />
     </Box>
   );
 });

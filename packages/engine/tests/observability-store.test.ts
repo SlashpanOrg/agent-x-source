@@ -328,6 +328,7 @@ describe.runIf(await isPgAvailable())('ObservabilityStore', () => {
     } as unknown as Pool;
     const badStore = new ObservabilityStore(badPool);
     // Should NOT throw — observability writes are non-blocking.
+    // Returns false on failure so callers can skip dependent writes.
     await expect(badStore.insertTrace({
       trace_id: 'fail',
       root_span_id: 'r',
@@ -337,6 +338,6 @@ describe.runIf(await isPgAvailable())('ObservabilityStore', () => {
       started_at: new Date().toISOString(),
       tool_call_count: 0,
       cost_usd: 0,
-    })).resolves.toBeUndefined();
+    })).resolves.toBe(false);
   });
 });

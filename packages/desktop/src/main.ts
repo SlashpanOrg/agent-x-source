@@ -659,6 +659,59 @@ ipcMain.handle('window:openInternal', async (_event, url: string) => {
   return true;
 });
 
+// ==================== Print to PDF (vector) ====================
+
+/**
+ * Render an HTML string to a vector PDF using Chromium's native print engine.
+ *
+ * This produces selectable text, crisp shapes, and CSS-controlled page breaks
+ * — far superior to html2canvas rasterization.  The HTML is loaded into an
+ * offscreen BrowserWindow, printed, and the window is destroyed.
+ *
+ * Returns the PDF as a Uint8Array (Buffer) that the renderer writes to disk
+ * via the existing `file:writeBytes` IPC channel.
+ */
+ipcMain.handle('print:htmlToPdf', async (_event, html: string) => {
+  if (!html || typeof html !== 'string') {
+    return { ok: false, error: 'html-required' };
+  }
+
+  const printWindow = new BrowserWindow({
+    width: 800,
+    height: 1200,
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+      offscreen: true,
+    },
+  });
+
+  try {
+    // Load the HTML string via a data URL so no server round-trip is needed.
+    // Using base64 encoding avoids issues with special characters in the HTML.
+    const encoded = Buffer.from(html, 'utf-8').toString('base64');
+    await printWindow.loadURL(`data:text/html;base64,${encoded}`);
+
+    // Wait a tick for fonts/layout to settle
+    await new Promise((r) => setTimeout(r, 200));
+
+    const pdfBuffer = await printWindow.webContents.printToPDF({
+      pageSize: 'A4',
+      margins: { top: 24, bottom: 24, left: 24, right: 24 },
+      printBackground: true,
+      preferCSSPageSize: false,
+    });
+
+    return { ok: true, data: new Uint8Array(pdfBuffer) };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg };
+  } finally {
+    printWindow.destroy();
+  }
+});
+
 // ==================== App Lifecycle ====================
 
 app.whenReady().then(async () => {

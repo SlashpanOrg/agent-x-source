@@ -30,6 +30,7 @@ export const AVAILABLE_PROVIDERS = [
   { id: 'commandcode', name: 'CommandCode', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://api.commandcode.ai/provider/v1' },
   { id: 'opencode', name: 'OpenCode Go', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://opencode.ai/zen/go/v1' },
   { id: 'opencode-zen', name: 'OpenCode Zen', type: 'cloud', requiresApiKey: true, defaultBaseUrl: 'https://opencode.ai/zen/v1' },
+  { id: 'custom', name: 'Custom Provider', type: 'cloud', requiresApiKey: true, defaultBaseUrl: '' },
   { id: 'ollama', name: 'Ollama', type: 'local', requiresApiKey: false, defaultBaseUrl: 'http://localhost:11434' },
   { id: 'lmstudio', name: 'LM Studio', type: 'local', requiresApiKey: false, defaultBaseUrl: 'http://localhost:1234/v1' },
 ];
@@ -80,8 +81,10 @@ export function createProvidersRouter(): Router {
 
   r.post('/api/provider/validate', async (req, res) => {
     try {
-      const { provider, baseUrl } = req.body as { provider: string; apiKey?: string; baseUrl?: string };
+      const { provider, baseUrl } = req.body as { provider: string; apiKey?: string; baseUrl?: string; apiType?: string; displayName?: string };
       let apiKey = typeof req.body?.apiKey === 'string' ? req.body.apiKey.trim() : '';
+      let apiType = typeof req.body?.apiType === 'string' ? req.body.apiType : undefined;
+      let displayName = typeof req.body?.displayName === 'string' ? req.body.displayName : undefined;
       const placeholder = !apiKey
         || apiKey === REDACTED_SECRET
         || apiKey.includes('•')
@@ -94,6 +97,8 @@ export function createProvidersRouter(): Router {
           const creds = cfg.provider.providers[provider as ProviderId];
           if (creds?.activeProfile && creds.profiles?.[creds.activeProfile]) {
             apiKey = creds.profiles[creds.activeProfile]?.apiKey?.trim() ?? '';
+            apiType = apiType ?? creds.profiles[creds.activeProfile]?.apiType;
+            displayName = displayName ?? creds.profiles[creds.activeProfile]?.label;
           }
           if (!apiKey) apiKey = creds?.apiKey?.trim() ?? '';
           if (apiKey.includes('•')) apiKey = '';
@@ -101,7 +106,7 @@ export function createProvidersRouter(): Router {
           apiKey = '';
         }
       }
-      const prov = ProviderFactory.create(provider as ProviderId, apiKey, baseUrl);
+      const prov = ProviderFactory.create(provider as ProviderId, apiKey, baseUrl, provider === 'custom' ? { apiType, displayName } : undefined);
       const valid = await prov.validate();
       if (valid) {
         res.json({ valid: true, provider: prov.id, name: prov.name });
@@ -121,6 +126,8 @@ export function createProvidersRouter(): Router {
       let providerId = (req.query['provider'] as string) || '';
       let apiKey: string | undefined;
       let baseUrl = (req.query['baseUrl'] as string) || undefined;
+      let apiType: string | undefined;
+      let displayName: string | undefined;
       if (!apiKey && !baseUrl) {
         try {
           const eng = getEngine();
@@ -136,10 +143,12 @@ export function createProvidersRouter(): Router {
           }
           const creds = cfg.provider.providers[providerId];
           if (creds?.activeProfile && creds.profiles?.[creds.activeProfile]) {
-            const active = creds.profiles[creds.activeProfile] as { apiKey?: string; baseUrl?: string } | undefined;
+            const active = creds.profiles[creds.activeProfile] as { apiKey?: string; baseUrl?: string; apiType?: string; label?: string } | undefined;
             if (active) {
               apiKey = active.apiKey;
               baseUrl = active.baseUrl;
+              apiType = active.apiType;
+              displayName = active.label;
             }
           }
           // Fallback: use flat apiKey/baseUrl on the provider creds if no profile matched
@@ -147,7 +156,7 @@ export function createProvidersRouter(): Router {
           if (!baseUrl && creds?.baseUrl) baseUrl = creds.baseUrl;
         } catch (e) { /* use provided values */ }
       }
-      const prov = ProviderFactory.create(providerId as ProviderId, apiKey, baseUrl);
+      const prov = ProviderFactory.create(providerId as ProviderId, apiKey, baseUrl, providerId === 'custom' ? { apiType, displayName } : undefined);
       const models = await prov.listModels();
       res.json(models);
     } catch (e: unknown) {
@@ -157,7 +166,7 @@ export function createProvidersRouter(): Router {
 
   r.post('/api/provider/configure', (req, res) => {
     try {
-      const { provider, apiKey, baseUrl, profileName } = req.body as { provider: string; apiKey?: string; baseUrl?: string; profileName?: string };
+      const { provider, apiKey, baseUrl, profileName, apiType, modelId } = req.body as { provider: string; apiKey?: string; baseUrl?: string; profileName?: string; apiType?: string; modelId?: string };
       if (!profileName || typeof profileName !== 'string' || !profileName.trim()) {
         res.status(400).json({ error: 'profileName is required. Provide a name for your provider profile (e.g. "My OpenAI Key" or "Work Account").' });
         return;
@@ -171,6 +180,25 @@ export function createProvidersRouter(): Router {
         config = eng.configManager.load();
       } catch (e) {
         config = { provider: { activeProvider: provider as ProviderId, activeModel: '', providers: {} }, ui: { theme: 'dark', showTokenBar: true, showTimers: true, animationSpeed: 'normal' }, organization: null, telemetry: false };
+      }
+
+      // For custom providers, detect an existing profile with the same
+      // baseUrl + apiKey and overwrite it instead of creating a duplicate.
+      let effectiveProfileId = profileId;
+      const existingProvCfg = config.provider.providers[provider];
+      if (existingProvCfg?.profiles) {
+        for (const [pid, prof] of Object.entries(existingProvCfg.profiles)) {
+          if (pid === profileId) {
+            // Exact name match — overwrite this profile.
+            effectiveProfileId = pid;
+            break;
+          }
+          if (provider === 'custom' && prof.baseUrl === baseUrl && prof.apiKey === apiKey) {
+            // Same endpoint + key — update the existing profile instead of creating a new one.
+            effectiveProfileId = pid;
+            break;
+          }
+        }
       }
 
       config.provider.activeProvider = provider as ProviderId;
@@ -187,18 +215,20 @@ export function createProvidersRouter(): Router {
 
       eng.configManager.save(config);
 
-      // Create a profile for this provider configuration
-      eng.configManager.addProviderProfile(provider, profileId, {
-        label: profileId,
+      // Create or update the profile for this provider configuration
+      eng.configManager.addProviderProfile(provider, effectiveProfileId, {
+        label: effectiveProfileId,
         apiKey,
         baseUrl,
         createdAt: new Date().toISOString(),
+        apiType,
+        modelId,
       }, true);
       const cfg = eng.configManager.load();
       cfg.provider.activeProvider = provider as ProviderId;
       eng.configManager.save(cfg);
 
-      res.json({ ok: true, provider, profileId });
+      res.json({ ok: true, provider, profileId: effectiveProfileId });
     } catch (e: unknown) {
       getLogger().error('POST_API_PROVIDER_CONFIGURE', e instanceof Error ? e : String(e));    res.status(400).json({ error: e instanceof Error ? e.message : 'save-failed' });
     }
@@ -211,7 +241,22 @@ export function createProvidersRouter(): Router {
       const configured = redactProvidersForClient(
         config.provider.providers as unknown as Record<string, Record<string, unknown>>,
       ).filter((p) => p['configured']);
-      res.json({ active: config.provider.activeProvider, providers: configured });
+      // Transform profiles from object to array for client consumption.
+      // The redaction function returns profiles as a Record<string, ...>,
+      // but the UI expects an array of { id, label, ... }.
+      const withProfileArrays = configured.map((p) => {
+        const profilesObj = p['profiles'] as Record<string, Record<string, unknown>> | undefined;
+        const provId = p['id'] as string;
+        const avail = AVAILABLE_PROVIDERS.find((ap) => ap.id === provId);
+        if (!profilesObj) return { ...p, name: avail?.name ?? provId };
+        const { profiles: _drop, ...rest } = p;
+        return {
+          ...rest,
+          name: avail?.name ?? provId,
+          profiles: Object.entries(profilesObj).map(([id, prof]) => ({ id, ...prof })),
+        };
+      });
+      res.json({ active: config.provider.activeProvider, providers: withProfileArrays });
     } catch (e) {
       res.json({ active: '', providers: [] });
     }
@@ -219,8 +264,8 @@ export function createProvidersRouter(): Router {
 
   r.post('/api/provider/profile', (req, res) => {
     try {
-      const { provider, profileId, label, apiKey, baseUrl, setActive } = req.body as {
-        provider: string; profileId: string; label?: string; apiKey?: string; baseUrl?: string; setActive?: boolean;
+      const { provider, profileId, label, apiKey, baseUrl, setActive, apiType, modelId } = req.body as {
+        provider: string; profileId: string; label?: string; apiKey?: string; baseUrl?: string; setActive?: boolean; apiType?: string; modelId?: string;
       };
       if (!label || typeof label !== 'string' || !label.trim()) {
         res.status(400).json({ error: 'label is required. Provide a name for your profile (e.g. "My OpenAI Key" or "Work Account").' });
@@ -232,6 +277,8 @@ export function createProvidersRouter(): Router {
         apiKey,
         baseUrl,
         createdAt: new Date().toISOString(),
+        apiType,
+        modelId,
       }, setActive !== false);
       if (setActive !== false) {
         destroyAgent();
