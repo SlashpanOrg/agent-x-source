@@ -41,14 +41,19 @@ function extractExitCode(result: string): string | null {
   return null;
 }
 
-function ShellExecutionCardImpl({ tool }: { tool: ToolCall }) {
-  const [expanded, setExpanded] = useState(true);
+function ShellExecutionCardImpl({ tool, defaultExpanded = false }: { tool: ToolCall; defaultExpanded?: boolean }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
   const command = extractCommand(tool);
   const isRunning = tool.status === 'running';
   const isError = tool.status === 'error';
 
   const output = isRunning ? tool.streamOutput : tool.result;
+  // Cap rendered output to avoid lag on very large command outputs.
+  const MAX_OUTPUT_CHARS = 8000;
+  const trimmedOutput = output && output.length > MAX_OUTPUT_CHARS
+    ? `${output.slice(0, MAX_OUTPUT_CHARS)}\n… (${output.length - MAX_OUTPUT_CHARS} more chars truncated)`
+    : output;
   const exitCode = !isRunning && tool.result ? extractExitCode(tool.result) : null;
 
   const statusLabel = isRunning
@@ -151,11 +156,12 @@ function ShellExecutionCardImpl({ tool }: { tool: ToolCall }) {
 
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{
-          maxHeight: 300,
+          maxHeight: 80,
           overflow: 'auto',
           px: 1,
           py: 0.5,
           bgcolor: colors.bg.primary,
+          contentVisibility: 'auto',
         }}>
           {command && (
             <Box
@@ -187,7 +193,7 @@ function ShellExecutionCardImpl({ tool }: { tool: ToolCall }) {
                 wordBreak: 'break-word',
               }}
             >
-              {output}
+              {trimmedOutput}
             </Box>
           )}
         </Box>

@@ -268,7 +268,7 @@ function renderParts(
   // Show tools inline only when streaming and there are running tools; otherwise collapse all.
   const showToolsInline = streaming && runningTools.length > 0;
 
-  const renderMainPart = (part: PartEntry) => {
+  const renderMainPart = (part: PartEntry, defaultExpanded = false) => {
     switch (part.type) {
       case 'thinking':
         if (!part.content?.trim()) return null;
@@ -379,25 +379,25 @@ function renderParts(
         // and done states. These are NOT collapsed into CollapsedToolsSummary.
         if (!part.tool) return null;
         if (isFileEditTool(part.tool.name)) {
-          return <FileEditCard key={part.id} tool={part.tool} />;
+          return <FileEditCard key={part.id} tool={part.tool} defaultExpanded={defaultExpanded} />;
         }
         if (isShellTool(part.tool.name)) {
-          return <ShellExecutionCard key={part.id} tool={part.tool} />;
+          return <ShellExecutionCard key={part.id} tool={part.tool} defaultExpanded={defaultExpanded} />;
         }
         if (isCodeSearchTool(part.tool.name)) {
-          return <CodeSearchCard key={part.id} tool={part.tool} />;
+          return <CodeSearchCard key={part.id} tool={part.tool} defaultExpanded={defaultExpanded} />;
         }
         if (isWebSearchTool(part.tool.name)) {
-          return <WebSearchCard key={part.id} tool={part.tool} />;
+          return <WebSearchCard key={part.id} tool={part.tool} defaultExpanded={defaultExpanded} />;
         }
         if (isGitTool(part.tool.name)) {
-          return <GitOperationCard key={part.id} tool={part.tool} />;
+          return <GitOperationCard key={part.id} tool={part.tool} defaultExpanded={defaultExpanded} />;
         }
         if (isFileReadTool(part.tool.name)) {
-          return <FileReadCard key={part.id} tool={part.tool} />;
+          return <FileReadCard key={part.id} tool={part.tool} defaultExpanded={defaultExpanded} />;
         }
         if (isDirectoryListTool(part.tool.name)) {
-          return <DirectoryListingCard key={part.id} tool={part.tool} />;
+          return <DirectoryListingCard key={part.id} tool={part.tool} defaultExpanded={defaultExpanded} />;
         }
         // Non-dedicated tools: running tools show inline, done tools get collapsed.
         if (showToolsInline && part.tool.status === 'running') {
@@ -417,6 +417,22 @@ function renderParts(
   const renderChronological = (): React.ReactNode[] => {
     const nodes: React.ReactNode[] = [];
     let doneToolBuffer: PartEntry[] = [];
+
+    // Pre-scan: find the id of the last dedicated tool card so only that one
+    // auto-expands. Older cards render collapsed; the user can expand manually.
+    // Running tools always expand regardless (they show live progress).
+    let lastDedicatedToolId: string | null = null;
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      const p = ordered[i]!;
+      if (p.type !== 'tool' || !p.tool) continue;
+      if (isFileEditTool(p.tool.name) || isShellTool(p.tool.name)
+        || isCodeSearchTool(p.tool.name) || isWebSearchTool(p.tool.name)
+        || isGitTool(p.tool.name) || isFileReadTool(p.tool.name)
+        || isDirectoryListTool(p.tool.name)) {
+        lastDedicatedToolId = p.id;
+        break;
+      }
+    }
 
     const flushDoneTools = () => {
       if (doneToolBuffer.length === 0) return;
@@ -440,7 +456,9 @@ function renderParts(
           || isDirectoryListTool(part.tool.name)
         )) {
           flushDoneTools();
-          const node = renderMainPart(part);
+          // Only the latest dedicated tool card auto-expands.
+          const isLatest = part.id === lastDedicatedToolId;
+          const node = renderMainPart(part, isLatest);
           if (node) nodes.push(<React.Fragment key={part.id}>{node}</React.Fragment>);
           continue;
         }
@@ -450,7 +468,9 @@ function renderParts(
       }
       // Flush any buffered done tools before rendering the non-tool part.
       flushDoneTools();
-      const node = renderMainPart(part);
+      // Running tools always expand to show live progress.
+      const isRunning = part.type === 'tool' && part.tool?.status === 'running';
+      const node = renderMainPart(part, isRunning);
       if (node) {
         nodes.push(<React.Fragment key={part.id}>{node}</React.Fragment>);
       }

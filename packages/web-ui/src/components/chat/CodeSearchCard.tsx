@@ -77,8 +77,8 @@ export function isCodeSearchTool(toolName: string): boolean {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-function CodeSearchCardImpl({ tool }: { tool: ToolCall }) {
-  const [expanded, setExpanded] = useState(true);
+function CodeSearchCardImpl({ tool, defaultExpanded = false }: { tool: ToolCall; defaultExpanded?: boolean }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
   const parsedArgs = useMemo(() => extractArgs(tool.args), [tool.args]);
   const pattern = useMemo(() => {
@@ -101,7 +101,18 @@ function CodeSearchCardImpl({ tool }: { tool: ToolCall }) {
       if (arr) arr.push(r);
       else map.set(r.file, [r]);
     }
-    return Array.from(map.entries());
+    // Cap total entries to avoid rendering huge DOM trees.
+    const MAX_ENTRIES = 200;
+    let total = 0;
+    const capped: Array<[string, SearchResult[]]> = [];
+    for (const [file, entries] of map) {
+      const room = MAX_ENTRIES - total;
+      if (room <= 0) break;
+      const slice = entries.slice(0, room);
+      capped.push([file, slice]);
+      total += slice.length;
+    }
+    return capped;
   }, [results]);
 
   const isRunning = tool.status === 'running';
@@ -220,11 +231,12 @@ function CodeSearchCardImpl({ tool }: { tool: ToolCall }) {
       {/* ─── Content ─── */}
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{
-          maxHeight: 300,
+          maxHeight: 80,
           overflow: 'auto',
           px: 1,
           py: 0.5,
           bgcolor: colors.bg.primary,
+          contentVisibility: 'auto',
         }}>
           {grouped.length > 0 ? (
             grouped.map(([file, entries]) => (

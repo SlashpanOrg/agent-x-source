@@ -126,9 +126,9 @@ function renderDiffLines(oldStr: string, newStr: string): Array<{ type: 'add' | 
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-function FileEditCardImpl({ tool }: { tool: ToolCall }) {
+function FileEditCardImpl({ tool, defaultExpanded = false }: { tool: ToolCall; defaultExpanded?: boolean }) {
   const content = useMemo(() => extractFileEditContent(tool), [tool]);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
   if (!content) return null;
 
@@ -163,6 +163,14 @@ function FileEditCardImpl({ tool }: { tool: ToolCall }) {
   }, [content]);
 
   const writeContent = content.kind === 'write' ? content.newContent : null;
+  // Cap rendered lines to avoid lag on very large file writes/diffs.
+  const MAX_LINES = 500;
+  const cappedWriteContent = writeContent && writeContent.split('\n').length > MAX_LINES
+    ? writeContent.split('\n').slice(0, MAX_LINES).join('\n') + `\n… (${writeContent.split('\n').length - MAX_LINES} more lines truncated)`
+    : writeContent;
+  const cappedDiffLines = diffLines && diffLines.length > MAX_LINES
+    ? [...diffLines.slice(0, MAX_LINES), { type: 'ctx' as const, text: `… (${diffLines.length - MAX_LINES} more lines truncated)` }]
+    : diffLines;
   const lineCount = writeContent
     ? writeContent.split('\n').length
     : diffLines
@@ -263,14 +271,15 @@ function FileEditCardImpl({ tool }: { tool: ToolCall }) {
       {/* ─── Content ─── */}
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{
-          maxHeight: 300,
+          maxHeight: 80,
           overflow: 'auto',
           px: 1,
           py: 0.5,
           bgcolor: colors.bg.primary,
+          contentVisibility: 'auto',
         }}>
           {/* For file_write: show the content being written */}
-          {writeContent && (
+          {cappedWriteContent && (
             <Box
               component="pre"
               sx={{
@@ -284,14 +293,14 @@ function FileEditCardImpl({ tool }: { tool: ToolCall }) {
                 tabSize: 2,
               }}
             >
-              {writeContent}
+              {cappedWriteContent}
             </Box>
           )}
 
           {/* For file_edit / file_patch: show the diff */}
-          {diffLines && (
+          {cappedDiffLines && (
             <Box sx={{ fontFamily: MONO, fontSize: '0.6rem', lineHeight: 1.5 }}>
-              {diffLines.map((line, idx) => (
+              {cappedDiffLines.map((line, idx) => (
                 <Box
                   key={idx}
                   sx={{

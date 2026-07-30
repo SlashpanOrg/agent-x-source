@@ -68,8 +68,8 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max) + '…';
 }
 
-function WebSearchCardImpl({ tool }: { tool: ToolCall }) {
-  const [expanded, setExpanded] = useState(true);
+function WebSearchCardImpl({ tool, defaultExpanded = false }: { tool: ToolCall; defaultExpanded?: boolean }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [showFull, setShowFull] = useState(false);
 
   const parsed = useMemo(() => extractArgs(tool.args), [tool.args]);
@@ -199,11 +199,12 @@ function WebSearchCardImpl({ tool }: { tool: ToolCall }) {
 
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{
-          maxHeight: 300,
+          maxHeight: 80,
           overflow: 'auto',
           px: 1,
           py: 0.5,
           bgcolor: colors.bg.primary,
+          contentVisibility: 'auto',
         }}>
           {webResults.length > 0 && (
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>

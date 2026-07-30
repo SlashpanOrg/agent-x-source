@@ -166,9 +166,8 @@ function LineRow({ line, maxNumWidth }: { line: ParsedLine; maxNumWidth: string 
     <Box sx={{ display: 'flex', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
       <Box
         component="span"
-        style={{ width: maxNumWidth }}
+        style={{ width: maxNumWidth, flexShrink: 0 }}
         sx={{
-          flexShrink: 0,
           pr: 1,
           textAlign: 'right',
           color: colors.text.dim,
@@ -176,6 +175,8 @@ function LineRow({ line, maxNumWidth }: { line: ParsedLine; maxNumWidth: string 
           fontFamily: MONO,
           fontSize: '0.6rem',
           lineHeight: 1.5,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
         }}
       >
         {line.num}
@@ -196,9 +197,13 @@ function LineRow({ line, maxNumWidth }: { line: ParsedLine; maxNumWidth: string 
   );
 }
 
+const MAX_RENDERED_LINES = 500;
+
 function FileSectionView({ section }: { section: FileSection }) {
   const maxNum = section.lines.length > 0 ? section.lines[section.lines.length - 1].num : 0;
-  const maxNumWidth = `${String(maxNum).length + 0.5}ch`;
+  const maxNumWidth = `${String(maxNum).length + 1}ch`;
+  const visibleLines = section.lines.slice(0, MAX_RENDERED_LINES);
+  const truncated = section.lines.length > MAX_RENDERED_LINES;
   return (
     <Box>
       {section.filePath && (
@@ -216,16 +221,21 @@ function FileSectionView({ section }: { section: FileSection }) {
           {section.filePath}
         </Typography>
       )}
-      {section.lines.map((line, idx) => (
+      {visibleLines.map((line, idx) => (
         <LineRow key={idx} line={line} maxNumWidth={maxNumWidth} />
       ))}
+      {truncated && (
+        <Typography sx={{ fontSize: '0.5rem', fontFamily: MONO, color: colors.text.dim, py: 0.25, fontStyle: 'italic' }}>
+          … {section.lines.length - MAX_RENDERED_LINES} more lines (scroll to read full output)
+        </Typography>
+      )}
     </Box>
   );
 }
 
-function FileReadCardImpl({ tool }: { tool: ToolCall }) {
+function FileReadCardImpl({ tool, defaultExpanded = false }: { tool: ToolCall; defaultExpanded?: boolean }) {
   const content = useMemo(() => extractFileReadContent(tool), [tool]);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
   if (!content) return null;
 
@@ -335,11 +345,12 @@ function FileReadCardImpl({ tool }: { tool: ToolCall }) {
 
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{
-          maxHeight: 300,
+          maxHeight: 80,
           overflow: 'auto',
           px: 1,
           py: 0.5,
           bgcolor: colors.bg.primary,
+          contentVisibility: 'auto',
         }}>
           {content.sections.map((section, idx) => (
             <Box key={idx} sx={content.isBatch && content.sections.length > 1 && idx > 0 ? { mt: 1, pt: 1, borderTop: `1px solid ${colors.border.subtle}` } : {}}>

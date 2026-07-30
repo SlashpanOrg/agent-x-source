@@ -91,14 +91,18 @@ export function isDirectoryListTool(toolName: string): boolean {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-function DirectoryListingCardImpl({ tool }: { tool: ToolCall }) {
-  const [expanded, setExpanded] = useState(true);
+function DirectoryListingCardImpl({ tool, defaultExpanded = false }: { tool: ToolCall; defaultExpanded?: boolean }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
   const parsed = useMemo(() => extractArgs(tool.args), [tool.args]);
   const dirPath = useMemo(() => extractPath(parsed), [parsed]);
 
   const resultText = tool.result || tool.streamOutput || '';
-  const entries = useMemo(() => parseListing(resultText), [resultText]);
+  const entries = useMemo(() => {
+    const all = parseListing(resultText);
+    // Cap rendered entries to avoid huge DOM trees for large directories.
+    return all.slice(0, 500);
+  }, [resultText]);
 
   const isRunning = tool.status === 'running';
   const isError = tool.status === 'error';
@@ -215,11 +219,12 @@ function DirectoryListingCardImpl({ tool }: { tool: ToolCall }) {
       {/* ─── Content ─── */}
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{
-          maxHeight: 300,
+          maxHeight: 80,
           overflow: 'auto',
           px: 1,
           py: 0.5,
           bgcolor: colors.bg.primary,
+          contentVisibility: 'auto',
         }}>
           {entries.length > 0 ? (
             <Box sx={{ fontFamily: MONO, fontSize: '0.6rem', lineHeight: 1.6 }}>
