@@ -19,6 +19,7 @@
 import { extract as trafilaturaExtract } from 'trafilatura';
 import { extractFromHtml as agentFetchExtract } from '@teng-lin/agent-fetch';
 import { assertSafeFetchUrl } from './url-utils.js';
+import httpcloak from 'httpcloak';
 
 export interface HybridExtractResult {
   /** Best markdown output from the winning extractor. */
@@ -43,6 +44,8 @@ export interface HybridExtractResult {
   url: string;
   /** Whether the output contains markdown tables. */
   hasTables: boolean;
+  /** Absolute URLs of hyperlinks found in the raw HTML. */
+  links: string[];
 }
 
 interface ExtractorOutput {
@@ -55,6 +58,50 @@ interface ExtractorOutput {
   hasHeadings: boolean;
   hasLists: boolean;
   wordCount: number;
+}
+
+/** Extract and absolutize all http(s) link targets from raw HTML.
+ *  Covers <a href>, <link href>, data-next-page-url, data-href, data-url, data-link.
+ */
+export function extractHtmlLinks(html: string, baseUrl: string): string[] {
+  const seen = new Set<string>();
+  const links: string[] = [];
+  const base = (() => {
+    try { return new URL(baseUrl); } catch { return null; }
+  })();
+
+  function add(raw: string) {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    try {
+      const resolved = base ? new URL(trimmed, base.href).href : trimmed;
+      if (!/^https?:\/\//i.test(resolved)) return;
+      if (seen.has(resolved)) return;
+      seen.add(resolved);
+      links.push(resolved);
+    } catch { /* invalid URL */ }
+  }
+
+  // <a href="...">, <link href="...">
+  const hrefRe = /<(a|link)\s+[^>]*?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*))[^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = hrefRe.exec(html)) !== null) {
+    add(m[2] ?? m[3] ?? m[4] ?? '');
+  }
+
+  // data-* link attributes (e.g. data-next-page-url, data-href, data-url, data-link)
+  const dataRe = /\sdata-(?:next-page-url|href|url|link)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*))/gi;
+  while ((m = dataRe.exec(html)) !== null) {
+    add(m[1] ?? m[2] ?? m[3] ?? '');
+  }
+
+  // <meta http-equiv="refresh" content="0;url=...">
+  const metaRe = /<meta[^>]*?http-equiv\s*=\s*["']?refresh["']?[^>]*?content\s*=\s*["']\d*\s*;\s*url\s*=\s*([^"']*)/gi;
+  while ((m = metaRe.exec(html)) !== null) {
+    add(m[1] ?? '');
+  }
+
+  return links;
 }
 
 /** Count words in a text string. */
@@ -239,33 +286,85 @@ function mergeMarkdown(base: string, supplement: string): string {
 }
 
 /**
- * Fetch HTML from a URL using a browser-like User-Agent, then run both
- * extractors in parallel and return the validated best result.
+ * Fetch HTML from a URL using httpcloak (browser TLS fingerprint emulation),
+ * falling back to Node's built-in fetch. Then run both extractors in parallel
+ * and return the validated best result.
  */
 export async function hybridFetchAndExtract(url: string, opts?: { timeout?: number }): Promise<HybridExtractResult> {
   assertSafeFetchUrl(url);
-  const timeout = opts?.timeout ?? 15000;
+  const timeout = opts?.timeout ?? 20000;
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+  };
 
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-    signal: AbortSignal.timeout(timeout),
-    redirect: 'follow',
-  });
+  let html = '';
+  let fetchMethod = 'httpcloak';
 
-  if (!response.ok) {
+  // Strategy 1: httpcloak — emulates browser TLS fingerprint (bypasses JA3/JA4 bot detection)
+  try {
+    const r = await httpcloak.get(url, { headers, timeout, follow: 5 });
+    const body = r._text ?? '';
+    // Heuristic: if the page is a known bot-protection interstitial, fall through
+    if (body.length > 500 && !isBotProtectionPage(body)) {
+      html = body;
+    } else {
+      fetchMethod = 'fetch-fallback';
+    }
+  } catch {
+    fetchMethod = 'fetch-fallback';
+  }
+
+  // Strategy 2: Node built-in fetch (fallback)
+  if (!html) {
+    try {
+      const response = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(timeout),
+        redirect: 'follow',
+      });
+      if (response.ok) {
+        const body = await response.text();
+        if (!isBotProtectionPage(body)) {
+          html = body;
+          fetchMethod = 'fetch';
+        }
+      }
+    } catch {
+      // continue to empty result
+    }
+  }
+
+  if (!html) {
     return {
-      markdown: '', text: '', title: '', winner: 'trafilatura', reason: `HTTP ${response.status}`,
-      trafilaturaQuality: null, agentFetchMethod: null, overlap: 0, rawHtml: '', url,
+      markdown: '', text: '', title: '', winner: 'trafilatura', reason: 'No content fetched (bot protection or network error)',
+      trafilaturaQuality: null, agentFetchMethod: fetchMethod, overlap: 0, rawHtml: '', url,
       hasTables: false,
+      links: [],
     };
   }
 
-  const html = await response.text();
-  return hybridExtractFromHtml(html, url);
+  const result = hybridExtractFromHtml(html, url);
+  return { ...result, agentFetchMethod: result.agentFetchMethod ?? fetchMethod };
+}
+
+/** Detect common bot-protection interstitial pages. */
+function isBotProtectionPage(html: string): boolean {
+  if (html.length < 1000) return true;
+  const lower = html.toLowerCase();
+  // reCAPTCHA challenge page
+  if (lower.includes('recaptcha/challengepage') && !lower.includes('references')) return true;
+  // "Checking your browser" interstitial
+  if (lower.includes('checking your browser') && lower.includes('recaptcha')) return true;
+  // Cloudflare challenge
+  if (lower.includes('cf-challenge') || lower.includes('cf-browser-verification')) return true;
+  return false;
 }
 
 /**
@@ -323,5 +422,6 @@ export function hybridExtractFromHtml(html: string, url?: string): HybridExtract
     rawHtml: html,
     url: url ?? '',
     hasTables: markdownHasTables(markdown),
+    links: extractHtmlLinks(html, url ?? ''),
   };
 }

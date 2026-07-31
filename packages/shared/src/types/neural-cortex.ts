@@ -13,6 +13,7 @@ export const KnowledgeBaseOrigin = {
   documentReprocess: 'kb.document.reprocess',
   websiteScrape: 'kb.website.scrape',
   websiteRescrape: 'kb.website.rescrape',
+  websiteScrapeChild: 'kb.website.scrape.child',
 } as const;
 
 export const CortexOrigin = {

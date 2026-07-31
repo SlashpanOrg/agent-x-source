@@ -43,8 +43,13 @@ export default defineConfig({
   // NOTE: @aws-sdk/client-s3 must stay external — unzipper has an optional
   // require() for it that breaks bundling when it's not installed. It's only
   // used for S3-backed zip extraction which we don't use.
-  noExternal: [/^(?!onnxruntime-|pdfjs-dist|@napi-rs\/keyring|@napi-rs\/canvas|esbuild|@aws-sdk\/client-s3).*$/],
-  external: ['onnxruntime-node', 'onnxruntime-web', 'onnxruntime-common', 'pdfjs-dist', '@napi-rs/keyring', '@napi-rs/canvas', 'esbuild', '@aws-sdk/client-s3'],
+  // NOTE: trafilatura must stay external — native .node binaries per platform.
+  // Bundling it causes the startup "Cannot find native binding" error.
+  // NOTE: httpcloak must stay external — its ESM wrapper does
+  // createRequire(import.meta.url)./index.js, which becomes a self-require cycle
+  // when bundled into the web-api ESM entry.
+  noExternal: [/^(?!onnxruntime-|pdfjs-dist|@napi-rs\/keyring|@napi-rs\/canvas|esbuild|@aws-sdk\/client-s3|trafilatura|httpcloak).*$/],
+  external: ['onnxruntime-node', 'onnxruntime-web', 'onnxruntime-common', 'pdfjs-dist', '@napi-rs/keyring', '@napi-rs/canvas', 'esbuild', '@aws-sdk/client-s3', 'trafilatura', 'httpcloak'],
   banner: {
     js: "import { createRequire as __bannerCr } from 'module'; const require = __bannerCr(import.meta.url); import { fileURLToPath as __futp } from 'node:url'; import { dirname as __dn } from 'node:path'; const __filename = __futp(import.meta.url); const __dirname = __dn(__filename);",
   },

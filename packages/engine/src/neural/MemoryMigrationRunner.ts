@@ -504,6 +504,15 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_memory_sources_source_url ON memory_sources(source_url) WHERE source_url IS NOT NULL;
     `,
   },
+  {
+    version: 25,
+    name: 'knowledge_base_parent_child',
+    sql: `
+      -- Parent/child relationship for followed reference or consecutive page scrapes.
+      ALTER TABLE memory_sources ADD COLUMN IF NOT EXISTS parent_id UUID REFERENCES memory_sources(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_memory_sources_parent_id ON memory_sources(parent_id);
+    `,
+  },
 ];
 
 export class MemoryMigrationRunner {

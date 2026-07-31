@@ -10,7 +10,7 @@ export type KnowledgeSourceStatus =
   | 'failed';
 
 /** Scrape-specific status for URL sources (stored in scrape_status column). */
-export type ScrapeStatus = 'fresh' | 'unchanged' | 'updated' | 'unavailable' | 'error';
+export type ScrapeStatus = 'fresh' | 'unchanged' | 'updated' | 'unavailable' | 'error' | 'paused';
 
 /** A document/file that has been uploaded into the knowledge base. */
 export interface KnowledgeSource {
@@ -41,6 +41,8 @@ export interface KnowledgeSource {
   lastScrapedAt?: string;
   /** Scrape-specific status for URL sources. */
   scrapeStatus?: ScrapeStatus;
+  /** Parent source id when this source was scraped as a followed reference/child link. */
+  parentId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -95,6 +97,8 @@ export interface CreateKnowledgeSourceInput {
   sourceUrl?: string;
   /** Content hash for smart rescrape comparison. */
   contentHash?: string;
+  /** Parent source id for followed reference/child scrapes. */
+  parentId?: string;
   /** Origin code — defaults to documentUpload if not specified. */
   origin?: string;
 }
@@ -111,4 +115,57 @@ export interface KnowledgeSearchRequest {
 /** Client response for a knowledge source list. */
 export interface KnowledgeSourceListResponse {
   sources: KnowledgeSource[];
+}
+
+/** A discovered reference link from a URL scan. */
+export interface ScannedReference {
+  url: string;
+  /** Relevance score from the link scoring algorithm. */
+  score: number;
+  /** Link text or URL-derived title. */
+  title: string;
+  /** Hostname of the link target. */
+  host: string;
+  /** Whether the link is on the same domain as the root URL. */
+  sameHost: boolean;
+  /** Whether the link is a known reference host (doi.org, ncbi, etc). */
+  isReferenceHost: boolean;
+  /** Category: reference, pagination, sequential, external, doi. */
+  category: 'reference' | 'pagination' | 'sequential' | 'external' | 'doi';
+}
+
+/** Result of scanning a URL for reference links (no ingestion). */
+export interface UrlScanResult {
+  /** The root URL that was scanned. */
+  url: string;
+  /** All discovered reference links, sorted by score descending. */
+  references: ScannedReference[];
+  /** Number of chars extracted from the root page. */
+  contentLength: number;
+  /** Page title from the extractor. */
+  title: string;
+  /** Which fetch method succeeded. */
+  fetchMethod: string;
+}
+
+/** Progress event for a batch reference scrape operation. */
+export interface ScrapeBatchProgress {
+  /** Unique batch ID for this scrape operation. */
+  batchId: string;
+  /** Total URLs to scrape. */
+  total: number;
+  /** Completed (success or fail). */
+  completed: number;
+  /** Currently being scraped (1-based index). */
+  currentIndex: number;
+  /** URL currently being scraped. */
+  currentUrl: string;
+  /** Number that succeeded. */
+  succeeded: number;
+  /** Number that failed. */
+  failed: number;
+  /** Status: running, done, paused. */
+  status: 'running' | 'done' | 'paused';
+  /** Source IDs created so far. */
+  sourceIds: string[];
 }

@@ -204,6 +204,9 @@ importers:
       graphology-types:
         specifier: ^0.24.8
         version: 0.24.8
+      httpcloak:
+        specifier: 1.6.8
+        version: 1.6.8
       imap:
         specifier: ^0.8.19
         version: 0.8.19

@@ -260,6 +260,11 @@ echo ">>> Cleaning package-manager caches..."
 pnpm store prune 2>/dev/null || true
 rm -rf node_modules/.cache 2>/dev/null || true
 
+# Restore dependencies after the pnpm store was pruned; otherwise builds fail
+# when hard-linked packages are removed (e.g. missing '@opentelemetry/api').
+cd "$ROOT_DIR"
+pnpm install
+
 # Ensure a .env file exists from the committed template (safe for fresh builds)
 if [ ! -f "$ROOT_DIR/.env" ]; then
   echo ">>> Creating .env from .env.example..."

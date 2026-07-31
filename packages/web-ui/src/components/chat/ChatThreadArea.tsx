@@ -57,17 +57,17 @@ export const ChatThreadArea = React.memo(function ChatThreadArea() {
         flexDirection: 'column',
         position: 'relative',
         minWidth: 0,
+        minHeight: 0,
+        overflow: 'hidden',
       }}
     >
       <Box
         sx={{
           flex: 1,
+          minHeight: 0,
           overflow: 'auto',
           px: 2,
           py: 1.5,
-          scrollbarWidth: 'none',
-          msOverflowStyle: 'none',
-          '&::-webkit-scrollbar': { display: 'none' },
         }}
         ref={messagesContainerRef}
       >

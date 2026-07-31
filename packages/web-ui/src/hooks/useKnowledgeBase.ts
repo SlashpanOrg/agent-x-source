@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { KnowledgeSource, KnowledgeSourceStatus, KnowledgeSearchResult } from '@agentx/shared';
+import type { KnowledgeSource, KnowledgeSourceStatus, KnowledgeSearchResult, UrlScanResult, ScrapeBatchProgress } from '@agentx/shared';
 import { knowledgeBase, type KnowledgeSourceEvent } from '../api';
 
 export interface UseKnowledgeBaseReturn {
@@ -8,13 +8,22 @@ export interface UseKnowledgeBaseReturn {
   error: string | null;
   /** Latest human-readable ingest status line per source (from WS). */
   ingestDetails: Record<string, string>;
+  /** Latest batch scrape progress (by batchId). */
+  batchProgress: Record<string, ScrapeBatchProgress>;
   refresh: () => Promise<void>;
   getSource: (id: string) => Promise<KnowledgeSource | null>;
   upload: (file: File, sessionId?: string) => Promise<KnowledgeSource>;
   deleteSource: (id: string) => Promise<void>;
   reprocess: (id: string) => Promise<KnowledgeSource>;
-  scrape: (url: string, sessionId?: string) => Promise<KnowledgeSource>;
+  scrape: (url: string, sessionId?: string, follow?: { followLinks?: boolean; maxDepth?: number; maxLinks?: number }) => Promise<KnowledgeSource>;
+  scan: (url: string, sessionId?: string, maxLinks?: number) => Promise<UrlScanResult>;
+  scrapeRefs: (urls: string[], sessionId?: string, opts?: { maxDepth?: number; maxLinks?: number }) => Promise<string>;
+  pauseBatch: (batchId: string) => Promise<void>;
+  resumeBatch: (batchId: string) => Promise<void>;
+  cancelBatch: (batchId: string) => Promise<void>;
   rescrape: (id: string) => Promise<{ source: KnowledgeSource; action: 'skipped' | 'updated' | 'unavailable' }>;
+  pause: (id: string) => Promise<KnowledgeSource>;
+  resume: (id: string) => Promise<KnowledgeSource>;
   search: (query: string, topK?: number, kind?: 'all' | 'chunk' | 'page', sourceId?: string) => Promise<KnowledgeSearchResult[]>;
   clearSearch: () => void;
   searchResults: KnowledgeSearchResult[];
@@ -28,6 +37,7 @@ export function useKnowledgeBase(sessionId?: string): UseKnowledgeBaseReturn {
   const [searchResults, setSearchResults] = useState<KnowledgeSearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [ingestDetails, setIngestDetails] = useState<Record<string, string>>({});
+  const [batchProgress, setBatchProgress] = useState<Record<string, ScrapeBatchProgress>>({});
 
   const refresh = useCallback(async (opts?: { silent?: boolean }) => {
     try {
@@ -77,13 +87,34 @@ export function useKnowledgeBase(sessionId?: string): UseKnowledgeBaseReturn {
     return source;
   }, []);
 
-  const scrape = useCallback(async (url: string, sessionId?: string) => {
-    const source = await knowledgeBase.scrape(url, sessionId);
+  const scrape = useCallback(async (url: string, sessionId?: string, follow?: { followLinks?: boolean; maxDepth?: number; maxLinks?: number }) => {
+    const source = await knowledgeBase.scrape(url, sessionId, follow);
     setSources((prev) => {
       const filtered = prev.filter((s) => s.id !== source.id);
       return [source, ...filtered];
     });
     return source;
+  }, []);
+
+  const scan = useCallback(async (url: string, sessionId?: string, maxLinks?: number) => {
+    return await knowledgeBase.scan(url, sessionId, maxLinks);
+  }, []);
+
+  const scrapeRefs = useCallback(async (urls: string[], sessionId?: string, opts?: { maxDepth?: number; maxLinks?: number }) => {
+    const result = await knowledgeBase.scrapeRefs(urls, sessionId, opts);
+    return result.batchId;
+  }, []);
+
+  const pauseBatch = useCallback(async (batchId: string) => {
+    await knowledgeBase.pauseBatch(batchId);
+  }, []);
+
+  const resumeBatch = useCallback(async (batchId: string) => {
+    await knowledgeBase.resumeBatch(batchId);
+  }, []);
+
+  const cancelBatch = useCallback(async (batchId: string) => {
+    await knowledgeBase.cancelBatch(batchId);
   }, []);
 
   const rescrape = useCallback(async (id: string) => {
@@ -92,6 +123,22 @@ export function useKnowledgeBase(sessionId?: string): UseKnowledgeBaseReturn {
       prev.map((s) => (s.id === source.id ? source : s)),
     );
     return { source, action };
+  }, []);
+
+  const pause = useCallback(async (id: string) => {
+    const source = await knowledgeBase.pause(id);
+    setSources((prev) =>
+      prev.map((s) => (s.id === source.id ? source : s)),
+    );
+    return source;
+  }, []);
+
+  const resume = useCallback(async (id: string) => {
+    const source = await knowledgeBase.resume(id);
+    setSources((prev) =>
+      prev.map((s) => (s.id === source.id ? source : s)),
+    );
+    return source;
   }, []);
 
   const search = useCallback(async (query: string, topK = 5, kind: 'all' | 'chunk' | 'page' = 'all', sourceId?: string) => {
@@ -192,6 +239,23 @@ export function useKnowledgeBase(sessionId?: string): UseKnowledgeBaseReturn {
           { status: 'failed', error: event.error },
           { refreshIfMissing: true },
         );
+      } else if (event.type === 'knowledge_base_scrape_batch_progress') {
+        const p: ScrapeBatchProgress = {
+          batchId: event.batchId,
+          total: event.total,
+          completed: event.completed,
+          currentIndex: event.currentIndex,
+          currentUrl: event.currentUrl,
+          succeeded: event.succeeded,
+          failed: event.failed,
+          status: event.status as ScrapeBatchProgress['status'],
+          sourceIds: event.sourceIds,
+        };
+        setBatchProgress((prev) => ({ ...prev, [p.batchId]: p }));
+        // Auto-refresh source list when batch is done
+        if (p.status === 'done' || p.status === 'paused') {
+          void refresh({ silent: true });
+        }
       }
     };
 
@@ -204,13 +268,21 @@ export function useKnowledgeBase(sessionId?: string): UseKnowledgeBaseReturn {
     loading,
     error,
     ingestDetails,
+    batchProgress,
     refresh,
     getSource,
     upload,
     deleteSource,
     reprocess,
     scrape,
+    scan,
+    scrapeRefs,
+    pauseBatch,
+    resumeBatch,
+    cancelBatch,
     rescrape,
+    pause,
+    resume,
     search,
     clearSearch,
     searchResults,

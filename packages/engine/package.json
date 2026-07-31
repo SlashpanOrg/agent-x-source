@@ -50,6 +50,7 @@
     "graphology-communities-louvain": "^2.0.2",
     "graphology-layout-forceatlas2": "^0.10.1",
     "graphology-types": "^0.24.8",
+    "httpcloak": "1.6.8",
     "imap": "^0.8.19",
     "jszip": "^3.10.1",
     "mailparser": "^3.9.9",

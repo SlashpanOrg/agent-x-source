@@ -9,6 +9,7 @@ import {
   broadcastKnowledgeBaseSourceFailed,
   broadcastKnowledgeBaseSourceReady,
   broadcastKnowledgeBaseSourceStatus,
+  broadcastKnowledgeBaseScrapeBatchProgress,
 } from '../ws.js';
 
 let service: KnowledgeBaseService | null = null;
@@ -31,6 +32,10 @@ function wireStatusBroadcasts(svc: KnowledgeBaseService): void {
       detail,
       error,
     });
+  });
+
+  svc.onBatchProgress((p) => {
+    broadcastKnowledgeBaseScrapeBatchProgress(p);
   });
 }
 

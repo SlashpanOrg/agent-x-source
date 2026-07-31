@@ -23,10 +23,17 @@ import DataObjectIcon from '@mui/icons-material/DataObject';
 import CloseIcon from '@mui/icons-material/Close';
 import ReplayIcon from '@mui/icons-material/Replay';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import SubdirectoryArrowRightIcon from '@mui/icons-material/SubdirectoryArrowRight';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import BoltIcon from '@mui/icons-material/Bolt';
 import PendingIcon from '@mui/icons-material/Pending';
+import PauseIcon from '@mui/icons-material/Pause';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import LinkIcon from '@mui/icons-material/Link';
+import HubIcon from '@mui/icons-material/Hub';
 import { FileViewerModal } from './FileViewerModal';
 
 const ACCEPTED_EXTS = '.pdf,.docx,.xlsx,.pptx,.txt,.md,.json,.html,.htm';
@@ -638,6 +645,414 @@ function DossierMonitor({
   );
 }
 
+function UrlScrapeDossier({
+  source,
+  statusDetail,
+  children,
+  onClose,
+  onReprocess,
+  onDelete,
+  onPause,
+  onResume,
+}: {
+  source: KnowledgeSource;
+  statusDetail?: string;
+  children: KnowledgeSource[];
+  onClose: () => void;
+  onReprocess: () => void;
+  onDelete: () => void;
+  onPause: () => void;
+  onResume: () => void;
+}) {
+  const active = isActiveStatus(source.status);
+  const failed = source.status === 'failed';
+  const ready = source.status === 'ready';
+  const paused = source.scrapeStatus === 'paused';
+  const accent = paused ? colors.accent.orange : statusColor(source.status);
+  const [seedDetail, setSeedDetail] = useState<string | undefined>();
+
+  useEffect(() => {
+    setSeedDetail(undefined);
+    let cancelled = false;
+    void knowledgeBase
+      .events(source.id)
+      .then((events) => {
+        const latest = events.at(-1);
+        if (!cancelled && latest?.detail) setSeedDetail(latest.detail);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [source.id]);
+
+  const statusLine = formatIngestStatus(source, statusDetail ?? seedDetail);
+  const childRefs = children.filter((c) => c.sourceUrl);
+
+  return (
+    <Box
+      sx={{
+        position: 'relative',
+        border: `1px solid ${alphaColor(colors.accent.cyan, 0.4)}`,
+        borderRadius: 0.5,
+        bgcolor: colors.bg.secondary,
+        overflow: 'hidden',
+      }}
+    >
+      <Bracket position="top-left" color={colors.accent.cyan} />
+      <Bracket position="top-right" color={colors.accent.cyan} />
+      <Bracket position="bottom-left" color={colors.accent.cyan} />
+      <Bracket position="bottom-right" color={colors.accent.cyan} />
+
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          px: 1.5,
+          py: 1,
+          borderBottom: `1px solid ${colors.border.default}`,
+          bgcolor: alphaColor(colors.accent.cyan, 0.08),
+        }}
+      >
+        <Box
+          sx={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            bgcolor: accent,
+            flexShrink: 0,
+            ...(active ? { animation: 'kbPulse 1s ease-in-out infinite' } : {}),
+          }}
+        />
+        <LinkIcon sx={{ fontSize: 14, color: colors.accent.cyan, flexShrink: 0 }} />
+        <Typography
+          sx={{
+            fontSize: '0.7rem',
+            color: colors.text.primary,
+            fontFamily: MONO,
+            fontWeight: 600,
+            letterSpacing: 1,
+            flex: 1,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {source.name}
+        </Typography>
+        <Chip
+          size="small"
+          label="WEB"
+          sx={{
+            fontSize: '0.5rem',
+            height: 16,
+            fontFamily: MONO,
+            color: colors.accent.cyan,
+            bgcolor: alphaColor(colors.accent.cyan, 0.12),
+            border: `1px solid ${alphaColor(colors.accent.cyan, 0.3)}`,
+          }}
+        />
+        <Chip
+          size="small"
+          label={source.status.toUpperCase()}
+          sx={{
+            fontSize: '0.5rem',
+            height: 16,
+            fontFamily: MONO,
+            color: accent,
+            bgcolor: alphaColor(accent, 0.12),
+            border: `1px solid ${alphaColor(accent, 0.3)}`,
+          }}
+        />
+        {source.scrapeStatus && (
+          <Chip
+            size="small"
+            label={source.scrapeStatus.toUpperCase()}
+            sx={{
+              fontSize: '0.5rem',
+              height: 16,
+              fontFamily: MONO,
+              color: source.scrapeStatus === 'paused' ? colors.accent.orange : colors.text.dim,
+              bgcolor: alphaColor(source.scrapeStatus === 'paused' ? colors.accent.orange : colors.text.dim, 0.12),
+              border: `1px solid ${alphaColor(source.scrapeStatus === 'paused' ? colors.accent.orange : colors.text.dim, 0.3)}`,
+            }}
+          />
+        )}
+        <Tooltip title="Rescrape">
+          <IconButton size="small" onClick={onReprocess} sx={{ color: colors.text.dim, p: 0.25, '&:hover': { color: colors.accent.blue } }}>
+            <ReplayIcon sx={{ fontSize: 14 }} />
+          </IconButton>
+        </Tooltip>
+        {paused ? (
+          <Tooltip title="Resume follow queue">
+            <IconButton size="small" onClick={onResume} sx={{ color: colors.accent.green, p: 0.25, '&:hover': { color: colors.accent.green } }}>
+              <PlayArrowIcon sx={{ fontSize: 14 }} />
+            </IconButton>
+          </Tooltip>
+        ) : (
+          <Tooltip title="Pause follow queue">
+            <IconButton size="small" onClick={onPause} sx={{ color: colors.text.dim, p: 0.25, '&:hover': { color: colors.accent.orange } }}>
+              <PauseIcon sx={{ fontSize: 14 }} />
+            </IconButton>
+          </Tooltip>
+        )}
+        <Tooltip title="Delete source">
+          <IconButton size="small" onClick={onDelete} sx={{ color: colors.text.dim, p: 0.25, '&:hover': { color: colors.accent.red } }}>
+            <DeleteOutlineIcon sx={{ fontSize: 14 }} />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Close dossier">
+          <IconButton size="small" onClick={onClose} sx={{ color: colors.text.dim, p: 0.25 }}>
+            <CloseIcon sx={{ fontSize: 14 }} />
+          </IconButton>
+        </Tooltip>
+      </Box>
+
+      <Box sx={{ p: 1.5, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+        <StagePipeline source={source} />
+
+        {source.sourceUrl && (
+          <Box
+            sx={{
+              p: 0.75,
+              border: `1px solid ${alphaColor(colors.accent.cyan, 0.25)}`,
+              borderRadius: 0.5,
+              bgcolor: alphaColor(colors.accent.cyan, 0.04),
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.75,
+            }}
+          >
+            <LinkIcon sx={{ fontSize: 13, color: colors.accent.cyan }} />
+            <Typography
+              component="a"
+              href={source.sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              sx={{
+                fontSize: '0.65rem',
+                color: colors.accent.cyan,
+                fontFamily: MONO,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                flex: 1,
+                textDecoration: 'none',
+                '&:hover': { textDecoration: 'underline' },
+              }}
+            >
+              {source.sourceUrl}
+            </Typography>
+          </Box>
+        )}
+
+        <Box>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+            <Typography sx={{ fontSize: '0.6rem', color: colors.text.dim, fontFamily: MONO, letterSpacing: 1 }}>
+              SCRAPE PROGRESS
+            </Typography>
+            <Typography sx={{ fontSize: '0.6rem', color: accent, fontFamily: MONO, fontWeight: 600 }}>
+              {ready ? 100 : failed ? 'ERR' : `${Math.max(0, Math.min(100, source.progress ?? 0))}%`}
+            </Typography>
+          </Box>
+          <Box
+            sx={{
+              height: 6,
+              borderRadius: 1,
+              bgcolor: colors.border.subtle,
+              overflow: 'hidden',
+              border: `1px solid ${colors.border.default}`,
+            }}
+          >
+            <Box
+              sx={{
+                height: '100%',
+                width: `${ready ? 100 : failed ? 100 : Math.max(0, Math.min(100, source.progress ?? 0))}%`,
+                bgcolor: accent,
+                transition: 'width 0.4s ease',
+                ...(active
+                  ? {
+                      backgroundImage: `repeating-linear-gradient(45deg, ${accent} 0 8px, ${alphaColor(accent, 0.8)} 8px 16px)`,
+                      backgroundSize: '16px 16px',
+                      animation: 'kbMarch 0.6s linear infinite',
+                    }
+                  : {}),
+              }}
+            />
+          </Box>
+        </Box>
+
+        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+          <Gauge icon={<StorageIcon sx={{ fontSize: 13 }} />} label="SIZE" value={formatBytes(source.size)} color={colors.accent.blue} />
+          <Gauge icon={<DescriptionIcon sx={{ fontSize: 13 }} />} label="PAGES" value={String(source.pageCount ?? '—')} color={colors.accent.cyan} />
+          <Gauge icon={<LayersIcon sx={{ fontSize: 13 }} />} label="CHUNKS" value={String(source.chunkCount ?? '—')} color={colors.accent.purple} />
+          <Gauge icon={<HubIcon sx={{ fontSize: 13 }} />} label="REFS" value={String(childRefs.length)} color={colors.accent.cyan} />
+        </Box>
+
+        {childRefs.length > 0 && (
+          <Box>
+            <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim, fontFamily: MONO, letterSpacing: 1.5, mb: 0.5 }}>
+              REFERENCE LINKS
+            </Typography>
+            <Box
+              sx={{
+                border: `1px solid ${colors.border.default}`,
+                borderRadius: 0.5,
+                bgcolor: colors.bg.primary,
+                maxHeight: 160,
+                overflow: 'auto',
+              }}
+            >
+              {childRefs.map((child) => (
+                <Box
+                  key={child.id}
+                  sx={{
+                    px: 1,
+                    py: 0.6,
+                    borderBottom: `1px solid ${colors.border.default}`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 0.75,
+                    '&:last-child': { borderBottom: 0 },
+                  }}
+                >
+                  <SubdirectoryArrowRightIcon sx={{ fontSize: 12, color: colors.accent.cyan }} />
+                  <Typography
+                    component="a"
+                    href={child.sourceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    sx={{
+                      fontSize: '0.6rem',
+                      color: colors.text.secondary,
+                      fontFamily: MONO,
+                      flex: 1,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      textDecoration: 'none',
+                      '&:hover': { color: colors.accent.cyan, textDecoration: 'underline' },
+                    }}
+                  >
+                    {child.name || child.sourceUrl}
+                  </Typography>
+                  <Chip
+                    size="small"
+                    label={child.status.toUpperCase()}
+                    sx={{
+                      fontSize: '0.45rem',
+                      height: 14,
+                      fontFamily: MONO,
+                      color: statusColor(child.status),
+                      bgcolor: alphaColor(statusColor(child.status), 0.1),
+                      border: `1px solid ${alphaColor(statusColor(child.status), 0.3)}`,
+                    }}
+                  />
+                </Box>
+              ))}
+            </Box>
+          </Box>
+        )}
+
+        {source.error && (
+          <Box
+            sx={{
+              p: 1,
+              border: `1px solid ${alphaColor(colors.accent.red, 0.35)}`,
+              borderRadius: 0.5,
+              bgcolor: alphaColor(colors.accent.red, 0.06),
+            }}
+          >
+            <Typography sx={{ fontSize: '0.5rem', color: colors.accent.red, fontFamily: MONO, letterSpacing: 1.5, mb: 0.5 }}>
+              FAULT REPORT
+            </Typography>
+            <Typography
+              sx={{
+                fontSize: '0.65rem',
+                color: colors.accent.red,
+                fontFamily: MONO,
+                lineHeight: 1.45,
+                wordBreak: 'break-word',
+                overflowWrap: 'anywhere',
+              }}
+              title={source.error}
+            >
+              {truncateError(source.error)}
+            </Typography>
+          </Box>
+        )}
+
+        {source.summary && (
+          <Box>
+            <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim, fontFamily: MONO, letterSpacing: 1.5, mb: 0.5 }}>
+              INTEL BRIEF
+            </Typography>
+            <Box
+              sx={{
+                p: 1,
+                border: `1px solid ${colors.border.default}`,
+                borderRadius: 0.5,
+                bgcolor: colors.bg.primary,
+                maxHeight: 160,
+                overflow: 'auto',
+              }}
+            >
+              <Typography sx={{ fontSize: '0.7rem', color: colors.text.secondary, fontFamily: MONO, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                {source.summary}
+              </Typography>
+            </Box>
+          </Box>
+        )}
+
+        <Box>
+          <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim, fontFamily: MONO, letterSpacing: 1.5, mb: 0.5 }}>
+            INGEST STATUS
+          </Typography>
+          <Box
+            sx={{
+              p: 1,
+              border: `1px solid ${colors.border.default}`,
+              borderRadius: 0.5,
+              bgcolor: colors.bg.primary,
+              minHeight: 40,
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            <Typography
+              sx={{
+                fontSize: '0.68rem',
+                color: failed ? colors.accent.red : ready ? colors.accent.green : colors.text.secondary,
+                fontFamily: MONO,
+                lineHeight: 1.45,
+                wordBreak: 'break-word',
+              }}
+            >
+              {active && (
+                <Box
+                  component="span"
+                  sx={{
+                    display: 'inline-block',
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    bgcolor: accent,
+                    mr: 0.75,
+                    verticalAlign: 'middle',
+                    animation: 'kbPulse 1s ease-in-out infinite',
+                  }}
+                />
+              )}
+              {statusLine}
+            </Typography>
+          </Box>
+        </Box>
+      </Box>
+    </Box>
+  );
+}
+
 function SourceCard({
   source,
   selected,
@@ -645,6 +1060,10 @@ function SourceCard({
   onView,
   onReprocess,
   onDelete,
+  depth = 0,
+  childCount,
+  expanded,
+  onToggle,
 }: {
   source: KnowledgeSource;
   selected: boolean;
@@ -652,6 +1071,10 @@ function SourceCard({
   onView: () => void;
   onReprocess: () => void;
   onDelete: () => void;
+  depth?: number;
+  childCount?: number;
+  expanded?: boolean;
+  onToggle?: () => void;
 }) {
   const accent = statusColor(source.status);
   const active = isActiveStatus(source.status);
@@ -659,20 +1082,42 @@ function SourceCard({
   const ready = source.status === 'ready';
   const StageIcon = ready ? CheckCircleIcon : failed ? ErrorIcon : active ? BoltIcon : PendingIcon;
 
+  const isChild = depth > 0;
+  const canExpand = childCount !== undefined && childCount > 0;
+
   return (
     <Box
       onClick={onSelect}
       sx={{
         p: 1.1,
+        pl: isChild ? 1.1 : 1.1,
         borderRadius: 0.5,
         cursor: 'pointer',
         border: `1px solid ${selected ? alphaColor(accent, 0.6) : colors.border.default}`,
         bgcolor: selected ? alphaColor(accent, 0.06) : colors.bg.tertiary,
         transition: 'all 0.15s',
+        ml: isChild ? 1.5 : 0,
+        borderLeft: isChild ? `2px solid ${alphaColor(colors.accent.cyan, 0.5)}` : undefined,
+        borderTopLeftRadius: isChild ? 0 : 0.5,
+        borderBottomLeftRadius: isChild ? 0 : 0.5,
         '&:hover': { borderColor: colors.border.strong },
       }}
     >
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.6 }}>
+        {canExpand && (
+          <Tooltip title={expanded ? 'Collapse references' : `Expand ${childCount} reference${childCount === 1 ? '' : 's'}`}>
+            <IconButton
+              size="small"
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggle?.();
+              }}
+              sx={{ color: colors.text.dim, p: 0.15, '&:hover': { color: colors.accent.cyan } }}
+            >
+              {expanded ? <ExpandMoreIcon sx={{ fontSize: 14 }} /> : <ChevronRightIcon sx={{ fontSize: 14 }} />}
+            </IconButton>
+          </Tooltip>
+        )}
         <StageIcon
           sx={{
             fontSize: 14,
@@ -681,6 +1126,15 @@ function SourceCard({
             ...(active ? { animation: 'kbPulse 1.5s ease-in-out infinite' } : {}),
           }}
         />
+        {source.sourceUrl ? (
+          isChild ? (
+            <SubdirectoryArrowRightIcon sx={{ fontSize: 14, color: colors.accent.cyan, flexShrink: 0 }} titleAccess="Followed reference" />
+          ) : (
+            <LinkIcon sx={{ fontSize: 14, color: colors.accent.blue, flexShrink: 0 }} titleAccess="Web link" />
+          )
+        ) : (
+          <DescriptionIcon sx={{ fontSize: 14, color: colors.text.dim, flexShrink: 0 }} titleAccess="Document" />
+        )}
         <Typography
           sx={{
             fontSize: '0.7rem',
@@ -706,6 +1160,20 @@ function SourceCard({
             border: `1px solid ${colors.border.default}`,
           }}
         />
+        {canExpand && (
+          <Chip
+            size="small"
+            label={`${childCount} ref${childCount === 1 ? '' : 's'}`}
+            sx={{
+              fontSize: '0.48rem',
+              height: 16,
+              fontFamily: MONO,
+              color: colors.accent.cyan,
+              bgcolor: alphaColor(colors.accent.cyan, 0.08),
+              border: `1px solid ${alphaColor(colors.accent.cyan, 0.4)}`,
+            }}
+          />
+        )}
         <Typography sx={{ fontSize: '0.55rem', color: accent, fontFamily: MONO, fontWeight: 600, letterSpacing: 0.5 }}>
           {source.status.toUpperCase()}
         </Typography>
@@ -778,27 +1246,76 @@ export function KnowledgeBasePanel() {
     loading,
     error,
     ingestDetails,
+    batchProgress,
     refresh,
     upload,
     deleteSource,
     reprocess,
     scrape,
+    scan,
+    scrapeRefs,
+    pauseBatch,
+    resumeBatch,
+    cancelBatch,
     rescrape,
+    pause,
+    resume,
   } = useKnowledgeBase();
   const [dragOver, setDragOver] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viewer, setViewer] = useState<{ id: string; name: string; mimeType?: string } | null>(null);
   const [cortexDegraded, setCortexDegraded] = useState(false);
-  const [activeScrapeId, setActiveScrapeId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
   const vaultScrollRef = useRef<HTMLDivElement>(null);
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set());
+
+  const childrenByParent = useMemo(() => {
+    const map = new Map<string, KnowledgeSource[]>();
+    for (const s of sources) {
+      if (s.parentId) {
+        const arr = map.get(s.parentId) ?? [];
+        arr.push(s);
+        map.set(s.parentId, arr);
+      }
+    }
+    for (const [id, arr] of map) {
+      arr.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      map.set(id, arr);
+    }
+    return map;
+  }, [sources]);
+
+  const visibleRows = useMemo(() => {
+    const rows: { source: KnowledgeSource; depth: number; childCount: number }[] = [];
+    const roots = sources
+      .filter((s) => !s.parentId)
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    const add = (source: KnowledgeSource, depth: number) => {
+      const children = childrenByParent.get(source.id) ?? [];
+      rows.push({ source, depth, childCount: children.length });
+      if (expandedParents.has(source.id) && children.length) {
+        for (const child of children) add(child, depth + 1);
+      }
+    };
+    for (const root of roots) add(root, 0);
+    return rows;
+  }, [sources, childrenByParent, expandedParents]);
+
+  const toggleParent = useCallback((id: string) => {
+    setExpandedParents((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
   const {
     visibleIndices: vaultVisibleIndices,
     topSpacerPx: vaultTopSpacer,
     bottomSpacerPx: vaultBottomSpacer,
   } = useVirtualGrid(vaultScrollRef, {
-    itemCount: sources.length,
+    itemCount: visibleRows.length,
     rowHeight: 92,
     minColWidth: 2000, // force 1-column list virtualization
     gap: 8,
@@ -857,21 +1374,38 @@ export function KnowledgeBasePanel() {
   const readyCount = sources.filter((s) => s.status === 'ready').length;
   const activeCount = sources.filter((s) => isActiveStatus(s.status)).length;
   const selectedSource = sources.find((s) => s.id === selectedId) ?? null;
+  const activeSource = sources
+    .filter((s) => isActiveStatus(s.status) || (s.status !== 'ready' && !s.error))
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))[0] ?? null;
+  const dossierSource = selectedSource ?? activeSource;
 
-  // URL sources for the rescrape list in the spy HUD panel
-  const urlSources = useMemo(() => sources.filter((s) => s.sourceUrl), [sources]);
+  const handleScan = useCallback(async (url: string) => {
+    return await scan(url);
+  }, [scan]);
 
-  const handleScrape = useCallback(async (url: string) => {
-    setActiveScrapeId(null); // use __scrape__ sentinel until source is created
-    await scrape(url);
+  const handleScrapeRoot = useCallback(async (url: string) => {
+    const source = await scrape(url);
     void refresh();
+    return source;
   }, [scrape, refresh]);
 
-  const handleRescrape = useCallback(async (id: string) => {
-    setActiveScrapeId(id);
-    await rescrape(id);
+  const handleScrapeRefs = useCallback(async (urls: string[], opts: { maxDepth: number; maxLinks: number }) => {
+    const batchId = await scrapeRefs(urls, undefined, opts);
     void refresh();
-  }, [rescrape, refresh]);
+    return batchId;
+  }, [scrapeRefs, refresh]);
+
+  const handlePauseBatch = useCallback(async (batchId: string) => {
+    await pauseBatch(batchId);
+  }, [pauseBatch]);
+
+  const handleResumeBatch = useCallback(async (batchId: string) => {
+    await resumeBatch(batchId);
+  }, [resumeBatch]);
+
+  const handleCancelBatch = useCallback(async (batchId: string) => {
+    await cancelBatch(batchId);
+  }, [cancelBatch]);
 
   useEffect(() => {
     if (selectedId && !sources.some((s) => s.id === selectedId)) {
@@ -989,11 +1523,13 @@ export function KnowledgeBasePanel() {
         )}
 
         <SpyHudScrapePanel
-          scrapeDetails={ingestDetails}
-          activeScrapeId={activeScrapeId}
-          onScrape={handleScrape}
-          onRescrape={handleRescrape}
-          urlSources={urlSources}
+          onScan={handleScan}
+          onScrapeRoot={handleScrapeRoot}
+          onScrapeRefs={handleScrapeRefs}
+          onPauseBatch={handlePauseBatch}
+          onResumeBatch={handleResumeBatch}
+          onCancelBatch={handleCancelBatch}
+          batchProgress={batchProgress}
         />
 
         <TacticalDropZone dragOver={dragOver} onClick={() => fileInputRef.current?.click()} />
@@ -1009,19 +1545,35 @@ export function KnowledgeBasePanel() {
           }}
         />
 
-        {selectedSource && (
+        {dossierSource && (
           <Box sx={{ mt: 2.5 }}>
             <SectionHeader label="SOURCE DOSSIER" />
-            <DossierMonitor
-              source={selectedSource}
-              statusDetail={ingestDetails[selectedSource.id]}
-              onClose={() => setSelectedId(null)}
-              onReprocess={() => void reprocess(selectedSource.id)}
-              onDelete={() => {
-                void deleteSource(selectedSource.id);
-                setSelectedId(null);
-              }}
-            />
+            {dossierSource.sourceUrl ? (
+              <UrlScrapeDossier
+                source={dossierSource}
+                statusDetail={ingestDetails[dossierSource.id]}
+                children={childrenByParent.get(dossierSource.id) ?? []}
+                onClose={() => setSelectedId((prev) => (prev === dossierSource.id ? null : prev))}
+                onReprocess={() => void rescrape(dossierSource.id)}
+                onDelete={() => {
+                  void deleteSource(dossierSource.id);
+                  if (selectedId === dossierSource.id) setSelectedId(null);
+                }}
+                onPause={() => void pause(dossierSource.id)}
+                onResume={() => void resume(dossierSource.id)}
+              />
+            ) : (
+              <DossierMonitor
+                source={dossierSource}
+                statusDetail={ingestDetails[dossierSource.id]}
+                onClose={() => setSelectedId((prev) => (prev === dossierSource.id ? null : prev))}
+                onReprocess={() => void (dossierSource.sourceUrl ? rescrape(dossierSource.id) : reprocess(dossierSource.id))}
+                onDelete={() => {
+                  void deleteSource(dossierSource.id);
+                  if (selectedId === dossierSource.id) setSelectedId(null);
+                }}
+              />
+            )}
           </Box>
         )}
 
@@ -1041,12 +1593,18 @@ export function KnowledgeBasePanel() {
             )}
             {vaultTopSpacer > 0 && <Box sx={{ height: vaultTopSpacer, flexShrink: 0 }} />}
             {vaultVisibleIndices.map((idx) => {
-              const source = sources[idx];
-              if (!source) return null;
+              const row = visibleRows[idx];
+              if (!row) return null;
+              const { source, depth, childCount } = row;
+              const canExpand = childCount > 0;
               return (
                 <SourceCard
                   key={source.id}
                   source={source}
+                  depth={depth}
+                  childCount={childCount}
+                  expanded={canExpand && expandedParents.has(source.id)}
+                  onToggle={canExpand ? () => toggleParent(source.id) : undefined}
                   selected={source.id === selectedId}
                   onSelect={() => setSelectedId((prev) => (prev === source.id ? null : source.id))}
                   onView={() => setViewer({
@@ -1054,7 +1612,7 @@ export function KnowledgeBasePanel() {
                     name: source.name,
                     mimeType: source.mimeType,
                   })}
-                  onReprocess={() => void reprocess(source.id)}
+                  onReprocess={() => void (source.sourceUrl ? rescrape(source.id) : reprocess(source.id))}
                   onDelete={() => {
                     void deleteSource(source.id);
                     if (selectedId === source.id) setSelectedId(null);

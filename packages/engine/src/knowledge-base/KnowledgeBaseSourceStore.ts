@@ -35,6 +35,7 @@ export class KnowledgeBaseSourceStore {
       contentHash: row.content_hash ? String(row.content_hash) : undefined,
       lastScrapedAt: row.last_scraped_at ? toISOString(row.last_scraped_at) : undefined,
       scrapeStatus: row.scrape_status ? (row.scrape_status as ScrapeStatus) : undefined,
+      parentId: row.parent_id ? String(row.parent_id) : undefined,
       createdAt: toISOString(row.created_at),
       updatedAt: toISOString(row.updated_at ?? row.created_at),
     };
@@ -45,8 +46,8 @@ export class KnowledgeBaseSourceStore {
     const { rows } = await this.pool.query(
       `INSERT INTO memory_sources
         (name, kind, color_hex, origin, session_id, storage_id, file_size, file_mime, status, progress,
-         source_url, content_hash, scrape_status)
-       VALUES ($1, 'document', '#4a90d9', $2, $3, $4, $5, $6, 'pending', 0, $7, $8, $9)
+         source_url, content_hash, scrape_status, parent_id)
+       VALUES ($1, 'document', '#4a90d9', $2, $3, $4, $5, $6, 'pending', 0, $7, $8, $9, $10)
        RETURNING *`,
       [
         input.name,
@@ -58,6 +59,7 @@ export class KnowledgeBaseSourceStore {
         input.sourceUrl ?? null,
         input.contentHash ?? null,
         input.sourceUrl ? 'fresh' : null,
+        input.parentId ?? null,
       ],
     );
     if (!rows[0]) throw new Error('Failed to create knowledge base source');

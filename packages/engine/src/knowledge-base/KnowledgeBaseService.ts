@@ -1,6 +1,6 @@
 import type { Pool } from 'pg';
-import { createHash } from 'node:crypto';
-import { getLogger, KnowledgeBaseOrigin, type CreateKnowledgeSourceInput, type KnowledgeSearchResult, type KnowledgeSource } from '@agentx/shared';
+import { createHash, randomUUID } from 'node:crypto';
+import { getLogger, KnowledgeBaseOrigin, type CreateKnowledgeSourceInput, type KnowledgeSearchResult, type KnowledgeSource, type ScannedReference, type UrlScanResult, type ScrapeBatchProgress } from '@agentx/shared';
 import { getAttachmentService } from '../attachments/index.js';
 import type { MemoryFabric } from '../neural/MemoryFabric.js';
 import { getEmbedderInstance, OnnxEmbeddingProvider } from '../neural/OnnxEmbeddingProvider.js';
@@ -19,10 +19,22 @@ export type KnowledgeBaseStatusListener = (
   error?: string,
 ) => void;
 
+export type ScrapeBatchProgressListener = (progress: ScrapeBatchProgress) => void;
+
 export interface KnowledgeBaseServiceOptions {
   pool: Pool;
   fabric: MemoryFabric;
   embedder?: OnnxEmbeddingProvider;
+}
+
+interface ScrapeJob {
+  rootId: string;
+  sessionId?: string;
+  opts: { followLinks: boolean; maxDepth: number; maxLinks: number };
+  visited: Set<string>;
+  paused: boolean;
+  pending: Array<{ url: string; parentId: string; depthLeft: number }>;
+  domainFailures: Map<string, number>;
 }
 
 export class KnowledgeBaseService {
@@ -32,8 +44,11 @@ export class KnowledgeBaseService {
   private sourceStore: KnowledgeBaseSourceStore;
   private logger = getLogger();
   private statusListeners = new Set<KnowledgeBaseStatusListener>();
+  private batchProgressListeners = new Set<ScrapeBatchProgressListener>();
   private queue: string[] = [];
   private processing = false;
+  private scrapeJobs = new Map<string, ScrapeJob>();
+  private batchScrapes = new Map<string, { cancelled: boolean; paused: boolean }>();
 
   constructor(opts: KnowledgeBaseServiceOptions) {
     this.pool = opts.pool;
@@ -45,6 +60,17 @@ export class KnowledgeBaseService {
   onStatusChange(listener: KnowledgeBaseStatusListener): () => void {
     this.statusListeners.add(listener);
     return () => this.statusListeners.delete(listener);
+  }
+
+  onBatchProgress(listener: ScrapeBatchProgressListener): () => void {
+    this.batchProgressListeners.add(listener);
+    return () => this.batchProgressListeners.delete(listener);
+  }
+
+  private emitBatchProgress(p: ScrapeBatchProgress): void {
+    for (const listener of this.batchProgressListeners) {
+      try { listener(p); } catch { /* ignore */ }
+    }
   }
 
   private emitStatus(
@@ -239,15 +265,111 @@ export class KnowledgeBaseService {
   /**
    * Scrape a website URL and ingest its content into the knowledge base.
    * Uses the hybrid extractor (trafilatura + agent-fetch) for accurate content.
-   * Emits literal content snippets through onStatus for the spy HUD terminal.
+   *
+   * Optionally follows reference/consecutive links as child sources.
+   * Follows are processed in a background queue so the root can be returned quickly.
+   * The queue pauses automatically if repeated server restrictions are detected.
    */
-  async scrapeSource(url: string, sessionId?: string): Promise<KnowledgeSource> {
-    this.emitStatus('__scrape__', 'extracting', 0, `Fetching ${url}`);
-    this.emitStatus('__scrape__', 'extracting', 5, 'Resolving URL via hybrid extractor');
+  async scrapeSource(
+    url: string,
+    sessionId?: string,
+    follow: { followLinks?: boolean; maxDepth?: number; maxLinks?: number } = {},
+  ): Promise<KnowledgeSource> {
+    const opts = {
+      followLinks: follow.followLinks ?? false,
+      maxDepth: Math.max(0, Math.min(follow.maxDepth ?? 0, 10)),
+      maxLinks: Math.max(0, Math.min(follow.maxLinks ?? 0, 250)),
+    };
+
+    const root = await this.scrapeOne(url, sessionId, undefined);
+
+    const job: ScrapeJob = {
+      rootId: root.id,
+      sessionId,
+      opts,
+      visited: new Set<string>([url]),
+      paused: false,
+      pending: [],
+      domainFailures: new Map(),
+    };
+    this.scrapeJobs.set(root.id, job);
+
+    // enqueue any immediate children the root found
+    if (opts.followLinks && opts.maxDepth > 0 && opts.maxLinks > 0) {
+      const childUrls = this.selectReferenceLinks(root.links ?? [], url, opts.maxLinks, job.visited);
+      for (const childUrl of childUrls) {
+        if (!job.visited.has(childUrl)) {
+          job.visited.add(childUrl);
+          job.pending.push({ url: childUrl, parentId: root.id, depthLeft: opts.maxDepth - 1 });
+        }
+      }
+    }
+
+    void this.processQueue(root.id);
+    return root;
+  }
+
+  private async processQueue(rootId: string): Promise<void> {
+    const job = this.scrapeJobs.get(rootId);
+    if (!job) return;
+
+    while (!job.paused && job.pending.length > 0) {
+      const task = job.pending.shift();
+      if (!task) continue;
+      if (job.visited.has(task.url)) continue;
+      job.visited.add(task.url);
+
+      try {
+        const source = await this.scrapeOne(task.url, job.sessionId, task.parentId);
+        if (job.paused) continue;
+
+        // enqueue this source's own references with one less depth level
+        if (task.depthLeft > 0 && job.opts.maxLinks > 0) {
+          const childUrls = this.selectReferenceLinks(source.links ?? [], task.url, job.opts.maxLinks, job.visited);
+          for (const childUrl of childUrls) {
+            if (!job.visited.has(childUrl)) {
+              job.visited.add(childUrl);
+              job.pending.push({ url: childUrl, parentId: source.id, depthLeft: task.depthLeft - 1 });
+            }
+          }
+        }
+      } catch (err) {
+        const domain = this.extractDomain(task.url);
+        const isRestricted = this.isRestrictedError(err);
+        const count = (job.domainFailures.get(domain) ?? 0) + (isRestricted ? 1 : 0);
+        job.domainFailures.set(domain, isRestricted ? count : 0);
+
+        if (isRestricted && count >= 2) {
+          this.logger.warn('KB_SCRAPE_PAUSED', `Domain ${domain} restricted — pausing follow queue`, { rootId });
+          job.paused = true;
+          await this.sourceStore.updateSource(rootId, { scrapeStatus: 'paused' });
+          this.emitStatus(rootId, 'pending', 0, `Domain restricted: ${domain} — follow queue paused. Resume to continue.`);
+          break;
+        }
+
+        this.logger.warn('KB_FOLLOW_LINK', `Failed to follow ${task.url}`, { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    if (!job.paused && job.pending.length === 0) {
+      this.scrapeJobs.delete(rootId);
+    }
+  }
+
+  private async scrapeOne(
+    url: string,
+    sessionId: string | undefined,
+    parentId: string | undefined,
+  ): Promise<KnowledgeSource & { links: string[] }> {
+    const isChild = parentId != null;
 
     const result = await hybridFetchAndExtract(url);
+    const httpStatus = this.parseHttpStatus(result.reason);
     const content = result.markdown || result.text;
     if (!content.trim()) {
+      if (httpStatus && httpStatus >= 400) {
+        throw new Error(`HTTP ${httpStatus} — no content extracted from ${url}`);
+      }
       throw new Error(`No content extracted from ${url}`);
     }
 
@@ -255,15 +377,6 @@ export class KnowledgeBaseService {
     const contentHash = createHash('sha256').update(content).digest('hex');
     const title = result.title || new URL(url).hostname;
     const filename = `${title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)}.md`;
-
-    // Emit literal content snippets for the spy HUD terminal
-    const snippetLines = content.split('\n').filter((l) => l.trim()).slice(0, 20);
-    for (let i = 0; i < snippetLines.length; i++) {
-      const snippet = snippetLines[i]!.trim().slice(0, 80);
-      this.emitStatus('__scrape__', 'extracting', 10 + Math.floor((i / snippetLines.length) * 10), `> ${snippet}`);
-    }
-
-    this.emitStatus('__scrape__', 'extracting', 22, `Extracted ${content.length} chars · winner: ${result.winner}`);
 
     // Save content as an attachment (markdown file)
     const attachment = await getAttachmentService().saveFromBuffer(
@@ -274,7 +387,7 @@ export class KnowledgeBaseService {
       'scrape',
     );
 
-    // Create the source row with URL + hash
+    // Create the source row with URL + hash + parent
     const source = await this.sourceStore.insertSource({
       name: title,
       mimeType: 'text/markdown',
@@ -283,7 +396,8 @@ export class KnowledgeBaseService {
       sessionId,
       sourceUrl: url,
       contentHash,
-      origin: KnowledgeBaseOrigin.websiteScrape,
+      parentId,
+      origin: isChild ? KnowledgeBaseOrigin.websiteScrapeChild : KnowledgeBaseOrigin.websiteScrape,
     } satisfies CreateKnowledgeSourceInput);
 
     // Update scrape timestamp
@@ -292,9 +406,258 @@ export class KnowledgeBaseService {
       scrapeStatus: 'fresh',
     });
 
-    this.emitStatus(source.id, 'pending', 0, 'Scrape complete — queued for ingestion');
+    this.emitStatus(source.id, 'pending', 0, isChild ? 'Reference scraped — queued for ingestion' : 'Scrape complete — queued for ingestion');
     this.enqueueProcess(source.id);
-    return source;
+
+    return { ...source, links: result.links };
+  }
+
+  /** Pause a running scrape job. */
+  async pauseScrape(rootId: string): Promise<void> {
+    const job = this.scrapeJobs.get(rootId);
+    if (!job) return;
+    job.paused = true;
+    await this.sourceStore.updateSource(rootId, { scrapeStatus: 'paused' });
+    this.emitStatus(rootId, 'pending', 0, 'Follow queue paused by user.');
+  }
+
+  /** Resume a paused scrape job from where it left off. */
+  async resumeScrape(rootId: string): Promise<void> {
+    const job = this.scrapeJobs.get(rootId);
+    if (!job) {
+      // if no in-memory job, just reset status so it can be rescraped manually
+      const source = await this.sourceStore.getSource(rootId);
+      if (source) {
+        await this.sourceStore.updateSource(rootId, { scrapeStatus: 'fresh' });
+      }
+      return;
+    }
+    job.paused = false;
+    await this.sourceStore.updateSource(rootId, { scrapeStatus: 'fresh' });
+    this.emitStatus(rootId, 'pending', 0, 'Resuming follow queue…');
+    void this.processQueue(rootId);
+  }
+
+  private extractDomain(url: string): string {
+    try { return new URL(url).hostname; } catch { return url; }
+  }
+
+  private parseHttpStatus(reason: string): number | null {
+    const m = reason.match(/HTTP\s+(\d{3})/);
+    return m ? Number(m[1]) : null;
+  }
+
+  private isRestrictedError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = msg.match(/\b(403|429|503)\b/)?.[0];
+    return code === '403' || code === '429' || code === '503' || /forbidden|rate.?limit|unauthorized/i.test(msg);
+  }
+
+  private selectReferenceLinks(links: string[], baseUrl: string, maxLinks: number, visited: Set<string>): string[] {
+    return this.scoreReferenceLinks(links, baseUrl, visited)
+      .slice(0, maxLinks)
+      .map((s) => s.url);
+  }
+
+  /** Score and categorize all reference links from a page. Returns sorted by score descending. */
+  private scoreReferenceLinks(links: string[], baseUrl: string, visited?: Set<string>): ScannedReference[] {
+    const base = (() => { try { return new URL(baseUrl); } catch { return null; } })();
+    if (!base) return [];
+
+    const excludedPathParts = new Set(['tag', 'author', 'category', 'archive', 'search', 'feed', 'rss', 'wp-json', 'wp-content', 'login', 'register', 'cart', 'checkout', 'account', 'shop', 'store', 'about', 'contact', 'myncbi', 'disclaimer', 'signout']);
+    const excludedKeywords = new Set(['related', 'recommended', 'sponsored', 'popular', 'trending', 'latest', 'newsletter', 'subscribe', 'share', 'comment', 'login', 'register', 'cart', 'checkout', 'signin', 'signup']);
+    const paginationKeywords = new Set(['page', 'p', 'offset', 'start', 'index', 'pg']);
+    const referenceKeywords = new Set(['ref', 'reference', 'references', 'bibliography', 'citation', 'citations', 'note', 'notes', 'footnote', 'footnotes', 'appendix', 'supplementary', 'additional']);
+    const sequentialKeywords = new Set(['part', 'chapter', 'section', 'step', 'next', 'prev', 'previous', 'continued', 'consecutive', 'page', 'episode']);
+    const badExtensions = new Set(['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp4', 'mp3', 'zip', 'tar', 'gz', 'doc', 'docx', 'xls', 'xlsx', 'css', 'js', 'xml', 'ico', 'woff', 'woff2', 'ttf', 'eot', 'otf', 'map', 'json']);
+
+    const isReferenceHost = (host: string) =>
+      host === 'doi.org' ||
+      host === 'dx.doi.org' ||
+      host.endsWith('.ncbi.nlm.nih.gov') ||
+      host.endsWith('.europepmc.org');
+
+    const isCdn = (host: string) => host.startsWith('cdn.') || host.startsWith('static.');
+
+    const scored: ScannedReference[] = [];
+    const seen = new Set<string>();
+
+    for (const raw of links) {
+      if (visited?.has(raw)) continue;
+      let u: URL;
+      try { u = new URL(raw); } catch { continue; }
+      if (isCdn(u.hostname)) continue;
+      const sameHost = u.hostname === base.hostname;
+      const refHost = isReferenceHost(u.hostname);
+      if (!sameHost && !refHost) continue;
+      if (u.pathname === base.pathname && u.search === base.search) continue;
+
+      const path = u.pathname.toLowerCase();
+      const search = u.search.toLowerCase();
+      const pathParts = path.split('/').filter(Boolean);
+
+      const ext = path.split('.').pop()?.toLowerCase();
+      if (ext && badExtensions.has(ext)) continue;
+
+      if (sameHost && pathParts.some((p) => excludedPathParts.has(p))) continue;
+      if (u.pathname === base.pathname && !search) continue;
+
+      const key = `${u.pathname}${u.search}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      let score = 1;
+      let category: ScannedReference['category'] = 'external';
+
+      if (sameHost && (pathParts.some((p) => referenceKeywords.has(p)) || /\/(ref|references|reference)\/?$/.test(path))) {
+        score += 10;
+        category = 'reference';
+      }
+      if (!sameHost && refHost) { score += 6; category = refHost && (u.hostname === 'doi.org' || u.hostname === 'dx.doi.org') ? 'doi' : 'reference'; }
+      if (sameHost && path.startsWith(base.pathname.replace(/\/[^/]*$/, ''))) { score += 2; if (category === 'external') category = 'sequential'; }
+      for (const k of paginationKeywords) {
+        if (search.includes(`${k}=`) || search.includes(`&${k}=`)) { score += 5; if (category === 'external') category = 'pagination'; break; }
+      }
+      if (/\/page\//.test(path) || /\/p\/\d+/.test(path) || /page[_-]?\d+/i.test(path)) { score += 6; if (category === 'external') category = 'pagination'; }
+      if (pathParts.some((p) => referenceKeywords.has(p))) { score += 6; if (category === 'external') category = 'reference'; }
+      if (pathParts.some((p) => sequentialKeywords.has(p))) { score += 4; if (category === 'external') category = 'sequential'; }
+      if (/\?(p|page|start|offset|section|chapter|part)=/.test(search)) score += 3;
+      if (u.hostname === 'doi.org' || u.hostname === 'dx.doi.org' || /\/pmc\/articles\//.test(path)) { score += 5; category = 'doi'; }
+
+      const joined = `${path} ${search} ${u.hash}`.toLowerCase();
+      for (const k of excludedKeywords) {
+        if (joined.includes(k)) { score -= 4; }
+      }
+      if (pathParts.length <= 3) score += 1;
+
+      if (score > 0) {
+        // Derive a title from the URL path
+        const lastPart = pathParts[pathParts.length - 1] ?? u.hostname;
+        const title = decodeURIComponent(lastPart).replace(/[-_]/g, ' ').replace(/\.(html?|php|aspx?)$/, '').slice(0, 80);
+        scored.push({ url: raw, score, title, host: u.hostname, sameHost, isReferenceHost: refHost, category });
+      }
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored;
+  }
+
+  /**
+   * Phase 1 of the scan-then-scrape workflow.
+   * Fetches the root URL and returns a scan report of all discovered reference
+   * links. Does NOT ingest anything into the knowledge base.
+   */
+  async scanUrl(
+    url: string,
+    _sessionId?: string,
+    scanOpts?: { maxLinks?: number },
+  ): Promise<UrlScanResult> {
+    const maxLinks = Math.max(1, Math.min(scanOpts?.maxLinks ?? 250, 250));
+
+    const result = await hybridFetchAndExtract(url);
+    const content = result.markdown || result.text;
+    if (!content.trim()) {
+      throw new Error(`No content extracted from ${url} — the site may be blocking automated access.`);
+    }
+
+    const references = this.scoreReferenceLinks(result.links, url).slice(0, maxLinks);
+    const title = result.title || (() => { try { return new URL(url).hostname; } catch { return url; } })();
+
+    return {
+      url,
+      references,
+      contentLength: content.length,
+      title,
+      fetchMethod: result.agentFetchMethod ?? 'unknown',
+    };
+  }
+
+  /**
+   * Phase 2 of the scan-then-scrape workflow.
+   * Scrapes each selected URL as its own root source, emitting batch progress
+   * events. If maxDepth > 1, each scraped page's references are also followed
+   * recursively (up to maxLinks per page per depth level).
+   */
+  async scrapeReferences(
+    urls: string[],
+    sessionId?: string,
+    opts?: { maxDepth?: number; maxLinks?: number },
+  ): Promise<string> {
+    const maxDepth = Math.max(1, Math.min(opts?.maxDepth ?? 1, 10));
+    const maxLinks = Math.max(0, Math.min(opts?.maxLinks ?? 25, 250));
+    const batchId = randomUUID();
+    const batchState = { cancelled: false, paused: false };
+    this.batchScrapes.set(batchId, batchState);
+
+    const total = urls.length;
+    let completed = 0;
+    let succeeded = 0;
+    let failed = 0;
+    const sourceIds: string[] = [];
+
+    this.emitBatchProgress({
+      batchId, total, completed, currentIndex: 0, currentUrl: '',
+      succeeded, failed, status: 'running', sourceIds: [],
+    });
+
+    for (let i = 0; i < urls.length; i++) {
+      if (batchState.cancelled) break;
+      while (batchState.paused && !batchState.cancelled) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      if (batchState.cancelled) break;
+
+      const url = urls[i]!;
+      this.emitBatchProgress({
+        batchId, total, completed, currentIndex: i + 1, currentUrl: url,
+        succeeded, failed, status: 'running', sourceIds: [...sourceIds],
+      });
+
+      try {
+        const source = await this.scrapeSource(url, sessionId, {
+          followLinks: maxDepth > 1,
+          maxDepth: maxDepth - 1,
+          maxLinks,
+        });
+        sourceIds.push(source.id);
+        succeeded++;
+      } catch (err) {
+        failed++;
+        this.logger.warn('KB_BATCH_SCRAPE', `Failed to scrape ${url}`, {
+          batchId, error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      completed++;
+    }
+
+    this.emitBatchProgress({
+      batchId, total, completed, currentIndex: total, currentUrl: '',
+      succeeded, failed, status: batchState.cancelled ? 'paused' : 'done',
+      sourceIds,
+    });
+
+    if (!batchState.cancelled) {
+      this.batchScrapes.delete(batchId);
+    }
+    return batchId;
+  }
+
+  /** Pause a batch scrape. */
+  pauseBatch(batchId: string): void {
+    const batch = this.batchScrapes.get(batchId);
+    if (batch) batch.paused = true;
+  }
+
+  /** Resume a batch scrape. */
+  resumeBatch(batchId: string): void {
+    const batch = this.batchScrapes.get(batchId);
+    if (batch) batch.paused = false;
+  }
+
+  /** Cancel a batch scrape. */
+  cancelBatch(batchId: string): void {
+    const batch = this.batchScrapes.get(batchId);
+    if (batch) batch.cancelled = true;
   }
 
   /**

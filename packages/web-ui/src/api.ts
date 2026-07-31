@@ -1,6 +1,6 @@
 // Centralized API client for all web-api endpoints
 
-import type { ClientSituation, TurnAttachment, AttachmentReference, AttachmentPreview, KnowledgeSource, KnowledgeSearchResult, KnowledgeSearchRequest, KnowledgeSourceListResponse } from '@agentx/shared';
+import type { ClientSituation, TurnAttachment, AttachmentReference, AttachmentPreview, KnowledgeSource, KnowledgeSearchResult, KnowledgeSearchRequest, KnowledgeSourceListResponse, ScannedReference } from '@agentx/shared';
 import { AGENTX_AUTH_TOKEN_KEY } from './utils/client-storage';
 import { notifyVoiceConfigUpdated } from './voice/support';
 
@@ -841,7 +841,20 @@ export interface KnowledgeSourceFailedEvent {
   error: string;
   timestamp?: string;
 }
-export type KnowledgeSourceEvent = KnowledgeSourceStatusEvent | KnowledgeSourceReadyEvent | KnowledgeSourceFailedEvent;
+export interface KnowledgeBaseScrapeBatchProgressEvent {
+  type: 'knowledge_base_scrape_batch_progress';
+  batchId: string;
+  total: number;
+  completed: number;
+  currentIndex: number;
+  currentUrl: string;
+  succeeded: number;
+  failed: number;
+  status: string;
+  sourceIds: string[];
+  timestamp?: string;
+}
+export type KnowledgeSourceEvent = KnowledgeSourceStatusEvent | KnowledgeSourceReadyEvent | KnowledgeSourceFailedEvent | KnowledgeBaseScrapeBatchProgressEvent;
 
 export interface KnowledgeIngestEvent {
   id: number;
@@ -916,11 +929,37 @@ export const knowledgeBase = {
   reprocess: (id: string) => request<{ source: KnowledgeSource }>(`/knowledge-base/${encodeURIComponent(id)}/reprocess`, { method: 'POST', body: JSON.stringify({}) }).then((r) => r.source),
 
   /** Scrape a website URL and ingest into the knowledge base. */
-  scrape: (url: string, sessionId?: string) =>
+  scrape: (url: string, sessionId?: string, follow?: { followLinks?: boolean; maxDepth?: number; maxLinks?: number }) =>
     request<{ source: KnowledgeSource }>('/knowledge-base/scrape', {
       method: 'POST',
-      body: JSON.stringify({ url, sessionId }),
+      body: JSON.stringify({ url, sessionId, followLinks: follow?.followLinks, maxDepth: follow?.maxDepth, maxLinks: follow?.maxLinks }),
     }).then((r) => r.source),
+
+  /** Scan a URL — fetch root, return discovered reference links (no ingestion). */
+  scan: (url: string, sessionId?: string, maxLinks?: number) =>
+    request<{ url: string; references: ScannedReference[]; contentLength: number; title: string; fetchMethod: string }>('/knowledge-base/scan', {
+      method: 'POST',
+      body: JSON.stringify({ url, sessionId, maxLinks }),
+    }),
+
+  /** Scrape selected reference URLs as individual sources. Returns batchId. */
+  scrapeRefs: (urls: string[], sessionId?: string, opts?: { maxDepth?: number; maxLinks?: number }) =>
+    request<{ ok: boolean; batchId: string; count: number }>('/knowledge-base/scrape-refs', {
+      method: 'POST',
+      body: JSON.stringify({ urls, sessionId, maxDepth: opts?.maxDepth, maxLinks: opts?.maxLinks }),
+    }),
+
+  /** Pause a batch scrape. */
+  pauseBatch: (batchId: string) =>
+    request<{ ok: boolean }>(`/knowledge-base/scrape-batch/${encodeURIComponent(batchId)}/pause`, { method: 'POST' }),
+
+  /** Resume a batch scrape. */
+  resumeBatch: (batchId: string) =>
+    request<{ ok: boolean }>(`/knowledge-base/scrape-batch/${encodeURIComponent(batchId)}/resume`, { method: 'POST' }),
+
+  /** Cancel a batch scrape. */
+  cancelBatch: (batchId: string) =>
+    request<{ ok: boolean }>(`/knowledge-base/scrape-batch/${encodeURIComponent(batchId)}/cancel`, { method: 'POST' }),
 
   /** Rescrape an existing URL source (smart hash compare). */
   rescrape: (id: string) =>
@@ -928,6 +967,12 @@ export const knowledgeBase = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+
+  /** Pause a running web-scrape follow queue. */
+  pause: (id: string) => request<{ source: KnowledgeSource }>(`/knowledge-base/${encodeURIComponent(id)}/pause`, { method: 'POST', body: JSON.stringify({}) }).then((r) => r.source),
+
+  /** Resume a paused web-scrape follow queue. */
+  resume: (id: string) => request<{ source: KnowledgeSource }>(`/knowledge-base/${encodeURIComponent(id)}/resume`, { method: 'POST', body: JSON.stringify({}) }).then((r) => r.source),
 
   /** Ingest event log for a knowledge source. */
   events: (id: string) =>
@@ -957,7 +1002,8 @@ export const knowledgeBase = {
             if (
               data.type === 'knowledge_base_source_status' ||
               data.type === 'knowledge_base_source_ready' ||
-              data.type === 'knowledge_base_source_failed'
+              data.type === 'knowledge_base_source_failed' ||
+              data.type === 'knowledge_base_scrape_batch_progress'
             ) {
               onEvent(data as unknown as KnowledgeSourceEvent);
             }
