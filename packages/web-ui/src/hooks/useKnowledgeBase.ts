@@ -13,6 +13,8 @@ export interface UseKnowledgeBaseReturn {
   upload: (file: File, sessionId?: string) => Promise<KnowledgeSource>;
   deleteSource: (id: string) => Promise<void>;
   reprocess: (id: string) => Promise<KnowledgeSource>;
+  scrape: (url: string, sessionId?: string) => Promise<KnowledgeSource>;
+  rescrape: (id: string) => Promise<{ source: KnowledgeSource; action: 'skipped' | 'updated' | 'unavailable' }>;
   search: (query: string, topK?: number, kind?: 'all' | 'chunk' | 'page', sourceId?: string) => Promise<KnowledgeSearchResult[]>;
   clearSearch: () => void;
   searchResults: KnowledgeSearchResult[];
@@ -73,6 +75,23 @@ export function useKnowledgeBase(sessionId?: string): UseKnowledgeBaseReturn {
       ),
     );
     return source;
+  }, []);
+
+  const scrape = useCallback(async (url: string, sessionId?: string) => {
+    const source = await knowledgeBase.scrape(url, sessionId);
+    setSources((prev) => {
+      const filtered = prev.filter((s) => s.id !== source.id);
+      return [source, ...filtered];
+    });
+    return source;
+  }, []);
+
+  const rescrape = useCallback(async (id: string) => {
+    const { source, action } = await knowledgeBase.rescrape(id);
+    setSources((prev) =>
+      prev.map((s) => (s.id === source.id ? source : s)),
+    );
+    return { source, action };
   }, []);
 
   const search = useCallback(async (query: string, topK = 5, kind: 'all' | 'chunk' | 'page' = 'all', sourceId?: string) => {
@@ -190,6 +209,8 @@ export function useKnowledgeBase(sessionId?: string): UseKnowledgeBaseReturn {
     upload,
     deleteSource,
     reprocess,
+    scrape,
+    rescrape,
     search,
     clearSearch,
     searchResults,

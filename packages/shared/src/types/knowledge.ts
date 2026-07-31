@@ -9,6 +9,9 @@ export type KnowledgeSourceStatus =
   | 'ready'
   | 'failed';
 
+/** Scrape-specific status for URL sources (stored in scrape_status column). */
+export type ScrapeStatus = 'fresh' | 'unchanged' | 'updated' | 'unavailable' | 'error';
+
 /** A document/file that has been uploaded into the knowledge base. */
 export interface KnowledgeSource {
   id: string;
@@ -30,6 +33,14 @@ export interface KnowledgeSource {
   pageCount?: number;
   /** 1-based position in the ingest queue when status is pending. */
   queuePosition?: number;
+  /** Source URL for website-scraped sources. */
+  sourceUrl?: string;
+  /** SHA-256 hash of extracted content, for smart rescrape comparison. */
+  contentHash?: string;
+  /** Last successful scrape timestamp (ISO string). */
+  lastScrapedAt?: string;
+  /** Scrape-specific status for URL sources. */
+  scrapeStatus?: ScrapeStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -80,6 +91,12 @@ export interface CreateKnowledgeSourceInput {
   size: number;
   storageId: string;
   sessionId?: string;
+  /** Source URL for website-scraped sources. */
+  sourceUrl?: string;
+  /** Content hash for smart rescrape comparison. */
+  contentHash?: string;
+  /** Origin code — defaults to documentUpload if not specified. */
+  origin?: string;
 }
 
 /** Client request to search the knowledge base. */

@@ -251,5 +251,59 @@ export function router(_ctx: ApiContext): Router {
     }
   });
 
+  // ─── Website scrape → RAG ingestion ───
+
+  r.post('/knowledge-base/scrape', async (req: Request, res: Response) => {
+    const svc = await getKnowledgeBaseService();
+    if (!svc) {
+      res.status(503).json({ error: 'Knowledge base unavailable' });
+      return;
+    }
+    const body = req.body as { url?: unknown; sessionId?: unknown };
+    const url = typeof body.url === 'string' ? body.url.trim() : '';
+    if (!url || !/^https?:\/\//i.test(url)) {
+      res.status(400).json({ error: 'A valid http(s) URL is required' });
+      return;
+    }
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined;
+    try {
+      const source = await svc.scrapeSource(url, sessionId);
+      broadcastKnowledgeBaseSourceStatus({
+        sourceId: source.id,
+        status: source.status,
+        progress: source.progress,
+        detail: 'scraped',
+      });
+      res.json({ source });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  r.post('/knowledge-base/:id/rescrape', async (req: Request, res: Response) => {
+    const svc = await getKnowledgeBaseService();
+    if (!svc) {
+      res.status(503).json({ error: 'Knowledge base unavailable' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id) {
+      res.status(400).json({ error: 'id is required' });
+      return;
+    }
+    try {
+      const { source, action } = await svc.rescrapeSource(id);
+      broadcastKnowledgeBaseSourceStatus({
+        sourceId: id,
+        status: source.status,
+        progress: source.progress,
+        detail: `rescrape:${action}`,
+      });
+      res.json({ source, action });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   return r;
 }

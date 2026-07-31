@@ -915,6 +915,20 @@ export const knowledgeBase = {
   /** Reprocess a knowledge source. */
   reprocess: (id: string) => request<{ source: KnowledgeSource }>(`/knowledge-base/${encodeURIComponent(id)}/reprocess`, { method: 'POST', body: JSON.stringify({}) }).then((r) => r.source),
 
+  /** Scrape a website URL and ingest into the knowledge base. */
+  scrape: (url: string, sessionId?: string) =>
+    request<{ source: KnowledgeSource }>('/knowledge-base/scrape', {
+      method: 'POST',
+      body: JSON.stringify({ url, sessionId }),
+    }).then((r) => r.source),
+
+  /** Rescrape an existing URL source (smart hash compare). */
+  rescrape: (id: string) =>
+    request<{ source: KnowledgeSource; action: 'skipped' | 'updated' | 'unavailable' }>(`/knowledge-base/${encodeURIComponent(id)}/rescrape`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
   /** Ingest event log for a knowledge source. */
   events: (id: string) =>
     request<{ events: KnowledgeIngestEvent[] }>(`/knowledge-base/${encodeURIComponent(id)}/events`).then((r) => r.events),

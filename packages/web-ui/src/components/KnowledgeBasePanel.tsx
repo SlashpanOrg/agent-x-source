@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualGrid } from '../perf/useVirtualGrid';
 import type { KnowledgeSource, KnowledgeSourceStatus } from '@agentx/shared';
 import Box from '@mui/material/Box';
@@ -10,6 +10,7 @@ import { PanelHeader } from './PanelHeader';
 import { useKnowledgeBase } from '../hooks/useKnowledgeBase';
 import { knowledgeBase, neuralCortex } from '../api';
 import { colors, alphaColor, MONO } from '../theme';
+import { SpyHudScrapePanel } from './SpyHudScrapePanel';
 
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -781,11 +782,14 @@ export function KnowledgeBasePanel() {
     upload,
     deleteSource,
     reprocess,
+    scrape,
+    rescrape,
   } = useKnowledgeBase();
   const [dragOver, setDragOver] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viewer, setViewer] = useState<{ id: string; name: string; mimeType?: string } | null>(null);
   const [cortexDegraded, setCortexDegraded] = useState(false);
+  const [activeScrapeId, setActiveScrapeId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
   const vaultScrollRef = useRef<HTMLDivElement>(null);
@@ -853,6 +857,21 @@ export function KnowledgeBasePanel() {
   const readyCount = sources.filter((s) => s.status === 'ready').length;
   const activeCount = sources.filter((s) => isActiveStatus(s.status)).length;
   const selectedSource = sources.find((s) => s.id === selectedId) ?? null;
+
+  // URL sources for the rescrape list in the spy HUD panel
+  const urlSources = useMemo(() => sources.filter((s) => s.sourceUrl), [sources]);
+
+  const handleScrape = useCallback(async (url: string) => {
+    setActiveScrapeId(null); // use __scrape__ sentinel until source is created
+    await scrape(url);
+    void refresh();
+  }, [scrape, refresh]);
+
+  const handleRescrape = useCallback(async (id: string) => {
+    setActiveScrapeId(id);
+    await rescrape(id);
+    void refresh();
+  }, [rescrape, refresh]);
 
   useEffect(() => {
     if (selectedId && !sources.some((s) => s.id === selectedId)) {
@@ -968,6 +987,14 @@ export function KnowledgeBasePanel() {
             </Typography>
           </Box>
         )}
+
+        <SpyHudScrapePanel
+          scrapeDetails={ingestDetails}
+          activeScrapeId={activeScrapeId}
+          onScrape={handleScrape}
+          onRescrape={handleRescrape}
+          urlSources={urlSources}
+        />
 
         <TacticalDropZone dragOver={dragOver} onClick={() => fileInputRef.current?.click()} />
         <input

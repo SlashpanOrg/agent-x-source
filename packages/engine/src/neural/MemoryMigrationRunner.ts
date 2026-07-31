@@ -490,6 +490,20 @@ export const MIGRATIONS: Migration[] = [
          AND t.unit_type = 'chunk';
     `,
   },
+  {
+    version: 24,
+    name: 'knowledge_base_url_scrape',
+    sql: `
+      -- Track the source URL and content hash for website-scraped knowledge
+      -- sources. Enables smart rescrape: hash-compare to skip unchanged pages,
+      -- and preserve existing chunks when a URL is taken down (404/5xx).
+      ALTER TABLE memory_sources ADD COLUMN IF NOT EXISTS source_url TEXT;
+      ALTER TABLE memory_sources ADD COLUMN IF NOT EXISTS content_hash TEXT;
+      ALTER TABLE memory_sources ADD COLUMN IF NOT EXISTS last_scraped_at TIMESTAMPTZ;
+      ALTER TABLE memory_sources ADD COLUMN IF NOT EXISTS scrape_status TEXT;
+      CREATE INDEX IF NOT EXISTS idx_memory_sources_source_url ON memory_sources(source_url) WHERE source_url IS NOT NULL;
+    `,
+  },
 ];
 
 export class MemoryMigrationRunner {

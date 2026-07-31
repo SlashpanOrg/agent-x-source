@@ -1,10 +1,12 @@
 import type { Pool } from 'pg';
+import { createHash } from 'node:crypto';
 import { getLogger, KnowledgeBaseOrigin, type CreateKnowledgeSourceInput, type KnowledgeSearchResult, type KnowledgeSource } from '@agentx/shared';
 import { getAttachmentService } from '../attachments/index.js';
 import type { MemoryFabric } from '../neural/MemoryFabric.js';
 import { getEmbedderInstance, OnnxEmbeddingProvider } from '../neural/OnnxEmbeddingProvider.js';
 import { resolveEmbedTextForNode } from '../neural/retrieval/contextualize.js';
 import { toHalfvecLiteral } from '../neural/VectorQuantizer.js';
+import { hybridFetchAndExtract } from '../search/hybrid-extract.js';
 import { DocumentIngestPipeline } from './DocumentIngestPipeline.js';
 import { searchKnowledgeBaseDocuments } from './document-search.js';
 import { KnowledgeBaseSourceStore } from './KnowledgeBaseSourceStore.js';
@@ -232,5 +234,154 @@ export class KnowledgeBaseService {
 
     this.emitStatus(id, 'ready', 100, `Re-embedded ${updated} chunks (failed=${failed})`);
     return { updated, failed };
+  }
+
+  /**
+   * Scrape a website URL and ingest its content into the knowledge base.
+   * Uses the hybrid extractor (trafilatura + agent-fetch) for accurate content.
+   * Emits literal content snippets through onStatus for the spy HUD terminal.
+   */
+  async scrapeSource(url: string, sessionId?: string): Promise<KnowledgeSource> {
+    this.emitStatus('__scrape__', 'extracting', 0, `Fetching ${url}`);
+    this.emitStatus('__scrape__', 'extracting', 5, 'Resolving URL via hybrid extractor');
+
+    const result = await hybridFetchAndExtract(url);
+    const content = result.markdown || result.text;
+    if (!content.trim()) {
+      throw new Error(`No content extracted from ${url}`);
+    }
+
+    // SHA-256 hash for smart rescrape comparison
+    const contentHash = createHash('sha256').update(content).digest('hex');
+    const title = result.title || new URL(url).hostname;
+    const filename = `${title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)}.md`;
+
+    // Emit literal content snippets for the spy HUD terminal
+    const snippetLines = content.split('\n').filter((l) => l.trim()).slice(0, 20);
+    for (let i = 0; i < snippetLines.length; i++) {
+      const snippet = snippetLines[i]!.trim().slice(0, 80);
+      this.emitStatus('__scrape__', 'extracting', 10 + Math.floor((i / snippetLines.length) * 10), `> ${snippet}`);
+    }
+
+    this.emitStatus('__scrape__', 'extracting', 22, `Extracted ${content.length} chars · winner: ${result.winner}`);
+
+    // Save content as an attachment (markdown file)
+    const attachment = await getAttachmentService().saveFromBuffer(
+      sessionId ?? 'global',
+      filename,
+      Buffer.from(content, 'utf-8'),
+      'text/markdown',
+      'scrape',
+    );
+
+    // Create the source row with URL + hash
+    const source = await this.sourceStore.insertSource({
+      name: title,
+      mimeType: 'text/markdown',
+      size: Buffer.byteLength(content, 'utf-8'),
+      storageId: attachment.id,
+      sessionId,
+      sourceUrl: url,
+      contentHash,
+      origin: KnowledgeBaseOrigin.websiteScrape,
+    } satisfies CreateKnowledgeSourceInput);
+
+    // Update scrape timestamp
+    await this.sourceStore.updateSource(source.id, {
+      lastScrapedAt: new Date().toISOString(),
+      scrapeStatus: 'fresh',
+    });
+
+    this.emitStatus(source.id, 'pending', 0, 'Scrape complete — queued for ingestion');
+    this.enqueueProcess(source.id);
+    return source;
+  }
+
+  /**
+   * Rescrape an existing URL source. Uses smart hash comparison:
+   * - If content unchanged → skip (no re-embed), return with scrapeStatus='unchanged'
+   * - If content changed → re-ingest with new content, scrapeStatus='updated'
+   * - If URL is down (404/5xx/network error) → preserve existing chunks, scrapeStatus='unavailable'
+   */
+  async rescrapeSource(id: string): Promise<{ source: KnowledgeSource; action: 'skipped' | 'updated' | 'unavailable' }> {
+    const source = await this.sourceStore.getSource(id);
+    if (!source) throw new Error(`Knowledge base source not found: ${id}`);
+    if (!source.sourceUrl) throw new Error('Source has no URL to rescrape');
+
+    this.emitStatus(id, 'extracting', 5, `Rescraping ${source.sourceUrl}`);
+
+    let result;
+    try {
+      result = await hybridFetchAndExtract(source.sourceUrl);
+    } catch (err) {
+      // URL is down — preserve existing chunks, mark unavailable
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.logger.warn('KB_RESCRAPE', `URL unavailable: ${source.sourceUrl}`, { error: errorMsg });
+      await this.sourceStore.updateSource(id, {
+        scrapeStatus: 'unavailable',
+        error: `URL unavailable: ${errorMsg}`,
+      });
+      this.emitStatus(id, 'failed', 0, `URL unavailable — existing chunks preserved`, errorMsg);
+      const updated = await this.sourceStore.getSource(id);
+      return { source: updated!, action: 'unavailable' };
+    }
+
+    const content = result.markdown || result.text;
+    if (!content.trim()) {
+      await this.sourceStore.updateSource(id, {
+        scrapeStatus: 'unavailable',
+        error: 'No content extracted — page may be empty or taken down',
+      });
+      this.emitStatus(id, 'failed', 0, 'No content extracted — existing chunks preserved', 'Empty response');
+      const updated = await this.sourceStore.getSource(id);
+      return { source: updated!, action: 'unavailable' };
+    }
+
+    const newHash = createHash('sha256').update(content).digest('hex');
+
+    // Smart hash compare — skip if unchanged
+    if (source.contentHash && source.contentHash === newHash) {
+      await this.sourceStore.updateSource(id, {
+        scrapeStatus: 'unchanged',
+        lastScrapedAt: new Date().toISOString(),
+        error: null,
+      });
+      this.emitStatus(id, 'ready', 100, 'Content unchanged — no re-embedding needed');
+      const updated = await this.sourceStore.getSource(id);
+      return { source: updated!, action: 'skipped' };
+    }
+
+    // Content changed — re-ingest
+    this.emitStatus(id, 'extracting', 15, 'Content changed — re-ingesting');
+
+    // Emit literal content snippets for the spy HUD terminal
+    const snippetLines = content.split('\n').filter((l) => l.trim()).slice(0, 20);
+    for (let i = 0; i < snippetLines.length; i++) {
+      const snippet = snippetLines[i]!.trim().slice(0, 80);
+      this.emitStatus(id, 'extracting', 15 + Math.floor((i / snippetLines.length) * 10), `> ${snippet}`);
+    }
+
+    const title = result.title || source.name;
+    const filename = `${title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)}.md`;
+
+    const attachment = await getAttachmentService().saveFromBuffer(
+      source.sessionId ?? 'global',
+      filename,
+      Buffer.from(content, 'utf-8'),
+      'text/markdown',
+      'scrape',
+    );
+
+    // Update source with new content + hash, then re-ingest
+    await this.pool.query(
+      `UPDATE memory_sources SET storage_id = $1, file_size = $2, content_hash = $3, scrape_status = 'updated', last_scraped_at = NOW(), origin = $4, status = 'pending', progress = 0, error = NULL, updated_at = NOW() WHERE id = $5::uuid`,
+      [attachment.id, Buffer.byteLength(content, 'utf-8'), newHash, KnowledgeBaseOrigin.websiteRescrape, id],
+    );
+
+    this.emitStatus(id, 'pending', 0, 'Re-scrape complete — queued for re-ingestion');
+    this.enqueueProcess(id);
+
+    const updated = await this.sourceStore.getSource(id);
+    return { source: updated!, action: 'updated' };
   }
 }
