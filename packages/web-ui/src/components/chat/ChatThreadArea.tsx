@@ -53,46 +53,58 @@ export const ChatThreadArea = React.memo(function ChatThreadArea() {
     <Box
       sx={{
         flex: 1,
-        overflow: 'auto',
-        px: 2,
-        py: 1.5,
+        display: 'flex',
+        flexDirection: 'column',
         position: 'relative',
-        scrollbarWidth: 'none',
-        msOverflowStyle: 'none',
-        '&::-webkit-scrollbar': { display: 'none' },
+        minWidth: 0,
       }}
-      ref={messagesContainerRef}
     >
-      <ChatThreadView
-        messagesContainerRef={messagesContainerRef}
-        sessionRestoring={sessionRestoring}
-        messages={messages}
-        streaming={streaming}
-        loadingOlderMessages={loadingOlderMessages}
-        hasOlderMessages={hasOlderMessages}
-        onLoadOlderMessages={handleLoadOlder}
-        loadingSteps={loadingSteps}
-        freezeMessageLayout={freezeMessageLayout || loadingOlderMessages || sessionRestoring || !initialScrollDone}
-        pendingFeedbackMessageId={sessionRestoring ? null : pendingFeedbackMessageId}
-        feedbackSubmitting={feedbackSubmitting}
-        turnActivityStage={currentStep ?? turnActivity?.stage}
-        bottomRef={bottomRef}
-        onResend={handleResend}
-        onOpenChildSession={openChildSession}
-        onQuestionnaireRespond={handleQuestionnaireRespond}
-        onQuestionnaireCancel={handleQuestionnaireCancel}
-        onCrewRosterPickerSubmit={handleCrewRosterPickerSubmit}
-        onCrewRosterPickerSkip={handleCrewRosterPickerSkip}
-        onViewCrewDossier={handleViewCrewDossier}
-        onViewCrewByCallsign={handleViewCrewByCallsign}
-        onTurnFeedback={handleTurnFeedback}
-        onSaveMarkdown={handleSaveMarkdown}
-      />
+      <Box
+        sx={{
+          flex: 1,
+          overflow: 'auto',
+          px: 2,
+          py: 1.5,
+          scrollbarWidth: 'none',
+          msOverflowStyle: 'none',
+          '&::-webkit-scrollbar': { display: 'none' },
+        }}
+        ref={messagesContainerRef}
+      >
+        <ChatThreadView
+          messagesContainerRef={messagesContainerRef}
+          sessionRestoring={sessionRestoring}
+          messages={messages}
+          streaming={streaming}
+          loadingOlderMessages={loadingOlderMessages}
+          hasOlderMessages={hasOlderMessages}
+          onLoadOlderMessages={handleLoadOlder}
+          loadingSteps={loadingSteps}
+          freezeMessageLayout={freezeMessageLayout || loadingOlderMessages || sessionRestoring || !initialScrollDone}
+          pendingFeedbackMessageId={sessionRestoring ? null : pendingFeedbackMessageId}
+          feedbackSubmitting={feedbackSubmitting}
+          turnActivityStage={currentStep ?? turnActivity?.stage}
+          bottomRef={bottomRef}
+          onResend={handleResend}
+          onOpenChildSession={openChildSession}
+          onQuestionnaireRespond={handleQuestionnaireRespond}
+          onQuestionnaireCancel={handleQuestionnaireCancel}
+          onCrewRosterPickerSubmit={handleCrewRosterPickerSubmit}
+          onCrewRosterPickerSkip={handleCrewRosterPickerSkip}
+          onViewCrewDossier={handleViewCrewDossier}
+          onViewCrewByCallsign={handleViewCrewByCallsign}
+          onTurnFeedback={handleTurnFeedback}
+          onSaveMarkdown={handleSaveMarkdown}
+        />
 
-      {toolEnablePrompt && (
-        <ToolEnableBanner toolId={toolEnablePrompt.toolId} toolName={toolEnablePrompt.toolName} onRespond={handleToolEnableRespond} />
-      )}
+        {toolEnablePrompt && (
+          <ToolEnableBanner toolId={toolEnablePrompt.toolId} toolName={toolEnablePrompt.toolName} onRespond={handleToolEnableRespond} />
+        )}
+      </Box>
 
+      {/* Floating jump-to-bottom pill — sibling of scroll container, not child.
+          This keeps it fixed relative to the thread area viewport instead of
+          scrolling with the message content. */}
       <ScrollToBottomPill
         visible={showJumpPill}
         onClick={handleScrollToBottom}
