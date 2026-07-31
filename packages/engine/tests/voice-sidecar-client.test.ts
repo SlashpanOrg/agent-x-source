@@ -8,7 +8,7 @@ describe('VoiceSidecarClient', () => {
     vi.stubGlobal('fetch', fetchMock);
     fetchMock.mockResolvedValue({
       ok: true,
-      text: async () => JSON.stringify({ ok: true, text: 'hello', chunks: [{ pcmBase64: 'AA==', sampleRate: 24000 }] }),
+      text: async () => JSON.stringify({ ok: true, text: 'hello' }),
     });
   });
 
@@ -27,16 +27,36 @@ describe('VoiceSidecarClient', () => {
     );
   });
 
-  it('streams transcription requests to /stt/stream', async () => {
+  it('streams transcription requests to /stt/stream with binary body', async () => {
     const client = new VoiceSidecarClient({ baseUrl: 'http://127.0.0.1:9876', authToken: 'secret' });
     await client.streamTranscribe({ pcmBase64: 'AA==', sampleRate: 16000, finalize: true });
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:9876/stt/stream',
-      expect.objectContaining({ method: 'POST' }),
+      expect.stringContaining('http://127.0.0.1:9876/stt/stream?'),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ 'content-type': 'application/octet-stream' }),
+      }),
     );
   });
 
-  it('streams synthesis requests to /tts/stream', async () => {
+  it('streams synthesis requests to /tts/stream via NDJSON', async () => {
+    const ndjsonLine = JSON.stringify({ pcmBase64: 'AA==', sampleRate: 24000 }) + '\n';
+    const encoder = new TextEncoder();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      body: {
+        getReader: () => {
+          let read = false;
+          return {
+            read: async () => {
+              if (read) return { done: true, value: undefined };
+              read = true;
+              return { done: false, value: encoder.encode(ndjsonLine) };
+            },
+          };
+        },
+      },
+    });
     const client = new VoiceSidecarClient({ baseUrl: 'http://127.0.0.1:9876', authToken: 'secret' });
     const result = await client.synthesizeStream({ text: 'Hello', engine: 'kokoro', requestId: 'req-1' });
     expect(result.chunks).toHaveLength(1);

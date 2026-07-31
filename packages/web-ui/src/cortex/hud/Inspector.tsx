@@ -52,7 +52,7 @@ export function Inspector({ detail, loading, onClose, onHop }: InspectorProps) {
       </Box>
 
       {detail && style && (
-        <Box sx={{ px: 1.75, pb: 1.75, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+        <Box className="ax-scroll-y" sx={{ px: 1.75, pb: 1.75, display: 'flex', flexDirection: 'column', gap: 1.25 }}>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
             <Row label="type" value={style.name.toLowerCase()} />
             <Row label="recalled" value={`${detail.node.accessCount}×`} />
@@ -62,10 +62,10 @@ export function Inspector({ detail, loading, onClose, onHop }: InspectorProps) {
           </Box>
 
           {detail.node.content && (
-            <Box sx={{
+            <Box className="ax-scroll-y" sx={{
               fontFamily: MONO, fontSize: '0.64rem', lineHeight: 1.6, color: '#aebadd',
               bgcolor: 'rgba(125,145,255,0.05)', border: '1px solid rgba(125,145,255,0.09)',
-              borderRadius: '8px', p: 1.25, maxHeight: 180, overflowY: 'auto', whiteSpace: 'pre-wrap',
+              borderRadius: '8px', p: 1.25, maxHeight: 180, whiteSpace: 'pre-wrap',
             }}>
               {detail.node.content}
             </Box>

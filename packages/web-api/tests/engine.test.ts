@@ -95,6 +95,7 @@ vi.mock('@agentx/engine', () => ({
   isWebSearchAvailableForChat: vi.fn().mockReturnValue(false),
   mergeWebSearchToolsConfig: vi.fn(),
   PostgresStorageAdapter: vi.fn(),
+  startAppSpan: vi.fn().mockReturnValue({ span: { setAttribute: vi.fn(), recordError: vi.fn(), end: vi.fn() }, withContext: (fn: () => void) => fn() }),
 }));
 
 vi.mock('@agentx/shared', async (importOriginal) => {

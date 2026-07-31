@@ -17,15 +17,11 @@ export function PipelineDiagramBlock({ code }: { code: string }) {
   return (
     <CodeBlockChrome title="Pipeline" copyText={copyText}>
       <CodeBlockBody sx={{ py: CODE_BLOCK_TOKENS.bodyPy - 0.15 }}>
-        <Box sx={{
+        <Box className="ax-scroll-x" sx={{
           display: 'flex',
           alignItems: 'center',
-          overflowX: 'auto',
           gap: 0,
           mx: -0.25,
-          scrollbarWidth: 'thin',
-          '&::-webkit-scrollbar': { height: 4 },
-          '&::-webkit-scrollbar-thumb': { bgcolor: colors.border.default, borderRadius: 2 },
         }}>
         {diagram.steps.map((step, i) => {
           const label = formatPipelineStepLabel(

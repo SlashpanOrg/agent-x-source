@@ -52,8 +52,9 @@ export { SmartSubAgent } from './agent/SmartSubAgent.js';
 export type { SmartSubAgentOptions, SmartSubAgentResult } from './agent/SmartSubAgent.js';
 export { DecisionEngine } from './agent/DecisionEngine.js';
 export type { MessageClass, ExecutionPath, DecisionResult } from './agent/DecisionEngine.js';
-export { PromptEngine } from './prompt/PromptEngine.js';
-export type { IntentResult, PromptBudget } from './prompt/PromptEngine.js';
+export { buildRagContext } from './prompt/PromptEngine.js';
+export { PromptBenchmarkService } from './prompt/PromptBenchmarkService.js';
+export * from './prompt/benchmark/types.js';
 export { AgentEventBus } from './EventBus.js';
 export type { EventBus, EngineEvent, EventHandler, SessionEvent } from './events/EventBus.js';
 export type { AgentEvent } from './events/AgentEvent.js';
@@ -82,7 +83,7 @@ export {
 export { AttachmentService, getAttachmentService } from './attachments/index.js';
 
 export { ProviderFactory } from './providers/index.js';
-export type { ProviderInterface } from './providers/index.js';
+export type { ProviderInterface, ProviderFactoryOptions } from './providers/index.js';
 export { OpenAIProvider } from './providers/OpenAIProvider.js';
 export { AnthropicProvider } from './providers/AnthropicProvider.js';
 export { OllamaProvider } from './providers/OllamaProvider.js';
@@ -272,7 +273,7 @@ export type { AutomationBridge } from './automation/automation-bridge.js';
 export { setAgentXOverviewBridge, getAgentXOverviewBridge } from './agent/agent-x-overview-bridge.js';
 export type { AgentXOverviewBridge, AgentXOverviewView } from './agent/agent-x-overview-bridge.js';
 export { setChannelSuperSessionSync, syncChannelSuperSessionContext } from './channels/channel-super-session-sync.js';
-export { setChannelInboundAgentResolver, resolveChannelInboundAgent } from './channels/channel-inbound-router.js';
+export { setChannelInboundAgentResolver, resolveChannelInboundAgent, type ChannelInboundAgentResolver } from './channels/channel-inbound-router.js';
 export {
   buildAutomationNotifyQuestionnaire,
   getNotificationChannelStatus,
@@ -315,7 +316,8 @@ export type { TelemetryBus, TelemetryEvent, TelemetryConfig } from '@agentx/shar
 
 // Phase 0: Storage adapter
 export { PostgresStorageAdapter, SessionPermissionStore, ensureDestinationSchema, transferPostgresStorage } from './storage/index.js';
-export type { PostgresConfig } from './storage/PostgresStorageAdapter.js';
+export { setDbMetricsSink } from './storage/PostgresStorageAdapter.js';
+export type { PostgresConfig, DbMetricsSink } from './storage/PostgresStorageAdapter.js';
 export type { StorageTransferResult } from './storage/pg-storage-transfer.js';
 export type { StorageAdapter, StorableSession, StorableMessage, StorableTokenLog, StorablePermission } from '@agentx/shared';
 
@@ -482,13 +484,43 @@ export { ChannelRegistry } from './services/channel/ChannelRegistry.js';
 export { ChannelRegistry as ChannelBridgeRegistry } from './services/channel/ChannelRegistry.js';
 export { InboundQueue } from './services/channel/InboundQueue.js';
 export { ChannelWorker } from './services/channel/ChannelWorker.js';
+export { ChannelRateLimiter } from './services/channel/ChannelRateLimiter.js';
 export type { ChannelServiceConfig } from './services/channel/ChannelService.js';
+export type { ChannelPolicyConfig, ChannelRetryConfig } from './services/channel/ChannelRateLimiter.js';
+export { getWhatsAppSessionServiceInstance, setWhatsAppSessionServiceInstance } from './services/ServiceContext.js';
 export type { ChannelId, OutboundMessage, InboundPayload, ChannelStatus, IChannelService } from './services/channel/IChannelService.js';
 export type { IChannelBridge, OnInboundCallback } from './services/channel/IChannelBridge.js';
 export { DiscordBridgeAdapter } from './services/channel/adapters/DiscordBridgeAdapter.js';
 export { SlackBridgeAdapter } from './services/channel/adapters/SlackBridgeAdapter.js';
 export { EmailBridgeAdapter } from './services/channel/adapters/EmailBridgeAdapter.js';
 export { TelegramBridgeAdapter } from './services/channel/adapters/TelegramBridgeAdapter.js';
+export { WhatsAppBridgeAdapter } from './services/channel/adapters/WhatsAppBridgeAdapter.js';
+export type { WhatsAppBridgeAdapterConfig } from './services/channel/adapters/WhatsAppBridgeAdapter.js';
+
+// WhatsApp session lifecycle + event bus
+export { WhatsAppSessionService } from './whatsapp/WhatsAppSessionService.js';
+export type { WhatsAppSessionServiceOptions, WhatsAppSessionStatus, WatchdogConfig } from './whatsapp/WhatsAppSessionService.js';
+export { WhatsAppEventBus } from './whatsapp/WhatsAppEventBus.js';
+export type { WhatsAppEvent, WhatsAppEventMap } from './whatsapp/WhatsAppEventBus.js';
+
+// GeoLocation service (server-side IP geolocation with periodic refresh)
+export { GeoLocationService, setGeoLocationServiceInstance, getGeoLocationService } from './services/GeoLocationService.js';
+export type { GeoLocationResult, GeoLocationUpdateCallback } from './services/GeoLocationService.js';
+
+// WhatsApp ack tracking + media handling (Phase 4.4, 4.5)
+export { AckTracker } from './whatsapp/AckTracker.js';
+export {
+  fetchMediaSafe,
+  downloadMedia,
+  validateUrlSafe,
+  isPrivateIp,
+  resolveInboundMedia,
+  shouldOmitMedia,
+  bufferToBase64,
+  DEFAULT_INBOUND_MEDIA_CAP_BYTES,
+  DEFAULT_OUTBOUND_MEDIA_CAP_BYTES,
+  DEFAULT_FETCH_TIMEOUT_MS,
+} from './whatsapp/MediaHandler.js';
 export { getPerfTracker } from './benchmark/index.js';
 
 // System metrics, location, and weather
@@ -552,3 +584,45 @@ export type {
   DocumentStudioEvent,
   DocumentStudioEventName,
 } from './document-studio/index.js';
+
+// Observability — APP-domain spans, tracer, and observability lifecycle
+export {
+  startAppSpan,
+  endAppSpan,
+  getTracer,
+  getCurrentSpan,
+  getCurrentTraceId,
+  getCurrentSpanId,
+  withSpan,
+  getSpanExporter,
+  context,
+  runWithTurnContext,
+  getTurnContext,
+  injectTraceparent,
+  extractTraceparent,
+  initObservability,
+  shutdownObservability,
+  getObservabilityHandle,
+  ObservabilityStore,
+  redactAttributes,
+  redactText,
+  incrementChannelEvent,
+  snapshotChannelMetrics,
+  channelMetricSource,
+  buildAgentMetricSource,
+  downsampleHistogram,
+  setSpanMetricsSink,
+} from './observability/index.js';
+export type {
+  AppSpan,
+  ObservabilityDeps,
+  ObservabilityHandle,
+  ListTracesFilters,
+  ListLogsFilters,
+  AgentMetricsApi,
+  AgentMetricsSnapshot,
+  MetricSource,
+  SpanMetricsSink,
+  ChannelType,
+  ChannelEvent,
+} from './observability/index.js';

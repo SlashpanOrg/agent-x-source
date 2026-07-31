@@ -371,7 +371,10 @@ export function buildPartsFromDbRows(
     const clean = stripToolNoise(fallbackContent);
     const hasText = parts.some((p) => p.type === 'text');
     if (clean && !hasText) {
-      parts.unshift({ type: 'text', id: crypto.randomUUID(), content: clean });
+      // Push text at the end — the final response typically comes after all
+      // tool calls. Using unshift would place it before tools, which is
+      // almost never the correct chronological position.
+      parts.push({ type: 'text', id: crypto.randomUUID(), content: clean });
     }
   }
 
@@ -430,13 +433,20 @@ export function shouldRebuildStoredParts(
 }
 
 export function rebuildPartsFromCanonical(content: string, toolCalls?: PersistedToolCall[]): MessagePart[] {
+  // Place tools first, then text at the end. This is a last-resort rebuild
+  // when we have no chronological ordering information. In practice, the
+  // final text response from the LLM comes after all tool calls, so putting
+  // text last is a better default than putting it first. The chronological
+  // ordering is preserved by the earlier code paths that use stored parts
+  // or DB rows; this fallback only triggers when those are unavailable or
+  // corrupted.
   return dedupeToolParts([
-    ...(content ? [{ type: 'text' as const, id: crypto.randomUUID(), content }] : []),
     ...(toolCalls ?? []).map((t) => ({
       type: 'tool' as const,
       id: t.id,
       tool: { ...t, status: t.status || 'done' as const },
     })),
+    ...(content ? [{ type: 'text' as const, id: crypto.randomUUID(), content }] : []),
   ], true);
 }
 
@@ -445,6 +455,12 @@ export function rebuildPartsFromCanonical(content: string, toolCalls?: Persisted
  * but content holds the canonical single-turn text from message_received).
  */
 export function partsCorruptedByCrossTurn(content: string, parts: MessagePart[]): boolean {
+  // If parts have interleaved text and tools (text before AND after a tool),
+  // this is a legitimate chronological ordering from streaming — not cross-turn
+  // corruption. Cross-turn corruption always has all text at the start with no
+  // interleaving (prior-turn prefix + current-turn text, then tools).
+  if (hasInterleavedTextAndTools(parts)) return false;
+
   const partsText = textFromParts(parts);
   const cleanContent = stripToolNoise(content);
   const cleanParts = stripToolNoise(partsText, { trim: false });
@@ -464,6 +480,35 @@ export function partsCorruptedByCrossTurn(content: string, parts: MessagePart[])
     return true;
   }
   return false;
+}
+
+/**
+ * Detect when text parts appear both before AND after a non-text part (tool,
+ * thinking, subagent, chart, deep_search). This is a clear signature of
+ * legitimate chronological interleaving from live streaming — the LLM emitted
+ * text, then called a tool, then emitted more text. Cross-turn corruption
+ * (prior-turn prefix + current-turn text) never has this pattern because the
+ * corrupted parts are all text-only with no interleaving.
+ */
+function hasInterleavedTextAndTools(parts: MessagePart[]): boolean {
+  let firstTextIdx = -1;
+  let lastTextIdx = -1;
+  let firstNonTextIdx = -1;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i]!;
+    if (p.type === 'text' && p.content) {
+      if (firstTextIdx < 0) firstTextIdx = i;
+      lastTextIdx = i;
+    } else {
+      if (firstNonTextIdx < 0) firstNonTextIdx = i;
+    }
+  }
+  // Need at least two text parts with a non-text part between them
+  return firstTextIdx >= 0
+    && lastTextIdx > firstTextIdx
+    && firstNonTextIdx >= 0
+    && firstNonTextIdx > firstTextIdx
+    && firstNonTextIdx < lastTextIdx;
 }
 
 /** Assign message_parts rows to one assistant message (turn window: after prev user, through assistant). */
@@ -597,6 +642,22 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
         toolCalls,
       });
     }
+    // If the only reason for rebuild is text length differences (not cross-turn
+    // corruption or tool ID mismatch), preserve the stored parts' chronological
+    // ordering. Rebuilding from canonical content would merge all text into one
+    // block and place it before all tools — destroying the interleaved
+    // chronological order the user sees during live streaming.
+    if (mapped.length > 0
+      && !partsCorruptedByCrossTurn(content, mapped)
+      && !partsToolIdsMismatch(mapped, toolCalls)
+      && partsTextExceedsContent(content, mapped)
+    ) {
+      return withThinkingAndSubAgents(msg, sessionParts, {
+        content,
+        parts: attachChartPartsFromTools(attachDeepSearchPartsFromTools(mapped, toolCalls), toolCalls),
+        toolCalls,
+      });
+    }
   }
 
   if (sessionParts && sessionParts.length > 0) {
@@ -607,6 +668,21 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
       .map((p) => p.tool);
     const effectiveTools = toolCalls?.length ? toolCalls : (rowTools.length ? rowTools : undefined);
     if (parts.length > 0 && !shouldRebuildStoredParts(content, parts, effectiveTools)) {
+      return withThinkingAndSubAgents(msg, sessionParts, {
+        content,
+        parts: attachChartPartsFromTools(attachDeepSearchPartsFromTools(parts, effectiveTools), effectiveTools),
+        toolCalls: effectiveTools,
+      });
+    }
+    // Same preservation check as above: if the only issue is text length
+    // differences (not cross-turn corruption or tool ID mismatch), keep the
+    // chronological ordering from the DB rows instead of falling through to
+    // rebuildPartsFromCanonical which would merge all text into one block.
+    if (parts.length > 0
+      && !partsCorruptedByCrossTurn(content, parts)
+      && !partsToolIdsMismatch(parts, effectiveTools)
+      && partsTextExceedsContent(content, parts)
+    ) {
       return withThinkingAndSubAgents(msg, sessionParts, {
         content,
         parts: attachChartPartsFromTools(attachDeepSearchPartsFromTools(parts, effectiveTools), effectiveTools),

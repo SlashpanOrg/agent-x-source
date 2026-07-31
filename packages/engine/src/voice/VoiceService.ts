@@ -11,9 +11,9 @@ import { VoiceProgressSession } from './VoiceProgressSession.js';
 import { VoiceSession } from './VoiceSession.js';
 import { VoiceSidecarManager } from './sidecar/VoiceSidecarManager.js';
 import { shouldSpeakVoiceAckFiller } from './voiceFillerPolicy.js';
-import type { VoiceSidecarStreamSynthesizeResponse, VoiceSidecarSynthesizeResponse, VoiceSidecarTranscribeResponse } from './sidecar/VoiceSidecarProtocol.js';
+import type { VoiceSidecarStreamAudioChunk, VoiceSidecarSynthesizeResponse, VoiceSidecarTranscribeResponse } from './sidecar/VoiceSidecarProtocol.js';
 
-export type VoiceStreamSynthesizeResult = VoiceSidecarStreamSynthesizeResponse & { requestId: string };
+export type VoiceStreamSynthesizeResult = { chunks: AsyncGenerator<VoiceSidecarStreamAudioChunk>; requestId: string };
 
 export interface VoiceServiceOptions {
   dataDir: string;
@@ -287,6 +287,22 @@ export class VoiceService {
     });
   }
 
+  /**
+   * Merged reset+finalize in a single HTTP call (Fix #1).
+   * Sends the PCM with both reset=true and finalize=true so the sidecar
+   * clears its stream buffer, appends the new PCM, and transcribes in one pass.
+   */
+  async streamTranscribeFinalize(pcm: Buffer, sampleRate: number) {
+    const client = await this.sidecar.start();
+    return client.streamTranscribe({
+      pcmBase64: pcm.length > 0 ? pcm.toString('base64') : undefined,
+      sampleRate,
+      reset: true,
+      finalize: true,
+      modelId: this.config.stt?.modelId,
+    });
+  }
+
   /** Incremental VAD on a mic chunk — used for duplex end-of-utterance. */
   async detectVad(
     pcm: Buffer,
@@ -297,6 +313,11 @@ export class VoiceService {
     return client.detectVad(pcm, sampleRate, options);
   }
 
+  /**
+   * Stream TTS audio chunks as they are synthesized (Fix #6/#7/#8).
+   * Returns an async iterator + requestId so the caller can start playing
+   * the first chunk while later sentences are still being synthesized.
+   */
   async synthesizeStreamText(text: string, options: VoiceSynthesizeOptions = {}): Promise<VoiceStreamSynthesizeResult> {
     const normalized = normalizeTextForSpeech(text);
     if (!normalized) throw new Error('Nothing to synthesize after speech normalization');
@@ -312,14 +333,14 @@ export class VoiceService {
       options.voiceId,
     );
     const requestId = options.requestId ?? randomUUID();
-    const response = await client.synthesizeStream({
+    const chunkStream = client.synthesizeStreamNd({
       text: normalized,
       engine,
       voiceId,
       style: options.style ?? this.config.tts?.style,
       requestId,
     });
-    return { ...response, requestId };
+    return { chunks: chunkStream, requestId };
   }
 
   async warmFillerCache(): Promise<void> {

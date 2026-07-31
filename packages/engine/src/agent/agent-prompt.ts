@@ -8,6 +8,11 @@ import {
   createPersonaToneSection,
   createWorkingDirectorySection,
   createRulesSection,
+  createOutputFormatSection,
+  createCodingRulesSection,
+  createCodebaseContextSection,
+  createTaskStateSection,
+  createCategoryOverlaySection,
   createCompactRulesSection,
   createLocalPersonaGuardSection,
   createCrewPrivateConductSection,
@@ -175,6 +180,11 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createPersonaToneSection(secCtx))
       .register(createWorkingDirectorySection(secCtx))
       .register(createRulesSection())
+      .register(createOutputFormatSection())
+      .register(createCodingRulesSection())
+      .register(createCodebaseContextSection(secCtx))
+      .register(createTaskStateSection(secCtx))
+      .register(createCategoryOverlaySection(secCtx))
       .register(createDocumentStudioSection())
       .register(createMissionPlanSection(secCtx.scopePath))
       .register(createThirdPartyServicesSection())

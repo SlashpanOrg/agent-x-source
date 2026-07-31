@@ -135,14 +135,13 @@ export function McpStorePage() {
         </Typography>
       </Box>
 
-      <Box sx={{
+      <Box className="ax-scroll-x" sx={{
         display: 'flex',
         gap: 0.5,
         px: 3,
         py: 1,
         borderBottom: `1px solid ${settingsTheme.border.default}`,
         flexShrink: 0,
-        overflowX: 'auto',
       }}>
         {([
           { id: 'browse' as const, label: 'Browse' },
@@ -156,6 +155,8 @@ export function McpStorePage() {
             sx={{
               fontSize: '0.72rem',
               textTransform: 'none',
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
               color: tab === item.id ? settingsTheme.text.primary : settingsTheme.text.dim,
               borderBottom: tab === item.id ? `2px solid ${settingsTheme.text.primary}` : '2px solid transparent',
               borderRadius: 0,
@@ -206,13 +207,12 @@ export function McpStorePage() {
             px: 3,
           }}>
             {tab === 'browse' && (
-              <Box sx={{
+              <Box className="ax-scroll-y" sx={{
                 width: 168,
                 flexShrink: 0,
                 display: { xs: 'none', md: 'block' },
                 pt: 2,
                 pb: 2,
-                overflowY: 'auto',
                 position: 'sticky',
                 top: 0,
                 alignSelf: 'flex-start',
@@ -248,7 +248,7 @@ export function McpStorePage() {
               </Box>
             )}
 
-            <Box sx={{ flex: 1, minWidth: 0, overflowY: 'auto', py: 2, pb: 6 }}>
+            <Box className="ax-scroll-y" sx={{ flex: 1, minWidth: 0, py: 2, pb: 6 }}>
               <Box sx={{ display: 'flex', gap: 1, mb: 3, flexWrap: 'wrap', alignItems: 'center' }}>
                 <TextField
                   size="small"
@@ -267,7 +267,7 @@ export function McpStorePage() {
               </Box>
 
               {tab === 'browse' && (
-                <Box sx={{ gap: 0.75, mb: 2, overflowX: 'auto', pb: 0.5, display: { xs: 'flex', md: 'none' } }}>
+                <Box className="ax-scroll-x" sx={{ gap: 0.75, mb: 2, pb: 0.5, display: { xs: 'flex', md: 'none' } }}>
                   {sidebarItems.map((item) => (
                     <Button
                       key={item.id}

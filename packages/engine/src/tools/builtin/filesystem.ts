@@ -1,10 +1,9 @@
 import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readdirSync, statSync, renameSync, rmSync, cpSync, copyFileSync, openSync, readSync, closeSync } from 'node:fs';
-import { resolve, dirname, basename, extname, isAbsolute, normalize, sep, relative } from 'node:path';
+import { resolve, dirname, basename, isAbsolute, normalize, sep, relative } from 'node:path';
 import { execSync } from 'node:child_process';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 import { isAgentInternalPath } from '@agentx/shared';
 import { IS_WINDOWS } from '../platform.js';
-import { getAICommentMarker } from './markers.js';
 
 /**
  * Resolve a user-supplied path against the agent's scope path.
@@ -80,7 +79,20 @@ export async function fileRead(args: Record<string, unknown>, context: ToolExecu
       return pdfRead({ path: args['path'] ?? filePath }, context);
     }
 
-    const content = readFileSync(filePath, 'utf-8');
+    const stat = statSync(filePath);
+    const cache = context.fileReadCache;
+    let content: string;
+    if (cache) {
+      const cached = cache.get(filePath);
+      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+        content = cached.content;
+      } else {
+        content = readFileSync(filePath, 'utf-8');
+        cache.set(filePath, { content, mtimeMs: stat.mtimeMs, size: stat.size });
+      }
+    } else {
+      content = readFileSync(filePath, 'utf-8');
+    }
     const MAX_CHARS = 50000;
     if (content.length > MAX_CHARS) {
       return { success: true, output: content.slice(0, MAX_CHARS) + `\n\n[File truncated — ${content.length - MAX_CHARS} chars omitted. Use offset/limit to read specific sections.]` };
@@ -133,15 +145,13 @@ export async function fileWrite(args: Record<string, unknown>, context: ToolExec
   const mode = (args['mode'] as string) || 'overwrite';
   try {
     mkdirSync(dirname(filePath), { recursive: true });
-    const ext = extname(filePath);
-    const marker = getAICommentMarker(ext);
     if (mode === 'append') {
-      const contentWithMarker = `\n${content}\n${marker}\n`;
-      writeFileSync(filePath, contentWithMarker, { flag: 'a', encoding: 'utf-8' });
+      const contentToAppend = `\n${content}\n`;
+      writeFileSync(filePath, contentToAppend, { flag: 'a', encoding: 'utf-8' });
       return { success: true, output: `Appended to ${filePath}` };
     }
-    const contentWithMarker = content.endsWith('\n') ? `${content}${marker}\n` : `${content}\n${marker}\n`;
-    writeFileSync(filePath, contentWithMarker, 'utf-8');
+    const contentToWrite = content.endsWith('\n') ? content : `${content}\n`;
+    writeFileSync(filePath, contentToWrite, 'utf-8');
     return { success: true, output: `Written to ${filePath}` };
   } catch (error) {
     return { success: false, output: `Failed to write file: ${(error as Error).message}`, error: 'WRITE_ERROR' };

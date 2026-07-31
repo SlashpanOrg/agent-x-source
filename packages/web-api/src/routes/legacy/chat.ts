@@ -349,6 +349,7 @@ export function createChatRouter(): Router {
 
       const turn = turnRegistry.create(sid);
       runAgentTurnAsync(agent, fullText, augmentedInstruction, retry, turn.turnId, sid, undefined, undefined, delegateCrewIds, crewSuggestionResolved, crewIntakeFromPicker, primaryCrewId, {
+        res,
         ...(forceWebSearch ? { forceWebSearch: true } : {}),
         userMessagePersisted: true,
         ...(clientSituation ? { clientSituation } : {}),
@@ -444,6 +445,7 @@ export function createChatRouter(): Router {
       const sid = agent.sessionId;
       const turn = turnRegistry.create(sid);
       runAgentTurnAsync(agent, fullText, instruction, false, turn.turnId, sid, undefined, undefined, delegateCrewIds, crewSuggestionResolved, crewIntakeFromPicker, primaryCrewId, {
+        res,
         ...(clientSituation ? { clientSituation } : {}),
         ...(attachments.length ? { attachments } : {}),
       });
@@ -499,6 +501,7 @@ export function createChatRouter(): Router {
       const sid = agent.sessionId;
       const turn = turnRegistry.create(sid);
       runAgentTurnAsync(agent, fullText, instruction, false, turn.turnId, sid, undefined, undefined, delegateCrewIds, crewSuggestionResolved, crewIntakeFromPicker, primaryCrewId, {
+        res,
         ...(clientSituation ? { clientSituation } : {}),
         ...(attachments.length ? { attachments } : {}),
       });

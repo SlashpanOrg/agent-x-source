@@ -1,5 +1,6 @@
+import type { Response } from 'express';
 import type { Agent } from '@agentx/engine';
-import { applyWebSearchConfigFromAgentConfig, getPersonaStore, isWebSearchAvailableForChat } from '@agentx/engine';
+import { applyWebSearchConfigFromAgentConfig, getPersonaStore, isWebSearchAvailableForChat, context } from '@agentx/engine';
 import type { AgentPersonaConfig, AgentXConfig, ClientSituation, Message, StorageAdapter, StorableMessage, TurnAttachment } from '@agentx/shared';
 import { normalizeClientSituation } from '@agentx/shared';
 import { getEngine } from './engine.js';
@@ -192,6 +193,8 @@ export function runAgentTurnAsync(
     /** Resolved user attachments (storage id + metadata). */
     attachments?: TurnAttachment[];
     todoDisposition?: 'continue' | 'skip' | 'defer';
+    /** Express response used to keep the HTTP parent span open until the async turn finishes. */
+    res?: Response;
   },
 ): void {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -208,6 +211,15 @@ export function runAgentTurnAsync(
   }
 
   registerActiveTurn(sessionId, turnId);
+
+  const res = extra?.res;
+  if (res?.locals?.httpSpan) {
+    res.locals.httpSpan.setAttribute('session.id', sessionId);
+    res.locals.httpSpan.setAttribute('turn.id', turnId);
+    res.locals.httpSpan.setAttribute('user.text', fullText);
+    res.locals.httpSpanAutoEnd = false;
+  }
+  const endHttp = () => { res?.locals?.endHttpSpan?.(); };
 
   const clearVoiceTurn = () => {
     if (!extra?.voiceTurn) return;
@@ -255,6 +267,7 @@ export function runAgentTurnAsync(
         persistMessageDirect(sessionId, 'assistant', partial + '\n\n⚠ Turn timed out — partial output saved.');
       }
       onError?.('The operation was aborted due to timeout', partial);
+      endHttp();
     } catch { /* best-effort */ }
   };
   const scheduleTimeout = () => {
@@ -314,7 +327,7 @@ export function runAgentTurnAsync(
     propagateTelegramConnectedToAgents(getEngine());
   } catch { /* best-effort */ }
 
-  void agent.sendMessage(fullText, {
+  void context.bind(context.active(), (text: string, options?: Parameters<Agent['sendMessage']>[1]) => agent.sendMessage(text, options))(fullText, {
     ...(instruction ? { instruction } : {}),
     ...(retry ? { retry: true } : {}),
     ...(delegateCrewIds?.length ? { delegateCrewIds } : {}),
@@ -340,16 +353,19 @@ export function runAgentTurnAsync(
       if (!message) {
         turnRegistry.complete(turnId, message as Message);
         onComplete?.(message as Message);
+        endHttp();
         return;
       }
       if (message.id === '__clarify__') {
         turnRegistry.complete(turnId, message);
         onComplete?.(message);
+        endHttp();
         return;
       }
       turnRegistry.complete(turnId, message);
       try { getEngine().sessionManager.updateSession({ updatedAt: new Date().toISOString() }); } catch { /* best-effort */ }
       onComplete?.(message);
+      endHttp();
     })
     .catch((e: unknown) => {
       turnCompleted = true;
@@ -360,6 +376,7 @@ export function runAgentTurnAsync(
         turnRegistry.cancel(turnId);
         persistToolLedger(agent, sessionId);
         onError?.('Cancelled', partial);
+        endHttp();
         return;
       }
       const errMsg = e instanceof Error ? e.message : 'chat-failed';
@@ -371,6 +388,7 @@ export function runAgentTurnAsync(
       }
       getLogger().error('CHAT_TURN_ASYNC', e instanceof Error ? e : String(e));
       onError?.(errMsg, partial);
+      endHttp();
     });
 }
 

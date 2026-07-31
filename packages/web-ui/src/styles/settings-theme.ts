@@ -91,10 +91,11 @@ export function settingsTabSx(active: boolean): SxProps<Theme> {
     fontFamily: "'JetBrains Mono', monospace",
     letterSpacing: '1.2px',
     textTransform: 'uppercase',
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
     color: active ? settingsTheme.accent.hud : settingsTheme.text.dim,
     borderBottom: active ? `2px solid ${settingsTheme.accent.hud}` : '2px solid transparent',
     borderRadius: 0,
-    minWidth: 0,
     bgcolor: active ? settingsTheme.bg.hud : 'transparent',
     '&:hover': { color: settingsTheme.text.primary, bgcolor: settingsTheme.bg.hud },
   };

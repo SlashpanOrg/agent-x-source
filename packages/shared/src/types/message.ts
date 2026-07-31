@@ -1,4 +1,5 @@
 import type { CompactionMarker, NormalizedAttachment } from './communication.js';
+import type { CallDividerVariant } from '../utils/call-transcript-divider.js';
 
 export interface Message {
   id: string;
@@ -48,7 +49,7 @@ export interface MessageMetadata {
    * Persisted at write time — clients render it without recomputing.
    */
   callDivider?: {
-    variant: 'daytime' | 'time' | 'duration';
+    variant: CallDividerVariant;
     label: string;
   };
 }

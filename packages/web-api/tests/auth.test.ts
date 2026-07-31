@@ -67,6 +67,7 @@ function makeRes(): Response {
     setHeader(name: string, value: string) { headers[name] = value; return this; },
     cookie: vi.fn(),
     clearCookie: vi.fn(),
+    locals: {},
   } as unknown as Response;
   (res as any).__statusCode = () => statusCode;
   (res as any).__body = () => body;

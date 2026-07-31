@@ -9,7 +9,7 @@ import { ChartBlock } from '../chat/ChartBlock';
 
 export function StyledTableWrapper({ children, sx }: { children: React.ReactNode; sx?: object }) {
   return (
-    <Box sx={{ ...tableContainerSx, ...sx }}>
+    <Box className="ax-scroll-x" sx={{ ...tableContainerSx, ...sx }}>
       <Box component="table" sx={tableInnerSx}>
         {children}
       </Box>

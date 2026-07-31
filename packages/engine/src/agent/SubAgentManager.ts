@@ -16,6 +16,7 @@ import type { SubAgentType } from './subagent-types.js';
 import { SUBAGENT_TYPES } from './subagent-types.js';
 import { getSubAgentServiceInstance, type SubAgentService } from './SubAgentService.js';
 import { getChannelServiceInstance } from '../services/ServiceContext.js';
+import { injectTraceparent, extractTraceparent } from '../observability/context.js';
 import type { ChannelId, OutboundMessage } from '../services/channel/IChannelService.js';
 import { getPerformanceLanes } from '../performance/PerformanceGovernor.js';
 
@@ -213,6 +214,7 @@ export class SubAgentManager {
         inboundThreadId: channelContext?.threadId,
         inboundMessageId: channelContext?.messageId,
       };
+      injectTraceparent(task as unknown as Record<string, unknown>);
       this.completedAgents.set(task.id, task);
       this.ensureChildSessionRegistered(task);
       this.service.registerTask(task);
@@ -245,6 +247,7 @@ export class SubAgentManager {
       inboundMessageId: channelContext?.messageId,
     };
 
+    injectTraceparent(task as unknown as Record<string, unknown>);
     this.agents.set(task.id, task);
     this.runningCount++;
     this.taskCompletions.set(task.id, new Deferred<void>());
@@ -293,6 +296,7 @@ export class SubAgentManager {
    * forced all sub-agents to run one-at-a-time and defeated spawnParallel).
    */
   private async execute(task: SubAgentTask): Promise<void> {
+    return extractTraceparent(task as unknown as Record<string, unknown>, async () => {
     task.status = 'running';
     task.startTime = Date.now();
     this.service.taskStarted(task.id, task.startTime);
@@ -404,6 +408,7 @@ export class SubAgentManager {
     } finally {
       clearInterval(heartbeatInterval);
     }
+    });
   }
 
   /**
@@ -700,8 +705,8 @@ export class SubAgentManager {
 
     // Try LLM-based merging
     if (this.provider && this.config) {
-      const parts = tasks.map((t, i) => `--- Task ${i + 1}: ${t.instruction} ---\n${t.result ?? '(empty)'}`);
-      const mergePrompt = `Consolidate the following parallel research/analysis results into a single coherent summary. Remove redundancy, combine related information, and present it in a well-organized format. Do not include the "--- Task N ---" separators in your output.
+      const parts = tasks.map((t, i) => `[Task ${i + 1}: ${t.instruction}]\n${t.result ?? '(empty)'}`);
+      const mergePrompt = `Consolidate the following parallel research/analysis results into a single coherent summary. Remove redundancy, combine related information, and present it in a well-organized format. Do not include the "[Task N]" separators in your output.
 
 ${parts.join('\n\n')}
 
@@ -724,7 +729,7 @@ Consolidated summary:`;
           }
         }
         return merged.trim() || tasks.map((t, i) =>
-          `--- Result ${i + 1}: ${t.instruction} ---\n${t.result ?? '(empty)'}`
+          `[Result ${i + 1}: ${t.instruction}]\n${t.result ?? '(empty)'}`
         ).join('\n\n');
       } catch {
         // Fall through to concatenation
@@ -733,7 +738,7 @@ Consolidated summary:`;
 
     // Simple concatenation fallback
     return tasks.map((t, i) =>
-      `--- Result ${i + 1}: ${t.instruction} ---\n${t.result ?? '(empty)'}`
+      `[Result ${i + 1}: ${t.instruction}]\n${t.result ?? '(empty)'}`
     ).join('\n\n');
   }
 }

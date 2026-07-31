@@ -993,4 +993,295 @@ ALTER TABLE doc_jobs ADD COLUMN IF NOT EXISTS error TEXT;
 ALTER TABLE doc_jobs ADD COLUMN IF NOT EXISTS cancelled BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE doc_jobs ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
 ` },
+  { version: 23, name: 'whatsapp_core_schema', sql: `-- WhatsApp channel: single-session lifecycle, Baileys credential storage, message log,
+-- LID<->phone identity mapping, and external webhook subsystem.
+--
+-- Scope note: exactly one WhatsApp session is supported per Agent-X install (see
+-- WHATSAPP_INTEGRATION_PLAN.md Ground Rule 7). whatsapp_session is single-row by
+-- application convention, not a hard schema constraint, so this isn't artificially
+-- welded shut if that changes later.
+
+-- ---------------------------------------------------------------------------
+-- 1.1 Session lifecycle record (single row)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS whatsapp_session (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'disconnected',
+  engine TEXT NOT NULL DEFAULT 'baileys',
+  phone_number TEXT,
+  push_name TEXT,
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  connected_at TIMESTAMPTZ,
+  last_active_at TIMESTAMPTZ
+);
+
+-- ---------------------------------------------------------------------------
+-- 1.2 Baileys credential storage.
+--
+-- Baileys' AuthenticationState splits into two independently-shaped parts:
+--   - \`creds\`: a single AuthenticationCreds object (noise/identity/signed-prekey
+--     material, registration id, account info) that changes occasionally.
+--   - \`keys\`: a signal protocol key store accessed via get(category, ids) /
+--     set({ [category]: { [id]: value | null } }), mutated frequently (one row
+--     read/write per key, not a full-blob rewrite) as messages are sent/received.
+--
+-- Modeling \`keys\` as individual rows (rather than one growing JSON blob) avoids
+-- read-modify-write races and avoids re-encrypting/re-writing an ever-growing
+-- blob on every single message.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS whatsapp_creds (
+  id TEXT PRIMARY KEY DEFAULT 'default',
+  creds_enc TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS whatsapp_signal_keys (
+  category TEXT NOT NULL,
+  key_id TEXT NOT NULL,
+  value_enc TEXT NOT NULL,
+  iv TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (category, key_id)
+);
+
+-- ---------------------------------------------------------------------------
+-- 1.3 LID <-> phone number mapping (WhatsApp multi-device identity quirk;
+-- global/last-write-wins, independent of session count).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS whatsapp_lid_mapping (
+  lid TEXT PRIMARY KEY,
+  phone TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ---------------------------------------------------------------------------
+-- 1.4 Message log.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS whatsapp_messages (
+  id TEXT PRIMARY KEY,
+  wa_message_id TEXT NOT NULL,
+  chat_id TEXT NOT NULL,
+  direction TEXT NOT NULL, -- 'incoming' | 'outgoing'
+  "from" TEXT NOT NULL,
+  "to" TEXT NOT NULL,
+  body TEXT,
+  type TEXT NOT NULL DEFAULT 'text',
+  status TEXT NOT NULL DEFAULT 'pending', -- pending|sent|delivered|read|failed
+  timestamp BIGINT NOT NULL,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_messages_wa_id ON whatsapp_messages(wa_message_id);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_timestamp ON whatsapp_messages(timestamp);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_chat ON whatsapp_messages(chat_id, timestamp);
+
+-- ---------------------------------------------------------------------------
+-- 1.5 External webhook subscriptions (managed exclusively through agent tools,
+-- not REST CRUD — see Phase 6/7 of the plan).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS whatsapp_webhooks (
+  id TEXT PRIMARY KEY,
+  url TEXT NOT NULL,
+  events TEXT[] NOT NULL DEFAULT ARRAY['*']::text[],
+  secret_enc TEXT,
+  secret_iv TEXT,
+  secret_tag TEXT,
+  headers JSONB NOT NULL DEFAULT '{}'::jsonb,
+  filters JSONB,
+  active BOOLEAN NOT NULL DEFAULT true,
+  retry_count INTEGER NOT NULL DEFAULT 3,
+  last_triggered_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ---------------------------------------------------------------------------
+-- 1.6 Webhook delivery failure / dead-letter bookkeeping.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS whatsapp_webhook_failures (
+  id TEXT PRIMARY KEY,
+  webhook_id TEXT NOT NULL REFERENCES whatsapp_webhooks(id) ON DELETE CASCADE,
+  event TEXT NOT NULL,
+  url TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  delivery_id TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_status_code INTEGER,
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_webhook_failures_webhook ON whatsapp_webhook_failures(webhook_id);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_webhook_failures_created ON whatsapp_webhook_failures(created_at);
+` },
+  { version: 24, name: 'observability_schema', sql: `-- Observability schema: traces, spans, logs, metric samples, config.
+-- Stored in the same embedded Postgres as the core schema; isolated in its own schema namespace.
+--
+-- DOMAIN SEGREGATION: every row is tagged with \`domain\` ∈ ('APP','AGENT'):
+--   AGENT = AI/LLM turn lifecycle (turns, journey, llm calls, tool decisions/executions, crew, retrieval)
+--   APP   = normal application operations (HTTP requests, auth, DB queries, WebSocket, channels, automation, startup, integrations)
+-- This lets the UI filter "show me only agent issues" vs "show me only app issues" vs "both" with one toggle.
+
+CREATE SCHEMA IF NOT EXISTS observability;
+
+-- 1. TRACES — one row per turn (AGENT) or per app request/operation (APP)
+CREATE TABLE IF NOT EXISTS observability.traces (
+  trace_id        TEXT PRIMARY KEY,
+  root_span_id    TEXT NOT NULL,
+  domain          TEXT NOT NULL CHECK(domain IN ('APP','AGENT')) DEFAULT 'AGENT',
+  kind            TEXT NOT NULL,   -- AGENT: 'turn','autonomous_run','crew_mission','task_executor'
+                                  -- APP:   'http_request','ws_connection','auth','db_query','channel_event','automation_run','startup','integration_call','job'
+  session_id      TEXT,
+  turn_id         TEXT,
+  user_text       TEXT,
+  status          TEXT NOT NULL CHECK(status IN ('running','ok','error','cancelled')),
+  error           TEXT,
+  started_at      TIMESTAMPTZ NOT NULL,
+  ended_at        TIMESTAMPTZ,
+  duration_ms     INTEGER,
+  provider        TEXT,
+  model           TEXT,
+  input_tokens    INTEGER,
+  output_tokens   INTEGER,
+  tool_call_count INTEGER NOT NULL DEFAULT 0,
+  cost_usd        NUMERIC(12,6) NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_traces_session_started ON observability.traces (session_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_traces_status_started ON observability.traces (status, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_traces_kind_started ON observability.traces (kind, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_traces_domain_started ON observability.traces (domain, started_at DESC);
+
+-- 2. SPANS — the tree (llm, tool, tool_decision, journey_stage, agent, retrieval, internal)
+--    For APP traces, kinds are: 'http','ws','auth','db','channel','automation','integration','job','internal'
+CREATE TABLE IF NOT EXISTS observability.spans (
+  span_id         TEXT PRIMARY KEY,
+  trace_id        TEXT NOT NULL REFERENCES observability.traces(trace_id) ON DELETE CASCADE,
+  parent_span_id  TEXT,
+  domain          TEXT NOT NULL CHECK(domain IN ('APP','AGENT')) DEFAULT 'AGENT',
+  name            TEXT NOT NULL,
+  kind            TEXT NOT NULL,   -- AGENT: 'llm','tool','tool_decision','journey_stage','agent','retrieval','internal'
+                                  -- APP:   'http','ws','auth','db','channel','automation','integration','job','internal'
+  status          TEXT NOT NULL CHECK(status IN ('ok','error','unset')),
+  started_at      TIMESTAMPTZ NOT NULL,
+  ended_at        TIMESTAMPTZ,
+  duration_ms     INTEGER,
+  attributes      JSONB NOT NULL DEFAULT '{}'::jsonb,
+  events          JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_spans_trace_started ON observability.spans (trace_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_spans_parent ON observability.spans (parent_span_id);
+CREATE INDEX IF NOT EXISTS idx_spans_domain ON observability.spans (domain);
+
+-- 3. LOGS — structured, linked to trace/span, tagged by domain
+CREATE TABLE IF NOT EXISTS observability.logs (
+  id           BIGSERIAL PRIMARY KEY,
+  trace_id     TEXT,
+  span_id      TEXT,
+  session_id   TEXT,
+  domain       TEXT NOT NULL CHECK(domain IN ('APP','AGENT')) DEFAULT 'AGENT',
+  ts           TIMESTAMPTZ NOT NULL,
+  level        TEXT NOT NULL CHECK(level IN ('debug','info','warn','error')),
+  scope        TEXT,
+  message      TEXT NOT NULL,
+  payload      JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_logs_trace_ts ON observability.logs (trace_id, ts);
+CREATE INDEX IF NOT EXISTS idx_logs_ts ON observability.logs (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_logs_session_ts ON observability.logs (session_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_logs_domain_ts ON observability.logs (domain, ts DESC);
+
+-- 4. METRIC SAMPLES — time-series for UI charts, tagged by domain via labels
+CREATE TABLE IF NOT EXISTS observability.metric_samples (
+  id         BIGSERIAL PRIMARY KEY,
+  ts         TIMESTAMPTZ NOT NULL,
+  name       TEXT NOT NULL,
+  value      DOUBLE PRECISION NOT NULL,
+  labels     JSONB NOT NULL DEFAULT '{}'::jsonb  -- includes { "domain": "APP"|"AGENT" }
+);
+
+CREATE INDEX IF NOT EXISTS idx_metrics_name_ts ON observability.metric_samples (name, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_metrics_domain_ts ON observability.metric_samples ((labels->>'domain'), ts DESC);
+
+-- 5. CONFIG — single row (id=1)
+CREATE TABLE IF NOT EXISTS observability.config (
+  id              INT PRIMARY KEY DEFAULT 1 CHECK(id = 1),
+  retention_days  INT NOT NULL DEFAULT 30 CHECK(retention_days BETWEEN 1 AND 90),
+  capture_prompts BOOLEAN NOT NULL DEFAULT TRUE,
+  enabled         BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+INSERT INTO observability.config (id) VALUES (1)
+  ON CONFLICT (id) DO NOTHING;
+` },
+  { version: 25, name: 'observability_otlp_alerts', sql: `-- V025 — Observability: OTLP export, alerting, cost analytics (Phase 11 v1.1+).
+--
+-- Extends the observability.config table with:
+--   * OTLP external collector settings (enable, endpoint, protocol, headers)
+--   * Alerting settings (enable, error-rate threshold, latency SLO threshold)
+--   * Cost analytics rollup materialized view
+--
+-- All new columns are nullable/defaulted so existing rows upgrade cleanly.
+
+-- ─── OTLP external collector ────────────────────────────────────────────────
+ALTER TABLE observability.config
+  ADD COLUMN IF NOT EXISTS otlp_enabled    BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS otlp_endpoint   TEXT    NOT NULL DEFAULT 'http://localhost:4318/v1/traces',
+  ADD COLUMN IF NOT EXISTS otlp_protocol   TEXT    NOT NULL DEFAULT 'http' CHECK(otlp_protocol IN ('http', 'grpc')),
+  ADD COLUMN IF NOT EXISTS otlp_headers    JSONB   NOT NULL DEFAULT '{}'::jsonb;
+
+-- ─── Alerting ───────────────────────────────────────────────────────────────
+ALTER TABLE observability.config
+  ADD COLUMN IF NOT EXISTS alerting_enabled          BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS alerting_error_rate_pct   INT     NOT NULL DEFAULT 10  CHECK(alerting_error_rate_pct BETWEEN 1 AND 100),
+  ADD COLUMN IF NOT EXISTS alerting_latency_p95_ms   INT     NOT NULL DEFAULT 30000 CHECK(alerting_latency_p95_ms BETWEEN 100 AND 600000),
+  ADD COLUMN IF NOT EXISTS alerting_window_minutes   INT     NOT NULL DEFAULT 15  CHECK(alerting_window_minutes BETWEEN 1 AND 1440);
+
+-- ─── Cost analytics rollup ──────────────────────────────────────────────────
+-- Per-provider, per-model, per-day cost rollup derived from traces.
+-- The traces table has \`provider\` and \`model\` columns directly (not an
+-- \`attributes\` JSONB column), so we reference them directly.
+-- Refreshed on-demand by the API (or a scheduled job).
+CREATE MATERIALIZED VIEW IF NOT EXISTS observability.cost_rollup_daily AS
+  SELECT
+    date_trunc('day', started_at)::date              AS day,
+    COALESCE(provider, 'unknown')                    AS provider,
+    COALESCE(model, 'unknown')                       AS model,
+    domain,
+    COUNT(*)                                         AS trace_count,
+    SUM(input_tokens)                                AS total_input_tokens,
+    SUM(output_tokens)                               AS total_output_tokens,
+    SUM(cost_usd)                                    AS total_cost_usd,
+    AVG(duration_ms)                                 AS avg_duration_ms
+  FROM observability.traces
+  WHERE cost_usd IS NOT NULL
+  GROUP BY 1, 2, 3, 4
+  ORDER BY 1 DESC, 2, 3;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cost_rollup_daily
+  ON observability.cost_rollup_daily (day, provider, model, domain);
+
+-- ─── Alerts table (persisted alert events) ──────────────────────────────────
+CREATE TABLE IF NOT EXISTS observability.alerts (
+  id          BIGSERIAL PRIMARY KEY,
+  triggered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  type        TEXT NOT NULL CHECK(type IN ('error_rate', 'latency_p95')),
+  severity    TEXT NOT NULL DEFAULT 'warning' CHECK(severity IN ('info', 'warning', 'critical')),
+  message     TEXT NOT NULL,
+  threshold   INT NOT NULL,
+  actual      INT NOT NULL,
+  window_minutes INT NOT NULL,
+  resolved    BOOLEAN NOT NULL DEFAULT FALSE,
+  resolved_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_unresolved ON observability.alerts (resolved, triggered_at DESC) WHERE NOT resolved;
+CREATE INDEX IF NOT EXISTS idx_alerts_triggered ON observability.alerts (triggered_at DESC);
+` },
 ];

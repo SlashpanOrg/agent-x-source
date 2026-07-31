@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, memo } from 'react';
 import Box from '@mui/material/Box';
 import Collapse from '@mui/material/Collapse';
 import Typography from '@mui/material/Typography';
@@ -9,7 +9,7 @@ import { colors } from '../theme';
  * - `live`: currently streaming thought → label "Thinking", forced open
  * - past thoughts → label "Thought", forced closed when a newer one becomes live
  */
-export function ThoughtCollapse({
+function ThoughtCollapseImpl({
   text,
   live = false,
 }: {
@@ -86,3 +86,7 @@ export function ThoughtCollapse({
     </Box>
   );
 }
+
+export const ThoughtCollapse = memo(ThoughtCollapseImpl, (prev, next) =>
+  prev.text === next.text && prev.live === next.live,
+);

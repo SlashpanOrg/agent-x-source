@@ -1,0 +1,49 @@
+[
+  {
+    "id": "creative-story",
+    "category": "creative",
+    "user": "Write a 3-paragraph sci-fi story about a lonely AI.",
+    "expected": {
+      "maxToolCalls": 0,
+      "assertions": [
+        { "type": "minLength", "in": "assistant", "value": 200 }
+      ]
+    }
+  },
+  {
+    "id": "coding-function",
+    "category": "coding",
+    "user": "Write a concise Python function that adds two numbers.",
+    "expected": {
+      "maxToolCalls": 0,
+      "assertions": [
+        { "type": "minLength", "in": "assistant", "value": 50 },
+        { "type": "contains", "in": "assistant", "value": "def" },
+        { "type": "contains", "in": "assistant", "value": "add" }
+      ]
+    }
+  },
+  {
+    "id": "finance-calculation",
+    "category": "finance",
+    "user": "Calculate the ROI for a $1,000 investment that returned $1,250.",
+    "expected": {
+      "maxToolCalls": 0,
+      "assertions": [
+        { "type": "minLength", "in": "assistant", "value": 50 },
+        { "type": "contains", "in": "assistant", "value": "25" }
+      ]
+    }
+  },
+  {
+    "id": "general-question",
+    "category": "general",
+    "user": "What is the capital of France?",
+    "expected": {
+      "maxToolCalls": 0,
+      "assertions": [
+        { "type": "contains", "in": "assistant", "value": "Paris" }
+      ]
+    }
+  }
+]

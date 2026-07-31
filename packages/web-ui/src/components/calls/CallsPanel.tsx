@@ -239,11 +239,10 @@ function TranscriptBody({
 
   return (
     <Box
+      className="ax-scroll-y"
       sx={{
         flex: 1,
         minHeight: 0,
-        overflowY: 'auto',
-        overflowX: 'hidden',
         px: 2,
         py: 1.5,
         display: 'flex',
@@ -571,7 +570,7 @@ export function CallsPanel() {
             />
           </Box>
 
-          <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
+          <Box className="ax-scroll-y" sx={{ flex: 1, minHeight: 0 }}>
             {listLoading && rows.length === 0 ? (
               <Box sx={{ py: 4, display: 'flex', justifyContent: 'center' }}>
                 <CircularProgress size={18} sx={{ color: colors.text.dim }} />

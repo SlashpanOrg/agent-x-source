@@ -158,8 +158,8 @@ export const providers = {
   available: () => request<{ providers: ProviderInfo[] }>('/providers/available').then(r => r.providers),
   configured: () => request<{ active: string; providers: ConfiguredProvider[] }>('/providers').then(r => r.providers),
   active: () => request<{ active: string; providers: ConfiguredProvider[] }>('/providers').then(r => r.active),
-  validate: (provider: string, apiKey?: string, baseUrl?: string) => request<{ valid: boolean; error?: string }>('/provider/validate', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl }) }),
-  configure: (provider: string, apiKey?: string, baseUrl?: string, profileName?: string) => request<{ ok: boolean }>('/provider/configure', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl, profileName }) }),
+  validate: (provider: string, apiKey?: string, baseUrl?: string, apiType?: string, displayName?: string) => request<{ valid: boolean; error?: string }>('/provider/validate', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl, apiType, displayName }) }),
+  configure: (provider: string, apiKey?: string, baseUrl?: string, profileName?: string, apiType?: string, modelId?: string) => request<{ ok: boolean }>('/provider/configure', { method: 'POST', body: JSON.stringify({ provider, apiKey, baseUrl, profileName, apiType, modelId }) }),
   models: (provider: string) => request<ModelInfo[]>('/provider/models?provider=' + provider),
   switch: async (provider: string) => {
     const result = await request<{ ok: boolean; provider: string; model: string }>('/provider/switch', { method: 'POST', body: JSON.stringify({ provider }) });
@@ -167,7 +167,7 @@ export const providers = {
     emitRuntimeConfigChanged({ kind: 'provider', provider });
     return result;
   },
-  createProfile: (provider: string, label: string, apiKey: string, baseUrl?: string, setActive?: boolean) => request<{ ok: boolean; provider: string; profileId: string }>('/provider/profile', { method: 'POST', body: JSON.stringify({ provider, profileId: label, label, apiKey, baseUrl, setActive }) }),
+  createProfile: (provider: string, label: string, apiKey: string, baseUrl?: string, setActive?: boolean, apiType?: string, modelId?: string) => request<{ ok: boolean; provider: string; profileId: string }>('/provider/profile', { method: 'POST', body: JSON.stringify({ provider, profileId: label, label, apiKey, baseUrl, setActive, apiType, modelId }) }),
   switchProfile: async (providerId: string, profileId: string) => {
     const result = await request<{ ok: boolean }>('/provider/profile/switch', { method: 'POST', body: JSON.stringify({ providerId, profileId }) });
     const { emitRuntimeConfigChanged } = await import('./runtime-config-sync.js');
@@ -282,6 +282,8 @@ export const crewChat = {
     created: boolean;
     crew: CrewChatCrewInfo;
     session: CrewChatSessionInfo;
+    /** Stable per-crew voice profile (local Kokoro + xAI voice IDs). */
+    crewVoiceProfile?: { local: string; xAI: string };
   }>('/crew-chat/voice-sessions', { method: 'POST', body: JSON.stringify(body) }),
 
   /** Call history — voice:{textSessionId} siblings only. */
@@ -781,6 +783,22 @@ export const clientSituation = {
   get: () => request<{ situation: ClientSituation | null }>('/client-situation'),
 };
 
+// ─── Server-side Geolocation (IP-based, city-level) ───
+export interface GeoLocationResponse {
+  city: string | null;
+  fullLabel: string | null;
+  cityLabel: string;
+  method: 'ip' | 'timezone_only';
+  vpnSuspected: boolean;
+  resolvedAt?: number;
+  resolved: boolean;
+}
+
+export const geolocation = {
+  get: () => request<GeoLocationResponse>('/geolocation'),
+  refresh: () => request<GeoLocationResponse & { ok: boolean }>('/geolocation/refresh', { method: 'POST' }),
+};
+
 // ─── Tools ───
 export const tools = {
   list: () => request<ToolInfo[]>('/tools'),
@@ -988,9 +1006,55 @@ export const bridges = {
     stop: () => request<{ ok: boolean }>('/email/stop', { method: 'POST' }),
     status: () => request<BridgeStatus>('/email/status'),
   },
+  whatsapp: {
+    status: () => request<WhatsAppSessionStatusResponse>('/whatsapp/status'),
+    link: () => request<WhatsAppLinkResponse>('/whatsapp/link', { method: 'POST' }),
+    stop: () => request<{ ok: boolean; message: string }>('/whatsapp/stop', { method: 'POST' }),
+    unlink: () => request<{ ok: boolean; message: string }>('/whatsapp/unlink', { method: 'POST' }),
+    pairingCode: (phoneNumber: string) =>
+      request<WhatsAppPairingCodeResponse>('/whatsapp/pairing-code', { method: 'POST', body: JSON.stringify({ phoneNumber }) }),
+    retry: () => request<WhatsAppRetryResponse>('/whatsapp/retry', { method: 'POST' }),
+  },
   clearConversation: (channelId: string) =>
     request<{ success: boolean; message: string }>(`/channels/${channelId}/clear`, { method: 'POST' }),
 };
+
+export interface WhatsAppSessionStatusResponse {
+  status: string;
+  engine: string;
+  phoneNumber?: string;
+  pushName?: string;
+  lastError?: string;
+  connectedAt?: string;
+  lastActiveAt?: string;
+  qrDataUrl?: string | null;
+  /** Present when WhatsApp is soft-paused (protocol break / version upgrade). */
+  paused?: boolean;
+  /** Human-readable explanation shown in the UI when paused. */
+  message?: string;
+}
+
+export interface WhatsAppLinkResponse {
+  ok: boolean;
+  status: string;
+  qrDataUrl?: string | null;
+  message?: string;
+  phoneNumber?: string;
+}
+
+export interface WhatsAppPairingCodeResponse {
+  ok: boolean;
+  pairingCode: string;
+}
+
+export interface WhatsAppRetryResponse {
+  ok: boolean;
+  paused: boolean;
+  status?: string;
+  phoneNumber?: string;
+  message?: string;
+  error?: string;
+}
 
 export interface TelegramDiscoverResponse {
   ok: boolean;
@@ -1417,7 +1481,7 @@ export interface ProviderSettings {
   baseUrl?: string;
   configured?: boolean;
   activeProfile?: string;
-  profiles?: Record<string, { label: string; apiKey: string; baseUrl?: string }>;
+  profiles?: Record<string, { label: string; apiKey: string; baseUrl?: string; apiType?: string; modelId?: string }>;
 }
 
 export interface ProviderInfo {
@@ -1435,6 +1499,7 @@ export interface ConfiguredProvider {
   name: string;
   configured: boolean;
   activeProfile?: string;
+  profiles?: Array<{ id: string; label: string; apiKeyConfigured?: boolean; baseUrl?: string; apiType?: string; modelId?: string }>;
 }
 
 export interface ModelInfo {
@@ -1587,7 +1652,7 @@ export interface ChatMessage {
   timestamp?: string;
   createdAt?: string;
   metadata?: {
-    callDivider?: { variant: 'daytime' | 'time' | 'duration'; label: string };
+    callDivider?: { variant: 'daytime' | 'time' | 'duration' | 'new_conversation'; label: string };
     [key: string]: unknown;
   };
   tokenCount?: number;
@@ -2003,6 +2068,8 @@ export const voice = {
   },
 };
 
+export type EmbeddingDownloadErrorKind = 'unavailable' | 'generic';
+
 export interface EmbeddingModelStatus {
   id: string;
   displayName: string;
@@ -2012,6 +2079,8 @@ export interface EmbeddingModelStatus {
   sizeOnDiskMB: number;
   downloadStatus: 'not_started' | 'pending' | 'downloading' | 'complete' | 'error';
   percentage: number;
+  /** Classified error kind — present when `downloadStatus === 'error'`. */
+  errorKind?: EmbeddingDownloadErrorKind;
 }
 
 export interface EmbeddingModelProgress {
@@ -2022,6 +2091,8 @@ export interface EmbeddingModelProgress {
   totalMB: number;
   percentage: number;
   error?: string;
+  /** Classified error kind — present when `status === 'error'`. */
+  errorKind?: EmbeddingDownloadErrorKind;
 }
 
 export interface NeuralCortexStatus {
@@ -2048,7 +2119,7 @@ export const embeddingModels = {
     }),
   purge: () =>
     request<{ ok: boolean; message: string; freedMB: number }>('/neural-cortex/embeddings', { method: 'DELETE' }),
-  progressStream: (onProgress: (data: { type: string; models?: EmbeddingModelProgress[]; allComplete?: boolean; hasError?: boolean; tier?: string }) => void): (() => void) => {
+  progressStream: (onProgress: (data: { type: string; models?: EmbeddingModelProgress[]; allComplete?: boolean; hasError?: boolean; hasUnavailableError?: boolean; tier?: string }) => void): (() => void) => {
     const url = `${BASE}/neural-cortex/embeddings/progress`;
     const es = new EventSource(url);
     es.onmessage = (ev) => {
@@ -2600,12 +2671,12 @@ export interface IntegrationHubSettings {
 }
 
 export const integrations = {
-  catalog: (includeCandidates?: boolean) =>
+  catalog: () =>
     request<{
       providers: IntegrationProvider[];
       settings?: IntegrationHubSettings;
       stats?: Record<'active' | 'candidate' | 'testing' | 'deprecated', number>;
-    }>(`/integrations/catalog${includeCandidates ? '?includeCandidates=true' : ''}`),
+    }>(`/integrations/catalog`),
   connections: () => request<{ connections: IntegrationConnection[] }>('/integrations/connections'),
   analytics: () => request<{ analytics: IntegrationAnalytics }>('/integrations/analytics'),
   maintain: () => request<{ ok: boolean }>('/integrations/maintain', { method: 'POST' }),
@@ -2701,12 +2772,16 @@ export const integrations = {
     request<{ entries: Array<{
       id: string;
       timestamp: string;
+      connectionId: string;
       providerId: string;
       toolName: string;
+      toolId: string;
       readonly: boolean;
       success: boolean;
       error?: string;
       argsSummary?: string;
+      input?: string;
+      output?: string;
     }> }>(`/integrations/audit?limit=${limit}`),
 };
 

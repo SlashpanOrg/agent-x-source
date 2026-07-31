@@ -8,6 +8,7 @@ describe('providerIdSchema', () => {
     expect(providerIdSchema.parse('google')).toBe('google');
     expect(providerIdSchema.parse('ollama')).toBe('ollama');
     expect(providerIdSchema.parse('lmstudio')).toBe('lmstudio');
+    expect(providerIdSchema.parse('custom')).toBe('custom');
   });
 
   it('rejects invalid provider IDs', () => {

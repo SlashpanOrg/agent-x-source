@@ -3,7 +3,8 @@ import type { ConnectIntegrationRequest, IntegrationHubSettings } from '@agentx/
 import { isChannelCoveredMcpIntegration } from '@agentx/shared';
 import { getEngine } from './engine.js';
 import { validate, connectIntegrationSchema, mcpImportSchema, integrationSettingsSchema, integrationRunToolSchema } from './validation.js';
-import { importMcpConfig, parseMcpImportConfig } from '@agentx/engine';
+import { importMcpConfig, parseMcpImportConfig, startAppSpan } from '@agentx/engine';
+import { metricsRegistry } from './metrics/MetricsRegistry.js';
 
 const router: import('express').Router = Router();
 
@@ -25,7 +26,7 @@ router.post('/integrations/maintain', async (_req: Request, res: Response) => {
 router.get('/integrations/catalog', (_req: Request, res: Response) => {
   const eng = getEngine();
   res.json({
-    providers: eng.integrationHub.listCatalog({ includeCandidates: true }),
+    providers: eng.integrationHub.listCatalog(),
     settings: eng.integrationHub.getSettings(),
     stats: eng.integrationHub.getCatalogStats(),
   });
@@ -314,9 +315,37 @@ router.post('/integrations/:connectionId/run-tool', validate(integrationRunToolS
     const eng = getEngine();
     const connectionId = req.params.connectionId!;
     const { toolName, args } = req.body as { toolName: string; args?: Record<string, unknown> };
-    const result = await eng.integrationHub.runStoreTool(connectionId, toolName, args ?? {});
-    syncIntegrationTools();
-    res.json({ result });
+    const connection = eng.integrationHub.listConnections().find((c) => c.id === connectionId);
+    const serverName = connection?.providerId ?? 'unknown';
+    const startedAt = Date.now();
+    const { span, withContext } = startAppSpan(
+      `integration.${serverName}.${toolName}`,
+      'integration_call',
+      'integration_call',
+      {
+        'integration.server': serverName,
+        'integration.tool': toolName,
+        'integration.args': JSON.stringify(args ?? {}),
+      },
+    );
+    let success = false;
+    try {
+      const result = await withContext(() => eng.integrationHub.runStoreTool(connectionId, toolName, args ?? {}));
+      success = result.success;
+      span.setAttribute('integration.output', typeof result.output === 'string' ? result.output.slice(0, 2000) : JSON.stringify(result.output).slice(0, 2000));
+      span.setAttribute('integration.success', success);
+      span.setAttribute('integration.duration_ms', Date.now() - startedAt);
+      syncIntegrationTools();
+      res.json({ result });
+    } catch (error) {
+      span.setAttribute('integration.success', false);
+      span.setAttribute('integration.duration_ms', Date.now() - startedAt);
+      span.recordError(error instanceof Error ? error.message : String(error));
+      throw error;
+    } finally {
+      span.end();
+      metricsRegistry.incrementCounter('integration_calls_total', { server: serverName, tool: toolName, success: String(success) }, 1);
+    }
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
   }

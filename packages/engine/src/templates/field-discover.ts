@@ -7,6 +7,7 @@ import type { TemplateField, TemplateFormat } from '@agentx/shared';
 import { getLogger } from '@agentx/shared';
 import { ConfigManager } from '../config/ConfigManager.js';
 import { createAiSdkModel } from '../agent/AiSdkBridge.js';
+import { withSpan } from '../observability/tracer.js';
 import { extractJsonObject } from '../agent/task-executor-helpers.js';
 import { extractFromPath } from '../attachments/extract.js';
 import { fieldsFromKeys, scanTemplatePlaceholders } from './placeholder-scan.js';
@@ -150,11 +151,19 @@ Return ONLY JSON:
 }`;
 
   try {
-    const { text: out } = await generateText({
-      model,
-      prompt,
-      maxOutputTokens: 3072,
-      temperature: 0.1,
+    const messages = [{ role: 'user' as const, content: prompt }];
+    const { text: out } = await withSpan('llm.template_design', 'llm', async (span) => {
+      span.setAttribute('gen_ai.system', cfg.provider.activeProvider);
+      span.setAttribute('gen_ai.request.model', cfg.provider.activeModel);
+      span.setAttribute('llm.input_messages', JSON.stringify(messages));
+      const r = await generateText({
+        model,
+        messages,
+        maxOutputTokens: 3072,
+        temperature: 0.1,
+      });
+      span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+      return r;
     });
     const parsed = extractJsonObject<{
       designSummary?: unknown;

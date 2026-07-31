@@ -41,4 +41,7 @@ contextBridge.exposeInMainWorld('agentx', {
     ipcRenderer.invoke('permissions:requestMicrophone') as Promise<{ granted: boolean }>,
   openMicrophoneSettings: () =>
     ipcRenderer.invoke('permissions:openMicrophoneSettings') as Promise<void>,
+  /** Render an HTML string to a vector PDF via Chromium's native print engine. */
+  printToPdf: (html: string) =>
+    ipcRenderer.invoke('print:htmlToPdf', html) as Promise<{ ok: boolean; data?: Uint8Array; error?: string }>,
 });

@@ -27,17 +27,17 @@ import BadgeIcon from '@mui/icons-material/Badge';
 import StorageIcon from '@mui/icons-material/Storage';
 import CloudIcon from '@mui/icons-material/Cloud';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import { providers as provApi, models as modelsApi, config, settings, voice, personaApi, type DbConnectionTestResult, type DbExtensionCheck } from '../api';
+import { providers as provApi, models as modelsApi, config, settings, voice, personaApi, modelBenchmark, type DbConnectionTestResult, type DbExtensionCheck } from '../api';
 import { useApp } from '../store/AppContext';
 import { useGlobalError } from '../components/ErrorBand';
 import { LocalModelStep } from '../components/LocalModelStep';
 import type { ActiveDownload } from '../components/DownloadIndicator';
-import type { ProviderInfo, ModelInfo, AgentXConfig, BenchmarkRunResult } from '../api';
+import type { ProviderInfo, ModelInfo, AgentXConfig, BenchmarkRunResult, BenchmarkGrade } from '../api';
 import { useLocalModelSupported, useSystemCapabilities } from '../hooks/useSystemCapabilities';
 import { ModelBenchmarkRunner, BenchmarkGradeAck, canProceedWithBenchmarkGrade } from '../components/settings/ModelBenchmarkRunner';
 import { WizardVoiceStep } from '../components/setup/WizardVoiceStep';
 import { WizardNeuralStep } from '../components/setup/WizardNeuralStep';
-import { WizardTelegramStep } from '../components/setup/WizardTelegramStep';
+import { WizardChannelStep } from '../components/setup/WizardChannelStep';
 import { WorkspaceCard } from '../components/settings/WorkspaceCard';
 import { WizardPerformancePreset } from '../components/setup/WizardPerformancePreset';
 import { WizardCheckMark, WizardStepHeader, WizardStepIcon } from '../components/setup/wizard-ui';
@@ -62,7 +62,7 @@ import {
 import { buildLocalBaseUrl, parseLocalEndpoint, defaultLocalPort } from '../utils/local-provider-endpoint';
 import type { AgentPersonaConfig, CommunicationStyle, DecisionMakingStyle } from '../api';
 
-const ALL_STEPS = ['Storage', 'Provider', 'Profile', 'Local Model', 'Model', 'Benchmark', 'Neural Core', 'Callsign', 'Agent Persona', 'Voice Comms', 'Telegram Relay', 'Complete'];
+const ALL_STEPS = ['Storage', 'Provider', 'Profile', 'Local Model', 'Model', 'Benchmark', 'Neural Core', 'Callsign', 'Agent Persona', 'Voice Comms', 'Channel Connect', 'Complete'];
 
 /** Preset personas the user can quickly pick in the wizard. */
 const PERSONA_PRESETS: Array<{
@@ -178,6 +178,11 @@ export function SetupWizard() {
   const { showError, clearError } = useGlobalError();
   const [loading, setLoading] = useState(false);
   const [neuralReady, setNeuralReady] = useState(false);
+  // True when the embedding model download failed because the model is no
+  // longer available from the HuggingFace endpoint. In that case the wizard
+  // offers a "Continue without Neural Core" path and silently leaves the
+  // cortex in degraded mode (the app already runs without embeddings).
+  const [neuralUnavailable, setNeuralUnavailable] = useState(false);
 
   const goToStep = useCallback((stepIndex: number) => {
     if (!isStepSupported(stepIndex)) return;
@@ -194,9 +199,13 @@ export function SetupWizard() {
   const [baseUrl, setBaseUrl] = useState('');
   const [localHost, setLocalHost] = useState('localhost');
   const [localPort, setLocalPort] = useState('11434');
+  const [customApiType, setCustomApiType] = useState<'openai-compatible' | 'anthropic' | 'google'>('openai-compatible');
+  const [customModelId, setCustomModelId] = useState('');
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState('');
+  /** Models that already have a passing benchmark on disk for the current provider. */
+  const [clearedModels, setClearedModels] = useState<Map<string, { grade: BenchmarkGrade; percent: number }>>(new Map());
   const [callsign, setCallsign] = useState('');
   const [profileName, setProfileName] = useState('');
   const [personaName, setPersonaName] = useState(PERSONA_PRESETS[0]!.name);
@@ -254,6 +263,9 @@ export function SetupWizard() {
   const [telegramLinked, setTelegramLinked] = useState(false);
   const [telegramBotLabel, setTelegramBotLabel] = useState<string | null>(null);
   const [telegramChatLabel, setTelegramChatLabel] = useState<string | null>(null);
+  const [whatsappLinked, setWhatsappLinked] = useState(false);
+  const [whatsappPhoneNumber, setWhatsappPhoneNumber] = useState<string | null>(null);
+  const [whatsappPushName, setWhatsappPushName] = useState<string | null>(null);
   /** Gate persist until restore finishes — avoids wiping localStorage with empty defaults (Strict Mode). */
   const [progressHydrated, setProgressHydrated] = useState(false);
   const [workspaceReady, setWorkspaceReady] = useState(false);
@@ -329,9 +341,13 @@ export function SetupWizard() {
       if (saved.selectedLocalModel) setSelectedLocalModel(saved.selectedLocalModel);
       if (saved.skipLocalModel) setSkipLocalModel(saved.skipLocalModel);
       if (saved.voiceCalibrated) setVoiceCalibrated(saved.voiceCalibrated);
+      if (saved.neuralReady) setNeuralReady(saved.neuralReady);
       if (saved.telegramLinked) setTelegramLinked(saved.telegramLinked);
       if (saved.telegramBotLabel) setTelegramBotLabel(saved.telegramBotLabel);
       if (saved.telegramChatLabel) setTelegramChatLabel(saved.telegramChatLabel);
+      if (saved.whatsappLinked) setWhatsappLinked(saved.whatsappLinked);
+      if (saved.whatsappPhoneNumber) setWhatsappPhoneNumber(saved.whatsappPhoneNumber);
+      if (saved.whatsappPushName) setWhatsappPushName(saved.whatsappPushName);
       if (saved.selectedProvider) {
         setModelsLoading(true);
         provApi.models(saved.selectedProvider).then(m => {
@@ -396,9 +412,13 @@ export function SetupWizard() {
       selectedLocalModel,
       skipLocalModel,
       voiceCalibrated,
+      neuralReady,
       telegramLinked,
       telegramBotLabel: telegramBotLabel ?? undefined,
       telegramChatLabel: telegramChatLabel ?? undefined,
+      whatsappLinked,
+      whatsappPhoneNumber: whatsappPhoneNumber ?? undefined,
+      whatsappPushName: whatsappPushName ?? undefined,
       personaName,
       personaDescription,
       personaCommStyle,
@@ -412,7 +432,8 @@ export function SetupWizard() {
   }, [
     progressHydrated, step, maxReachedStep, selectedProvider, selectedModel, selectedReasoningEffort, callsign,
     selectedBackend, profileName, apiKey, apiKeyConfigured, baseUrl, localHost, localPort,
-    selectedLocalModel, skipLocalModel, voiceCalibrated, telegramLinked, telegramBotLabel, telegramChatLabel,
+    selectedLocalModel, skipLocalModel, voiceCalibrated, neuralReady, telegramLinked, telegramBotLabel, telegramChatLabel,
+    whatsappLinked, whatsappPhoneNumber, whatsappPushName,
     personaName, personaDescription, personaCommStyle, personaDecisionStyle, personaDomain, personaTraits,
     limitedOverride, standbyOverride, benchmarkResult?.grade,
   ]);
@@ -576,6 +597,7 @@ export function SetupWizard() {
   const selectedProviderInfo = availableProviders.find(p => p.id === selectedProvider);
   const isLocal = selectedProviderInfo?.type === 'local';
   const isAzure = selectedProvider === 'azure';
+  const isCustom = selectedProvider === 'custom';
 
   const selectProvider = (providerId: string) => {
     if (providerId === selectedProvider) return;
@@ -589,6 +611,8 @@ export function SetupWizard() {
     setSelectedReasoningEffort('');
     setAvailableModels([]);
     setBenchmarkResult(null);
+    setCustomApiType('openai-compatible');
+    setCustomModelId('');
     const info = availableProviders.find((p) => p.id === providerId);
     if (info?.type === 'local') {
       const ep = parseLocalEndpoint(info.defaultBaseUrl, providerId);
@@ -600,6 +624,24 @@ export function SetupWizard() {
       setLocalPort(defaultLocalPort(providerId));
     }
   };
+
+  // Fetch cleared (benchmarked) models when the provider changes so we can
+  // mark them in the model picker and skip the benchmark step if already passed.
+  useEffect(() => {
+    if (!selectedProvider) { setClearedModels(new Map()); return; }
+    let cancelled = false;
+    modelBenchmark.cleared(selectedProvider)
+      .then((data) => {
+        if (cancelled) return;
+        const map = new Map<string, { grade: BenchmarkGrade; percent: number }>();
+        for (const m of data.models) {
+          map.set(m.modelId, { grade: m.grade, percent: m.percent });
+        }
+        setClearedModels(map);
+      })
+      .catch(() => { if (!cancelled) setClearedModels(new Map()); });
+    return () => { cancelled = true; };
+  }, [selectedProvider]);
 
   const handleProviderNext = () => {
     if (!selectedProvider) { showError('Select a provider'); return; }
@@ -619,6 +661,7 @@ export function SetupWizard() {
     if (!profileName.trim()) { showError('Enter a profile name'); return; }
     if (!isLocal && !apiKey.trim() && !apiKeyConfigured) { showError('Enter your API key'); return; }
     if (isAzure && !baseUrl.trim()) { showError('Azure requires a resource endpoint URL'); return; }
+    if (isCustom && !baseUrl.trim()) { showError('Custom provider requires a base URL'); return; }
     if (isLocal && !localPort.trim()) { showError('Enter the local server port'); return; }
     setLoading(true);
     try {
@@ -629,7 +672,7 @@ export function SetupWizard() {
 
       // Revisit with key already on file — re-validate via stored creds, skip configure
       // so we never wipe the server-side key with an empty body.
-      if (!isLocal && apiKeyConfigured && !apiKey.trim()) {
+      if (!isLocal && !isCustom && apiKeyConfigured && !apiKey.trim()) {
         const r = await provApi.validate(selectedProvider, undefined, resolvedBaseUrl);
         if (!r.valid) { showError(r.error ?? 'Invalid credentials'); setLoading(false); return; }
         if (availableModels.length === 0) {
@@ -641,12 +684,62 @@ export function SetupWizard() {
       }
 
       const keyForRequest = isLocal ? 'no-key-needed' : apiKey.trim();
-      const r = await provApi.validate(selectedProvider, keyForRequest, resolvedBaseUrl);
+      const r = await provApi.validate(
+        selectedProvider,
+        keyForRequest,
+        resolvedBaseUrl,
+        isCustom ? customApiType : undefined,
+        isCustom ? profileName.trim() : undefined,
+      );
       if (!r.valid) { showError(r.error ?? 'Invalid credentials'); setLoading(false); return; }
-      await provApi.configure(selectedProvider, keyForRequest, resolvedBaseUrl, profileName.trim());
+      await provApi.configure(
+        selectedProvider,
+        keyForRequest,
+        resolvedBaseUrl,
+        profileName.trim(),
+        isCustom ? customApiType : undefined,
+        isCustom ? customModelId.trim() : undefined,
+      );
       if (!isLocal) setApiKeyConfigured(true);
-      const ml = await provApi.models(selectedProvider);
-      setAvailableModels(ml); next();
+
+      // For custom providers, try listing models from the endpoint first.
+      // Only fall back to the user-supplied model id if /models is unsupported.
+      if (isCustom) {
+        try {
+          const ml = await provApi.models(selectedProvider);
+          if (ml.length > 0) {
+            setAvailableModels(ml);
+          } else if (customModelId.trim()) {
+            // Endpoint returned an empty list — use the manually supplied model id.
+            setAvailableModels([{
+              id: customModelId.trim(),
+              name: customModelId.trim(),
+              providerId: 'custom',
+              contextWindow: 0,
+              capabilities: ['text', 'streaming', 'function_calling'],
+            }]);
+          } else {
+            setAvailableModels([]);
+          }
+        } catch {
+          // Endpoint doesn't support /models — use the manually supplied model id if any.
+          if (customModelId.trim()) {
+            setAvailableModels([{
+              id: customModelId.trim(),
+              name: customModelId.trim(),
+              providerId: 'custom',
+              contextWindow: 0,
+              capabilities: ['text', 'streaming', 'function_calling'],
+            }]);
+          } else {
+            setAvailableModels([]);
+          }
+        }
+      } else {
+        const ml = await provApi.models(selectedProvider);
+        setAvailableModels(ml);
+      }
+      next();
     } catch (err) { showError(err instanceof Error ? err.message : 'Validation failed'); }
     finally { setLoading(false); }
   };
@@ -660,6 +753,24 @@ export function SetupWizard() {
         reasoningEffort: selectedReasoningEffort || undefined,
       });
     } catch {}
+
+    // If this model already has a passing benchmark on disk, load the cached
+    // result and skip the benchmark step (step 5) entirely.
+    const cleared = clearedModels.get(selectedModel);
+    if (cleared && canProceedWithBenchmarkGrade(cleared.grade)) {
+      try {
+        const latest = await modelBenchmark.latest(selectedProvider, selectedModel);
+        if (latest.result) {
+          setBenchmarkResult(latest.result);
+          // Skip step 5 (benchmark) — advance two steps instead of one.
+          setStep((s) => moveStep(moveStep(s, 1), 1));
+          return;
+        }
+      } catch {
+        // Fall through to normal benchmark flow if cache read fails.
+      }
+    }
+
     next();
   };
 
@@ -766,7 +877,7 @@ export function SetupWizard() {
                 (label === 'Local Model' && skipLocalModel)
                 || (label === 'Neural Core' && !neuralReady)
                 || (label === 'Voice Comms' && !voiceCalibrated)
-                || (label === 'Telegram Relay' && !telegramLinked)
+                || (label === 'Channel Connect' && !telegramLinked && !whatsappLinked)
               ),
             );
             const isCompleted = reached && !isCurrent && !isSkipped;
@@ -1124,14 +1235,34 @@ export function SetupWizard() {
                   <WizardStepHeader codename="MODULE · PROVIDER" title="Choose AI Provider" />
                   <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', color: wizardTheme.textDim, mb: 2, fontFamily: WIZARD_MONO, letterSpacing: '1px' }}>CLOUD</Typography>
                   <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 1.5, mb: 2 }}>
-                    {availableProviders.filter(Boolean).filter(p => p.type === 'cloud').map(p => (
+                    {availableProviders.filter(Boolean).filter(p => p.type === 'cloud' && p.id !== 'custom').map(p => (
                       <Box key={p.id} onClick={() => selectProvider(p.id)} sx={wizardTileSx(selectedProvider === p.id)}>
                         <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8rem', color: wizardTheme.text }}>{p.name}</Typography>
                       </Box>
                     ))}
                   </Box>
+                  {availableProviders.some(p => p.id === 'custom') && (
+                    <Box
+                      onClick={() => selectProvider('custom')}
+                      sx={{
+                        ...wizardTileSx(selectedProvider === 'custom'),
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 0.5,
+                        py: 1.5,
+                        px: 2,
+                        width: '100%',
+                        mb: 2,
+                      }}
+                    >
+                      <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8rem', color: wizardTheme.text }}>Custom Provider</Typography>
+                      <Typography variant="caption" sx={{ display: 'block', fontSize: '0.55rem', fontFamily: WIZARD_MONO, color: wizardTheme.accentSignal, letterSpacing: '0.5px' }}>BRING YOUR OWN · OPENAI-COMPATIBLE / ANTHROPIC / GEMINI</Typography>
+                    </Box>
+                  )}
                   <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', color: wizardTheme.textDim, mb: 1.5, fontFamily: WIZARD_MONO, letterSpacing: '1px' }}>LOCAL</Typography>
-                  <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 1.5 }}>
+                  <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 1.5, mb: 2 }}>
                     {availableProviders.filter(Boolean).filter(p => p.type === 'local').map(p => (
                       <Box key={p.id} onClick={() => selectProvider(p.id)} sx={wizardTileSx(selectedProvider === p.id)}>
                         <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8rem', color: wizardTheme.text }}>{p.name}</Typography>
@@ -1146,8 +1277,8 @@ export function SetupWizard() {
                 <Box sx={{ maxWidth: 520, mx: 'auto' }}>
                   <WizardStepHeader
                     codename="MODULE · PROFILE"
-                    title={isLocal ? 'Name Your Local Profile' : isAzure ? 'Azure Profile' : 'Configure Profile'}
-                    subtitle={isLocal ? `Connecting to ${selectedProviderInfo?.name ?? 'local provider'}. No API key needed.` : isAzure ? 'Enter your Azure endpoint and API key' : `Set up your ${selectedProviderInfo?.name ?? ''} connection`}
+                    title={isLocal ? 'Name Your Local Profile' : isAzure ? 'Azure Profile' : isCustom ? 'Custom Provider' : 'Configure Profile'}
+                    subtitle={isLocal ? `Connecting to ${selectedProviderInfo?.name ?? 'local provider'}. No API key needed.` : isAzure ? 'Enter your Azure endpoint and API key' : isCustom ? 'Bring your own OpenAI-compatible, Anthropic, or Gemini endpoint' : `Set up your ${selectedProviderInfo?.name ?? ''} connection`}
                   />
 
                   <TextField label="Profile Name" value={profileName} onChange={e => setProfileName(e.target.value)} fullWidth
@@ -1155,13 +1286,42 @@ export function SetupWizard() {
                     sx={{ mb: !isLocal ? 2 : 1.5 }}
                     slotProps={wizardTextFieldSlotProps} />
 
-                  {isAzure && (
+                  {isCustom && (
+                    <FormControl fullWidth sx={{ mb: 2 }}>
+                      <InputLabel sx={{ fontSize: '0.75rem', fontFamily: WIZARD_MONO }}>API Type</InputLabel>
+                      <Select
+                        value={customApiType}
+                        label="API Type"
+                        onChange={(e) => setCustomApiType(e.target.value as 'openai-compatible' | 'anthropic' | 'google')}
+                        sx={{ fontSize: '0.8rem', fontFamily: WIZARD_MONO }}
+                      >
+                        <MenuItem value="openai-compatible" sx={{ fontSize: '0.8rem', fontFamily: WIZARD_MONO }}>OpenAI-Compatible</MenuItem>
+                        <MenuItem value="anthropic" sx={{ fontSize: '0.8rem', fontFamily: WIZARD_MONO }}>Anthropic Messages</MenuItem>
+                        <MenuItem value="google" sx={{ fontSize: '0.8rem', fontFamily: WIZARD_MONO }}>Google Gemini</MenuItem>
+                      </Select>
+                    </FormControl>
+                  )}
+
+                  {(isAzure || isCustom) && (
                     <TextField
-                      label="Azure Endpoint"
+                      label={isCustom ? 'Base URL' : 'Azure Endpoint'}
                       value={baseUrl}
                       onChange={(e) => setBaseUrl(e.target.value)}
                       fullWidth
-                      placeholder="https://YOUR_RESOURCE.openai.azure.com"
+                      placeholder={isCustom ? 'https://api.your-provider.com/v1' : 'https://YOUR_RESOURCE.openai.azure.com'}
+                      sx={{ mb: 2 }}
+                      slotProps={wizardTextFieldSlotProps}
+                    />
+                  )}
+
+                  {isCustom && (
+                    <TextField
+                      label="Model ID (optional)"
+                      value={customModelId}
+                      onChange={(e) => setCustomModelId(e.target.value)}
+                      fullWidth
+                      placeholder="e.g. gpt-4o, claude-sonnet-4, gemini-2.5-pro"
+                      helperText="Leave blank if your endpoint lists models via /models. Enter a model ID only if the endpoint doesn't support model listing."
                       sx={{ mb: 2 }}
                       slotProps={wizardTextFieldSlotProps}
                     />
@@ -1239,7 +1399,9 @@ export function SetupWizard() {
                     <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, py: 4 }}><CircularProgress size={16} sx={{ color: wizardTheme.text }} /><Typography variant="body2" sx={{ color: wizardTheme.textDim }}>Loading models...</Typography></Box>
                   ) : (
                     <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 1.5 }}>
-                      {availableModels.filter(Boolean).map(m => (
+                      {availableModels.filter(Boolean).map(m => {
+                        const cleared = clearedModels.get(m.id);
+                        return (
                         <Box key={m.id} onClick={() => handleWizardModelSelect(m)} sx={wizardTileSx(selectedModel === m.id)}>
                           <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8rem', color: wizardTheme.text, mb: 0.5, wordBreak: 'break-word' }}>{m.name}</Typography>
                           <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
@@ -1251,8 +1413,22 @@ export function SetupWizard() {
                               </Typography>
                             )}
                           </Box>
+                          {cleared && (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
+                              <Typography component="span" sx={{ fontSize: '0.5rem', fontFamily: WIZARD_MONO, fontWeight: 700, color: cleared.grade === 'ELITE' || cleared.grade === 'CLEARED' ? wizardTheme.accentSignal : wizardTheme.accentWarn, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                {cleared.grade}
+                              </Typography>
+                              <Typography component="span" sx={{ fontSize: '0.5rem', fontFamily: WIZARD_MONO, color: wizardTheme.textDim }}>
+                                · {cleared.percent}%
+                              </Typography>
+                              <Typography component="span" sx={{ fontSize: '0.45rem', fontFamily: WIZARD_MONO, color: wizardTheme.textDim, ml: 0.3 }}>
+                                ✓ cleared
+                              </Typography>
+                            </Box>
+                          )}
                         </Box>
-                      ))}
+                        );
+                      })}
                     </Box>
                   )}
                   {selectedModel && !modelsLoading && (
@@ -1332,6 +1508,7 @@ export function SetupWizard() {
                 <WizardNeuralStep
                   totalMemoryGB={systemCaps?.totalMemoryGB}
                   onReadyChange={setNeuralReady}
+                  onAvailabilityErrorChange={setNeuralUnavailable}
                 />
               )}
 
@@ -1555,14 +1732,22 @@ export function SetupWizard() {
               )}
 
               {step === 10 && (
-                <WizardTelegramStep
-                  alreadyLinked={telegramLinked}
-                  initialBotLabel={telegramBotLabel}
-                  initialChatLabel={telegramChatLabel}
-                  onLinkedChange={(linked, meta) => {
+                <WizardChannelStep
+                  telegramLinked={telegramLinked}
+                  initialTelegramBotLabel={telegramBotLabel}
+                  initialTelegramChatLabel={telegramChatLabel}
+                  onTelegramLinkedChange={(linked, meta) => {
                     setTelegramLinked(linked);
                     if (meta?.botLabel !== undefined) setTelegramBotLabel(meta.botLabel);
                     if (meta?.chatLabel !== undefined) setTelegramChatLabel(meta.chatLabel);
+                  }}
+                  whatsappLinked={whatsappLinked}
+                  initialWhatsAppPhoneNumber={whatsappPhoneNumber}
+                  initialWhatsAppPushName={whatsappPushName}
+                  onWhatsAppLinkedChange={(linked, meta) => {
+                    setWhatsappLinked(linked);
+                    if (meta?.phoneNumber !== undefined) setWhatsappPhoneNumber(meta.phoneNumber);
+                    if (meta?.pushName !== undefined) setWhatsappPushName(meta.pushName);
                   }}
                 />
               )}
@@ -1591,6 +1776,7 @@ export function SetupWizard() {
                         personaName || null,
                         voiceCalibrated ? 'Voice' : null,
                         telegramLinked ? 'Telegram' : null,
+                        whatsappLinked ? 'WhatsApp' : null,
                       ].filter(Boolean).map((label) => (
                         <Box
                           key={String(label)}
@@ -1685,7 +1871,7 @@ export function SetupWizard() {
               Next
             </Button>
           )}
-          {step === 4 && <Button variant="contained" onClick={handleModelNext} disabled={!selectedModel} sx={wizardPrimaryBtnSx}>Next</Button>}
+          {step === 4 && <Button variant="contained" onClick={handleModelNext} disabled={!selectedModel} sx={wizardPrimaryBtnSx}>{selectedModel && clearedModels.get(selectedModel) && canProceedWithBenchmarkGrade(clearedModels.get(selectedModel)!.grade) ? 'Next (skip scan)' : 'Next'}</Button>}
           {step === 5 && (
             <Button
               variant="contained"
@@ -1697,16 +1883,25 @@ export function SetupWizard() {
             </Button>
           )}
           {step === 6 && (
-            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', ml: 'auto' }}>
-              {!neuralReady && (
-                <Button onClick={next} sx={wizardSkipBtnSx}>
-                  Skip for now
-                </Button>
-              )}
-              <Button variant="contained" onClick={next} sx={wizardPrimaryBtnSx}>
-                {neuralReady ? 'Next' : 'Skip →'}
-              </Button>
-            </Box>
+            <Button
+              variant="contained"
+              onClick={() => {
+                // If the model is unavailable from the endpoint, silently pause
+                // the neural core: mark the step as handled (the cortex stays in
+                // degraded mode — the app already runs without embeddings) and
+                // continue. The user can retry the download later from settings.
+                if (neuralUnavailable && !neuralReady) setNeuralReady(true);
+                next();
+              }}
+              disabled={!neuralReady && !neuralUnavailable}
+              sx={wizardPrimaryBtnSx}
+            >
+              {neuralReady
+                ? 'Continue →'
+                : neuralUnavailable
+                  ? 'Continue without Neural Core →'
+                  : 'Continue →'}
+            </Button>
           )}
           {step === 7 && <Button variant="contained" onClick={handleCallsignNext} disabled={!callsign.trim()} sx={wizardPrimaryBtnSx}>Next</Button>}
           {step === 8 && <Button variant="contained" onClick={next} disabled={!personaName.trim()} sx={wizardPrimaryBtnSx}>Next</Button>}
@@ -1735,14 +1930,14 @@ export function SetupWizard() {
             </Box>
           )}
           {step === 10 && (
-            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', justifyContent: telegramLinked ? 'flex-end' : 'space-between', width: '100%' }}>
-              {!telegramLinked && (
+            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', justifyContent: (telegramLinked || whatsappLinked) ? 'flex-end' : 'space-between', width: '100%' }}>
+              {!telegramLinked && !whatsappLinked && (
                 <Button onClick={next} sx={wizardSkipBtnSx}>
                   Skip for now
                 </Button>
               )}
               <Button variant="contained" onClick={next} sx={wizardPrimaryBtnSx}>
-                {telegramLinked ? 'Continue →' : 'Skip →'}
+                {(telegramLinked || whatsappLinked) ? 'Continue →' : 'Skip →'}
               </Button>
             </Box>
           )}
@@ -1806,12 +2001,11 @@ export function SetupWizard() {
                 : 'Setup complete.'}
           </Typography>
           <Box
+            className="ax-scroll"
             ref={provisionModalMode === 'embedded-postgres' ? embeddedLogRef : cloudLogRef}
             sx={{
               minHeight: 200,
               maxHeight: 280,
-              overflowY: 'auto',
-              overflowX: 'auto',
               px: 1.5,
               py: 1.25,
               bgcolor: alphaColor(colors.ink, 0.06),

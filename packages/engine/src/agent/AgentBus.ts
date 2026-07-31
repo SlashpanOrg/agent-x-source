@@ -2,6 +2,7 @@ import type { EngineEvent } from '@agentx/shared';
 import type { AgentEventBus } from '../EventBus.js';
 import { getLogger } from '@agentx/shared';
 import { randomUUID } from 'node:crypto';
+import { injectTraceparent, extractTraceparent } from '../observability/context.js';
 
 const logger = getLogger();
 
@@ -74,6 +75,8 @@ export class AgentBus {
 
   /**
    * Publish a message to a topic. All subscribers receive it.
+   * Injects the current traceparent into the message payload so subscribers
+   * can continue the trace (cross-agent distributed tracing, v1.1+).
    */
   async publish(
     from: string,
@@ -82,6 +85,9 @@ export class AgentBus {
     payload: Record<string, unknown>,
     replyTo?: string,
   ): Promise<AgentMessage> {
+    // Inject the active span's traceparent into the payload (v1.1+).
+    injectTraceparent(payload);
+
     const msg: AgentMessage = {
       id: randomUUID(),
       from,
@@ -101,7 +107,9 @@ export class AgentBus {
 
     for (const sub of subscribers) {
       try {
-        await sub.handler(msg);
+        // Extract the traceparent from the message payload so the handler
+        // runs within the same trace context as the publisher.
+        await extractTraceparent(msg.payload, () => sub.handler(msg));
       } catch (e) {
         logger.warn('AGENT_BUS', `Handler for ${sub.agentId} on ${topic} failed: ${e}`);
       }

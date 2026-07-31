@@ -15,8 +15,8 @@ export const VOICE_DEPLOY_STEPS = [
   'Open Chat, switch to Voice, and hold Space to speak.',
 ] as const;
 
-/** Local hands-free (duplex) UI — off; Local is PTT-only. xAI remains duplex. */
-export const VOICE_HANDS_FREE_ENABLED = false;
+/** Local hands-free (duplex) UI — enabled; Local supports both PTT and duplex. */
+export const VOICE_HANDS_FREE_ENABLED = true;
 
 export interface KokoroVoiceProfile {
   id: string;
@@ -102,17 +102,18 @@ export const KOKORO_VOICE_PROFILES: KokoroVoiceProfile[] = [
 ];
 
 export function mergeVoiceConfig(input?: VoiceConfig | null): VoiceConfig {
-  const hasXaiCredentials = Boolean(input?.xai?.apiKey);
+  // The /config endpoint redacts apiKey (sets it to undefined) and exposes
+  // apiKeyConfigured instead. Check both so this works on both client and server.
+  const hasXaiCredentials = Boolean(input?.xai?.apiKey ?? input?.xai?.apiKeyConfigured);
   const engine = input?.engine ?? (hasXaiCredentials ? 'realtime_xai' : 'stt_llm_tts');
   const isXai = engine === 'realtime_xai';
   const enabled = input?.enabled ?? (hasXaiCredentials || isXai);
   // When voice is enabled, web mode must not be 'off' — otherwise voice UI stays hidden.
-  // xAI is always duplex; Local is always push-to-talk (no stale duplex leftovers).
+  // xAI is always duplex; Local supports both push-to-talk and duplex (local Silero VAD).
   const inputWebMode = input?.mode?.web;
   let webMode = enabled && (!inputWebMode || inputWebMode === 'off' || (isXai && inputWebMode !== 'duplex'))
     ? (isXai ? 'duplex' : 'push-to-talk')
     : (inputWebMode ?? 'off');
-  if (!isXai && webMode === 'duplex') webMode = 'push-to-talk';
   if (isXai && enabled && webMode !== 'off' && webMode !== 'duplex') webMode = 'duplex';
   return {
     enabled,
@@ -149,8 +150,8 @@ export function applyVoicePreset(config: VoiceConfig): VoiceConfig {
   return mergeVoiceConfig({
     ...config,
     enabled: true,
-    // xAI → duplex; Local → push-to-talk (never preserve a stale duplex setting).
-    mode: { ...config.mode, web: isXai ? 'duplex' : 'push-to-talk' },
+    // xAI → duplex; Local → preserve user's choice (push-to-talk or duplex).
+    mode: { ...config.mode, web: isXai ? 'duplex' : (config.mode?.web === 'duplex' ? 'duplex' : 'push-to-talk') },
     stt: { modelId: 'faster-distil-whisper-small.en', computeType: 'int8', device: 'auto' },
     tts: {
       engine: 'kokoro',

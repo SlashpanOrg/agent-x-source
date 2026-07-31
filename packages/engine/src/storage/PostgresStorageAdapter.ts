@@ -1,4 +1,4 @@
-import { Pool, type PoolConfig } from 'pg';
+import { Pool, type PoolConfig, type PoolClient, type QueryResult } from 'pg';
 import { buildListDayDivider, generateId, getLogger } from '@agentx/shared';
 import type {
   StorageAdapter,
@@ -13,6 +13,7 @@ import type {
   SessionListKpis,
   Session,
 } from '@agentx/shared';
+import { withSpan } from '../observability/index.js';
 import { normalizeSessionUpdates } from '../session/session-field-utils.js';
 import { estimateTokensFromMessages } from '../session/session-token-utils.js';
 import { createPgCrewCatalogStore } from '../crew/postgres-crew-catalog.js';
@@ -115,6 +116,166 @@ export type { PostgresConfig } from './pg-helpers.js';
 
 const logger = getLogger();
 
+// ─── DB query observability instrumentation ─────────────────────────────
+//
+// Every `pool.query()` / `client.query()` is wrapped with a `db.query` span
+// (domain='APP') plus `db_queries_total{operation,table}` counter and
+// `db_query_duration_seconds` histogram. High-volume DB traffic is sampled via
+// `AGENTX_OBS_DB_SAMPLE_RATE` (default 1.0): when sampled out, metrics are still
+// recorded but no span is created. The observability subsystem's own queries
+// (anything touching the `observability.` schema) are never instrumented to
+// avoid recursive span generation.
+
+/** A minimal metrics sink the web-api layer can wire up to its MetricsRegistry. */
+export interface DbMetricsSink {
+  incrementCounter(name: string, labels: Record<string, string>, value?: number): void;
+  recordHistogram(name: string, labels: Record<string, string>, valueSeconds: number): void;
+}
+
+class NullDbMetricsSink implements DbMetricsSink {
+  incrementCounter(): void { /* no-op until a sink is plugged in */ }
+  recordHistogram(): void { /* no-op until a sink is plugged in */ }
+}
+
+let dbMetricsSink: DbMetricsSink = new NullDbMetricsSink();
+
+/**
+ * Plug an external metrics registry (e.g. the web-api `metricsRegistry`) into
+ * the DB query instrumentation. Until this is called, DB metrics are silently
+ * dropped — spans still flow through the tracer regardless.
+ */
+export function setDbMetricsSink(sink: DbMetricsSink): void {
+  dbMetricsSink = sink;
+}
+
+/** Parse the leading SQL verb to classify the db.operation. */
+function parseDbOperation(sql: string): string {
+  const match = /^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|TRUNCATE|BEGIN|COMMIT|ROLLBACK|COPY|GRANT|REVOKE|SET|SHOW)\b/i.exec(sql);
+  return (match?.[1] ?? '').toUpperCase() || 'UNKNOWN';
+}
+
+/** Best-effort extraction of the target table name from a SQL statement. */
+function parseDbTable(sql: string, operation: string): string {
+  let m: RegExpExecArray | null;
+  if (operation === 'INSERT') m = /INSERT\s+INTO\s+([\w.]+)/i.exec(sql);
+  else if (operation === 'UPDATE') m = /\bUPDATE\s+([\w.]+)/i.exec(sql);
+  else if (operation === 'DELETE') m = /DELETE\s+FROM\s+([\w.]+)/i.exec(sql);
+  else m = /\bFROM\s+([\w.]+)/i.exec(sql);
+  if (!m) return 'unknown';
+  const ident = m[1] ?? '';
+  const last = ident.split('.').pop() ?? ident;
+  return last.replace(/"/g, '') || 'unknown';
+}
+
+/** Detect queries that target the observability schema (recursion guard). */
+function isObservabilityQuery(sql: string): boolean {
+  return /\bobservability\./i.test(sql);
+}
+
+/** Read the DB span sampling rate from the env (default 1.0 = always span). */
+function getDbSampleRate(): number {
+  const raw = process.env['AGENTX_OBS_DB_SAMPLE_RATE'];
+  if (raw === undefined || raw === '') return 1.0;
+  const n = Number(raw);
+  if (Number.isNaN(n)) return 1.0;
+  return Math.min(1, Math.max(0, n));
+}
+
+/** Generic query executor signature used by the instrumentation wrapper. */
+type QueryFn = (...args: unknown[]) => Promise<QueryResult>;
+
+/**
+ * Execute a `pool.query` / `client.query` call with observability: span +
+ * counter + histogram. Skips span/metrics for observability-schema queries
+ * (recursion guard) and for sampled-out queries still records metrics.
+ */
+async function executeWithObservability(exec: QueryFn, args: unknown[]): Promise<QueryResult> {
+  let sql: string;
+  const first = args[0];
+  if (typeof first === 'string') {
+    sql = first;
+  } else if (first && typeof first === 'object' && typeof (first as { text?: unknown }).text === 'string') {
+    sql = (first as { text: string }).text;
+  } else {
+    // Unknown query shape (e.g. Submittable streams) — execute as-is.
+    return exec(...args);
+  }
+
+  // Never instrument the observability subsystem's own queries (avoid recursion).
+  if (isObservabilityQuery(sql)) {
+    return exec(...args);
+  }
+
+  const operation = parseDbOperation(sql);
+  const table = parseDbTable(sql, operation);
+  const started = Date.now();
+  const sampleRate = getDbSampleRate();
+  const sampledIn = sampleRate <= 0 ? false : sampleRate >= 1 ? true : Math.random() < sampleRate;
+
+  const recordMetrics = (durationMs: number): void => {
+    dbMetricsSink.incrementCounter('db_queries_total', { operation, table });
+    dbMetricsSink.recordHistogram('db_query_duration_seconds', { operation, table }, durationMs / 1000);
+  };
+
+  // Sampled out: record metrics only, no span.
+  if (!sampledIn) {
+    try {
+      const result = await exec(...args);
+      recordMetrics(Date.now() - started);
+      return result;
+    } catch (err) {
+      recordMetrics(Date.now() - started);
+      throw err;
+    }
+  }
+
+  // Sampled in: create a `db.query` span (domain='APP') with full attributes.
+  return withSpan('db.query', 'db', async (span) => {
+    span.setAttribute('db.system', 'postgresql');
+    span.setAttribute('db.statement', sql);
+    span.setAttribute('db.operation', operation);
+    span.setAttribute('db.table', table);
+    span.setAttribute('trace.domain', 'APP');
+    try {
+      const result = await exec(...args);
+      const elapsed = Date.now() - started;
+      span.setAttribute('db.duration_ms', elapsed);
+      if (operation === 'SELECT') {
+        span.setAttribute('db.rows_returned', result.rowCount ?? 0);
+      } else {
+        span.setAttribute('db.rows_affected', result.rowCount ?? 0);
+      }
+      recordMetrics(elapsed);
+      return result;
+    } catch (err) {
+      const elapsed = Date.now() - started;
+      span.setAttribute('db.duration_ms', elapsed);
+      const code = (err as { code?: string } | null | undefined)?.code;
+      if (code) span.setAttribute('db.error.code', code);
+      recordMetrics(elapsed);
+      // withSpan marks the span status ERROR + records the exception on rethrow.
+      throw err;
+    }
+  });
+}
+
+/**
+ * Wrap a `pg.PoolClient` (returned by `pool.connect()`) so its `query()` calls
+ * are observed. `release()` and all other members pass through untouched.
+ */
+function instrumentClient(client: PoolClient): PoolClient {
+  const handler: ProxyHandler<PoolClient> = {
+    get(target, prop, receiver) {
+      if (prop === 'query') {
+        const boundQuery = target.query.bind(target) as unknown as QueryFn;
+        return (...args: unknown[]): Promise<QueryResult> => executeWithObservability(boundQuery, args);
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  };
+  return new Proxy(client, handler) as PoolClient;
+}
+
 export class PostgresStorageAdapter implements StorageAdapter {
   private pool: Pool;
   private connected = false;
@@ -131,9 +292,34 @@ export class PostgresStorageAdapter implements StorageAdapter {
       connectionTimeoutMillis: getEnvInt('PG_CONNECTION_TIMEOUT_MS', config.connectionTimeoutMillis, 5_000),
       allowExitOnIdle: getEnvBool('PG_POOL_ALLOW_EXIT_ON_IDLE', config.allowExitOnIdle, false),
     };
-    this.pool = new Pool(poolConfig as PoolConfig);
+    this.pool = this.instrumentPool(new Pool(poolConfig as PoolConfig));
     this.lazyHydrate = config.lazyHydrate !== false;
     this.onProgress = config.onProgress;
+  }
+
+  /**
+   * Wrap a `pg.Pool` in a Proxy so every `pool.query(...)` is observed via
+   * `executeWithObservability` (span + metrics) and every `pool.connect()`
+   * returns an instrumented `PoolClient`. The observability subsystem receives
+   * this same proxied pool via `getPool()`, but its `observability.*` queries
+   * are skipped inside `executeWithObservability` to avoid recursion.
+   */
+  private instrumentPool(pool: Pool): Pool {
+    const handler: ProxyHandler<Pool> = {
+      get(target, prop, receiver) {
+        if (prop === 'query') {
+          const boundQuery = target.query.bind(target) as unknown as QueryFn;
+          return (...args: unknown[]): Promise<QueryResult> => executeWithObservability(boundQuery, args);
+        }
+        if (prop === 'connect') {
+          const origConnect = target.connect.bind(target) as unknown as (...a: unknown[]) => Promise<PoolClient>;
+          return (...args: unknown[]): Promise<PoolClient> =>
+            origConnect(...args).then((client: PoolClient) => instrumentClient(client));
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    };
+    return new Proxy(pool, handler) as Pool;
   }
 
   private progress(line: string): void {
@@ -151,7 +337,13 @@ export class PostgresStorageAdapter implements StorageAdapter {
     try {
       const client = await pool.connect();
       try {
-        const result = await client.query('SELECT version() as version');
+        // Instrument the connection-test query with a `db.query` span. This
+        // transient pool is separate from the adapter pool, so there is no
+        // recursion risk; `observability.`-schema queries are still skipped.
+        const result = await executeWithObservability(
+          client.query.bind(client) as unknown as QueryFn,
+          ['SELECT version() as version'],
+        );
         const pgVersion = result.rows[0]?.['version'] as string;
         return { ok: true, version: pgVersion || 'connected' };
       } finally {

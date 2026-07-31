@@ -273,7 +273,7 @@ export class CrewMissionOrchestrator {
       const others = round1.filter((r) => r.crewId !== member.crew.id);
       const peerSummary = others
         .map((r) => `[${r.crewName}]:\n${r.output.slice(0, 1200)}`)
-        .join('\n\n---\n\n');
+        .join('\n\n');
       const critiqueTask = [
         this.buildCrewTask(member, taskMap, opts.sessionContext, context, attempt),
         '',
@@ -517,8 +517,8 @@ export class CrewMissionOrchestrator {
       : '**Mission in progress** — crew updates:\n';
     const body = responses
       .map((r) => `### @${r.callsign} — ${r.member}\n${r.content}`)
-      .join('\n\n---\n\n');
-    return `${header}\n${body}\n\n---\n*Original request: ${userMessage.slice(0, 200)}*`;
+      .join('\n\n');
+    return `${header}\n${body}\n\n*Original request: ${userMessage.slice(0, 200)}*`;
   }
 
   private persist(opts: CrewMissionOptions, payload: Record<string, unknown>): void {

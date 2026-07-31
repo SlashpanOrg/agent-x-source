@@ -19,6 +19,7 @@ import {
   sendTelegramGreeting,
 } from '../../channels-sync.js';
 import { DiscordBridge, DiscordStore, SlackBridge, SlackStore, EmailBridge, Agent } from '@agentx/engine';
+import type { WhatsAppSessionStatus } from '@agentx/engine';
 
 export function createChannelsRouter(): Router {
   const r = Router();
@@ -521,6 +522,219 @@ export function createChannelsRouter(): Router {
       const logger = getLogger('channels');
       logger.warn('CHANNELS', `Failed to clear channel: ${e instanceof Error ? e.message : String(e)}`);
       res.status(500).json({ error: e instanceof Error ? e.message : 'Failed to clear channel' });
+    }
+  });
+
+  // ═══ WhatsApp ═══
+  // The WhatsApp session lifecycle is managed by WhatsAppSessionService on the
+  // engine state. These routes provide the dashboard with status, link (QR),
+  // stop, unlink, and pairing-code operations.
+
+  // Soft-pause check: reads the runtime paused flag from the session service.
+  // The flag is set automatically when the engine fails to connect on startup.
+  function isWhatsAppPaused(): boolean {
+    try {
+      const eng = getEngine();
+      return eng.whatsappSessionService?.paused === true;
+    } catch {
+      return false;
+    }
+  }
+
+  const PAUSED_RESPONSE = {
+    status: 'paused',
+    paused: true,
+    message: 'WhatsApp is temporarily disabled due to a connection failure (possible protocol update). This will be resolved in the next Agent-X update (usually within 48 hours). You can click Retry to try again, or wait for the update.',
+  };
+
+  r.get('/api/whatsapp/status', async (_req, res) => {
+    try {
+      if (isWhatsAppPaused()) {
+        res.json(PAUSED_RESPONSE);
+        return;
+      }
+      const eng = getEngine();
+      const svc = eng.whatsappSessionService;
+      if (!svc) {
+        res.json({ status: 'not_configured', engine: 'baileys' });
+        return;
+      }
+      const status = await svc.getStatus();
+      // Use svc.getQr() which returns the cached PNG data URL (not the raw
+      // QR string from the engine). Also included in status.qrDataUrl.
+      const qr = svc.getQr();
+      res.json({ ...status, qrDataUrl: qr ?? status.qrDataUrl });
+    } catch (e) {
+      getLogger('channels').warn('WHATSAPP', `Status error: ${e instanceof Error ? e.message : String(e)}`);
+      res.status(500).json({ error: e instanceof Error ? e.message : 'Failed to get WhatsApp status' });
+    }
+  });
+
+  r.post('/api/whatsapp/link', async (_req, res) => {
+    try {
+      if (isWhatsAppPaused()) {
+        res.status(503).json({ error: PAUSED_RESPONSE.message, paused: true });
+        return;
+      }
+      const eng = getEngine();
+      let svc = eng.whatsappSessionService;
+      // Auto-enable: if WhatsApp isn't configured yet (e.g. user is in the
+      // setup wizard and hasn't visited Settings → Channels), enable it in
+      // the config and apply the channels config to create the session service.
+      if (!svc) {
+        const cfg = eng.configManager.load();
+        if (!cfg.channels?.whatsapp?.enabled) {
+          eng.configManager.save({
+            ...cfg,
+            channels: {
+              ...cfg.channels,
+              whatsapp: { ...cfg.channels?.whatsapp, enabled: true, inbound: true, outbound: true },
+            },
+          });
+          // Apply the updated config to start the WhatsApp session service
+          const { applyChannelsConfig } = await import('../../channels/config.js');
+          await applyChannelsConfig();
+          svc = eng.whatsappSessionService;
+        }
+      }
+      if (!svc) {
+        res.status(400).json({ error: 'WhatsApp could not be initialized. Please try again.' });
+        return;
+      }
+      const status = await svc.getStatus();
+      if (status.status === 'ready') {
+        res.json({ ok: true, status: 'ready', message: 'Already linked', phoneNumber: status.phoneNumber });
+        return;
+      }
+      // link() is idempotent — if the engine is already active (e.g. from
+      // reconcileOnBoot), it returns without throwing. After link(), we wait
+      // for the QR to be generated (Baileys generates it asynchronously
+      // after initialize() returns).
+      await svc.link();
+      const qr = await svc.waitForQr(15_000);
+      const newStatus = await svc.getStatus();
+      res.json({ ok: true, status: newStatus.status, qrDataUrl: qr ?? newStatus.qrDataUrl });
+    } catch (e) {
+      getLogger('channels').warn('WHATSAPP', `Link error: ${e instanceof Error ? e.message : String(e)}`);
+      res.status(500).json({ error: e instanceof Error ? e.message : 'Failed to start WhatsApp linking' });
+    }
+  });
+
+  r.post('/api/whatsapp/stop', async (_req, res) => {
+    try {
+      if (isWhatsAppPaused()) {
+        res.json({ ok: true, message: 'WhatsApp is paused' });
+        return;
+      }
+      const eng = getEngine();
+      const svc = eng.whatsappSessionService;
+      if (!svc) {
+        res.json({ ok: true, message: 'WhatsApp is not active' });
+        return;
+      }
+      await svc.stop();
+      res.json({ ok: true, message: 'WhatsApp session stopped' });
+    } catch (e) {
+      getLogger('channels').warn('WHATSAPP', `Stop error: ${e instanceof Error ? e.message : String(e)}`);
+      res.status(500).json({ error: e instanceof Error ? e.message : 'Failed to stop WhatsApp' });
+    }
+  });
+
+  r.post('/api/whatsapp/unlink', async (_req, res) => {
+    try {
+      if (isWhatsAppPaused()) {
+        res.status(503).json({ error: PAUSED_RESPONSE.message, paused: true });
+        return;
+      }
+      const eng = getEngine();
+      const svc = eng.whatsappSessionService;
+      if (!svc) {
+        res.json({ ok: true, message: 'WhatsApp is not configured' });
+        return;
+      }
+      await svc.unlink();
+      res.json({ ok: true, message: 'WhatsApp unlinked. All credentials purged.' });
+    } catch (e) {
+      getLogger('channels').warn('WHATSAPP', `Unlink error: ${e instanceof Error ? e.message : String(e)}`);
+      res.status(500).json({ error: e instanceof Error ? e.message : 'Failed to unlink WhatsApp' });
+    }
+  });
+
+  r.post('/api/whatsapp/pairing-code', async (req, res) => {
+    try {
+      if (isWhatsAppPaused()) {
+        res.status(503).json({ error: PAUSED_RESPONSE.message, paused: true });
+        return;
+      }
+      const eng = getEngine();
+      let svc = eng.whatsappSessionService;
+      if (!svc) {
+        const cfg = eng.configManager.load();
+        if (!cfg.channels?.whatsapp?.enabled) {
+          eng.configManager.save({
+            ...cfg,
+            channels: {
+              ...cfg.channels,
+              whatsapp: { ...cfg.channels?.whatsapp, enabled: true, inbound: true, outbound: true },
+            },
+          });
+          const { applyChannelsConfig } = await import('../../channels/config.js');
+          await applyChannelsConfig();
+          svc = eng.whatsappSessionService;
+        }
+      }
+      if (!svc) {
+        res.status(400).json({ error: 'WhatsApp could not be initialized. Please try again.' });
+        return;
+      }
+      const { phoneNumber } = req.body as { phoneNumber?: string };
+      if (!phoneNumber?.trim()) {
+        res.status(400).json({ error: 'phoneNumber is required' });
+        return;
+      }
+      const code = await svc.requestPairingCode(phoneNumber.trim());
+      res.json({ ok: true, pairingCode: code });
+    } catch (e) {
+      getLogger('channels').warn('WHATSAPP', `Pairing code error: ${e instanceof Error ? e.message : String(e)}`);
+      res.status(500).json({ error: e instanceof Error ? e.message : 'Failed to request pairing code' });
+    }
+  });
+
+  // Retry connecting after a soft-pause. Attempts to re-link the engine —
+  // if it succeeds, clears the paused flag and returns success. If it still
+  // fails, stays paused and returns the error.
+  r.post('/api/whatsapp/retry', async (_req, res) => {
+    try {
+      const eng = getEngine();
+      const svc = eng.whatsappSessionService;
+      if (!svc) {
+        res.status(400).json({ error: 'WhatsApp is not enabled' });
+        return;
+      }
+      if (!svc.paused) {
+        res.json({ ok: true, paused: false, message: 'WhatsApp is not paused' });
+        return;
+      }
+      const success = await svc.retry();
+      if (success) {
+        const status = await svc.getStatus();
+        res.json({
+          ok: true,
+          paused: false,
+          status: status.status,
+          phoneNumber: status.phoneNumber,
+          message: 'WhatsApp reconnected successfully',
+        });
+      } else {
+        res.status(503).json({
+          ok: false,
+          paused: true,
+          error: 'Retry failed — WhatsApp is still unable to connect. This may be due to a protocol update. Please try again later or wait for the next Agent-X update.',
+        });
+      }
+    } catch (e) {
+      getLogger('channels').warn('WHATSAPP', `Retry error: ${e instanceof Error ? e.message : String(e)}`);
+      res.status(500).json({ error: e instanceof Error ? e.message : 'Failed to retry WhatsApp connection' });
     }
   });
 

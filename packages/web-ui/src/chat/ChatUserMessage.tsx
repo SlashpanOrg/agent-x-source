@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, memo } from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
@@ -25,7 +25,7 @@ function topChipAttachments(message: UIMessage) {
   });
 }
 
-export function ChatUserMessage({
+function ChatUserMessageImpl({
   message,
   onCrewClick,
 }: {
@@ -144,3 +144,10 @@ export function ChatUserMessage({
     </Box>
   );
 }
+
+export const ChatUserMessage = memo(ChatUserMessageImpl, (prev, next) =>
+  prev.message.id === next.message.id
+  && prev.message.content === next.message.content
+  && prev.message.attachments === next.message.attachments
+  && prev.onCrewClick === next.onCrewClick,
+);

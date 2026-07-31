@@ -1,5 +1,5 @@
 import type { WebSocket } from 'ws';
-import type { VoiceSessionMode, ClientSituation } from '@agentx/shared';
+import type { VoiceSessionMode, VoiceConfig, ClientSituation } from '@agentx/shared';
 import type { WebSocketVoiceTransport } from '@agentx/engine';
 
 export type VoiceEngineType = 'stt_llm_tts' | 'realtime_xai';
@@ -23,6 +23,12 @@ export interface VoiceEngineSessionOptions {
   mode: VoiceSessionMode;
   chatSessionId?: string;
   clientSituation?: ClientSituation | null;
+  /**
+   * Optional voice config override (e.g. per-crew voice profile for crew calls).
+   * When provided, the engine uses this instead of the global config. The xAI
+   * voice ID is read from voiceConfig.xai?.voice.
+   */
+  voiceConfig?: VoiceConfig;
 }
 
 export interface VoiceEngine {

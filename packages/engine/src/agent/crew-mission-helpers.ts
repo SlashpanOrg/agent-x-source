@@ -8,6 +8,7 @@ import { streamText } from 'ai';
 import type { Message, EngineEvent, AgentXConfig, CompletionMessage } from '@agentx/shared';
 import { generateMessageId, getLogger } from '@agentx/shared';
 import { createAiSdkModel } from './AiSdkBridge.js';
+import { withSpan } from '../observability/tracer.js';
 import type { CrewMember } from './CrewOrchestrator.js';
 import type { CrewMissionResult } from './CrewMissionOrchestrator.js';
 import type { ContextTracker } from './ContextTracker.js';
@@ -53,26 +54,35 @@ export async function superviseCrewMission(
   const systemContent = typeof systemMsg?.content === 'string' ? systemMsg.content : '';
   const workerSummary = mission.workers.map((w) =>
     `@${w.callsign} (${w.crewName}) [${w.success ? 'ok' : 'failed'}]:\n${w.output.slice(0, 2000)}`,
-  ).join('\n\n---\n\n');
+  ).join('\n\n');
 
   const turnCtx = ctx.prepareTurnContext(cleanContent);
   const reviewPrompt = `${systemContent}\n\n[CREW SUPERVISOR]\nYou are Agent-X, the project manager supervising a crew mission. Review worker outputs, resolve conflicts, and deliver the final cohesive answer to the user. If the mission failed or needs user input, say so clearly and concisely.\n[/CREW SUPERVISOR]`;
 
   try {
     const model = createAiSdkModel(ctx.config, ctx.getApiKey());
-    const r = await streamText({
-      model,
-      messages: [
-        { role: 'system', content: reviewPrompt },
-        {
-          role: 'user',
-          content: `${turnCtx.block}\n\nUser request: ${turnCtx.mergedTask}\n\nMission success: ${mission.success}\n\nCrew outputs:\n${workerSummary}\n\nProvide your final supervised response:`,
-        },
-      ],
-      maxOutputTokens: 4096,
+    const messages = [
+      { role: 'system' as const, content: reviewPrompt },
+      {
+        role: 'user' as const,
+        content: `${turnCtx.block}\n\nUser request: ${turnCtx.mergedTask}\n\nMission success: ${mission.success}\n\nCrew outputs:\n${workerSummary}\n\nProvide your final supervised response:`,
+      },
+    ];
+    const text = await withSpan('llm.crew_supervisor', 'llm', async (span) => {
+      span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+      span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+      span.setAttribute('gen_ai.usage.total_cost', 0);
+      span.setAttribute('llm.input_messages', JSON.stringify(messages));
+      const r = await streamText({
+        model,
+        messages,
+        maxOutputTokens: 4096,
+      });
+      let content = '';
+      for await (const chunk of r.textStream) { content += chunk; }
+      span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content }]));
+      return content;
     });
-    let text = '';
-    for await (const chunk of r.textStream) { text += chunk; }
     if (text.trim()) {
       const msg: Message = {
         id: generateMessageId(),

@@ -20,6 +20,13 @@ export function restorePrimaryToolkitBridge(): void {
  * Sync connected MCP + native integration tools into a toolkit registry/executor
  * (e.g. xAI realtime voice) without leaving IntegrationHub bridged away from the
  * primary agent toolkit used by chat / local voice.
+ *
+ * Connection sync is ENABLED (not skipped) so that MCP connections that aren't
+ * already active get synced before tool registration. Without this, voice sessions
+ * that start before any chat session would have zero MCP tools available because
+ * `registerConnectionTools` only registers tools for connections that are already
+ * in `this.sessions`. The `prepareForAgentTurn` has a 3-second budget for
+ * connection sync, and the caller should allow at least 8 seconds total.
  */
 export async function syncIntegrationToolsIntoToolkit(
   registry: ToolRegistry,
@@ -32,7 +39,7 @@ export async function syncIntegrationToolsIntoToolkit(
       registry,
       executor,
       userText,
-      { skipConnectionSync: true },
+      { skipConnectionSync: false },
     );
     return {
       registeredCount: snapshot.registeredCount,

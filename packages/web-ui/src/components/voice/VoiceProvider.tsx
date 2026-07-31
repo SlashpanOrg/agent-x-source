@@ -57,6 +57,15 @@ interface VoiceContextValue {
   /** Dashboard voice card active state (persisted across navigation). */
   voiceActive: boolean;
   setVoiceActive: (active: boolean) => void;
+  /**
+   * Dashboard voice activation mode for the current/next activation:
+   * - 'continue' (default): agent hydrates with recent transcript history.
+   * - 'new': agent starts fresh; backend inserts a new_conversation divider.
+   * Reset to 'continue' after the session starts so subsequent reconnections
+   * don't re-insert dividers.
+   */
+  conversationMode: 'continue' | 'new';
+  setConversationMode: (mode: 'continue' | 'new') => void;
 }
 
 /** Separate context for the dashboard comms session — avoids circular type
@@ -100,6 +109,7 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
   const [wakePhrase, setWakePhrase] = useState(() => resolveWakePhrase());
   const [canRunWeb, setCanRunWeb] = useState(false);
   const [voiceActive, setVoiceActiveState] = useState(() => readVoiceActiveFromStorage());
+  const [conversationMode, setConversationModeState] = useState<'continue' | 'new'>('continue');
   const voiceConsumersRef = useRef(0);
   const releaseTimerRef = useRef<number | null>(null);
 
@@ -125,12 +135,26 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
     requestMicOnActivate: true,
     voiceContext: commsVoiceContext,
     pttKeyboardEnabled: isDashboard,
+    conversationMode,
   });
 
   const setVoiceActive = useCallback((active: boolean) => {
     setVoiceActiveState(active);
     writeVoiceActiveToStorage(active);
   }, []);
+
+  const setConversationMode = useCallback((mode: 'continue' | 'new') => {
+    setConversationModeState(mode);
+  }, []);
+
+  // Reset conversationMode to 'continue' shortly after activation so the
+  // divider + skip-hydrate only applies to the first turn of this activation.
+  // Subsequent reconnections (e.g. engine swap) use normal history hydration.
+  useEffect(() => {
+    if (!voiceActive) return;
+    const timer = window.setTimeout(() => setConversationModeState('continue'), 3_000);
+    return () => window.clearTimeout(timer);
+  }, [voiceActive]);
 
   const retainVoiceEngine = useCallback(() => {
     voiceConsumersRef.current += 1;
@@ -263,6 +287,8 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
     retryVoiceWarmup: warmup.retry,
     voiceActive,
     setVoiceActive,
+    conversationMode,
+    setConversationMode,
   }), [
     coreSessionId,
     voiceReady,
@@ -280,6 +306,8 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
     warmup.retry,
     voiceActive,
     setVoiceActive,
+    conversationMode,
+    setConversationMode,
   ]);
 
   const commsContextValue = useMemo<VoiceCommsContextValue>(() => ({

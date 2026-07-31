@@ -1,13 +1,16 @@
 import type {
   PromptSection,
+  PromptSectionLayer,
   SourceSnapshot,
   Generation,
+  LayeredGeneration,
   ReconcileResult,
   ReplacementResult,
 } from './types.js';
 
 interface LoadedEntry {
   readonly key: string;
+  readonly layer: PromptSectionLayer;
   readonly value: unknown;
   readonly snapshot: SourceSnapshot;
   readonly baselineText?: string;
@@ -70,6 +73,29 @@ export class PromptAssembly {
     }
 
     return { baseline, snapshot };
+  }
+
+  /** Assemble the prompt into static/category/dynamic layers for prefix caching. */
+  async assemble(): Promise<LayeredGeneration> {
+    const entries = await this.loadAllAsync();
+    const available = entries.filter(e => !e.unavailable);
+
+    const byLayer = {
+      static: [] as string[],
+      category: [] as string[],
+      dynamic: [] as string[],
+    };
+    for (const entry of available) {
+      byLayer[entry.layer].push(entry.baselineText!);
+    }
+
+    const staticPrefix = byLayer.static.join('\n\n');
+    const categoryOverlay = byLayer.category.join('\n\n');
+    const dynamicSuffix = byLayer.dynamic.join('\n\n');
+    const baseline = [staticPrefix, categoryOverlay, dynamicSuffix].filter(Boolean).join('\n\n');
+    const sections = available.map(e => ({ key: e.key, layer: e.layer, length: e.baselineText!.length }));
+
+    return { staticPrefix, categoryOverlay, dynamicSuffix, baseline, sections };
   }
 
   /** Reconciles current state against a previous snapshot. Returns diffs for changed sections. */
@@ -179,6 +205,7 @@ export class PromptAssembly {
           // If any section is async during sync init, treat as unavailable
           results.push({
             key: section.key,
+          layer: section.layer ?? 'dynamic',
             unavailable: true,
             value: null,
             snapshot: { value: null },
@@ -190,6 +217,7 @@ export class PromptAssembly {
         if (baselineText.length === 0) {
           results.push({
             key: section.key,
+          layer: section.layer ?? 'dynamic',
             unavailable: true,
             value: null,
             snapshot: { value: this.toJson(value) },
@@ -199,6 +227,7 @@ export class PromptAssembly {
         }
         results.push({
           key: section.key,
+          layer: section.layer ?? 'dynamic',
           value,
           unavailable: false,
           snapshot: {
@@ -208,7 +237,7 @@ export class PromptAssembly {
           baselineText,
         });
       } catch {
-        results.push({ key: section.key, unavailable: true, value: null, snapshot: { value: null }, baselineText: undefined });
+        results.push({ key: section.key, layer: section.layer ?? 'dynamic', unavailable: true, value: null, snapshot: { value: null }, baselineText: undefined });
       }
     }
     return results;
@@ -222,10 +251,11 @@ export class PromptAssembly {
           const valueJson = this.toJson(value);
           const baselineText = section.render(value);
           if (baselineText.length === 0) {
-            return { key, unavailable: true, value: null, snapshot: { value: valueJson }, baselineText: undefined };
+            return { key, layer: section.layer ?? 'dynamic', unavailable: true, value: null, snapshot: { value: valueJson }, baselineText: undefined };
           }
           return {
             key,
+            layer: section.layer ?? 'dynamic',
             value,
             unavailable: false,
             snapshot: {
@@ -235,7 +265,7 @@ export class PromptAssembly {
             baselineText,
           };
         } catch {
-          return { key, unavailable: true, value: null, snapshot: { value: null }, baselineText: undefined };
+          return { key, layer: section.layer ?? 'dynamic', unavailable: true, value: null, snapshot: { value: null }, baselineText: undefined };
         }
       }),
     );

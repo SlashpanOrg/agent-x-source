@@ -11,6 +11,7 @@ import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { getDataDir, getConfigDir, getCacheDir, agentXConfigSchema, voiceConfigSchema, authManager, buildPublicSystemCapabilities, resolvePerformanceSettings, buildPerformanceShowcase, getLogger, normalizeClientSituation } from '@agentx/shared';
 import type { AgentXConfig } from '@agentx/shared';
 import { getEngine, destroyAgent, clearEngine, applyPerformanceSettings, setCurrentClientSituation, getCurrentClientSituation } from '../../engine.js';
+import { getGeoLocationService } from '@agentx/engine';
 import {
   redactConfigForClient,
   mergeConfigPreservingSecrets,
@@ -387,6 +388,56 @@ export function createSystemRouter(): Router {
       res.json({ situation: getCurrentClientSituation() });
     } catch (e: unknown) {
       getLogger().error('GET_CLIENT_SITUATION', e instanceof Error ? e : String(e));
+      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : 'failed' });
+    }
+  });
+
+  // Server-side geolocation — returns city-level location resolved from IP.
+  // The web-ui uses this to display location in the footer and docking station.
+  r.get('/api/geolocation', (_req, res) => {
+    try {
+      const svc = getGeoLocationService();
+      const result = svc?.getCurrent();
+      if (!result) {
+        res.json({ city: null, fullLabel: null, cityLabel: 'Location not found', resolved: false });
+        return;
+      }
+      res.json({
+        city: result.city,
+        fullLabel: result.fullLabel,
+        cityLabel: result.cityLabel,
+        method: result.method,
+        vpnSuspected: result.vpnSuspected,
+        resolvedAt: result.resolvedAt,
+        resolved: true,
+      });
+    } catch (e: unknown) {
+      getLogger().error('GET_GEOLOCATION', e instanceof Error ? e : String(e));
+      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : 'failed' });
+    }
+  });
+
+  // Force a geolocation refresh (e.g. user clicked "retry").
+  r.post('/api/geolocation/refresh', async (_req, res) => {
+    try {
+      const svc = getGeoLocationService();
+      if (!svc) {
+        res.json({ ok: false, error: 'Geolocation service not available' });
+        return;
+      }
+      const result = await svc.refresh();
+      res.json({
+        ok: true,
+        city: result?.city ?? null,
+        fullLabel: result?.fullLabel ?? null,
+        cityLabel: result?.cityLabel ?? 'Location not found',
+        method: result?.method ?? 'timezone_only',
+        vpnSuspected: result?.vpnSuspected ?? false,
+        resolvedAt: result?.resolvedAt ?? Date.now(),
+        resolved: !!result,
+      });
+    } catch (e: unknown) {
+      getLogger().error('POST_GEOLOCATION_REFRESH', e instanceof Error ? e : String(e));
       res.status(500).json({ ok: false, error: e instanceof Error ? e.message : 'failed' });
     }
   });

@@ -19,6 +19,7 @@ export const providerIdSchema = z.enum([
   'commandcode',
   'opencode',
   'opencode-zen',
+  'custom',
 ]);
 
 export const permissionDecisionSchema = z.enum([
@@ -203,6 +204,9 @@ export const notificationChannelsConfigSchema = z.object({
     webhookUrl: z.string().optional(),
     botToken: z.string().optional(),
     channelId: z.string().optional(),
+  }).optional(),
+  whatsapp: channelDirectionSchema.extend({
+    engine: z.enum(['baileys', 'electron-wwebjs']).optional(),
   }).optional(),
 }).optional();
 

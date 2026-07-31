@@ -14,6 +14,12 @@ export interface WizardNeuralStepProps {
   totalMemoryGB?: number;
   /** Fired when download completes (or was already complete). */
   onReadyChange?: (ready: boolean) => void;
+  /**
+   * Fired when the download fails because the model is no longer available
+   * from the endpoint. The wizard uses this to offer a "Continue without
+   * Neural Core" path and silently leave the cortex in degraded mode.
+   */
+  onAvailabilityErrorChange?: (hasAvailabilityError: boolean) => void;
 }
 
 const TIER_COPY = {
@@ -27,7 +33,7 @@ const TIER_COPY = {
   },
 } as const;
 
-export function WizardNeuralStep({ totalMemoryGB, onReadyChange }: WizardNeuralStepProps) {
+export function WizardNeuralStep({ totalMemoryGB, onReadyChange, onAvailabilityErrorChange }: WizardNeuralStepProps) {
   const tier = resolveNeuralCortexEmbeddingTier(totalMemoryGB ?? 0);
   const copy = TIER_COPY[tier];
 
@@ -41,6 +47,7 @@ export function WizardNeuralStep({ totalMemoryGB, onReadyChange }: WizardNeuralS
 
       <EmbeddingModelDownload
         onReadyChange={onReadyChange}
+        onAvailabilityErrorChange={onAvailabilityErrorChange}
         banner={tier === 'minilm' && 'headline' in copy
           ? { headline: copy.headline, body: copy.body }
           : undefined}

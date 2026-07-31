@@ -246,6 +246,25 @@ const themeOptions: CssVarsThemeOptions & Parameters<typeof createTheme>[0] = {
           height: 0,
           background: 'transparent',
         },
+        // ── Scroll-container utilities ──────────────────────────────────────
+        // Apply `.ax-scroll-x` / `.ax-scroll-y` to any container that should
+        // scroll its content instead of shrinking it. The direct children are
+        // prevented from shrinking (flexShrink: 0) and wrapping (nowrap for x)
+        // so the container scrolls rather than compresses its content.
+        '.ax-scroll-x': {
+          overflowX: 'auto',
+          overflowY: 'hidden',
+          '& > *': { flexShrink: 0, whiteSpace: 'nowrap' },
+        },
+        '.ax-scroll-y': {
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          '& > *': { flexShrink: 0 },
+        },
+        '.ax-scroll': {
+          overflow: 'auto',
+          '& > *': { flexShrink: 0 },
+        },
       },
     },
     MuiCollapse: {
@@ -287,10 +306,11 @@ const themeOptions: CssVarsThemeOptions & Parameters<typeof createTheme>[0] = {
       styleOverrides: { root: { padding: '8px 16px 16px' } },
     },
     MuiTabs: {
+      defaultProps: { variant: 'scrollable', scrollButtons: false },
       styleOverrides: { root: { minHeight: 36 }, indicator: { height: 2 } },
     },
     MuiTab: {
-      styleOverrides: { root: { minHeight: 36, padding: '6px 12px', fontSize: '0.75rem', textTransform: 'none' } },
+      styleOverrides: { root: { minHeight: 36, padding: '6px 12px', fontSize: '0.75rem', textTransform: 'none', flexShrink: 0 } },
     },
     MuiTooltip: {
       styleOverrides: {

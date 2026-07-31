@@ -3,8 +3,8 @@ import { VOICE_HANDS_FREE_ENABLED } from '../src/voice/voice-config';
 import { phaseActiveChannel, resolveCommsPhase } from '../src/components/voice/voice-comms-phase';
 
 describe('voice config', () => {
-  it('keeps local hands-free disabled (Local engine is PTT-only)', () => {
-    expect(VOICE_HANDS_FREE_ENABLED).toBe(false);
+  it('enables local hands-free (Local engine supports duplex)', () => {
+    expect(VOICE_HANDS_FREE_ENABLED).toBe(true);
   });
 });
 

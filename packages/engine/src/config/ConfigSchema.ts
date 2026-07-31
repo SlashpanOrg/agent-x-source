@@ -13,6 +13,8 @@ export const providerProfileSchema = z.object({
   apiKey: z.string().optional(),
   baseUrl: z.string().optional(),
   createdAt: z.string().optional(),
+  apiType: z.string().optional(),
+  modelId: z.string().optional(),
 });
 
 export const providerCredentialsSchema = z.object({
@@ -148,6 +150,9 @@ export const agentXConfigSchema = z.preprocess(migrateConfigPerformanceKey, z.ob
   maxRetries: z.number().int().min(0).max(10).optional(),
   maxOutputTokens: z.number().int().min(256).max(32768).optional(),
   useSandbox: z.boolean().optional(),
+  developer: z.object({
+    devMode: z.boolean().optional(),
+  }).optional(),
   postgres: z.object({
     connectionString: z.string().optional(),
     poolSize: z.number().int().min(1).max(100).optional(),

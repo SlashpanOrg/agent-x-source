@@ -328,10 +328,10 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
     setXaiStatus('idle');
     setCapabilities(null);
     const isXai = nextEngine === 'realtime_xai';
-    // xAI → duplex. Local → always PTT (clear any leftover duplex setting).
-    const nextWeb = voiceConfig.enabled
-      ? (isXai ? 'duplex' : 'push-to-talk')
-      : (isXai ? voiceConfig.mode?.web : 'push-to-talk');
+    // xAI → always duplex. Local → keep existing mode (PTT or duplex).
+    const nextWeb = isXai
+      ? 'duplex'
+      : (voiceConfig.mode?.web === 'duplex' ? 'duplex' : 'push-to-talk');
     await persistVoice({
       ...voiceConfig,
       engine: nextEngine,
@@ -461,7 +461,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
               void persistVoice({
                 ...voiceConfig,
                 enabled: true,
-                mode: { ...voiceConfig.mode, web: isXai ? 'duplex' : 'push-to-talk' },
+                mode: { ...voiceConfig.mode, web: isXai ? 'duplex' : (voiceConfig.mode?.web ?? 'push-to-talk') },
               });
             }}
             sx={{
@@ -536,9 +536,17 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
                 '&:hover': engine !== 'stt_llm_tts' ? { borderColor: `${settingsTheme.accent.hud}88` } : {},
               }}
             >
-              <Typography sx={{ ...settingsMonoSx, fontSize: '0.72rem', color: settingsTheme.text.primary, mb: 0.5 }}>
-                Local STT + LLM + TTS
-              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.5 }}>
+                <Typography sx={{ ...settingsMonoSx, fontSize: '0.72rem', color: settingsTheme.text.primary }}>
+                  Local STT + LLM + TTS
+                </Typography>
+                {!loading && !kitReady && (
+                  <Box sx={settingsStatusBadgeSx('warn')}>Setup</Box>
+                )}
+                {!loading && kitReady && (
+                  <Box sx={settingsStatusBadgeSx('active')}>Ready</Box>
+                )}
+              </Box>
               <Typography sx={{ ...settingsHelperSx, fontSize: '0.58rem' }}>
                 Runs entirely on your machine with the Agent-X voice kit.
               </Typography>
@@ -563,6 +571,100 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
               </Typography>
             </Box>
           </Box>
+
+          {/* ─── Local engine setup prompt ─────────────────────────────────── */}
+          {/* When Local engine is selected but not installed, show a setup
+              section right here in the engine card — same UX as the Setup
+              Wizard. The user doesn't have to scroll down to find the button. */}
+          {!loading && engine === 'stt_llm_tts' && !kitReady && (
+            <Box sx={{
+              mt: 2,
+              p: 1.5,
+              borderRadius: 1,
+              border: `1px solid ${alphaColor(settingsTheme.accent.amber, '44')}`,
+              bgcolor: `${alphaColor(settingsTheme.accent.amber, '08')}`,
+            }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+                <Box sx={settingsStatusBadgeSx('warn')}>Setup Required</Box>
+                <Typography sx={{ ...settingsHelperSx, fontSize: '0.62rem', color: settingsTheme.text.secondary }}>
+                  Voice kit not installed — deploy STT, TTS, and VAD models to enable local voice.
+                </Typography>
+              </Box>
+
+              {missingRuntime ? (
+                <Typography sx={{ ...settingsHelperSx, fontSize: '0.58rem', color: settingsTheme.accent.alert }}>
+                  {!capabilities?.pythonAvailable
+                    ? 'Python 3.10+ is required before deploying voice.'
+                    : 'Bundled ffmpeg is missing. Reinstall Agent-X or install ffmpeg on PATH.'}
+                </Typography>
+              ) : (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => { void deployKit(); }}
+                  disabled={deploying}
+                  sx={settingsBtnPrimarySx}
+                >
+                  {deploying ? <CircularProgress size={12} sx={{ mr: 0.75, color: colors.bg.primary }} /> : null}
+                  {deploying ? 'Deploying…' : 'Initialize & Download'}
+                </Button>
+              )}
+
+              {/* Inline progress during deployment */}
+              {(deploying || (deployStatus && deployStatus.phase !== 'complete' && deployStatus.phase !== 'idle')) && deployStatus && (
+                <Box sx={{ mt: 1.5 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 1, mb: 0.75 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+                      <Box sx={settingsStatusBadgeSx('warn')}>{deployPhaseLabel(deployStatus.phase)}</Box>
+                      {deployStatus.step && (
+                        <Typography sx={{ ...settingsOverlineSx, mb: 0, fontSize: '0.55rem' }}>
+                          {deployStatus.step}
+                          {deployStatus.stepIndex != null && deployStatus.totalSteps != null
+                            ? ` · ${deployStatus.stepIndex}/${deployStatus.totalSteps}`
+                            : ''}
+                        </Typography>
+                      )}
+                    </Box>
+                    <Typography sx={{ ...settingsMonoSx, fontSize: '0.82rem', fontWeight: 700, color: settingsTheme.accent.hud }}>
+                      {Math.round(deployStatus.progress)}%
+                    </Typography>
+                  </Box>
+
+                  <Typography sx={{ ...settingsHelperSx, fontSize: '0.62rem', color: settingsTheme.text.primary, mb: 0.35 }}>
+                    {deployStatus.message}
+                  </Typography>
+
+                  {deployStatus.currentAssetName && deployStatus.phase === 'download' && (
+                    <Typography sx={{ ...settingsHelperSx, fontSize: '0.58rem', mb: 0.35 }}>
+                      Asset {deployStatus.assetIndex ?? '?'}/{deployStatus.totalAssets ?? '?'} · {deployStatus.currentAssetName}
+                      {deployStatus.assetProgress != null ? ` · ${Math.round(deployStatus.assetProgress)}%` : ''}
+                    </Typography>
+                  )}
+
+                  <LinearProgress
+                    variant="determinate"
+                    value={deployStatus.progress}
+                    sx={{
+                      height: 4,
+                      borderRadius: 1,
+                      bgcolor: settingsTheme.border.default,
+                      '& .MuiLinearProgress-bar': { bgcolor: settingsTheme.accent.hud },
+                    }}
+                  />
+                </Box>
+              )}
+            </Box>
+          )}
+
+          {/* ─── Local engine ready indicator ──────────────────────────────── */}
+          {!loading && engine === 'stt_llm_tts' && kitReady && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 1.5 }}>
+              <Box sx={settingsStatusBadgeSx('active')}>Ready</Box>
+              <Typography sx={{ ...settingsHelperSx, color: settingsTheme.accent.signal }}>
+                Voice kit deployed — STT, TTS, and VAD are operational.
+              </Typography>
+            </Box>
+          )}
 
           {engine === 'realtime_xai' ? (
           <>
@@ -707,7 +809,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
         </SettingsCard>
 
         {engine === 'stt_llm_tts' && (
-        <SettingsCard title="Local voice settings" subtitle="TTS model, voice profile, and push-to-talk input">
+        <SettingsCard title="Local voice settings" subtitle="TTS model, voice profile, and input mode">
           <TtsModelRow
             name="Kokoro"
             description="Fast, natural local TTS. Installed with the voice kit and used for fillers."
@@ -811,20 +913,59 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
 
           <Box sx={{ mt: 2, pt: 2, borderTop: `1px solid ${settingsTheme.border.default}` }}>
             <Typography sx={{ ...settingsOverlineSx, mb: 1 }}>Voice input mode</Typography>
-            <Box
-              sx={{
-                p: 1.5,
-                borderRadius: 1,
-                border: `1.5px solid ${settingsTheme.accent.hud}`,
-                bgcolor: `${settingsTheme.accent.hud}14`,
-              }}
-            >
-              <Typography sx={{ fontSize: '0.72rem', color: settingsTheme.text.primary, ...settingsMonoSx, mb: 0.5 }}>
-                Push-to-Talk
-              </Typography>
-              <Typography sx={{ ...settingsHelperSx, fontSize: '0.6rem' }}>
-                Hold Space on the dashboard to speak. Release when done. Hands-free duplex is available with the xAI engine.
-              </Typography>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Box
+                onClick={() => {
+                  if (!kitReady) return;
+                  void persistVoice({
+                    ...voiceConfig,
+                    mode: { ...voiceConfig.mode, web: 'push-to-talk' },
+                  });
+                }}
+                sx={{
+                  flex: 1,
+                  p: 1.5,
+                  borderRadius: 1,
+                  border: `1.5px solid ${(voiceConfig.mode?.web ?? 'push-to-talk') === 'push-to-talk' ? settingsTheme.accent.hud : settingsTheme.border.default}`,
+                  bgcolor: (voiceConfig.mode?.web ?? 'push-to-talk') === 'push-to-talk' ? `${settingsTheme.accent.hud}14` : 'transparent',
+                  cursor: kitReady ? 'pointer' : 'default',
+                  transition: 'border-color 0.15s, background-color 0.15s',
+                  '&:hover': kitReady && (voiceConfig.mode?.web ?? 'push-to-talk') !== 'push-to-talk' ? { borderColor: `${settingsTheme.accent.hud}88` } : {},
+                }}
+              >
+                <Typography sx={{ fontSize: '0.72rem', color: settingsTheme.text.primary, ...settingsMonoSx, mb: 0.5 }}>
+                  Push-to-Talk
+                </Typography>
+                <Typography sx={{ ...settingsHelperSx, fontSize: '0.58rem' }}>
+                  Hold Space on the dashboard to speak. Release when done.
+                </Typography>
+              </Box>
+              <Box
+                onClick={() => {
+                  if (!kitReady) return;
+                  void persistVoice({
+                    ...voiceConfig,
+                    mode: { ...voiceConfig.mode, web: 'duplex' },
+                  });
+                }}
+                sx={{
+                  flex: 1,
+                  p: 1.5,
+                  borderRadius: 1,
+                  border: `1.5px solid ${voiceConfig.mode?.web === 'duplex' ? settingsTheme.accent.hud : settingsTheme.border.default}`,
+                  bgcolor: voiceConfig.mode?.web === 'duplex' ? `${settingsTheme.accent.hud}14` : 'transparent',
+                  cursor: kitReady ? 'pointer' : 'default',
+                  transition: 'border-color 0.15s, background-color 0.15s',
+                  '&:hover': kitReady && voiceConfig.mode?.web !== 'duplex' ? { borderColor: `${settingsTheme.accent.hud}88` } : {},
+                }}
+              >
+                <Typography sx={{ fontSize: '0.72rem', color: settingsTheme.text.primary, ...settingsMonoSx, mb: 0.5 }}>
+                  Hands-free (Duplex)
+                </Typography>
+                <Typography sx={{ ...settingsHelperSx, fontSize: '0.58rem' }}>
+                  Speak freely — local Silero VAD detects when you finish. No button needed.
+                </Typography>
+              </Box>
             </Box>
           </Box>
         </SettingsCard>

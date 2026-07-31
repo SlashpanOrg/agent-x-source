@@ -68,6 +68,7 @@ import {
   exchangeAuthorizationCode,
   refreshAccessToken,
   registerOAuthClient,
+  revokeOAuthToken,
   tokenExpiresAt,
   tryResolveClientId,
 } from './oauth/oauth-client.js';
@@ -89,6 +90,7 @@ import {
   usesNativeMcpStdioBrowserOAuth,
 } from './mcp-stdio-oauth-flow.js';
 import { runPreflightChecks, type PreflightContext } from './preflight.js';
+import { withSpan } from '../observability/tracer.js';
 
 interface McpToolShape {
   name: string;
@@ -196,9 +198,24 @@ export class IntegrationHub {
     if (!options?.skipConnectionSync) {
       const PRETURN_SYNC_BUDGET_MS = 3_000;
       const syncDeadline = Date.now() + PRETURN_SYNC_BUDGET_MS;
+      // Build a set of providerIds that already have a connected session —
+      // skip syncing stale error/disconnected connections for those providers
+      // so the LLM doesn't see "session expired" for a provider that's actually
+      // working fine via a different connection.
+      const connectedProviders = new Set<string>();
+      for (const conn of this.store.listConnections()) {
+        if (conn.enabled && this.sessions.has(conn.id) && conn.status === 'connected') {
+          connectedProviders.add(conn.providerId);
+        }
+      }
       for (const connection of this.store.listConnections()) {
         if (!connection.enabled) continue;
         if (this.sessions.has(connection.id) && connection.status === 'connected') continue;
+        // Skip stale error connections when a healthy connection already exists
+        // for the same provider — trying to sync them just produces noise.
+        if (connection.status === 'error' && connectedProviders.has(connection.providerId)) {
+          continue;
+        }
         const remaining = syncDeadline - Date.now();
         if (remaining <= 0) {
           getLogger().warn(
@@ -232,6 +249,17 @@ export class IntegrationHub {
 
     const registeredIntegrationToolIds = registry.list().map((t) => t.id);
 
+    // Build a set of providerIds that have at least one active session —
+    // stale error connections for those providers should not be reported as
+    // "unavailable" to the LLM (it would say "session expired" even though
+    // the provider is working fine via a different connection).
+    const providersWithActiveSession = new Set<string>();
+    for (const conn of this.store.listConnections()) {
+      if (conn.enabled && this.sessions.has(conn.id)) {
+        providersWithActiveSession.add(conn.providerId);
+      }
+    }
+
     for (const connection of this.store.listConnections()) {
       if (!connection.enabled) continue;
       const provider = this.resolveProvider(connection.providerId);
@@ -246,6 +274,10 @@ export class IntegrationHub {
         }, registeredIntegrationToolIds));
         continue;
       }
+      // Skip reporting stale error connections when a healthy session exists
+      // for the same provider — otherwise the LLM sees "session expired" and
+      // tells the user to reconnect even though the integration is working.
+      if (providersWithActiveSession.has(connection.providerId)) continue;
       unavailable.push({
         providerId: connection.providerId,
         name,
@@ -254,10 +286,17 @@ export class IntegrationHub {
     }
 
     const snapshot: IntegrationTurnSnapshot = { registeredCount, connected, unavailable };
+    // Collect native (non-integration) tool IDs so the prompt hint system can
+    // avoid generating "[INTEGRATION UNAVAILABLE]" for providers that have
+    // native tool equivalents (e.g. WhatsApp via Baileys).
+    const nativeToolIds = registry.list()
+      .filter((t) => t.source !== 'integration')
+      .map((t) => t.id);
     const { promptHint, policy } = this.buildIntegrationPromptHint(
       userText,
       snapshot,
       registeredIntegrationToolIds,
+      nativeToolIds,
     );
     return promptHint || policy
       ? { snapshot, promptHint, accessPolicy: policy }
@@ -277,6 +316,7 @@ export class IntegrationHub {
     userText: string,
     snapshot: IntegrationTurnSnapshot,
     registeredIntegrationToolIds: string[],
+    nativeToolIds: string[] = [],
   ): { promptHint?: string; policy?: ThirdPartyTurnPolicy } {
     const lower = userText.toLowerCase();
     if (!lower.trim()) return {};
@@ -293,6 +333,7 @@ export class IntegrationHub {
       catalog,
       driveReadIntent: readIntent,
       registeredIntegrationToolIds,
+      nativeToolIds,
     });
     if (resolved.promptHint || resolved.policy) {
       return { promptHint: resolved.promptHint, policy: resolved.policy };
@@ -302,6 +343,7 @@ export class IntegrationHub {
       userText,
       snapshot,
       registeredIntegrationToolIds,
+      nativeToolIds,
     );
     if (mentioned) {
       return { promptHint: mentioned.promptHint, policy: mentioned.policy };
@@ -352,7 +394,15 @@ Rules:
 - pay/book/purchase/charge/transfer/delete/remove/cancel = critical risk, defaultDecision deny
 - unknown or potentially destructive = high risk, defaultDecision ask`;
     try {
-      const { text } = await generateText({ model, prompt, maxOutputTokens: 2048, temperature: 0.1 });
+      const messages = [{ role: 'user' as const, content: prompt }];
+      const { text } = await withSpan('llm.classify_mcp_tools', 'llm', async (span) => {
+        span.setAttribute('gen_ai.system', cfg.provider.activeProvider);
+        span.setAttribute('gen_ai.request.model', cfg.provider.activeModel);
+        span.setAttribute('llm.input_messages', JSON.stringify(messages));
+        const r = await generateText({ model, prompt, maxOutputTokens: 2048, temperature: 0.1 });
+        span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+        return r;
+      });
       const jsonStart = text.indexOf('{');
       const jsonEnd = text.lastIndexOf('}');
       if (jsonStart === -1 || jsonEnd === -1) throw new Error('No JSON object in LLM response');
@@ -440,9 +490,8 @@ Rules:
     return this.oauthRedirectUri();
   }
 
-  listCatalog(options?: { includeCandidates?: boolean }): IntegrationProvider[] {
-    const includeCandidates = options?.includeCandidates ?? true;
-    return listAllProviders({ includeCandidates });
+  listCatalog(): IntegrationProvider[] {
+    return listAllProviders();
   }
 
   getCatalogStats() {
@@ -836,6 +885,41 @@ Rules:
   }
 
   async disconnect(connectionId: string): Promise<void> {
+    // Revoke OAuth tokens with the provider before removing the local
+    // connection — this is a proper logout so the next sign-in starts fresh
+    // and doesn't reuse a stale browser session.
+    const connection = this.store.getConnection(connectionId);
+    if (connection) {
+      const provider = this.resolveProvider(connection.providerId);
+      if (provider) {
+        const remoteUrl = connection.remote?.url ?? provider.server.url;
+        const oauthBase = resolveProviderOAuthConfig(provider, remoteUrl);
+        if (provider.auth.oauth || provider.auth.primary === 'oauth' || provider.auth.primary === 'sign_in_browser') {
+          try {
+            const secrets = await this.store.getSecrets(connectionId, this.currentDek());
+            const oauth = secrets?.oauth;
+            if (oauth?.accessToken) {
+              await revokeOAuthToken({
+                oauth: this.resolveOAuthConfig(connection.providerId, oauthBase),
+                token: oauth.accessToken,
+                tokenTypeHint: 'access_token',
+                remoteResourceUrl: remoteUrl,
+              });
+            }
+            if (oauth?.refreshToken) {
+              await revokeOAuthToken({
+                oauth: this.resolveOAuthConfig(connection.providerId, oauthBase),
+                token: oauth.refreshToken,
+                tokenTypeHint: 'refresh_token',
+                remoteResourceUrl: remoteUrl,
+              });
+            }
+          } catch {
+            // Best-effort — don't block disconnect on revocation failure
+          }
+        }
+      }
+    }
     await this.closeSession(connectionId);
     this.notifications.clearForConnection(connectionId);
     await this.store.removeConnection(connectionId);
@@ -1122,6 +1206,8 @@ Rules:
         success: result.success,
         argsSummary: summarizeArgs(args),
         error: result.success ? undefined : result.error ?? result.output,
+        input: JSON.stringify(args, null, 2),
+        output: typeof result.output === 'string' ? result.output : JSON.stringify(result.output, null, 2),
       });
       return {
         ...result,
@@ -1143,6 +1229,8 @@ Rules:
         success: false,
         argsSummary: summarizeArgs(args),
         error: message,
+        input: JSON.stringify(args, null, 2),
+        output: message,
       });
       this.recordRuntimeToolError(connection, bridge.mcpName, message, readonly);
       return { success: false, output: message, error: 'INTEGRATION_TOOL_FAILED' };
@@ -1166,63 +1254,81 @@ Rules:
     }
 
     const readonly = isReadOnlyIntegrationTool(toolName, provider);
-    try {
-      await this.ensureFreshOAuthToken(connectionId);
-      const result = await active.session.callTool(toolName, args);
-      let output = formatMcpToolResult(result);
-      output = this.clarifyPackageSignInOutput(provider, toolName, output);
-      if (connection.providerId === 'google-maps') {
-        output = enhanceGoogleMapsToolOutput(toolName, output);
-      }
-      const failed = isMcpToolResultError(result, output);
-      const cleanedError = failed ? cleanMcpErrorMessage(output) : undefined;
-      const toolId = integrationToolId(connection.providerId, toolName);
-      const structured = parseIntegrationStructuredResult(toolId, output);
-      this.audit.append({
-        connectionId,
-        providerId: connection.providerId,
-        toolName,
-        toolId: parseIntegrationToolId(toolId)?.toolName ?? toolName,
-        readonly,
-        success: !failed,
-        argsSummary: summarizeArgs(args),
-        error: cleanedError,
-      });
-      if (failed && cleanedError) {
-        this.recordRuntimeToolError(connection, toolName, cleanedError, readonly);
-      }
-      return {
-        success: !failed,
-        output: failed ? cleanedError ?? output : output,
-        error: failed ? 'INTEGRATION_TOOL_FAILED' : undefined,
-        metadata: {
+    const startedAt = Date.now();
+    return withSpan(`integration.${connection.providerId}.${toolName}`, 'integration_call', async (span) => {
+      span.setAttribute('trace.domain', 'APP');
+      span.setAttribute('trace.kind', 'integration_call');
+      span.setAttribute('integration.server', connection.providerId);
+      span.setAttribute('integration.tool', toolName);
+      span.setAttribute('integration.args', JSON.stringify(args));
+      try {
+        await this.ensureFreshOAuthToken(connectionId);
+        const result = await active.session.callTool(toolName, args);
+        let output = formatMcpToolResult(result);
+        output = this.clarifyPackageSignInOutput(provider, toolName, output);
+        if (connection.providerId === 'google-maps') {
+          output = enhanceGoogleMapsToolOutput(toolName, output);
+        }
+        const failed = isMcpToolResultError(result, output);
+        const cleanedError = failed ? cleanMcpErrorMessage(output) : undefined;
+        const toolId = integrationToolId(connection.providerId, toolName);
+        const structured = parseIntegrationStructuredResult(toolId, output);
+        this.audit.append({
+          connectionId,
           providerId: connection.providerId,
           toolName,
+          toolId: parseIntegrationToolId(toolId)?.toolName ?? toolName,
           readonly,
-          integrationStructured: structured ?? undefined,
-        },
-      };
-    } catch (error) {
-      const message = cleanMcpErrorMessage(error instanceof Error ? error.message : String(error));
-      this.audit.append({
-        connectionId,
-        providerId: connection.providerId,
-        toolName,
-        toolId: toolName,
-        readonly,
-        success: false,
-        argsSummary: summarizeArgs(args),
-        error: message,
-      });
-      this.recordRuntimeToolError(connection, toolName, message, readonly);
-      const lower = message.toLowerCase();
-      if (lower.includes('not connected') || lower.includes('connection') || lower.includes('econnrefused') || lower.includes('closed')) {
-        getLogger().warn('INTEGRATION_TOOL_CONNECTION_LOST', `${connectionId}: ${message}`);
-        await this.closeSession(connectionId).catch(() => { /* ignore */ });
+          success: !failed,
+          argsSummary: summarizeArgs(args),
+          error: cleanedError,
+          input: JSON.stringify(args, null, 2),
+          output: output.slice(0, 10_000),
+        });
+        if (failed && cleanedError) {
+          this.recordRuntimeToolError(connection, toolName, cleanedError, readonly);
+        }
+        span.setAttribute('integration.output', output.slice(0, 2000));
+        span.setAttribute('integration.success', !failed);
+        span.setAttribute('integration.duration_ms', Date.now() - startedAt);
+        return {
+          success: !failed,
+          output: failed ? cleanedError ?? output : output,
+          error: failed ? 'INTEGRATION_TOOL_FAILED' : undefined,
+          metadata: {
+            providerId: connection.providerId,
+            toolName,
+            readonly,
+            integrationStructured: structured ?? undefined,
+          },
+        };
+      } catch (error) {
+        const message = cleanMcpErrorMessage(error instanceof Error ? error.message : String(error));
+        this.audit.append({
+          connectionId,
+          providerId: connection.providerId,
+          toolName,
+          toolId: toolName,
+          readonly,
+          success: false,
+          argsSummary: summarizeArgs(args),
+          error: message,
+          input: JSON.stringify(args, null, 2),
+          output: message,
+        });
+        this.recordRuntimeToolError(connection, toolName, message, readonly);
+        const lower = message.toLowerCase();
+        if (lower.includes('not connected') || lower.includes('connection') || lower.includes('econnrefused') || lower.includes('closed')) {
+          getLogger().warn('INTEGRATION_TOOL_CONNECTION_LOST', `${connectionId}: ${message}`);
+          await this.closeSession(connectionId).catch(() => { /* ignore */ });
+        }
+        const clarified = provider ? this.clarifyPackageSignInOutput(provider, toolName, message) : message;
+        span.setAttribute('integration.output', message.slice(0, 2000));
+        span.setAttribute('integration.success', false);
+        span.setAttribute('integration.duration_ms', Date.now() - startedAt);
+        return { success: false, output: cleanMcpErrorMessage(clarified), error: 'INTEGRATION_TOOL_FAILED' };
       }
-      const clarified = provider ? this.clarifyPackageSignInOutput(provider, toolName, message) : message;
-      return { success: false, output: cleanMcpErrorMessage(clarified), error: 'INTEGRATION_TOOL_FAILED' };
-    }
+    });
   }
 
   private recordRuntimeToolError(
@@ -1633,7 +1739,18 @@ Rules:
 
 function summarizeArgs(args: Record<string, unknown>): string {
   const keys = Object.keys(args).slice(0, 6);
-  return keys.map((key) => `${key}=${String(args[key]).slice(0, 40)}`).join(', ');
+  return keys.map((key) => {
+    const value = args[key];
+    let valueStr: string;
+    if (typeof value === 'string') {
+      valueStr = value;
+    } else if (typeof value === 'object' && value !== null) {
+      valueStr = JSON.stringify(value);
+    } else {
+      valueStr = String(value);
+    }
+    return `${key}=${valueStr.slice(0, 80)}`;
+  }).join(', ');
 }
 
 function formatMcpToolResult(result: unknown): string {

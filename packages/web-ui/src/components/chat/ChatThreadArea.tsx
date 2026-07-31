@@ -30,7 +30,7 @@ export const ChatThreadArea = React.memo(function ChatThreadArea() {
   } = useChatSessionSettersContext();
   // Thread handlers.
   const {
-    handleResend, handleQuestionnaireRespond,
+    handleResend, handleQuestionnaireRespond, handleQuestionnaireCancel,
     handleCrewRosterPickerSubmit, handleCrewRosterPickerSkip,
     handleViewCrewDossier, handleViewCrewByCallsign, handleTurnFeedback, handleSaveMarkdown,
   } = useChatThreadHandlersContext();
@@ -80,6 +80,7 @@ export const ChatThreadArea = React.memo(function ChatThreadArea() {
         onResend={handleResend}
         onOpenChildSession={openChildSession}
         onQuestionnaireRespond={handleQuestionnaireRespond}
+        onQuestionnaireCancel={handleQuestionnaireCancel}
         onCrewRosterPickerSubmit={handleCrewRosterPickerSubmit}
         onCrewRosterPickerSkip={handleCrewRosterPickerSkip}
         onViewCrewDossier={handleViewCrewDossier}

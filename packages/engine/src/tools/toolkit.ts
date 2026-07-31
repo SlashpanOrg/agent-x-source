@@ -39,6 +39,8 @@ import * as build from './builtin/build.js';
 import * as script from './builtin/script.js';
 import * as aliases from './builtin/aliases.js';
 import * as todo from './builtin/todo.js';
+import * as whatsapp from './builtin/whatsapp/index.js';
+import { WHATSAPP_TOOLS } from './builtin/whatsapp/whatsapp-tool-definitions.js';
 import { registerDocumentStudioTools, type DocumentStudioToolsConfig } from '../document-studio/tools/register.js';
 import { SUBAGENT_TYPES } from '../agent/subagent-types.js';
 
@@ -327,6 +329,8 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'node_rpc', name: 'Run JavaScript/TypeScript', description: 'Execute JS/TS in Node (no Python required)', modelDescription: 'Run JavaScript or TypeScript snippets via Node/tsx. Use for data transforms, JSON processing, quick logic in JS/TS repos. Args via `args` → __args in script. Prefer this over python_rpc when the project uses Node.', category: 'agent_meta', riskLevel: 'medium', schema: { type: 'object', properties: { script: { type: 'string', description: 'JS/TS code to execute' }, language: { type: 'string', description: 'javascript (default) or typescript' }, args: { type: 'object', description: 'Arguments as JSON object' }, timeout: { type: 'number', description: 'Timeout ms (default: 60000)' } }, required: ['script'] }, composable: false, source: 'builtin' },
   { id: 'python_rpc', name: 'Execute Python Script', description: 'Run Python code in an isolated subprocess', modelDescription: 'Run Python when Python libraries (pandas, numpy, etc.) are needed or when Python is genuinely the fastest/only way to complete a step. Prefer built-in tools (file_*, glob, grep, pdf_*, script_run, node_rpc) for searching, parsing, reading, or calculations that those tools can handle. Never use python_rpc as the first/easy default when another tool fits. Do NOT use it for web scraping or HTML parsing. Use only when no better tool exists.', category: 'agent_meta', riskLevel: 'medium', schema: { type: 'object', properties: { script: { type: 'string', description: 'Python code to execute' }, args: { type: 'object', description: 'Arguments to pass to the script (accessible via os.environ)' }, timeout: { type: 'number', description: 'Timeout in ms (default: 60000)' } }, required: ['script'] }, composable: false, source: 'builtin' },
 
+  // ═══ WHATSAPP (Phase 6 — native agent-tool control surface) ═══
+  ...WHATSAPP_TOOLS,
 ];
 
 /** Migration shim for the legacy template_* tool family. */
@@ -658,6 +662,76 @@ export function createDefaultToolkit(
   executor.registerHandler('discord_send_file', channelSend.discordSendFile);
   executor.registerHandler('email_send_message', channelSend.emailSendMessage);
   executor.registerHandler('email_send_file', channelSend.emailSendFile);
+
+  // ═══ WHATSAPP (Phase 6 — native agent-tool control surface) ═══
+  // Session tools (6.1)
+  executor.registerHandler('whatsapp_link_session', whatsapp.whatsappLinkSession);
+  executor.registerHandler('whatsapp_get_session_status', whatsapp.whatsappGetSessionStatus);
+  executor.registerHandler('whatsapp_stop_session', whatsapp.whatsappStopSession);
+  executor.registerHandler('whatsapp_unlink_session', whatsapp.whatsappUnlinkSession);
+  executor.registerHandler('whatsapp_request_pairing_code', whatsapp.whatsappRequestPairingCode);
+  executor.registerHandler('whatsapp_allow_sender', whatsapp.whatsappAllowSender);
+  executor.registerHandler('whatsapp_block_sender', whatsapp.whatsappBlockSender);
+  // Messaging tools (6.2)
+  executor.registerHandler('whatsapp_send_text', whatsapp.whatsappSendText);
+  executor.registerHandler('whatsapp_send_image', whatsapp.whatsappSendImage);
+  executor.registerHandler('whatsapp_send_video', whatsapp.whatsappSendVideo);
+  executor.registerHandler('whatsapp_send_audio', whatsapp.whatsappSendAudio);
+  executor.registerHandler('whatsapp_send_document', whatsapp.whatsappSendDocument);
+  executor.registerHandler('whatsapp_send_location', whatsapp.whatsappSendLocation);
+  executor.registerHandler('whatsapp_send_contact', whatsapp.whatsappSendContact);
+  executor.registerHandler('whatsapp_send_poll', whatsapp.whatsappSendPoll);
+  executor.registerHandler('whatsapp_send_sticker', whatsapp.whatsappSendSticker);
+  executor.registerHandler('whatsapp_reply', whatsapp.whatsappReply);
+  executor.registerHandler('whatsapp_forward', whatsapp.whatsappForward);
+  executor.registerHandler('whatsapp_react', whatsapp.whatsappReact);
+  executor.registerHandler('whatsapp_edit_message', whatsapp.whatsappEditMessage);
+  executor.registerHandler('whatsapp_delete_message', whatsapp.whatsappDeleteMessage);
+  executor.registerHandler('whatsapp_get_message_history', whatsapp.whatsappGetMessageHistory);
+  executor.registerHandler('whatsapp_get_reactions', whatsapp.whatsappGetReactions);
+  // Bulk send-safety tools (6.3)
+  executor.registerHandler('whatsapp_send_bulk', whatsapp.whatsappSendBulk);
+  executor.registerHandler('whatsapp_get_batch_status', whatsapp.whatsappGetBatchStatus);
+  executor.registerHandler('whatsapp_cancel_batch', whatsapp.whatsappCancelBatch);
+  // Contact tools (6.4)
+  executor.registerHandler('whatsapp_check_number', whatsapp.whatsappCheckNumber);
+  executor.registerHandler('whatsapp_block_contact', whatsapp.whatsappBlockContact);
+  executor.registerHandler('whatsapp_unblock_contact', whatsapp.whatsappUnblockContact);
+  executor.registerHandler('whatsapp_list_contacts', whatsapp.whatsappListContacts);
+  executor.registerHandler('whatsapp_get_contact', whatsapp.whatsappGetContact);
+  executor.registerHandler('whatsapp_get_profile_picture', whatsapp.whatsappGetProfilePicture);
+  // Group tools (6.5)
+  executor.registerHandler('whatsapp_create_group', whatsapp.whatsappCreateGroup);
+  executor.registerHandler('whatsapp_get_group_info', whatsapp.whatsappGetGroupInfo);
+  executor.registerHandler('whatsapp_add_participants', whatsapp.whatsappAddParticipants);
+  executor.registerHandler('whatsapp_remove_participants', whatsapp.whatsappRemoveParticipants);
+  executor.registerHandler('whatsapp_promote_participant', whatsapp.whatsappPromoteParticipant);
+  executor.registerHandler('whatsapp_demote_participant', whatsapp.whatsappDemoteParticipant);
+  executor.registerHandler('whatsapp_set_group_subject', whatsapp.whatsappSetGroupSubject);
+  executor.registerHandler('whatsapp_set_group_description', whatsapp.whatsappSetGroupDescription);
+  executor.registerHandler('whatsapp_leave_group', whatsapp.whatsappLeaveGroup);
+  executor.registerHandler('whatsapp_join_group_by_invite', whatsapp.whatsappJoinGroupByInvite);
+  // Label tools (6.6 — Business accounts only, capability-gated)
+  executor.registerHandler('whatsapp_list_labels', whatsapp.whatsappListLabels);
+  executor.registerHandler('whatsapp_get_chat_labels', whatsapp.whatsappGetChatLabels);
+  executor.registerHandler('whatsapp_add_label_to_chat', whatsapp.whatsappAddLabelToChat);
+  executor.registerHandler('whatsapp_remove_label_from_chat', whatsapp.whatsappRemoveLabelFromChat);
+  // Status/Channel/Call/Profile tools (6.7)
+  executor.registerHandler('whatsapp_post_text_status', whatsapp.whatsappPostTextStatus);
+  executor.registerHandler('whatsapp_post_image_status', whatsapp.whatsappPostImageStatus);
+  executor.registerHandler('whatsapp_list_status_updates', whatsapp.whatsappListStatusUpdates);
+  executor.registerHandler('whatsapp_subscribe_channel', whatsapp.whatsappSubscribeChannel);
+  executor.registerHandler('whatsapp_list_channels', whatsapp.whatsappListChannels);
+  executor.registerHandler('whatsapp_reject_call', whatsapp.whatsappRejectCall);
+  executor.registerHandler('whatsapp_set_profile_name', whatsapp.whatsappSetProfileName);
+  executor.registerHandler('whatsapp_set_profile_status', whatsapp.whatsappSetProfileStatus);
+  executor.registerHandler('whatsapp_set_profile_picture', whatsapp.whatsappSetProfilePicture);
+  // Webhook tools (6.8)
+  executor.registerHandler('whatsapp_create_webhook', whatsapp.whatsappCreateWebhook);
+  executor.registerHandler('whatsapp_list_webhooks', whatsapp.whatsappListWebhooks);
+  executor.registerHandler('whatsapp_update_webhook', whatsapp.whatsappUpdateWebhook);
+  executor.registerHandler('whatsapp_delete_webhook', whatsapp.whatsappDeleteWebhook);
+  executor.registerHandler('whatsapp_test_webhook', whatsapp.whatsappTestWebhook);
 
   // ═══ Document Studio (doc_* family — atomic register, spec §9.7.2) ═══
   registerDocumentStudioTools(registry, executor, config?.documentStudioTools);

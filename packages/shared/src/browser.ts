@@ -189,7 +189,9 @@ export {
 export {
   CHANNEL_SESSION_ID,
   channelSessionIdForBinding,
+  channelSessionIdForContact,
   parseChannelBindingFromSessionId,
+  contactIdFromChannelSessionId,
   isChannelSessionId,
   isSuperSessionId,
   resolveFleetToolSessionScope,
@@ -251,6 +253,7 @@ export {
   formatCallDividerDuration,
   formatCallDividerDayLabel,
   formatCallDividerTimeLabel,
+  buildNewConversationDividerMeta,
 } from './utils/call-transcript-divider.js';
 export type { CallDividerVariant, CallDividerMeta } from './utils/call-transcript-divider.js';
 
@@ -266,3 +269,21 @@ export type {
   DeepSearchResultBundle,
   DeepSearchRequest,
 } from './types/deep-search.js';
+
+// Observability types (Phase 5+) — needed by the web-ui observability app.
+export type {
+  TraceKind,
+  SpanKind,
+  TraceSummary,
+  SpanNode,
+  ObservabilityLogEntry,
+  MetricPoint,
+  MetricSeries,
+  ObservabilityConfig,
+  TraceDetail,
+  DevVerifyRequest,
+  DevVerifyResponse,
+  TraceDiagnosis,
+  TraceExportBundle,
+} from './types/observability.js';
+export type { MetricSample, ObservabilityDomain } from './types/telemetry.js';

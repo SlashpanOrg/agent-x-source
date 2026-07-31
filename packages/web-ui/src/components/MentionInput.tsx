@@ -483,12 +483,12 @@ const MentionInputComponent = React.forwardRef<MentionInputHandle, MentionInputP
 
   return (
     <Box
+      className="ax-scroll-y"
       sx={{
         flex: 1,
         position: 'relative',
         minHeight: 24,
         maxHeight: 140,
-        overflowY: 'auto',
         py: 0.75,
         px: 0.5,
         cursor: 'text',

@@ -41,6 +41,7 @@ function runAuth(path: string, headers: Record<string, string> = {}) {
       body = payload;
       return this;
     },
+    locals: {},
   } as unknown as Response;
   const next = vi.fn() as NextFunction;
   authMiddleware(req, res, next);

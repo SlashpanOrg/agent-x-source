@@ -762,13 +762,12 @@ export function BentoDashboard() {
               gridRow: { sm: '2', lg: '1' },
             }}
           >
-            <Box sx={{
+            <Box className="ax-scroll-y" sx={{
               display: 'flex',
               flexDirection: 'column',
               gap: 0.75,
               flex: 1,
               minHeight: 0,
-              overflowY: 'auto',
             }}>
               <Box sx={{
                 display: 'flex',
@@ -910,7 +909,7 @@ export function BentoDashboard() {
               }
               sx={{ gridColumn: { sm: '1' }, gridRow: { sm: '3', lg: '2' }, minHeight: 0 }}
             >
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.6, overflowY: 'auto', flex: 1, minHeight: 0 }}>
+              <Box className="ax-scroll-y" sx={{ display: 'flex', flexDirection: 'column', gap: 0.6, flex: 1, minHeight: 0 }}>
                 {activeSessions.length === 0 ? (
                   <EmptyHint>No active turns</EmptyHint>
                 ) : (
@@ -942,7 +941,7 @@ export function BentoDashboard() {
               }
               sx={{ gridColumn: { sm: '2' }, gridRow: { sm: '3', lg: '2' }, minHeight: 0 }}
             >
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.6, overflowY: 'auto', flex: 1, minHeight: 0 }}>
+              <Box className="ax-scroll-y" sx={{ display: 'flex', flexDirection: 'column', gap: 0.6, flex: 1, minHeight: 0 }}>
                 {subagentTasks.length === 0 ? (
                   <EmptyHint>Idle</EmptyHint>
                 ) : (
@@ -974,7 +973,7 @@ export function BentoDashboard() {
               }
               sx={{ gridColumn: { sm: '3' }, gridRow: { sm: '3', lg: '2' }, minHeight: 0 }}
             >
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.6, overflowY: 'auto', flex: 1, minHeight: 0 }}>
+              <Box className="ax-scroll-y" sx={{ display: 'flex', flexDirection: 'column', gap: 0.6, flex: 1, minHeight: 0 }}>
                 {tasks.length === 0 ? (
                   <EmptyHint>None scheduled</EmptyHint>
                 ) : (

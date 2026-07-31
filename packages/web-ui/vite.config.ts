@@ -33,6 +33,10 @@ export default defineConfig({
     sourcemap: false,
     chunkSizeWarningLimit: 800,
     rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        observability: path.resolve(__dirname, 'observability.html'),
+      },
       output: {
         manualChunks(id) {
           if (id.includes('node_modules/react-syntax-highlighter') || id.includes('node_modules/refractor')) {

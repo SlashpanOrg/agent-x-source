@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { EnhancedToolExecutor } from '../src/tools/EnhancedToolExecutor.js';
 import { ToolRegistry } from '../src/tools/ToolRegistry.js';
-import { PromptEngine } from '../src/prompt/PromptEngine.js';
 
 // ─── Helper: create a minimal ToolRegistry ───
 function dummyRegistry() {
@@ -101,45 +100,6 @@ describe('Gap 3 — Circuit Breaker', () => {
     // Clearing should happen via _execOne on success — simulate
     executor['circuitBreakers'].delete('file_write');
     expect(executor.isCircuitBlacklisted('file_write')).toBe(false);
-  });
-});
-
-// ─────────────────────────────────────────────
-// Gap 4: PromptEngine — Structured Compression
-// ─────────────────────────────────────────────
-describe('Gap 4 — Structured Message Compression', () => {
-  let engine: PromptEngine;
-
-  beforeEach(() => {
-    engine = new PromptEngine(128000);
-  });
-
-  it('extracts file facts from messages', () => {
-    const facts = engine['extractKeyFacts']('Created package.json with node dependencies. Wrote src/index.ts with the main entry point.');
-    expect(facts.some(f => f.includes('package.json'))).toBe(true);
-    expect(facts.some(f => f.includes('index.ts'))).toBe(true);
-  });
-
-  it('extracts error facts from messages', () => {
-    const facts = engine['extractKeyFacts']('Error: npm install failed with EACCES. Failed to compile index.ts.');
-    expect(facts.some(f => f.includes('Error'))).toBe(true);
-  });
-
-  it('extracts URL facts', () => {
-    const facts = engine['extractKeyFacts']('Refer to https://docs.example.com/api for details and https://github.com/user/repo for code.');
-    expect(facts.some(f => f.includes('https://docs.example.com/api'))).toBe(true);
-  });
-
-  it('returns empty facts for empty content', () => {
-    const facts = engine['extractKeyFacts']('');
-    expect(facts).toHaveLength(0);
-  });
-
-  it('deduplicates facts within limit', () => {
-    const repeated = Array(20).fill('Error: timeout').join('\n');
-    const facts = engine['extractKeyFacts'](repeated);
-    const errorFacts = facts.filter(f => f.includes('Error'));
-    expect(errorFacts.length).toBeLessThanOrEqual(3);
   });
 });
 

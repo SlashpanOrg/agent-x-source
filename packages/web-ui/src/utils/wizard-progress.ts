@@ -22,9 +22,13 @@ export interface WizardProgress {
   selectedLocalModel?: string | null;
   skipLocalModel?: boolean;
   voiceCalibrated?: boolean;
+  neuralReady?: boolean;
   telegramLinked?: boolean;
   telegramBotLabel?: string;
   telegramChatLabel?: string;
+  whatsappLinked?: boolean;
+  whatsappPhoneNumber?: string;
+  whatsappPushName?: string;
   personaName?: string;
   personaDescription?: string;
   personaCommStyle?: string;

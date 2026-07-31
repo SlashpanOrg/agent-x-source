@@ -9,10 +9,10 @@ import { ChatMessageList } from '../../chat/ChatMessageList';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import { colors } from '../../theme';
 
-const ESTIMATED_ROW_PX = 120;
-const VIRTUALIZE_THRESHOLD = 48;
-const OVERSCAN = 6;
-const TAIL_ALWAYS_VISIBLE = 4;
+const ESTIMATED_ROW_PX = 160;
+const VIRTUALIZE_THRESHOLD = 20;
+const OVERSCAN = 8;
+const TAIL_ALWAYS_VISIBLE = 6;
 
 export function useVirtualMessageWindow(
   items: VisibleMessageItem[],
@@ -79,6 +79,7 @@ export interface ChatThreadViewProps {
   onResend: (text: string) => void;
   onOpenChildSession: (props: { childSessionId: string; label: string; kind: 'sub_agent' | 'crew_worker'; status: 'running' | 'done' | 'error'; task?: string }) => void;
   onQuestionnaireRespond: (messageId: string, response: string) => void;
+  onQuestionnaireCancel?: (messageId: string) => void;
   onCrewRosterPickerSubmit: (messageId: string, selected: CrewMatchCandidate[]) => void;
   onCrewRosterPickerSkip: (messageId: string, dismissForSession?: boolean) => void;
   onViewCrewDossier: (candidate: CrewMatchCandidate) => void;
@@ -105,6 +106,7 @@ function ChatThreadViewComponent(props: ChatThreadViewProps) {
     onResend,
     onOpenChildSession,
     onQuestionnaireRespond,
+    onQuestionnaireCancel,
     onCrewRosterPickerSubmit,
     onCrewRosterPickerSkip,
     onViewCrewDossier,
@@ -206,6 +208,7 @@ function ChatThreadViewComponent(props: ChatThreadViewProps) {
         bottomRef={bottomRef}
         onOpenChildSession={onOpenChildSession}
         onQuestionnaireRespond={onQuestionnaireRespond}
+        onQuestionnaireCancel={onQuestionnaireCancel}
         onCrewRosterPickerSubmit={onCrewRosterPickerSubmit}
         onCrewRosterPickerSkip={onCrewRosterPickerSkip}
         onViewCrewDossier={onViewCrewDossier}

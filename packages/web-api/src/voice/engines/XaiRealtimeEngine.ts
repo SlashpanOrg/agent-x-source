@@ -12,7 +12,9 @@ export class XaiRealtimeEngine implements VoiceEngine {
 
   async createSession(options: VoiceEngineSessionOptions): Promise<VoiceEngineSession> {
     const config = getEngine().configManager.load();
-    const voiceConfig: VoiceConfig = config.voice ?? {};
+    // Use the override voice config when provided (e.g. per-crew voice profile),
+    // otherwise fall back to the global config.
+    const voiceConfig: VoiceConfig = options.voiceConfig ?? config.voice ?? {};
     const apiKey = voiceConfig.xai?.apiKey ?? process.env['XAI_API_KEY'];
     if (!apiKey) {
       throw new Error('xAI API key is not configured. Add it in Settings → Voice.');

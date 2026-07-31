@@ -254,6 +254,10 @@ export interface IntegrationAuditEntry {
   timestamp: string;
   error?: string;
   argsSummary?: string;
+  /** Full input arguments as JSON string (for expandable audit UI). */
+  input?: string;
+  /** Full output/response as string (for expandable audit UI). */
+  output?: string;
 }
 
 export interface IntegrationHealth {

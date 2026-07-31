@@ -44,7 +44,7 @@ export function SearchBox({ onPick }: SearchBoxProps) {
         />
       </Box>
       {open && results.length > 0 && (
-        <Box sx={{ ...glassPanel, mt: 0.75, maxHeight: 320, overflowY: 'auto', py: 0.5 }}>
+        <Box className="ax-scroll-y" sx={{ ...glassPanel, mt: 0.75, maxHeight: 320, py: 0.5 }}>
           {results.map((node) => {
             const style = categoryStyle(node.category);
             return (

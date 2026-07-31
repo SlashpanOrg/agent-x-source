@@ -15,6 +15,7 @@ export interface ProviderProfile {
   id: string;
   label: string;
   providerId: string;
+  providerName?: string;
 }
 
 export interface ChatToolbarProps {
@@ -27,6 +28,8 @@ export interface ChatToolbarProps {
   providerMenuAnchor: HTMLElement | null;
   setProviderMenuAnchor: (el: HTMLElement | null) => void;
   setCurrentProvider: (id: string) => void;
+  /** When set, provider switch opens a modal to force model selection instead of immediately switching. */
+  onProviderSwitch?: (profileId: string) => void;
   setCurrentModel: (id: string) => void;
   setModelList: (list: ModelInfo[]) => void;
   modelMenuAnchor: HTMLElement | null;
@@ -44,7 +47,7 @@ export function ChatToolbar(props: ChatToolbarProps) {
     isCrewPrivateSession, bypassPermissions, toggleBypassPermissions, revokeSessionPermissions,
     providerList, currentProvider,
     providerMenuAnchor, setProviderMenuAnchor,
-    setCurrentProvider, setCurrentModel, setModelList,
+    setCurrentProvider, onProviderSwitch, setCurrentModel, setModelList,
     modelMenuAnchor, setModelMenuAnchor,
     currentModel, modelList, loadingModels, currentProviderId,
     setTokenTotal, setTokenReserved,
@@ -106,15 +109,21 @@ export function ChatToolbar(props: ChatToolbarProps) {
         PaperProps={{ sx: { bgcolor: colors.bg.secondary, border: `1px solid ${colors.border.default}`, minWidth: 200 } }}>
         {providerList.filter(Boolean).map((profile) => (
           <MenuItem key={profile.id} onClick={() => {
-            setCurrentProvider(profile.id);
-            setCurrentModel('');
-            setModelList([]);
-            providers.switchProfile(profile.providerId, profile.id).catch(() => {});
             setProviderMenuAnchor(null);
+            if (onProviderSwitch) {
+              // Force model selection via modal before committing the switch
+              onProviderSwitch(profile.id);
+            } else {
+              // Fallback: legacy immediate switch (no modal)
+              setCurrentProvider(profile.id);
+              setCurrentModel('');
+              setModelList([]);
+              providers.switchProfile(profile.providerId, profile.id).catch(() => {});
+            }
           }} selected={profile.id === currentProvider} sx={{ fontSize: '0.7rem' }}>
             <Box>
               <Typography sx={{ fontSize: '0.7rem' }}>{profile.label}</Typography>
-              <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim, fontFamily: "'JetBrains Mono', monospace" }}>{profile.providerId}</Typography>
+              <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim, fontFamily: "'JetBrains Mono', monospace" }}>{profile.providerName || profile.providerId}</Typography>
             </Box>
           </MenuItem>
         ))}

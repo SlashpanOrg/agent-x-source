@@ -805,7 +805,7 @@ export class TaskExecutor {
     // Cross-repo: if step targets a specific repo, prepend context
     if (step.repoPath) {
       const repoContext = await tryShellExec(this.agent,
-        `ls "${step.repoPath}/" 2>/dev/null && echo "--- repo exists ---" || echo "--- cloning ---" && git clone "$(git remote get-url origin 2>/dev/null)" "${step.repoPath}" 2>/dev/null && echo "--- done ---" || echo "--- using existing ---"`
+        `ls "${step.repoPath}/" 2>/dev/null && echo "[repo exists]" || echo "[cloning]" && git clone "$(git remote get-url origin 2>/dev/null)" "${step.repoPath}" 2>/dev/null && echo "[done]" || echo "[using existing]"`
       );
       stepPrompt = `Working in repo: ${step.repoPath}\n${repoContext.slice(0, 500)}\n\n${stepPrompt}\n\nEnsure all file operations use the absolute path "${step.repoPath}".`;
     }

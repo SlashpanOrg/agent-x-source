@@ -128,6 +128,8 @@ const MODELS: ModelSpec[] = [
   },
 ];
 
+type DownloadErrorKind = 'unavailable' | 'generic';
+
 interface DownloadState {
   modelId: string;
   status: 'pending' | 'downloading' | 'complete' | 'error';
@@ -135,8 +137,50 @@ interface DownloadState {
   totalMB: number;
   percentage: number;
   error?: string;
+  /** Classified error kind — drives the wizard's "continue without neural core" path. */
+  errorKind?: DownloadErrorKind;
   startedAt: number;
   completedAt?: number;
+}
+
+/**
+ * Classify a download failure.
+ *
+ * `unavailable` — the model could not be fetched from the HuggingFace endpoint
+ * (404 / repo not found / gated / network unreachable / DNS failure). In these
+ * cases retrying won't help until the endpoint or model is restored, so the
+ * setup wizard offers a "Continue without Neural Core" path and silently leaves
+ * the cortex in degraded mode.
+ *
+ * `generic` — anything else (disk full, ONNX runtime error, etc.). The user
+ * should resolve and retry; the wizard's Continue button stays disabled.
+ */
+function classifyDownloadError(err: unknown): DownloadErrorKind {
+  const msg = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase();
+  if (!msg) return 'generic';
+  const unavailableSignals = [
+    '404',
+    'not found',
+    'repo not found',
+    'model not found',
+    'could not fetch',
+    'gated repo',
+    'access to this model',
+    'unavailable',
+    'enotfound',
+    'econnrefused',
+    'econnreset',
+    'etimedout',
+    'getaddrinfo',
+    'fetch failed',
+    'network request failed',
+    'too many redirects',
+    'tunneling socket',
+    'self-signed certificate',
+    'unable to verify',
+    'certificate',
+  ];
+  return unavailableSignals.some((s) => msg.includes(s)) ? 'unavailable' : 'generic';
 }
 
 const downloadStates = new Map<string, DownloadState>();
@@ -217,6 +261,7 @@ async function downloadModel(model: ModelSpec): Promise<void> {
     state.downloadedMB = 0;
     state.percentage = 0;
     state.error = undefined;
+    state.errorKind = undefined;
 
     // Start a progress poller that measures the directory size on disk.
     const progressInterval = setInterval(() => {
@@ -280,11 +325,13 @@ async function downloadModel(model: ModelSpec): Promise<void> {
 
   // All retries exhausted.
   const s = downloadStates.get(model.id);
+  const errorKind = classifyDownloadError(lastError);
   if (s) {
     s.status = 'error';
     s.error = lastError instanceof Error ? lastError.message : String(lastError);
+    s.errorKind = errorKind;
   }
-  getLogger().warn('EMBEDDING_DOWNLOAD', `All ${MAX_RETRIES} attempts failed for ${model.huggingfaceId}`);
+  getLogger().warn('EMBEDDING_DOWNLOAD', `All ${MAX_RETRIES} attempts failed for ${model.huggingfaceId} (kind=${errorKind})`);
   throw lastError ?? new Error('Download failed after all retries');
 }
 
@@ -305,6 +352,7 @@ function handleEmbeddingStatus(_req: Request, res: Response): void {
       sizeOnDiskMB: downloaded ? Math.round(getModelSizeMB(m) * 100) / 100 : 0,
       downloadStatus: state?.status ?? (downloaded ? 'complete' : 'not_started'),
       percentage: state?.percentage ?? (downloaded ? 100 : 0),
+      errorKind: state?.errorKind,
     };
   });
   const allDownloaded = models.every((m) => m.downloaded);
@@ -403,15 +451,19 @@ function handleEmbeddingProgress(req: Request, res: Response): void {
         totalMB: state?.totalMB ?? m.approxSizeMB,
         percentage: state?.percentage ?? (downloaded ? 100 : 0),
         error: state?.error,
+        errorKind: state?.errorKind,
       };
     });
     const allComplete = models.every((m) => m.status === 'complete');
     const hasError = models.some((m) => m.status === 'error');
+    // `unavailable` = at least one model failed because it could not be fetched
+    // from the endpoint. Drives the wizard's "continue without neural core" path.
+    const hasUnavailableError = models.some((m) => m.status === 'error' && m.errorKind === 'unavailable');
 
-    res.write('data: ' + JSON.stringify({ type: 'progress', models, allComplete, hasError, tier: getActiveEmbeddingTier() }) + '\n\n');
+    res.write('data: ' + JSON.stringify({ type: 'progress', models, allComplete, hasError, hasUnavailableError, tier: getActiveEmbeddingTier() }) + '\n\n');
 
     if (allComplete || hasError) {
-      res.write('data: ' + JSON.stringify({ type: 'done', allComplete, hasError }) + '\n\n');
+      res.write('data: ' + JSON.stringify({ type: 'done', allComplete, hasError, hasUnavailableError }) + '\n\n');
       clearInterval(interval);
       res.end();
     }

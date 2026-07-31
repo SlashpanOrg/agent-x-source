@@ -24,7 +24,7 @@ import PsychologyIcon from '@mui/icons-material/Psychology';
 import RadarIcon from '@mui/icons-material/Radar';
 import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
-import { config, providers as provApi, models as modelsApi, type AgentXConfig, type ProviderInfo, type ModelInfo, type BenchmarkRunResult } from '../api';
+import { config, providers as provApi, models as modelsApi, modelBenchmark, type AgentXConfig, type ProviderInfo, type ModelInfo, type BenchmarkRunResult, type BenchmarkGrade } from '../api';
 import {
   settingsTheme,
   settingsMonoSx,
@@ -50,6 +50,8 @@ interface ProfileEntry {
   providerName: string;
   apiKey: string;
   baseUrl?: string;
+  apiType?: string;
+  modelId?: string;
 }
 
 function ProfileDossier({
@@ -140,7 +142,7 @@ function ProfileDossier({
               </Box>
             )}
             <Typography sx={{ ...settingsMonoSx, fontSize: '0.52rem', color: settingsTheme.text.dim, mt: 0.4, letterSpacing: '0.5px' }}>
-              Provider · {profile.providerName}
+              Provider · {profile.providerName}{profile.apiType ? ` · ${profile.apiType}` : ''}
             </Typography>
           </Box>
           <Tooltip title={deleteTooltip} placement="left" arrow>
@@ -199,7 +201,7 @@ export function ProvidersPanel() {
   const [switching, setSwitching] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [showAddDialog, setShowAddDialog] = useState(false);
-  const [newProfile, setNewProfile] = useState({ label: '', providerId: '', apiKey: '', baseUrl: '', host: 'localhost', port: '' });
+  const [newProfile, setNewProfile] = useState({ label: '', providerId: '', apiKey: '', baseUrl: '', host: 'localhost', port: '', apiType: 'openai-compatible', modelId: '' });
   const [saving, setSaving] = useState(false);
 
   const [editingLabel, setEditingLabel] = useState<string | null>(null);
@@ -214,12 +216,16 @@ export function ProvidersPanel() {
   const [pickerLoading, setPickerLoading] = useState(false);
   const [pickerError, setPickerError] = useState('');
   const [pickerStep, setPickerStep] = useState<'select' | 'benchmark'>('select');
+  /** Cleared (benchmarked) models for the current picker profile's provider. */
+  const [pickerClearedModels, setPickerClearedModels] = useState<Map<string, { grade: BenchmarkGrade; percent: number }>>(new Map());
   const [benchmarkResult, setBenchmarkResult] = useState<BenchmarkRunResult | null>(null);
   const [benchmarkRunning, setBenchmarkRunning] = useState(false);
   const [limitedOverride, setLimitedOverride] = useState(false);
   const [standbyOverride, setStandbyOverride] = useState(false);
   const [scanRequested, setScanRequested] = useState(false);
   const [modelsTab, setModelsTab] = useState(0);
+  const [manualModelId, setManualModelId] = useState('');
+  const [showManualModelInput, setShowManualModelInput] = useState(false);
 
   const providerName = useCallback((id: string) => {
     return availableProviders.find(p => p.id === id)?.name ?? id;
@@ -245,7 +251,7 @@ export function ProvidersPanel() {
     Object.entries(providerConfigs).forEach(([provId, settings]) => {
       if (settings.profiles) {
         Object.entries(settings.profiles).forEach(([profId, prof]) => {
-          extracted.push({ id: profId, label: prof.label, providerId: provId, providerName: providerName(provId), apiKey: prof.apiKey ?? '', baseUrl: prof.baseUrl });
+          extracted.push({ id: profId, label: prof.label, providerId: provId, providerName: providerName(provId), apiKey: prof.apiKey ?? '', baseUrl: prof.baseUrl, apiType: prof.apiType, modelId: prof.modelId });
         });
       } else if (settings.configured && settings.apiKey) {
         extracted.push({ id: `${provId}-default`, label: providerName(provId), providerId: provId, providerName: providerName(provId), apiKey: settings.apiKey, baseUrl: settings.baseUrl });
@@ -266,7 +272,9 @@ export function ProvidersPanel() {
   const handleAddProfile = async () => {
     if (!newProfile.providerId || !newProfile.label) return;
     const sel = availableProviders.find(p => p.id === newProfile.providerId);
-    if (sel?.type !== 'local' && !newProfile.apiKey) return;
+    const isCustom = newProfile.providerId === 'custom';
+    if (sel?.type !== 'local' && !isCustom && !newProfile.apiKey) return;
+    if (isCustom && (!newProfile.apiKey || !newProfile.baseUrl)) return;
     setSaving(true);
     try {
       const isLocal = sel?.type === 'local';
@@ -279,11 +287,13 @@ export function ProvidersPanel() {
         isLocal ? 'no-api-key-required' : newProfile.apiKey,
         resolvedBaseUrl,
         false,
+        isCustom ? newProfile.apiType : undefined,
+        isCustom ? newProfile.modelId : undefined,
       );
       const updated = await config.get();
       setCfg(updated);
       setShowAddDialog(false);
-      setNewProfile({ label: '', providerId: '', apiKey: '', baseUrl: '', host: 'localhost', port: '' });
+      setNewProfile({ label: '', providerId: '', apiKey: '', baseUrl: '', host: 'localhost', port: '', apiType: 'openai-compatible', modelId: '' });
       openModelPicker({
         id: result.profileId,
         label: newProfile.label,
@@ -291,6 +301,8 @@ export function ProvidersPanel() {
         providerName: providerName(result.provider),
         apiKey: isLocal ? 'no-api-key-required' : newProfile.apiKey,
         baseUrl: resolvedBaseUrl,
+        apiType: isCustom ? newProfile.apiType : undefined,
+        modelId: isCustom ? newProfile.modelId : undefined,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to add profile');
@@ -337,7 +349,11 @@ export function ProvidersPanel() {
   const openModelPicker = async (profile: ProfileEntry) => {
     setPickingProfile(profile);
     setPickerModels([]);
-    setPickerSelectedModel(selectedModels[profile.id] || '');
+    const isCustom = profile.providerId === 'custom';
+    const preselected = selectedModels[profile.id] || (isCustom ? (profile.modelId ?? '') : '');
+    setPickerSelectedModel(preselected);
+    setManualModelId(preselected);
+    setShowManualModelInput(isCustom);
     setPickerError('');
     setPickerStep('select');
     setBenchmarkResult(null);
@@ -348,10 +364,29 @@ export function ProvidersPanel() {
     setModelPickerOpen(true);
 
     try {
-      const models = await provApi.models(profile.providerId);
+      const [models, cleared] = await Promise.all([
+        provApi.models(profile.providerId),
+        modelBenchmark.cleared(profile.providerId).catch(() => ({ models: [] as Array<{ modelId: string; grade: BenchmarkGrade; percent: number }> })),
+      ]);
       setPickerModels(models);
+      const clearedMap = new Map<string, { grade: BenchmarkGrade; percent: number }>();
+      for (const m of cleared.models) {
+        clearedMap.set(m.modelId, { grade: m.grade, percent: m.percent });
+      }
+      setPickerClearedModels(clearedMap);
+      if (models.length === 0 && isCustom && preselected) {
+        // Endpoint has no /models listing — keep the pre-filled manual model id.
+        setPickerError('');
+      }
     } catch (e) {
-      setPickerError(e instanceof Error ? e.message : 'Failed to load models');
+      const msg = e instanceof Error ? e.message : 'Failed to load models';
+      if (isCustom && preselected) {
+        // Custom endpoint may not support /models; allow manual entry instead of hard error.
+        setPickerError('');
+        setPickerModels([]);
+      } else {
+        setPickerError(msg);
+      }
     } finally {
       setPickerLoading(false);
     }
@@ -372,11 +407,30 @@ export function ProvidersPanel() {
     setPickerStep('select');
   };
 
-  const handleStartScan = () => {
+  const handleStartScan = async () => {
     if (!pickerSelectedModel) return;
     setBenchmarkResult(null);
     setLimitedOverride(false);
     setStandbyOverride(false);
+
+    // If this model already has a passing benchmark on disk, load the cached
+    // result and skip directly to confirmation (no re-scan needed).
+    const cleared = pickerClearedModels.get(pickerSelectedModel);
+    if (cleared && canProceedWithBenchmarkGrade(cleared.grade)) {
+      try {
+        const providerId = pickingProfile?.providerId ?? '';
+        const latest = await modelBenchmark.latest(providerId, pickerSelectedModel);
+        if (latest.result) {
+          setBenchmarkResult(latest.result);
+          // Move to the benchmark step so the grade and Save Model button are rendered.
+          setPickerStep('benchmark');
+          return;
+        }
+      } catch {
+        // Fall through to normal scan if cache read fails.
+      }
+    }
+
     setScanRequested(true);
     setPickerStep('benchmark');
   };
@@ -428,6 +482,8 @@ export function ProvidersPanel() {
       <Tabs
         value={modelsTab}
         onChange={(_, v) => setModelsTab(v)}
+        variant="scrollable"
+        scrollButtons={false}
         sx={{
           minHeight: 36, mb: 2,
           '& .MuiTab-root': {
@@ -556,6 +612,7 @@ export function ProvidersPanel() {
                 const provId = e.target.value;
                 const sel = availableProviders.find(p => p.id === provId);
                 const isLocal = sel?.type === 'local';
+                const isCustom = provId === 'custom';
                 const ep = isLocal
                   ? parseLocalEndpoint(sel?.defaultBaseUrl, provId)
                   : { host: 'localhost', port: '' };
@@ -563,14 +620,16 @@ export function ProvidersPanel() {
                   ...newProfile,
                   providerId: provId,
                   apiKey: isLocal ? 'no-api-key-required' : '',
-                  baseUrl: isLocal ? buildLocalBaseUrl(provId, ep.host, ep.port) : (sel?.defaultBaseUrl ?? ''),
+                  baseUrl: isLocal ? buildLocalBaseUrl(provId, ep.host, ep.port) : (isCustom ? '' : (sel?.defaultBaseUrl ?? '')),
                   host: ep.host,
                   port: ep.port,
+                  apiType: isCustom ? 'openai-compatible' : newProfile.apiType,
+                  modelId: isCustom ? '' : newProfile.modelId,
                 });
               }}>
               {availableProviders.map((p) => (
                 <MenuItem key={p.id} value={p.id} sx={{ fontSize: '0.75rem', ...settingsMonoSx }}>
-                  {p.name} {p.type === 'local' ? '[LOCAL]' : ''}
+                  {p.name} {p.type === 'local' ? '[LOCAL]' : ''}{p.id === 'custom' ? ' [BYO]' : ''}
                 </MenuItem>
               ))}
             </Select>
@@ -582,7 +641,39 @@ export function ProvidersPanel() {
           {(() => {
             const sel = availableProviders.find(p => p.id === newProfile.providerId);
             const isLocal = sel?.type === 'local';
+            const isCustom = newProfile.providerId === 'custom';
             if (!newProfile.providerId) return null;
+            if (isCustom) {
+              return (
+                <>
+                  <FormControl size="small" sx={settingsTextFieldSx}>
+                    <InputLabel>API Type</InputLabel>
+                    <Select
+                      value={newProfile.apiType}
+                      label="API Type"
+                      onChange={(e) => setNewProfile({ ...newProfile, apiType: e.target.value })}
+                    >
+                      <MenuItem value="openai-compatible" sx={{ fontSize: '0.75rem', ...settingsMonoSx }}>OpenAI-Compatible</MenuItem>
+                      <MenuItem value="anthropic" sx={{ fontSize: '0.75rem', ...settingsMonoSx }}>Anthropic Messages</MenuItem>
+                      <MenuItem value="google" sx={{ fontSize: '0.75rem', ...settingsMonoSx }}>Google Gemini</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <TextField size="small" label="Base URL" value={newProfile.baseUrl}
+                    onChange={(e) => setNewProfile({ ...newProfile, baseUrl: e.target.value })}
+                    placeholder="https://api.your-provider.com/v1"
+                    sx={settingsTextFieldSx} />
+                  <TextField size="small" label="API Key" type="password" value={newProfile.apiKey}
+                    onChange={(e) => setNewProfile({ ...newProfile, apiKey: e.target.value })}
+                    placeholder="sk-…"
+                    sx={settingsTextFieldSx} />
+                  <TextField size="small" label="Model ID (optional)" value={newProfile.modelId}
+                    onChange={(e) => setNewProfile({ ...newProfile, modelId: e.target.value })}
+                    placeholder="e.g. gpt-4o, claude-sonnet-4, gemini-2.5-pro"
+                    helperText="Leave blank if your endpoint lists models via /models. Enter a model ID only if the endpoint doesn't support model listing."
+                    sx={settingsTextFieldSx} />
+                </>
+              );
+            }
             if (isLocal) {
               return (
                 <Box sx={{ display: 'flex', gap: 1.5 }}>
@@ -651,13 +742,42 @@ export function ProvidersPanel() {
           ) : pickerError ? (
             <Alert severity="error" sx={{ bgcolor: `${alphaColor(settingsTheme.accent.alert, '12')}`, fontSize: '0.7rem', ...settingsMonoSx }}>{pickerError}</Alert>
           ) : pickerModels.length === 0 ? (
-            <Typography sx={{ ...settingsMonoSx, fontSize: '0.65rem', color: settingsTheme.text.dim, py: 2 }}>
-              No models available for this provider.
-            </Typography>
+            <Box sx={{ py: 2 }}>
+              <Typography sx={{ ...settingsMonoSx, fontSize: '0.65rem', color: settingsTheme.text.dim, mb: 1.5 }}>
+                {showManualModelInput
+                  ? 'This provider did not return a model list. Enter a model ID manually below.'
+                  : 'No models available for this provider.'}
+              </Typography>
+              {showManualModelInput && (
+                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                  <TextField
+                    size="small"
+                    label="Model ID"
+                    value={manualModelId}
+                    onChange={(e) => {
+                      setManualModelId(e.target.value);
+                      setPickerSelectedModel(e.target.value);
+                    }}
+                    placeholder="e.g. gpt-4o, claude-sonnet-4, gemini-2.5-pro"
+                    sx={{ ...settingsTextFieldSx, flex: 1 }}
+                  />
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    disabled={!manualModelId.trim()}
+                    onClick={() => handleModelSelect(manualModelId.trim())}
+                    sx={settingsBtnGhostSx}
+                  >
+                    Use
+                  </Button>
+                </Box>
+              )}
+            </Box>
           ) : (
             <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 1, maxHeight: 360, overflow: 'auto' }}>
               {pickerModels.map((m) => {
                 const selected = pickerSelectedModel === m.id;
+                const cleared = pickerClearedModels.get(m.id);
                 return (
                   <Box
                     key={m.id}
@@ -696,9 +816,47 @@ export function ProvidersPanel() {
                         </Typography>
                       )}
                     </Box>
+                    {cleared && (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
+                        <Typography component="span" sx={{ ...settingsMonoSx, fontSize: '0.48rem', fontWeight: 700, color: cleared.grade === 'ELITE' || cleared.grade === 'CLEARED' ? settingsTheme.accent.signal : settingsTheme.accent.amber, textTransform: 'uppercase' }}>
+                          {cleared.grade}
+                        </Typography>
+                        <Typography component="span" sx={{ ...settingsMonoSx, fontSize: '0.48rem', color: settingsTheme.text.dim }}>
+                          · {cleared.percent}%
+                        </Typography>
+                        <Typography component="span" sx={{ ...settingsMonoSx, fontSize: '0.42rem', color: settingsTheme.text.dim, ml: 0.3 }}>
+                          ✓ cleared
+                        </Typography>
+                      </Box>
+                    )}
                   </Box>
                 );
               })}
+            </Box>
+          )}
+
+          {showManualModelInput && !pickerLoading && pickerModels.length > 0 && (
+            <Box sx={{ mt: 1.5, display: 'flex', gap: 1, alignItems: 'center' }}>
+              <TextField
+                size="small"
+                label="Or enter model ID manually"
+                value={manualModelId}
+                onChange={(e) => {
+                  setManualModelId(e.target.value);
+                  setPickerSelectedModel(e.target.value);
+                }}
+                placeholder="e.g. gpt-4o, claude-sonnet-4"
+                sx={{ ...settingsTextFieldSx, flex: 1 }}
+              />
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={!manualModelId.trim()}
+                onClick={() => handleModelSelect(manualModelId.trim())}
+                sx={settingsBtnGhostSx}
+              >
+                Use
+              </Button>
             </Box>
           )}
 
@@ -741,7 +899,9 @@ export function ProvidersPanel() {
                 onClick={handleStartScan}
                 sx={settingsBtnPrimarySx}
               >
-                Run Clearance Scan
+                {pickerSelectedModel && pickerClearedModels.get(pickerSelectedModel) && canProceedWithBenchmarkGrade(pickerClearedModels.get(pickerSelectedModel)!.grade)
+                  ? 'Use Cached Clearance'
+                  : 'Run Clearance Scan'}
               </Button>
             </Box>
           )}

@@ -4,25 +4,71 @@ import Typography from '@mui/material/Typography';
 import CircularProgress from '@mui/material/CircularProgress';
 import { colors, alphaColor, MONO } from '../../theme';
 import { sessions } from '../../api';
-import { mapHistoryToUiMessages } from '../../chat/restoreMessages';
 import { sanitizeVoiceDisplayText } from '../../voice/sanitize-display-text';
-import type { UIMessage } from '../../chat/types';
+import { parseCallDivider, readCallDividerMeta } from '@agentx/shared/browser';
+import type { ChatMessage } from '../../api';
 
 const VOICE_SESSION_ID = '__channel__:voice';
 /** Default window — matches chat recycler spirit, sized for the voice card. */
 export const VOICE_TRANSCRIPT_PAGE = 25;
 const VOICE_TRANSCRIPT_WINDOW_MAX = VOICE_TRANSCRIPT_PAGE * 2;
 
-function messageText(m: UIMessage): string {
-  const direct = (m.content || '').trim();
-  const raw = direct || (Array.isArray(m.parts)
-    ? m.parts
-      .filter((p) => p.type === 'text' && typeof (p as { content?: string }).content === 'string')
-      .map((p) => String((p as { content?: string }).content || ''))
-      .join('')
-      .trim()
-    : '');
-  return sanitizeVoiceDisplayText(raw);
+/** A transcript line — either a spoken turn or a divider. */
+interface TranscriptLine {
+  id: string;
+  role: 'user' | 'assistant' | 'divider';
+  text: string;
+  /** Divider variant (daytime / time / duration / new_conversation) — only for divider lines. */
+  dividerVariant?: string;
+  /** Raw message — used for dedup and older-page logic. */
+  raw: ChatMessage;
+}
+
+/**
+ * Map raw chat messages into transcript lines, preserving divider rows
+ * (role 'system' with [call_divider:...] content or metadata.callDivider).
+ * Spoken turns are filtered to user/assistant with non-empty sanitized text.
+ */
+function mapTranscriptLines(messages: ChatMessage[]): TranscriptLine[] {
+  const lines: TranscriptLine[] = [];
+  for (const m of messages) {
+    const id = m.id || crypto.randomUUID();
+    const content = (m.content || '').trim();
+
+    // Divider rows: standalone system messages with [call_divider:...] content
+    // or metadata.callDivider. These are persisted by the backend — never
+    // computed on the frontend.
+    const divider = parseCallDivider(content, m.metadata);
+    if (divider && (/^\[call_divider:/i.test(content) || m.role === 'system')) {
+      lines.push({
+        id,
+        role: 'divider',
+        text: divider.label,
+        dividerVariant: divider.variant,
+        raw: m,
+      });
+      continue;
+    }
+
+    // Also handle dividers attached as metadata on spoken turns (the
+    // call-divider-before-turn pattern). Emit a divider line first.
+    const beforeDivider = readCallDividerMeta(m.metadata);
+    if (beforeDivider && (m.role === 'user' || m.role === 'assistant')) {
+      lines.push({
+        id: `${id}-div`,
+        role: 'divider',
+        text: beforeDivider.label,
+        dividerVariant: beforeDivider.variant,
+        raw: m,
+      });
+    }
+
+    if (m.role !== 'user' && m.role !== 'assistant') continue;
+    const text = sanitizeVoiceDisplayText(content);
+    if (!text) continue;
+    lines.push({ id, role: m.role, text, raw: m });
+  }
+  return lines;
 }
 
 /**
@@ -41,7 +87,7 @@ export function VoiceTranscriptPanel({
   /** Persona name for agent lines (defaults to "Agent"). */
   agentLabel?: string;
 }) {
-  const [messages, setMessages] = useState<UIMessage[]>([]);
+  const [messages, setMessages] = useState<TranscriptLine[]>([]);
   const [hasOlder, setHasOlder] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -65,9 +111,7 @@ export function VoiceTranscriptPanel({
     if (!soft) setLoading(true);
     try {
       const page = await sessions.getMessagesPage(VOICE_SESSION_ID, { limit: VOICE_TRANSCRIPT_PAGE });
-      const mapped = mapHistoryToUiMessages(page.messages).filter(
-        (m) => (m.role === 'user' || m.role === 'assistant') && messageText(m),
-      );
+      const mapped = mapTranscriptLines(page.messages);
       setMessages(mapped);
       setHasOlder(page.hasMore || mapped.length >= VOICE_TRANSCRIPT_PAGE);
       liveCapRef.current = true;
@@ -118,9 +162,7 @@ export function VoiceTranscriptPanel({
         limit: VOICE_TRANSCRIPT_PAGE,
         before: first.id,
       });
-      const older = mapHistoryToUiMessages(page.messages).filter(
-        (m) => (m.role === 'user' || m.role === 'assistant') && messageText(m),
-      );
+      const older = mapTranscriptLines(page.messages);
       if (!older.length) {
         setHasOlder(false);
         return;
@@ -152,11 +194,22 @@ export function VoiceTranscriptPanel({
   const liveAgentClean = sanitizeVoiceDisplayText(liveAgent || '');
 
   useEffect(() => {
-    if (liveUserClean) setPendingUser(liveUserClean);
+    if (liveUserClean) {
+      setPendingUser(liveUserClean);
+    } else {
+      // Live user text cleared (phase left recording) — drop the stale partial.
+      // The history reload will show the persisted user message if the turn succeeded.
+      setPendingUser('');
+    }
   }, [liveUserClean]);
 
   useEffect(() => {
-    if (liveAgentClean) setPendingAgent(liveAgentClean);
+    if (liveAgentClean) {
+      setPendingAgent(liveAgentClean);
+    } else {
+      // Live agent text cleared — drop the stale agent partial.
+      setPendingAgent('');
+    }
   }, [liveAgentClean]);
 
   // Avoid duplicate lines when history already includes the same utterance
@@ -164,14 +217,14 @@ export function VoiceTranscriptPanel({
   const lastUserText = (() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const m = messages[i]!;
-      if (m.role === 'user') return messageText(m);
+      if (m.role === 'user') return m.text;
     }
     return '';
   })();
   const lastAgentText = (() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const m = messages[i]!;
-      if (m.role === 'assistant') return messageText(m);
+      if (m.role === 'assistant') return m.text;
     }
     return '';
   })();
@@ -243,10 +296,10 @@ export function VoiceTranscriptPanel({
 
       <Box
         ref={scrollerRef}
+        className="ax-scroll-y"
         sx={{
           flex: 1,
           minHeight: 0,
-          overflowY: 'auto',
           px: 1.15,
           py: 0.85,
           display: 'flex',
@@ -296,12 +349,16 @@ export function VoiceTranscriptPanel({
           </Typography>
         ) : (
           messages.map((m) => (
-            <LogLine
-              key={m.id}
-              role={m.role === 'user' ? 'operator' : 'agent'}
-              text={messageText(m)}
-              agentLabel={agentLabel}
-            />
+            m.role === 'divider' ? (
+              <DividerLine key={m.id} label={m.text} variant={m.dividerVariant} />
+            ) : (
+              <LogLine
+                key={m.id}
+                role={m.role === 'user' ? 'operator' : 'agent'}
+                text={m.text}
+                agentLabel={agentLabel}
+              />
+            )
           ))
         )}
 
@@ -360,6 +417,59 @@ function LogLine({
       }}>
         {text}
       </Typography>
+    </Box>
+  );
+}
+
+/**
+ * Divider line — a centered horizontal rule with a label, rendered from a
+ * persisted message-table row (role 'system', content [call_divider:…]).
+ * Never computed on the frontend; the backend inserts the row.
+ */
+function DividerLine({
+  label,
+  variant,
+}: {
+  label: string;
+  variant?: string;
+}) {
+  const isNewConversation = variant === 'new_conversation';
+  const accentColor = isNewConversation ? colors.accent.green : colors.text.dim;
+  return (
+    <Box sx={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: 0.75,
+      my: 0.5,
+      width: '100%',
+    }}>
+      <Box sx={{
+        flex: 1,
+        height: '1px',
+        bgcolor: alphaColor(accentColor, '30'),
+      }} />
+      <Typography sx={{
+        fontFamily: MONO,
+        fontSize: '0.45rem',
+        letterSpacing: '0.1em',
+        color: accentColor,
+        textTransform: 'uppercase',
+        whiteSpace: 'nowrap',
+        ...(isNewConversation ? {
+          px: 0.75,
+          py: 0.15,
+          border: `1px solid ${alphaColor(accentColor, '40')}`,
+          borderRadius: '999px',
+          bgcolor: alphaColor(accentColor, '8'),
+        } : {}),
+      }}>
+        {label}
+      </Typography>
+      <Box sx={{
+        flex: 1,
+        height: '1px',
+        bgcolor: alphaColor(accentColor, '30'),
+      }} />
     </Box>
   );
 }

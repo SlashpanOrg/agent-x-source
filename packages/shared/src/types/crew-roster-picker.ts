@@ -1,6 +1,6 @@
 import type { CrewSuggestionEvaluation } from './crew-catalog.js';
 
-export type CrewRosterPickerStatus = 'pending' | 'answered' | 'skipped';
+export type CrewRosterPickerStatus = 'pending' | 'answered' | 'skipped' | 'expired';
 
 /** Persisted in-chat crew roster picker (assistant message part). */
 export interface CrewRosterPickerRecord {

@@ -91,6 +91,7 @@ function buildChronologicalLog(
   parts: PreviewPart[],
   assistantMessages: ChatMessage[],
   liveActivity: ChildSessionLiveActivity | null | undefined,
+  stableTsMap: Map<string, number>,
 ): LogEntry[] {
   const entries: LogEntry[] = [];
   const seenToolIds = new Set<string>();
@@ -99,6 +100,17 @@ function buildChronologicalLog(
     const cleaned = text.trim();
     if (!cleaned) return;
     entries.push({ id: `log-${seq++}`, kind, text: cleaned, ts });
+  };
+
+  // Helper: get a stable timestamp for live entries. The first time we see a
+  // given key (tool id or content hash), cache Date.now(). On subsequent
+  // re-renders/polls, return the cached value so timestamps don't update.
+  const stableTs = (key: string): number => {
+    const existing = stableTsMap.get(key);
+    if (existing != null) return existing;
+    const now = Date.now();
+    stableTsMap.set(key, now);
+    return now;
   };
 
   // Persistable parts — already roughly chronological from the store.
@@ -132,15 +144,24 @@ function buildChronologicalLog(
     if (t.id) seenToolIds.add(t.id);
     const mark = t.status === 'running' ? '…' : t.status === 'done' ? '✓' : t.status === 'error' ? '✕' : '→';
     const detail = t.streamOutput?.slice(-120) || (t.result ? String(t.result).slice(0, 120) : '');
-    push('tool', `${mark} ${t.name}${detail ? ` — ${clip(detail, 160)}` : ''}`, Date.now());
+    const toolKey = t.id ? `tool:${t.id}` : `tool:${t.name}:${seq}`;
+    push('tool', `${mark} ${t.name}${detail ? ` — ${clip(detail, 160)}` : ''}`, stableTs(toolKey));
   }
 
   // Live thinking / stream (SSE) — append after persisted timeline.
   if (liveActivity?.thinking?.trim()) {
-    push('thought', clip(stripToolNoise(liveActivity.thinking.slice(-900)), 320), Date.now());
+    const content = clip(stripToolNoise(liveActivity.thinking.slice(-900)), 320);
+    if (content) {
+      const hash = content.slice(0, 60);
+      push('thought', content, stableTs(`think:${hash}`));
+    }
   }
   if (liveActivity?.streamContent?.trim()) {
-    push('thought', clip(stripToolNoise(liveActivity.streamContent), 320), Date.now());
+    const content = clip(stripToolNoise(liveActivity.streamContent), 320);
+    if (content) {
+      const hash = content.slice(0, 60);
+      push('thought', content, stableTs(`stream:${hash}`));
+    }
   }
 
   // Persisted assistant turns (final write-ups) when not already covered by live stream.
@@ -165,9 +186,15 @@ export function ChildSessionDrawer({ open, state, parentSessionTitle, liveActivi
   const [error, setError] = useState<string | null>(null);
   const [taskExpanded, setTaskExpanded] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+  // Cache stable timestamps for live entries so they don't update on every
+  // poll cycle. Keyed by tool ID or content hash. Cleared when the drawer
+  // opens for a different child session.
+  const stableTsMapRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     if (!open || !state?.childSessionId) return;
+    // Reset stable timestamp cache for the new session.
+    stableTsMapRef.current = new Map();
     let cancelled = false;
     let first = true;
 
@@ -210,7 +237,7 @@ export function ChildSessionDrawer({ open, state, parentSessionTitle, liveActivi
   }, [messages, state?.label]);
 
   const logEntries = useMemo(
-    () => buildChronologicalLog(parts, assistantMessages, liveActivity),
+    () => buildChronologicalLog(parts, assistantMessages, liveActivity, stableTsMapRef.current),
     [parts, assistantMessages, liveActivity],
   );
 

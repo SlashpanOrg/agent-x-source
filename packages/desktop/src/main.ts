@@ -2,12 +2,9 @@ import { app, BrowserWindow, Tray, Menu, Notification, globalShortcut, ipcMain, 
 import { writeFileSync } from 'node:fs';
 import { join, basename } from 'path';
 import { existsSync, createWriteStream, unlinkSync, mkdtempSync, readFileSync } from 'fs';
-import { spawn, execFile, execFileSync } from 'child_process';
-import { promisify } from 'util';
+import { spawn, execFileSync } from 'child_process';
 import { tmpdir, totalmem } from 'os';
 import { AgentRuntime, createDesktopRuntimeOptions, DEFAULT_PORT } from '@agentx/runtime';
-
-const execFileAsync = promisify(execFile);
 
 const REPO = 'that-rookie-dev/agent-x';
 
@@ -305,58 +302,49 @@ function isExternalHttpUrl(url: string): boolean {
   }
 }
 
-/** Open URL as a new tab in existing Google Chrome (macOS Privacy → Automation). */
-async function openInExistingChromeTab(url: string): Promise<void> {
-  if (process.platform === 'darwin') {
-    const escaped = url.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const script = [
-      'tell application "Google Chrome"',
-      '  if it is running then',
-      '    activate',
-      '    if (count of windows) = 0 then make new window',
-      `    tell window 1 to make new tab with properties {URL:"${escaped}"}`,
-      '  else',
-      `    open location "${escaped}"`,
-      '    activate',
-      '  end if',
-      'end tell',
-    ].join('\n');
-    try {
-      await execFileAsync('osascript', ['-e', script]);
-      return;
-    } catch {
-      await execFileAsync('open', ['-a', 'Google Chrome', url]);
-      return;
-    }
-  }
-  if (process.platform === 'win32') {
-    await execFileAsync('cmd', ['/c', 'start', '', url]);
-    return;
-  }
-  await shell.openExternal(url);
-}
-
 async function openExternalLink(url: string): Promise<boolean> {
   if (!isExternalHttpUrl(url)) return false;
+  // Always use shell.openExternal — this opens the URL in the user's
+  // default system browser (Safari, Chrome, Firefox, Arc, etc.) as
+  // configured in OS settings. We deliberately do NOT hardcode Chrome
+  // or try to reuse an existing Chrome window, because that overrides
+  // the user's browser choice and breaks OAuth flows for non-Chrome users.
   try {
-    // Prefer a new tab in the already-running Google Chrome.
-    // Avoids MCP/OAuth flows spawning a separate Chrome app instance.
-    await openInExistingChromeTab(url);
+    await shell.openExternal(url);
     return true;
   } catch (err) {
-    console.error('openExternal (Chrome tab) failed, falling back', err);
-    try {
-      await shell.openExternal(url);
-      return true;
-    } catch (fallbackErr) {
-      console.error('openExternal failed', fallbackErr);
-      return false;
-    }
+    console.error('openExternal failed:', err);
+    return false;
   }
+}
+
+function createObservabilityWindow(url: string): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 900,
+    minHeight: 600,
+    title: 'Agent-X Observability',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      preload: join(__dirname, 'preload.js'),
+    },
+  });
+  void win.loadURL(url);
+  return win;
 }
 
 function attachExternalLinkHandlers(win: BrowserWindow, appOrigin: string): void {
   win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.origin === appOrigin && parsed.pathname.startsWith('/observability')) {
+        createObservabilityWindow(url);
+        return { action: 'deny' };
+      }
+    } catch { /* invalid URL, fall through */ }
     if (isExternalHttpUrl(url)) {
       void openExternalLink(url);
     }
@@ -669,6 +657,59 @@ ipcMain.handle('window:openInternal', async (_event, url: string) => {
   const target = url.startsWith('http') ? url : `http://localhost:${PORT}${url.startsWith('/') ? '' : '/'}${url}`;
   await internal.loadURL(target);
   return true;
+});
+
+// ==================== Print to PDF (vector) ====================
+
+/**
+ * Render an HTML string to a vector PDF using Chromium's native print engine.
+ *
+ * This produces selectable text, crisp shapes, and CSS-controlled page breaks
+ * — far superior to html2canvas rasterization.  The HTML is loaded into an
+ * offscreen BrowserWindow, printed, and the window is destroyed.
+ *
+ * Returns the PDF as a Uint8Array (Buffer) that the renderer writes to disk
+ * via the existing `file:writeBytes` IPC channel.
+ */
+ipcMain.handle('print:htmlToPdf', async (_event, html: string) => {
+  if (!html || typeof html !== 'string') {
+    return { ok: false, error: 'html-required' };
+  }
+
+  const printWindow = new BrowserWindow({
+    width: 800,
+    height: 1200,
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+      offscreen: true,
+    },
+  });
+
+  try {
+    // Load the HTML string via a data URL so no server round-trip is needed.
+    // Using base64 encoding avoids issues with special characters in the HTML.
+    const encoded = Buffer.from(html, 'utf-8').toString('base64');
+    await printWindow.loadURL(`data:text/html;base64,${encoded}`);
+
+    // Wait a tick for fonts/layout to settle
+    await new Promise((r) => setTimeout(r, 200));
+
+    const pdfBuffer = await printWindow.webContents.printToPDF({
+      pageSize: 'A4',
+      margins: { top: 24, bottom: 24, left: 24, right: 24 },
+      printBackground: true,
+      preferCSSPageSize: false,
+    });
+
+    return { ok: true, data: new Uint8Array(pdfBuffer) };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg };
+  } finally {
+    printWindow.destroy();
+  }
 });
 
 // ==================== App Lifecycle ====================

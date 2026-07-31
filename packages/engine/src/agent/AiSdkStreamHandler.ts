@@ -638,4 +638,64 @@ export function createAiSdkStreamHandler(
   };
 }
 
+/** Default idle window before a `fullStream` iterator is treated as wedged. */
+export const STREAM_IDLE_TIMEOUT_MS = 45_000;
+
+export interface StreamWatchdogOutcome {
+  /** True if the stream produced no chunk for longer than the idle timeout. */
+  stalled: boolean;
+}
+
+/**
+ * Consumes an AI SDK `fullStream` async iterable with an idle-timeout watchdog.
+ *
+ * Individual tool executions already enforce their own hard timeout inside
+ * ToolExecutor (see ToolExecutor.execute's Promise.race), so under normal
+ * conditions the stream should never go silent for more than a few tens of
+ * seconds even while a tool runs. If the provider connection drops mid-turn
+ * (or a tool call gets orphaned below the ToolExecutor layer), the stream
+ * simply stops emitting new chunks — the `for await` loop would otherwise
+ * hang indefinitely with the model (and the user) never told anything is
+ * wrong, while some outer layer may silently restart the entire turn from
+ * scratch. This watchdog turns that silent hang into a fast, explicit,
+ * single failure instead.
+ */
+export async function consumeStreamWithWatchdog<T>(
+  stream: AsyncIterable<T>,
+  onChunk: (chunk: T) => void,
+  idleTimeoutMs: number = STREAM_IDLE_TIMEOUT_MS,
+): Promise<StreamWatchdogOutcome> {
+  const iterator = stream[Symbol.asyncIterator]();
+  for (;;) {
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let next: Promise<IteratorResult<T>> | undefined;
+    try {
+      const idle = new Promise<'idle'>((resolve) => {
+        idleTimer = setTimeout(() => resolve('idle'), idleTimeoutMs);
+      });
+      next = iterator.next();
+      const raced = await Promise.race([next, idle]);
+
+      if (raced === 'idle') {
+        // Best-effort, fire-and-forget cleanup: a generator suspended on an
+        // unresolvable await (e.g. a dead network stream) will never actually
+        // settle a `.return()` call either, so we must NOT await it here — that
+        // would just trade one infinite hang for another. Let it resolve (or
+        // never resolve) in the background; we've already given up on this stream.
+        void iterator.return?.(undefined)?.catch(() => { /* ignore */ });
+        return { stalled: true };
+      }
+      if (raced.done) {
+        return { stalled: false };
+      }
+      onChunk(raced.value);
+    } finally {
+      clearTimeout(idleTimer);
+      // Avoid unhandled rejections when the idle timer wins the race and the
+      // pending .next() later rejects.
+      next?.catch(() => { /* ignored */ });
+    }
+  }
+}
+
 export type { PartRecord, StreamState };

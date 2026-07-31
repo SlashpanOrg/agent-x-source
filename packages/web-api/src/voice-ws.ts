@@ -1,7 +1,7 @@
-import type { Server } from 'node:http';
+import type { Server, IncomingMessage } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { VoiceService, WebSocketVoiceTransport, mergeVoiceConfig, getPersonaStore } from '@agentx/engine';
+import { VoiceService, WebSocketVoiceTransport, mergeVoiceConfig, getPersonaStore, startAppSpan } from '@agentx/engine';
 import { XaiRealtimeEngine } from './voice/engines/XaiRealtimeEngine.js';
 import type { VoiceEngineSession } from './voice/engines/types.js';
 import { VoiceStreamSpeakPipeline, VoiceTurnTimingTracker } from './voice-turn-tts.js';
@@ -25,6 +25,7 @@ import {
 import { validateVoiceWebSocketConnection } from './auth.js';
 import { ensureSubscribed } from './ws.js';
 import { registerWebSocketRoute } from './ws-upgrade-router.js';
+import { metricsRegistry } from './metrics/MetricsRegistry.js';
 import { getEngine, createAgent, destroyAgent, setCurrentClientSituation, hydrateAgentRecentHistory } from './engine.js';
 import { runAgentTurnAsync, VOICE_TURN_TIMEOUT_MS, VOICE_TURN_MAX_MS, isCrewPrivateSessionRecord } from './chat-helpers.js';
 import { getVoiceService, resetVoiceService } from './voice-runtime.js';
@@ -35,6 +36,10 @@ import {
   getLogger,
   VOICE_PERMISSION_TIMEOUT_MS,
   VOICE_PERMISSION_TIMEOUT_INSTRUCTION,
+  buildNewConversationDividerMeta,
+  encodeCallDividerContent,
+  resetCallDividerClock,
+  isCrewVoiceSessionId,
 } from '@agentx/shared';
 import type { ProviderId, QuestionnairePayload } from '@agentx/shared';
 import { normalizeVoiceAssistantContent } from './voice-speakable.js';
@@ -43,12 +48,15 @@ import type { ClientSituation } from '@agentx/shared';
 import { updateDuplexEndpointing } from './voice/duplex-endpointing.js';
 import { resolveCrewPrivateHostForAgent } from './host-crew-session.js';
 import { seedCallDividerClockFromStore } from './voice/seed-call-divider-clock.js';
+import { getCrewVoiceProfile } from './crew-voice-profiles.js';
 
 const SAMPLE_RATE = 16_000;
 /** Minimum interval between streaming STT preview passes (PTT + duplex). */
 const STT_PREVIEW_INTERVAL_MS = 200;
-/** Continuous silence after spoken words before auto-send in duplex mode. */
-export const DUPLEX_END_SILENCE_MS = 2_000;
+/** Continuous silence after spoken words before auto-send in duplex mode.
+ * Local engine uses Silero VAD which is fast and accurate — 900ms is enough.
+ * xAI realtime has server-side VAD with its own endpointing. */
+export const DUPLEX_END_SILENCE_MS = 900;
 /** Minimum gap between duplicate error frames to the client. */
 const DUPLEX_ERROR_COOLDOWN_MS = 8_000;
 /** PTT shorter than this is treated as accidental (mis-click). */
@@ -110,6 +118,22 @@ interface VoiceWsSession {
   sttQueue?: Promise<unknown>;
   /** True while finishTurn owns the mic buffer — skip new STT previews. */
   turnFinishing?: boolean;
+  /**
+   * Dashboard voice activation mode:
+   * - 'continue' (default): hydrate agent with recent transcript history.
+   * - 'new': insert a new_conversation divider row and start the agent fresh
+   *   (no history hydration). The transcript UI still shows prior messages.
+   * Only meaningful for the dashboard voice-only session (__channel__:voice).
+   */
+  conversationMode?: 'continue' | 'new';
+  /** True once the conversationMode has been consumed by ensureChatSessionActive. */
+  conversationModeApplied?: boolean;
+  /**
+   * Per-crew voice override for crew calls (voice:{textSessionId} sessions).
+   * When set, the local TTS engine uses this Kokoro voice ID instead of the
+   * global config. Set from the crew-voice-profiles.json store at session start.
+   */
+  crewVoiceId?: string;
 }
 
 const activeSessions = new Map<WebSocket, VoiceWsSession>();
@@ -148,8 +172,11 @@ async function speakSystemLine(session: VoiceWsSession, line: string): Promise<v
   const synthId = randomUUID();
   session.activeSynthId = synthId;
   try {
-    const stream = await service.synthesizeStreamText(line, { requestId: synthId });
-    for (const chunk of stream.chunks) {
+    const stream = await service.synthesizeStreamText(line, {
+      requestId: synthId,
+      ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
+    });
+    for await (const chunk of stream.chunks) {
       if (session.activeSynthId !== stream.requestId) break;
       const audio = Buffer.from(chunk.pcmBase64, 'base64');
       await sendSessionAudio(session, audio, chunk.sampleRate, false);
@@ -361,16 +388,74 @@ export function setupVoiceWebSocket(_server: Server): void {
   });
   registerWebSocketRoute('/ws/voice', voiceWss);
 
-  voiceWss.on('connection', (ws) => {
+  voiceWss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+    // Observability: open a root span for this voice WS connection (trace root).
+    const wsUrl = req.url ?? '';
+    const sessionIdMatch = wsUrl.match(/[?&]sessionId=([^&]+)/);
+    const wsSessionId = sessionIdMatch ? decodeURIComponent(sessionIdMatch[1]!) : '';
+    const clientIdMatch = wsUrl.match(/[?&]clientId=([^&]+)/);
+    const wsClientId = clientIdMatch ? decodeURIComponent(clientIdMatch[1]!) : '';
+    const protocol = req.headers['sec-websocket-protocol'] ?? '';
+    const { span: connectSpan, withContext } = startAppSpan('ws.connection', 'websocket', 'websocket_connection', {
+      'ws.type': 'voice',
+      'ws.protocol': protocol,
+      'ws.url': wsUrl,
+      ...(wsSessionId ? { 'ws.session.id': wsSessionId } : {}),
+      ...(wsClientId ? { 'ws.client.id': wsClientId } : {}),
+    });
+    metricsRegistry.incrementCounter('ws_connections_total', { type: 'voice' });
+
+    // WebSocket keepalive: send a ping every 20s. Without this, long xAI
+    // responses with brief audio gaps (thinking between sentences) can let
+    // the connection idle out at the OS/NAT level (~60-120s), causing the
+    // "reconnecting" symptom during long TTS playback.
+    let missedPongs = 0;
+    const pingTimer = setInterval(() => {
+      if (ws.readyState !== 1 /* WebSocket.OPEN */) return;
+      if (missedPongs >= 3) {
+        getLogger().warn('VOICE_WS', 'Closing stale voice WebSocket (3 missed pongs)');
+        try { ws.terminate(); } catch { /* ignore */ }
+        return;
+      }
+      missedPongs += 1;
+      try { ws.ping(); } catch { /* ignore */ }
+    }, 20_000);
+    ws.on('pong', () => { missedPongs = 0; });
+    const clearPing = () => clearInterval(pingTimer);
+    ws.on('close', clearPing);
+    ws.on('error', clearPing);
+
     // Register handlers BEFORE sending connected — a client that sends
     // session_start on open can otherwise race and drop the first frame.
     ws.on('message', (data, isBinary) => {
-      void handleVoiceMessage(ws, data, isBinary);
+      withContext(() => {
+        const rawSize = data.toString().length;
+        metricsRegistry.incrementCounter('ws_messages_total', { type: 'voice', direction: 'inbound' });
+        const { span: msgSpan } = startAppSpan('ws.message', 'websocket', 'websocket_message', {
+          'ws.message.size': rawSize,
+          'ws.message.type': isBinary ? 'binary' : 'text',
+        });
+        try {
+          void handleVoiceMessage(ws, data, isBinary);
+        } finally {
+          msgSpan.end();
+        }
+      });
     });
-    ws.on('close', () => {
+    ws.on('error', (err: Error) => {
+      connectSpan.recordError(err.message);
+    });
+    ws.on('close', (code: number, reason: Buffer) => {
       cleanupSession(ws);
+      // Observability: end the root span with disconnect reason
+      const reasonText = reason.toString();
+      connectSpan.setAttribute('ws.disconnect.reason', `${code}${reasonText ? `: ${reasonText}` : ''}`);
+      connectSpan.end();
     });
-    ws.send(JSON.stringify({ type: 'connected' }));
+    withContext(() => {
+      ws.send(JSON.stringify({ type: 'connected' }));
+      metricsRegistry.incrementCounter('ws_messages_total', { type: 'voice', direction: 'outbound' });
+    });
   });
 }
 
@@ -451,7 +536,7 @@ async function handleVoiceMessage(ws: WebSocket, data: WebSocket.RawData, isBina
       }
       break;
     case 'audio_end':
-      if (session) await finishTurn(ws, session);
+      if (session) await finishTurn(ws, session, { preSttMs: Number(msg.preSttMs) || 0 });
       break;
     case 'audio_cancel':
       if (session) await discardAccidentalPttRecording(ws, session);
@@ -527,7 +612,10 @@ async function handleVoiceMessage(ws: WebSocket, data: WebSocket.RawData, isBina
   }
 }
 
-async function ensureChatSessionActive(chatSessionId: string): Promise<boolean> {
+async function ensureChatSessionActive(
+  chatSessionId: string,
+  conversationMode: 'continue' | 'new' = 'continue',
+): Promise<boolean> {
   const eng = getEngine();
   let peek = eng.sessionManager.getSessionById(chatSessionId);
 
@@ -554,11 +642,40 @@ async function ensureChatSessionActive(chatSessionId: string): Promise<boolean> 
   }
   if (!peek) return false;
 
+  // 'new' mode: persist a new_conversation divider row so the transcript UI
+  // can render the boundary. The divider is a real message-table entry (role
+  // 'system', content [call_divider:new_conversation]…) — never computed on
+  // the frontend. hydrateAgentRecentHistory already filters [call_divider:
+  // rows, so the agent won't see it or any prior history in 'new' mode.
+  if (conversationMode === 'new' && chatSessionId === '__channel__:voice') {
+    try {
+      const store = eng.sessionManager.getStorageAdapter();
+      if (store?.insertMessage) {
+        const dividerMeta = buildNewConversationDividerMeta();
+        store.insertMessage({
+          sessionId: chatSessionId,
+          role: 'system',
+          content: encodeCallDividerContent(dividerMeta),
+          metadata: { callDivider: dividerMeta },
+        });
+      }
+      // Reset the call-divider clock so the next spoken turn gets a fresh
+      // daytime divider rather than a tight-gap time divider.
+      resetCallDividerClock(chatSessionId);
+    } catch { /* best-effort */ }
+  }
+
   const existingAgent = eng.agent;
   const keepAgent = !!existingAgent
     && existingAgent.sessionId === chatSessionId
     && (!existingAgent.processing || existingAgent.isAwaitingClarification());
   if (keepAgent) {
+    // In 'new' mode with an already-live agent, clear its history so the agent
+    // starts fresh without the prior conversation context. The transcript UI
+    // still shows old messages because they remain in the DB.
+    if (conversationMode === 'new' && typeof existingAgent.clearHistory === 'function') {
+      try { existingAgent.clearHistory(); } catch { /* best-effort */ }
+    }
     seedCallDividerClockFromStore(chatSessionId);
     return true;
   }
@@ -568,14 +685,19 @@ async function ensureChatSessionActive(chatSessionId: string): Promise<boolean> 
   if (!session) return false;
   createAgent(undefined, session);
   if (eng.agent) {
-    // Storage hydration can hang on a busy write queue / PG lock — never block
-    // a voice turn forever waiting for history (left clients stuck after STT).
-    try {
-      await Promise.race([
-        hydrateAgentRecentHistory(eng.agent, chatSessionId, 24),
-        new Promise<void>((resolve) => setTimeout(resolve, 2_500)),
-      ]);
-    } catch { /* best-effort */ }
+    // 'new' mode: skip history hydration — agent starts with empty context.
+    // 'continue' mode (default): hydrate with recent transcript so the agent
+    // has conversational context from prior voice turns.
+    if (conversationMode !== 'new') {
+      // Storage hydration can hang on a busy write queue / PG lock — never block
+      // a voice turn forever waiting for history (left clients stuck after STT).
+      try {
+        await Promise.race([
+          hydrateAgentRecentHistory(eng.agent, chatSessionId, 24),
+          new Promise<void>((resolve) => setTimeout(resolve, 2_500)),
+        ]);
+      } catch { /* best-effort */ }
+    }
     seedCallDividerClockFromStore(chatSessionId);
   }
   ensureSubscribed();
@@ -610,19 +732,47 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
     return;
   }
 
-  // Engine owns the mode: xAI is always duplex; Local is always PTT.
-  // Ignore stale client/config duplex leftovers after switching engines.
-  const mode = voiceConfig.engine === 'realtime_xai' ? 'duplex' : 'push-to-talk';
+  // xAI is always duplex (server-side VAD). Local supports both PTT and duplex
+  // (local VAD via Silero). The mode is driven by VoiceConfig.mode.web.
+  const configWebMode = voiceConfig.mode?.web ?? 'push-to-talk';
+  const mode = voiceConfig.engine === 'realtime_xai'
+    ? 'duplex'
+    : (configWebMode === 'duplex' ? 'duplex' : 'push-to-talk');
   const voiceOnly = Boolean(msg.voiceOnly);
   const chatSessionId = voiceOnly
     ? '__channel__:voice'
     : (typeof msg.chatSessionId === 'string' ? msg.chatSessionId : undefined);
   const voiceWsSessionId = String(msg.sessionId ?? randomUUID());
   const clientSituation = normalizeClientSituation(msg.clientSituation);
+  const conversationMode = (msg.conversationMode === 'new' || msg.conversationMode === 'continue')
+    ? (msg.conversationMode as 'continue' | 'new')
+    : 'continue' as const;
+
+  // Crew call voice override: look up the per-crew voice profile for this
+  // voice:{textSessionId} session and apply it to whichever engine is active.
+  // The profile is created on first call (postCrewChatVoiceSession) and is
+  // stable thereafter — gives each crew member a consistent voice identity.
+  let crewVoiceId: string | undefined;
+  let crewXaiVoice: string | undefined;
+  if (chatSessionId && isCrewVoiceSessionId(chatSessionId)) {
+    const sessionRecord = getEngine().sessionManager.getSessionById(chatSessionId);
+    const callsign = sessionRecord?.hostCrewCallsign;
+    if (callsign) {
+      const profile = getCrewVoiceProfile(callsign);
+      if (profile) {
+        crewVoiceId = profile.local;
+        crewXaiVoice = profile.xAI;
+      }
+    }
+  }
 
   if (voiceConfig.engine === 'realtime_xai') {
     const transport = new WebSocketVoiceTransport({ ws, sessionId: voiceWsSessionId, mode, engine: 'realtime_xai' });
     const engine = new XaiRealtimeEngine();
+    // Apply per-crew xAI voice override if this is a crew call with a profile.
+    const xaiVoiceConfig = crewXaiVoice
+      ? { ...voiceConfig, xai: { ...voiceConfig.xai, voice: crewXaiVoice } }
+      : voiceConfig;
     try {
       const session = await engine.createSession({
         ws,
@@ -631,6 +781,7 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
         mode,
         chatSessionId,
         clientSituation,
+        voiceConfig: xaiVoiceConfig,
       });
       activeEngineSessions.set(ws, session);
     } catch (err) {
@@ -684,6 +835,8 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
     searchWeb: false,
     bypassChip: false,
     ...(clientSituation ? { clientSituation } : {}),
+    conversationMode,
+    ...(crewVoiceId ? { crewVoiceId } : {}),
   });
   voiceSession.setState(mode === 'duplex' ? 'listening' : 'idle');
   ws.send(JSON.stringify({ type: 'session_ready', sessionId: voiceSession.sessionId, mode }));
@@ -886,7 +1039,7 @@ function isVoiceAgentBusy(session: VoiceWsSession): boolean {
   }
 }
 
-async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void> {
+async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preSttMs?: number } = {}): Promise<void> {
   if (session.turnFinishing) return;
   // Kickoff / prior reply still owns the agent — try to clear a stuck lock for PTT
   // so the operator's utterance is not silently discarded after a bad kickoff.
@@ -955,15 +1108,16 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void>
   }
 
   const timings = new VoiceTurnTimingTracker();
+  if (opts.preSttMs) timings.setPreSttMs(opts.preSttMs);
   try {
     ws.send(JSON.stringify({ type: 'transcript_pending' }));
     let transcriptText = '';
+    let sttResponse: any = null;
     try {
-      const transcript = await enqueueSessionStt(session, async () => {
-        await service.streamTranscribeChunk(Buffer.alloc(0), SAMPLE_RATE, { reset: true });
-        return service.streamTranscribeChunk(pcm, SAMPLE_RATE, { finalize: true });
+      sttResponse = await enqueueSessionStt(session, async () => {
+        return service.streamTranscribeFinalize(pcm, SAMPLE_RATE);
       });
-      transcriptText = transcript.text?.trim() ?? '';
+      transcriptText = sttResponse.text?.trim() ?? '';
     } catch (sttErr) {
       // Streaming STT can fail after a preview race; fall back to one-shot PCM STT.
       getLogger().warn(
@@ -972,8 +1126,16 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void>
       );
       const fallback = await service.transcribePcmBuffer(pcm, SAMPLE_RATE);
       transcriptText = fallback.text?.trim() ?? '';
+      sttResponse = fallback;
     }
     timings.markSttDone();
+    const sttTimings = sttResponse?.timings;
+    if (sttTimings) {
+      getLogger().info(
+        'VOICE',
+        `STT finalize: ${sttTimings.totalMs}ms (load=${sttTimings.loadMs}ms, convert=${sttTimings.convertMs}ms, infer=${sttTimings.inferMs}ms, audio=${sttTimings.audioSeconds}s) → "${transcriptText.slice(0, 60)}"`,
+      );
+    }
 
     // Prefer finalize text; if empty, keep the live partial the operator already saw.
     const text = transcriptText || previewFallback;
@@ -1018,7 +1180,11 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void>
       voiceSession?.setState('idle');
       return;
     }
-    const sessionReady = await ensureChatSessionActive(chatSessionId);
+    // Apply conversationMode only on the first turn after activation; subsequent
+    // turns continue normally (the divider + skip-hydrate already happened).
+    const turnMode = session.conversationModeApplied ? 'continue' : (session.conversationMode ?? 'continue');
+    session.conversationModeApplied = true;
+    const sessionReady = await ensureChatSessionActive(chatSessionId, turnMode);
     if (!sessionReady) {
       session.duplexTurnInFlight = false;
       sendError(ws, 'Chat session not found');
@@ -1097,8 +1263,12 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void>
       if (session.textOnlyPlayback) return;
       const fillerId = randomUUID();
       session.activeSynthId = fillerId;
-      const stream = await service.synthesizeStreamText(line, { forFiller: true, requestId: fillerId });
-      for (const chunk of stream.chunks) {
+      const stream = await service.synthesizeStreamText(line, {
+        forFiller: true,
+        requestId: fillerId,
+        ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
+      });
+      for await (const chunk of stream.chunks) {
         if (session.activeSynthId !== stream.requestId) break;
         const audio = Buffer.from(chunk.pcmBase64, 'base64');
         await sendSessionAudio(session, audio, chunk.sampleRate, true);
@@ -1128,8 +1298,11 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession): Promise<void>
       }
       const synthId = randomUUID();
       session.activeSynthId = synthId;
-      const stream = await service.synthesizeStreamText(unit, { requestId: synthId });
-      for (const chunk of stream.chunks) {
+      const stream = await service.synthesizeStreamText(unit, {
+        requestId: synthId,
+        ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
+      });
+      for await (const chunk of stream.chunks) {
         if (session.activeSynthId !== stream.requestId) break;
         const audio = Buffer.from(chunk.pcmBase64, 'base64');
         await sendSessionAudio(session, audio, chunk.sampleRate, false);
@@ -1390,7 +1563,9 @@ async function runCallKickoff(
       sendError(ws, 'No chat session available for call');
       return;
     }
-    const sessionReady = await ensureChatSessionActive(chatSessionId);
+    const turnMode = session.conversationModeApplied ? 'continue' : (session.conversationMode ?? 'continue');
+    session.conversationModeApplied = true;
+    const sessionReady = await ensureChatSessionActive(chatSessionId, turnMode);
     if (!sessionReady) {
       sendError(ws, 'Chat session not found');
       return;
@@ -1588,6 +1763,7 @@ function cleanupSession(ws: WebSocket): void {
 function sendError(ws: WebSocket, message: string): void {
   if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify({ type: 'error', message }));
+    metricsRegistry.incrementCounter('ws_messages_total', { type: 'voice', direction: 'outbound' });
   }
 }
 
@@ -1599,6 +1775,7 @@ function sendError(ws: WebSocket, message: string): void {
 function sendWarning(ws: WebSocket, message: string): void {
   if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify({ type: 'voice_warning', message }));
+    metricsRegistry.incrementCounter('ws_messages_total', { type: 'voice', direction: 'outbound' });
   }
 }
 
@@ -1606,6 +1783,7 @@ function sendWarning(ws: WebSocket, message: string): void {
 function notifyDuplexListening(ws: WebSocket): void {
   if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify({ type: 'agent_status', status: 'listening' }));
+    metricsRegistry.incrementCounter('ws_messages_total', { type: 'voice', direction: 'outbound' });
   }
 }
 

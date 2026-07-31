@@ -3,7 +3,6 @@ import { resolve, extname } from 'node:path';
 import { execSync } from 'node:child_process';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 import { IS_WINDOWS } from '../platform.js';
-import { getAICommentMarker } from './markers.js';
 
 export async function codeSearch(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
   const pattern = args['pattern'] as string;
@@ -94,9 +93,7 @@ export async function codeReplace(args: Record<string, unknown>, context: ToolEx
 
   const { writeFileSync } = await import('node:fs');
   const updated = content.replace(oldStr, newStr);
-  const ext = extname(file);
-  const marker = getAICommentMarker(ext, 'code replace');
-  const finalContent = updated.endsWith('\n') ? `${updated}${marker}\n` : `${updated}\n${marker}\n`;
+  const finalContent = updated.endsWith('\n') ? updated : `${updated}\n`;
   writeFileSync(file, finalContent, 'utf-8');
 
   return { success: true, output: `Replaced 1 occurrence in ${file}` };
@@ -119,10 +116,7 @@ export async function codeInsert(args: Record<string, unknown>, context: ToolExe
   }
 
   lines.splice(line, 0, content);
-  let finalContent = lines.join('\n');
-  const ext = extname(file);
-  const marker = getAICommentMarker(ext, 'code insert');
-  finalContent = finalContent.endsWith('\n') ? `${finalContent}${marker}\n` : `${finalContent}\n${marker}\n`;
+  const finalContent = lines.join('\n');
   const { writeFileSync } = await import('node:fs');
   writeFileSync(file, finalContent, 'utf-8');
 
@@ -193,9 +187,7 @@ export async function filePatch(args: Record<string, unknown>, context: ToolExec
     results.push(`Edit ${i + 1}: OK`);
   }
 
-  const ext = extname(filePath);
-  const marker = getAICommentMarker(ext, 'multi-edit patch');
-  content = content.endsWith('\n') ? `${content}${marker}\n` : `${content}\n${marker}\n`;
+  content = content.endsWith('\n') ? content : `${content}\n`;
   writeFileSync(filePath, content, 'utf-8');
   return { success: true, output: results.join('\n'), metadata: { applied: results.filter(r => r.includes('OK')).length, total: edits.length } };
 }
@@ -221,10 +213,8 @@ export async function codeRange(args: Record<string, unknown>, context: ToolExec
   const newLines = replacement === '' ? [] : replacement.split('\n');
   lines.splice(startLine, endLine - startLine + 1, ...newLines);
 
-  const ext = extname(filePath);
-  const marker = getAICommentMarker(ext, 'range edit');
   const content = lines.join('\n');
-  const finalContent = content.endsWith('\n') ? `${content}${marker}\n` : `${content}\n${marker}\n`;
+  const finalContent = content.endsWith('\n') ? content : `${content}\n`;
   writeFileSync(filePath, finalContent, 'utf-8');
   return { success: true, output: `Replaced lines ${startLine}-${endLine} in ${filePath}` };
 }

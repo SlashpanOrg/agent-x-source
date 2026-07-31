@@ -7,6 +7,7 @@
  */
 
 import { getLogger } from '@agentx/shared';
+import { withSpan } from '../observability/tracer.js';
 import { getRAGEngineInstance } from '../commands/builtin/rag_index.js';
 import { getKnowledgeBaseService } from '../knowledge-base/global-manager.js';
 import type { MasterKind } from '../document-studio/types.js';
@@ -32,6 +33,7 @@ async function withPrefetchTimeout<T>(label: string, work: Promise<T>, fallback:
 export type TurnJourneyStageId =
   | 'local_knowledge'
   | 'deeper_retrieval'
+  | 'native_tools'
   | 'integrations'
   | 'web'
   | 'model';
@@ -87,6 +89,31 @@ function summarizeIntegrations(toolIds: string[]): string[] {
     if (server) names.add(server);
   }
   return [...names].sort().slice(0, 12);
+}
+
+/**
+ * Summarize native (builtin, non-integration) tools by category so the Turn
+ * Journey can tell the agent about them. This is critical for services like
+ * WhatsApp that have native tools (Baileys-based) rather than MCP integrations
+ * — without this, the agent doesn't know native tools exist and tells the
+ * user to "connect it in MCP Store" even though the tools are already
+ * available.
+ */
+function summarizeNativeTools(toolIds: string[]): { categories: string[]; examples: string[] } {
+  const categories = new Set<string>();
+  const examples: string[] = [];
+  for (const id of toolIds) {
+    if (id.startsWith('integration__')) continue; // MCP integration tools
+    // Group by prefix (e.g. whatsapp_send_message → whatsapp)
+    const prefix = id.split('_')[0] ?? id;
+    if (prefix === 'whatsapp') {
+      categories.add('communication');
+      if (examples.length < 8) examples.push(id);
+    } else if (prefix === 'automation' || prefix === 'crew') {
+      categories.add('automation');
+    }
+  }
+  return { categories: [...categories].sort(), examples: examples.slice(0, 8) };
 }
 
 function listPresent(toolIds: string[], candidates: string[]): string[] {
@@ -236,23 +263,27 @@ async function prefetchLocalKnowledge(userText: string): Promise<{
   const kb = getKnowledgeBaseService();
   if (kb) {
     try {
-      const kbResults = mentionedKb.length > 0
-        ? (
-          await Promise.all(
-            mentionedKb.map((m) =>
-              withPrefetchTimeout(
-                `Knowledge Base search (${m.sourceId})`,
-                kb.search(searchQuery, 8, m.sourceId),
-                [],
+      const kbResults = await withSpan('journey.local_knowledge', 'journey_stage', async (span) => {
+        span.setAttribute('journey.stage.id', 'local_knowledge');
+        span.setAttribute('journey.stage.name', 'knowledge_base');
+        return mentionedKb.length > 0
+          ? (
+            await Promise.all(
+              mentionedKb.map((m) =>
+                withPrefetchTimeout(
+                  `Knowledge Base search (${m.sourceId})`,
+                  kb.search(searchQuery, 8, m.sourceId),
+                  [],
+                ),
               ),
-            ),
-          )
-        ).flat()
-        : await withPrefetchTimeout(
-          'Knowledge Base search',
-          kb.search(searchQuery, 8),
-          [],
-        );
+            )
+          ).flat()
+          : await withPrefetchTimeout(
+            'Knowledge Base search',
+            kb.search(searchQuery, 8),
+            [],
+          );
+      });
       for (const r of kbResults) {
         hits.push({
           content: r.content,
@@ -297,7 +328,11 @@ async function prefetchLocalKnowledge(userText: string): Promise<{
   const rag = getRAGEngineInstance();
   if (rag?.isEnabled) {
     try {
-      const docs = await withPrefetchTimeout('Codebase RAG search', rag.search(searchQuery, 3), []);
+      const docs = await withSpan('journey.local_knowledge', 'journey_stage', async (span) => {
+        span.setAttribute('journey.stage.id', 'local_knowledge');
+        span.setAttribute('journey.stage.name', 'codebase_rag');
+        return await withPrefetchTimeout('Codebase RAG search', rag.search(searchQuery, 3), []);
+      });
       for (const d of docs) {
         hits.push({
           content: d.content,
@@ -335,6 +370,7 @@ function buildJourneyBlock(opts: {
   mentionedTemplates: Array<{ templateId: string; name: string }>;
 }): string {
   const integrations = summarizeIntegrations(opts.toolIds);
+  const nativeTools = summarizeNativeTools(opts.toolIds);
   const webTools = listPresent(opts.toolIds, [...WEB_TOOLS]);
   const memoryTools = listPresent(opts.toolIds, [...MEMORY_TOOLS]);
   const hasKnowledgeSearch = opts.toolIds.includes('knowledge_base_search');
@@ -361,6 +397,10 @@ function buildJourneyBlock(opts: {
       integrations.length > 0
         ? `MCP ready: ${integrations.join(', ')}.`
         : 'No MCP integrations connected.';
+    const nativeLine =
+      nativeTools.examples.length > 0
+        ? `Native tools: ${nativeTools.examples.join(', ')}. Use these for WhatsApp messaging, contacts, and session management — NOT MCP Store integrations.`
+        : '';
     const kbHint = kbPinLine
       ? ` STRICT @kb: only knowledge_base_search with sourceId for: ${kbPinLine}. NEVER file_read/shell_exec/glob on the original upload.`
       : '';
@@ -371,9 +411,10 @@ function buildJourneyBlock(opts: {
       '[TURN_JOURNEY]',
       'Default silent research order (user did not need to request tools):',
       `1. LOCAL — ${opts.localHitCount > 0 ? `${opts.localHitCount} excerpt(s) injected above` : 'none yet'}; if weak, call knowledge_base_search.${kbHint}${tplHint}`,
-      `2. INTEGRATIONS — ${integLine} Use matching integration__* tools when the ask involves those apps.`,
-      `3. WEB — ${webTools.length > 0 ? webTools.join(', ') : 'unavailable'} only if local+MCP cannot answer or facts may be stale.`,
-      '4. MODEL — brief answer from trained knowledge last; say when unsure.',
+      `2. NATIVE TOOLS — ${nativeLine || 'none available.'} These are builtin tools (WhatsApp via Baileys, automations, etc.) — check them BEFORE MCP integrations for services they cover.`,
+      `3. INTEGRATIONS — ${integLine} Use matching integration__* tools when the ask involves those apps.`,
+      `4. WEB — ${webTools.length > 0 ? webTools.join(', ') : 'unavailable'} only if local+native+MCP cannot answer or facts may be stale.`,
+      '5. MODEL — brief answer from trained knowledge last; say when unsure.',
       'Do not narrate this pipeline. Explicit user how-to overrides. Keep voice replies short.',
       '[/TURN_JOURNEY]',
     ].join('\n');
@@ -410,19 +451,26 @@ function buildJourneyBlock(opts: {
       ? `- Also available: ${memoryTools.join(', ')} for prior chat/memory facts.`
       : '- No extra memory tools in this turn.',
     '',
-    'STAGE 3 — CONNECTED INTEGRATIONS (MCP)',
+    'STAGE 3 — NATIVE TOOLS (builtin, non-MCP)',
+    nativeTools.examples.length > 0
+      ? `- Available: ${nativeTools.examples.join(', ')}. These are builtin tools for services like WhatsApp (via Baileys), automations, etc.`
+      : '- No native service tools this turn.',
+    '- Check native tools BEFORE MCP integrations for services they cover (e.g. WhatsApp messaging, contacts, session status).',
+    '- Native tools may require setup (e.g. WhatsApp needs linking via Settings → Channels). If a native tool returns "not configured", tell the user to enable it in Settings → Channels — NOT MCP Store.',
+    '',
+    'STAGE 4 — CONNECTED INTEGRATIONS (MCP)',
     integrations.length > 0
       ? `- Connected servers: ${integrations.join(', ')}. If the question involves these apps/accounts, use the matching integration__* tools next.`
-      : '- No MCP integrations connected this turn. If the user needs a live app/account, tell them to connect it in Settings → MCP Store — do not scavenge credentials from disk/shell.',
+      : '- No MCP integrations connected this turn. If the user needs a live app/account not covered by native tools, tell them to connect it in Settings → MCP Store — do not scavenge credentials from disk/shell.',
     '- Never use shell/filesystem hunting for third-party credentials (see [THIRD_PARTY_SERVICES]).',
     '',
-    'STAGE 4 — INTERNET',
+    'STAGE 5 — INTERNET',
     webTools.length > 0
-      ? `- Tools: ${webTools.join(', ')}. Use when local+MCP are insufficient, or for current/public facts, news, docs, or verification.`
+      ? `- Tools: ${webTools.join(', ')}. Use when local+native+MCP are insufficient, or for current/public facts, news, docs, or verification.`
       : '- Web tools unavailable this turn.',
-    '- Skip web if stage 1–3 already answered completely.',
+    '- Skip web if stage 1–4 already answered completely.',
     '',
-    'STAGE 5 — MODEL KNOWLEDGE',
+    'STAGE 6 — MODEL KNOWLEDGE',
     '- Use trained knowledge only after the above. Be honest when uncertain or when sources conflict.',
     '',
     'STYLE:',
@@ -452,7 +500,7 @@ export async function runTurnJourney(input: TurnJourneyInput): Promise<TurnJourn
 
   const stages: TurnJourneyStageReport[] = [];
   // Always prefetch local knowledge on the standard path (chat + voice), even for
-  // compact models — users should not need to ask for RAG. Cap size in PromptEngine.
+  // compact models — users should not need to ask for RAG. Cap size in buildRagContext.
   const local = await prefetchLocalKnowledge(input.userText);
   const ragResults = local.hits;
   stages.push(...local.stages);
@@ -466,6 +514,14 @@ export async function runTurnJourney(input: TurnJourneyInput): Promise<TurnJourn
         ? `knowledge_base_search available (prefer @kb sourceId)`
         : 'knowledge_base_search available')
       : 'limited retrieval tools',
+  });
+  stages.push({
+    id: 'native_tools',
+    status: summarizeNativeTools(toolIds).examples.length > 0 ? 'ready' : 'skipped',
+    detail:
+      summarizeNativeTools(toolIds).examples.length > 0
+        ? `Native: ${summarizeNativeTools(toolIds).examples.slice(0, 5).join(', ')}`
+        : 'No native service tools',
   });
   stages.push({
     id: 'integrations',

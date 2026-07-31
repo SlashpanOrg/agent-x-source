@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { VoiceConfig } from '@agentx/shared';
+import { VOICE_ACK_PHRASES } from './voiceFillerPolicy.js';
+
 export const DEFAULT_FILLER_LINES = [
-  'Got it.',
+  ...VOICE_ACK_PHRASES,
   'One moment.',
   'Checking that now.',
   'Still working on it.',
@@ -11,6 +13,7 @@ export const DEFAULT_FILLER_LINES = [
   'Almost there.',
   'Let me look into that.',
   'Working on your request.',
+  'Coordinating with the crew.',
 ];
 
 export interface FillerCacheOptions {

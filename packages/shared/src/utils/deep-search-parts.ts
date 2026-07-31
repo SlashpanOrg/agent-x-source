@@ -117,18 +117,23 @@ export function partitionPartsForRender<T extends { type: string }>(parts: T[]):
   return { main, deepSearch };
 }
 
-/** Keep each deep_search block adjacent to its matching deep_web_search tool. */
+/** Keep each deep_search block adjacent to its matching deep_web_search tool.
+ *  Questionnaire parts are moved to the end — they are a question to the user
+ *  and should appear after all tools, thinking, and text content. */
 export function orderPartsForChatRender<T extends { type: string; id?: string; tool?: { id?: string } }>(parts: T[]): T[] {
   const deepSearchById = new Map<string, T>();
+  const questionnaireParts: T[] = [];
   const nonDeep: T[] = [];
   for (const p of parts) {
     if (p.type === 'deep_search' && p.id) {
       deepSearchById.set(p.id, p);
+    } else if (p.type === 'questionnaire') {
+      questionnaireParts.push(p);
     } else {
       nonDeep.push(p);
     }
   }
-  if (deepSearchById.size === 0) return parts;
+  if (deepSearchById.size === 0 && questionnaireParts.length === 0) return parts;
 
   const ordered: T[] = [];
   const placed = new Set<string>();
@@ -149,5 +154,8 @@ export function orderPartsForChatRender<T extends { type: string; id?: string; t
       ordered.push(part);
     }
   }
+  // Questionnaire parts go last — they are a question/response to the user
+  // and should appear after all tool results, thinking, and text content.
+  ordered.push(...questionnaireParts);
   return ordered;
 }

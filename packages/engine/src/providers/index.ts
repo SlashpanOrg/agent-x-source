@@ -33,11 +33,20 @@ function providerDisplayName(providerId: ProviderId): string {
   return PROVIDERS[providerId]?.name ?? providerId;
 }
 
+/** Extra options used by the `custom` provider to dispatch on wire protocol. */
+export interface ProviderFactoryOptions {
+  /** Wire protocol for custom providers. Ignored for built-in provider IDs. */
+  apiType?: string;
+  /** Display name override (used by custom providers to surface the user-supplied label). */
+  displayName?: string;
+}
+
 export class ProviderFactory {
   static create(
     providerId: ProviderId,
     apiKey?: string,
     baseUrl?: string,
+    options?: ProviderFactoryOptions,
   ): ProviderInterface {
     switch (providerId) {
       case 'openai':
@@ -85,6 +94,19 @@ export class ProviderFactory {
         if (!apiKey) throw new Error('Azure OpenAI requires an API key');
         if (!baseUrl) throw new Error('Azure OpenAI requires a base URL (resource endpoint)');
         return new OpenAICompatibleProvider('azure', 'Azure OpenAI', apiKey, baseUrl);
+      case 'custom': {
+        if (!apiKey) throw new Error('Custom provider requires an API key');
+        if (!baseUrl) throw new Error('Custom provider requires a base URL');
+        const name = options?.displayName ?? 'Custom';
+        const apiType = options?.apiType ?? 'openai-compatible';
+        if (apiType === 'anthropic') {
+          return new AnthropicProvider(apiKey, baseUrl, 'custom', name);
+        }
+        if (apiType === 'google') {
+          return new GoogleProvider(apiKey, baseUrl, 'custom', name);
+        }
+        return new OpenAICompatibleProvider('custom', name, apiKey, baseUrl);
+      }
       default:
         throw new Error(`Unknown provider: ${providerId}`);
     }

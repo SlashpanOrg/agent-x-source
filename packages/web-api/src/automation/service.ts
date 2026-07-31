@@ -9,12 +9,13 @@ import type {
   TelemetryEvent,
 } from '@agentx/shared';
 import { generateAxId, generateId, getLogger } from '@agentx/shared';
-import { effectiveAutomationNotifyChannels, getNotificationChannelStatus, inferAutomationSourceChannel, normalizeAutomationTaskOrigin, SessionPermissionStore } from '@agentx/engine';
+import { effectiveAutomationNotifyChannels, getNotificationChannelStatus, inferAutomationSourceChannel, normalizeAutomationTaskOrigin, SessionPermissionStore, startAppSpan } from '@agentx/engine';
 import { broadcast } from '../ws.js';
 import { getEngine } from '../engine.js';
 import { getTelegramRuntimeHints } from '../channels-sync.js';
 import { getPgBoss, getAutomationQueueName } from './boss.js';
 import { AUTOMATION_RUN_LEAD_MS } from './constants.js';
+import { metricsRegistry } from '../metrics/MetricsRegistry.js';
 
 export interface AutomationJobPayload {
   taskId: string;
@@ -236,21 +237,41 @@ export class AutomationService {
     const boss = getPgBoss();
     if (!boss || task.status !== 'active' || task.scheduleType !== 'recurring' || !task.cronExpression) return;
 
-    const timezone = task.timezone || 'UTC';
-    const nextRunAt = cronParser.parseExpression(task.cronExpression, { tz: timezone }).next().toDate();
-    const triggerAt = new Date(Math.max(Date.now() + 500, nextRunAt.getTime() - AUTOMATION_RUN_LEAD_MS));
-    const singletonKey = `automation-run:${task.id}`;
+    const scheduleStartedAt = process.hrtime.bigint();
+    const { span, withContext } = startAppSpan('automation.schedule', 'automation', 'automation_schedule', {
+      'automation.id': task.id,
+      'automation.schedule_type': task.scheduleType,
+      'automation.cron': task.cronExpression,
+    });
 
-    const pgbossJobId = await boss.send(
-      getAutomationQueueName(),
-      { taskId: task.id, targetRunAt: nextRunAt.toISOString() } satisfies AutomationJobPayload,
-      { startAfter: triggerAt, singletonKey },
-    );
+    try {
+      const timezone = task.timezone || 'UTC';
+      const nextRunAt = cronParser.parseExpression(task.cronExpression, { tz: timezone }).next().toDate();
+      const triggerAt = new Date(Math.max(Date.now() + 500, nextRunAt.getTime() - AUTOMATION_RUN_LEAD_MS));
+      const singletonKey = `automation-run:${task.id}`;
 
-    await this.pool.query(
-      `UPDATE automation_tasks SET pgboss_job_id = $2, next_run_at = $3, updated_at = NOW() WHERE id = $1`,
-      [task.id, pgbossJobId, nextRunAt],
-    );
+      const pgbossJobId = await withContext(() => boss.send(
+        getAutomationQueueName(),
+        { taskId: task.id, targetRunAt: nextRunAt.toISOString() } satisfies AutomationJobPayload,
+        { startAfter: triggerAt, singletonKey },
+      ));
+
+      await this.pool.query(
+        `UPDATE automation_tasks SET pgboss_job_id = $2, next_run_at = $3, updated_at = NOW() WHERE id = $1`,
+        [task.id, pgbossJobId, nextRunAt],
+      );
+      span.setAttribute('automation.next_run_at', nextRunAt.toISOString());
+      span.setAttribute('automation.schedule.status', 'success');
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      span.setAttribute('automation.schedule.status', 'failed');
+      span.recordError(errMsg);
+      throw e;
+    } finally {
+      const durationMs = Math.round(Number(process.hrtime.bigint() - scheduleStartedAt) / 1e6);
+      span.setAttribute('automation.schedule.duration_ms', durationMs);
+      span.end();
+    }
   }
 
   /** Migrate legacy pg-boss cron schedules to lead-time one-shot jobs. */
@@ -568,7 +589,7 @@ export class AutomationService {
     }
   }
 
-  async recordRun(taskId: string, status: 'success' | 'failed'): Promise<void> {
+  async recordRun(taskId: string, status: 'success' | 'failed', _trigger: 'schedule' | 'event' | 'manual' = 'schedule'): Promise<void> {
     const completedOnce = status === 'success';
     await this.pool.query(
       `UPDATE automation_tasks SET
@@ -580,6 +601,8 @@ export class AutomationService {
        WHERE id = $1`,
       [taskId, status, completedOnce],
     );
+    // automation_runs_total counter is incremented by the worker span lifecycle
+    // (in the finally block of runAutomationTurn) to avoid double-counting.
   }
 
   async publishNotification(input: {

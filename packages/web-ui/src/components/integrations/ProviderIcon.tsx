@@ -24,6 +24,9 @@ import LanguageIcon from '@mui/icons-material/Language';
 import PsychologyIcon from '@mui/icons-material/Psychology';
 import BugReportIcon from '@mui/icons-material/BugReport';
 import CodeIcon from '@mui/icons-material/Code';
+import RestaurantIcon from '@mui/icons-material/Restaurant';
+import GroceryIcon from '@mui/icons-material/LocalGroceryStore';
+import RestaurantMenuIcon from '@mui/icons-material/RestaurantMenu';
 import { settingsTheme } from '../../styles/settings-theme';
 
 import { alphaColor } from '../../theme';
@@ -69,6 +72,9 @@ const ICON_MAP: Record<string, typeof HubIcon> = {
   clickup: NotesIcon,
   trello: NotesIcon,
   notes: NotesIcon,
+  restaurant: RestaurantIcon,
+  grocery: GroceryIcon,
+  restaurant_menu: RestaurantMenuIcon,
 };
 
 export interface ProviderIconProps {

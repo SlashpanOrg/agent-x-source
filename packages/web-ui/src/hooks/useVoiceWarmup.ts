@@ -61,6 +61,11 @@ export function useVoiceWarmup(voiceEnabled: boolean, canRunWeb: boolean): Voice
   const releaseEpochRef = useRef(0);
   const bootingStartedAtRef = useRef<number | null>(null);
   const runWarmupRef = useRef<(force?: boolean) => Promise<void> | undefined>(async () => {});
+  /** True once syncWarmupConfig has resolved and set engineXaiRef / autoStartRef.
+   *  Prevents ensureWarmup → runWarmup from racing ahead of the config sync
+   *  on page refresh and mistakenly starting the local sidecar when xAI is
+   *  the active engine (the engine type ref is still false until sync completes). */
+  const configSyncedRef = useRef(false);
   /** Tracks whether this is the first warmup attempt on app launch.
    * On first load we always force-start the engine so it becomes visible/active,
    * even if "keep engine running at launch" (autoStart) is disabled. */
@@ -111,6 +116,16 @@ export function useVoiceWarmup(voiceEnabled: boolean, canRunWeb: boolean): Voice
       setPhase('disabled');
       setError(null);
       setHealth(undefined);
+      return;
+    }
+
+    // Config sync race guard: on page refresh, voiceEnabled/canRunWeb can be
+    // set by loadVoiceState before syncWarmupConfig has resolved. If we proceed
+    // now, engineXaiRef is still false (its initial value) and we'd mistakenly
+    // start the local Python sidecar even when xAI is the active engine.
+    // syncWarmupConfig's .finally() block will call runWarmup once the refs are
+    // set, so it's safe to defer here.
+    if (!configSyncedRef.current) {
       return;
     }
 
@@ -197,6 +212,7 @@ export function useVoiceWarmup(voiceEnabled: boolean, canRunWeb: boolean): Voice
       warmupAllowedRef.current = false;
       engineXaiRef.current = false;
       xaiConfiguredRef.current = false;
+      configSyncedRef.current = true;
       setEngineWarmAtLaunch(false);
       setPhase('disabled');
       setHealth(undefined);
@@ -212,7 +228,10 @@ export function useVoiceWarmup(voiceEnabled: boolean, canRunWeb: boolean): Voice
         const merged = mergeVoiceConfig(cfg);
         const isXai = merged.engine === 'realtime_xai';
         engineXaiRef.current = isXai;
-        xaiConfiguredRef.current = isXai && Boolean(merged.xai?.apiKey);
+        // The /config endpoint redacts the apiKey (sets it to undefined) and
+        // exposes apiKeyConfigured instead. Use that to determine whether xAI
+        // is ready — checking apiKey directly always returns false on the client.
+        xaiConfiguredRef.current = isXai && Boolean(merged.xai?.apiKeyConfigured ?? merged.xai?.apiKey);
         if (isXai) {
           autoStartRef.current = false;
           warmupAllowedRef.current = false;
@@ -237,6 +256,9 @@ export function useVoiceWarmup(voiceEnabled: boolean, canRunWeb: boolean): Voice
         setEngineWarmAtLaunch(false);
       })
       .finally(() => {
+        // Mark config as synced so runWarmup / ensureWarmup no longer defer.
+        // This must be set before runWarmup is called below so it proceeds.
+        configSyncedRef.current = true;
         // Don't tear down the engine on config-only updates (e.g. switching
         // model/provider/voice). If the engine is already ready or booting,
         // keep it running — only probe to see if it's still healthy.
@@ -252,6 +274,11 @@ export function useVoiceWarmup(voiceEnabled: boolean, canRunWeb: boolean): Voice
   }, [voiceEnabled, canRunWeb]);
 
   useEffect(() => {
+    // Reset the config-synced flag when voiceEnabled/canRunWeb change so
+    // runWarmup defers until the new config sync completes. Without this,
+    // a stale `true` from the previous disabled-state sync would let
+    // ensureWarmup race ahead of the new config fetch.
+    configSyncedRef.current = false;
     syncWarmupConfig();
   }, [syncWarmupConfig]);
 

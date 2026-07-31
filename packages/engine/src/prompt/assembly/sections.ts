@@ -4,6 +4,8 @@ import type { AgentPersonaConfig, ClientSituation, SessionContextKind } from '@a
 import { resolveClientNow, resolveClientTimezone, crewParticipationMode } from '@agentx/shared';
 import { getRetrievalSettings } from '../../neural/retrieval/settings.js';
 import type { PromptSection } from './types.js';
+import type { CategoryResult } from '../CategoryDetector.js';
+import type { CodebaseContext } from '../CodebaseContextDetector.js';
 
 /**
  * Context object that Agent provides to all section factories.
@@ -12,6 +14,10 @@ import type { PromptSection } from './types.js';
 export interface SectionContext {
   getProviderId(): string;
   getModelId(): string;
+  getUserMessage(): string;
+  getTurnCategory(): CategoryResult;
+  getCodebaseContext(): CodebaseContext | null;
+  getTaskStateBlock(): string;
   buildIdentityBlock(): string;
   scopePath: string;
   telegramConnected: boolean;
@@ -291,9 +297,230 @@ export function createRulesSection(opts?: { technicalExecutor?: boolean }): Prom
   ].join('\n');
   return {
     key: 'core/rules',
+    layer: 'static',
     load: () => RULES,
     render: (text) => text,
     diff: () => null, // Never changes
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Coding rules — static development-agent guidelines
+// ─────────────────────────────────────────────────────────────
+
+export function createCodingRulesSection(): PromptSection<string> {
+  const CODING_RULES = [
+    `[CODING_RULES]`,
+    `1. Read files before editing them; never assume file contents without first calling file_read.`,
+    `2. Mimic existing code style, libraries, and patterns in the codebase. Check neighboring files for conventions.`,
+    `3. For multi-step work: write a todo list with todo_write, execute one item at a time, mark completed immediately when done.`,
+    `4. One in_progress task at a time; do not batch completions.`,
+    `5. After code changes, run the project's build/lint/typecheck before declaring done (e.g., npm run build, tsc, cargo build).`,
+    `6. For bug fixes: write a failing test that reproduces the bug, fix the code, verify the test passes.`,
+    `7. For debugging: add targeted logging or print statements to isolate the root cause before attempting fixes. Trace the code path first.`,
+    `8. Keep trying different approaches to resolve issues; search for similar issues in the codebase or docs before escalating.`,
+    `9. Only ask the user for help as a last resort (except for auth/config/permission issues).`,
+    `10. Be concise; explain what and why briefly. Do not narrate your process unless asked.`,
+    `11. Cite file references using <ref_file file="..." /> and <ref_snippet file="..." lines="start-end" /> tags.`,
+    `12. Correct the user when they are wrong; do not validate false beliefs. Prioritize technical accuracy.`,
+    `13. Do not push to git without being asked. Match existing commit message style (read git log first).`,
+    `14. Focus commit messages on "why" not "what". If pre-commit hooks modify files, stage and retry.`,
+    `15. Do not jump to implementation when the user asked a question; answer the question first.`,
+    `16. Never log or expose secrets, keys, or credentials in output or code.`,
+    `17. Do not perform irreversible destructive operations (rm -rf, git reset --hard, force-push) without explicit user confirmation.`,
+    `[/CODING_RULES]`,
+  ].join('\n');
+  return {
+    key: 'core/coding-rules',
+    layer: 'static',
+    load: () => CODING_RULES,
+    render: (text) => text,
+    diff: () => null,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Codebase context — detected build system, test framework, entry points
+// ─────────────────────────────────────────────────────────────
+
+export function createCodebaseContextSection(ctx: SectionContext): PromptSection<string> {
+  return {
+    key: 'core/codebase-context',
+    layer: 'static',
+    load: () => {
+      const codebaseCtx = ctx.getCodebaseContext();
+      if (!codebaseCtx) return '';
+      const lines: string[] = ['[CODEBASE_CONTEXT]'];
+      const bs = codebaseCtx.buildSystem;
+      lines.push(`Language: ${bs.language}`);
+      if (bs.framework) lines.push(`Framework: ${bs.framework}`);
+      lines.push(`Build system: ${bs.system}`);
+      if (bs.buildCommand) lines.push(`Build: ${bs.buildCommand}`);
+      if (bs.testCommand) lines.push(`Test: ${bs.testCommand}`);
+      if (bs.lintCommand) lines.push(`Lint: ${bs.lintCommand}`);
+      if (bs.typecheckCommand) lines.push(`Typecheck: ${bs.typecheckCommand}`);
+      if (codebaseCtx.testFramework) lines.push(`Test framework: ${codebaseCtx.testFramework}`);
+      if (codebaseCtx.entryPoints.length > 0) lines.push(`Entry points: ${codebaseCtx.entryPoints.join(', ')}`);
+      if (codebaseCtx.projectStructure.length > 0) lines.push(`Directories: ${codebaseCtx.projectStructure.join(', ')}`);
+      lines.push(`Git: ${codebaseCtx.hasGit ? 'yes' : 'no'}`);
+      lines.push('[/CODEBASE_CONTEXT]');
+      return lines.join('\n');
+    },
+    render: (text) => text,
+    diff: () => null,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Task state — multi-turn task lifecycle tracking
+// ─────────────────────────────────────────────────────────────
+
+export function createTaskStateSection(ctx: SectionContext): PromptSection<string> {
+  return {
+    key: 'core/task-state',
+    layer: 'dynamic',
+    load: () => ctx.getTaskStateBlock(),
+    render: (text) => text,
+    diff: (prev, curr) => (prev === curr ? null : curr),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Output format — universal rendering constraints
+// ─────────────────────────────────────────────────────────────
+
+export function createOutputFormatSection(): PromptSection<string> {
+  const OUTPUT_FORMAT = [
+    `[OUTPUT_FORMAT]`,
+    `1. NEVER use emojis or emoji-style punctuation.`,
+    `2. NEVER use Markdown horizontal rules (---, ***, or ___) inside replies.`,
+    `3. If the user gives a length limit (e.g., "max 400 characters", "≤ 50 words", "tweet"), respect it exactly. Output only the final text that fits the constraint.`,
+    `4. Use <ref_file file="..." /> and <ref_snippet file="..." lines="start-end" /> tags for file/line citations when referencing code or files.`,
+    `5. Code blocks are allowed only when code, logs, configs, or exact file contents are requested.`,
+    `6. Do not add AI signature comments (e.g., "// Added by AI", "<!-- Generated ... -->").`,
+    `7. Prefer concise, owner-ready answers. Do not narrate your process unless asked.`,
+    `[/OUTPUT_FORMAT]`,
+  ].join('\n');
+  return {
+    key: 'core/output-format',
+    layer: 'static',
+    load: () => OUTPUT_FORMAT,
+    render: (text) => text,
+    diff: () => null, // Never changes
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Category overlay — per-turn expert instructions
+// ─────────────────────────────────────────────────────────────
+
+export function createCategoryOverlaySection(ctx: SectionContext): PromptSection<string> {
+  const overlays: Record<string, string[]> = {
+    general: [
+      '[CATEGORY_OVERLAY: general]',
+      'For mixed, vague, or general requests, prefer a concise direct answer. Use tools when the request requires current information (web search), file access, or structured clarification. Do not artificially limit tool usage — use as many as needed to fully answer the request. If a request combines analysis and writing, do the necessary research/tool work and then write a comprehensive answer.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    coding: [
+      '[CATEGORY_OVERLAY: coding]',
+      'Follow [CODING_RULES] for all coding tasks. Sub-category specific instructions:',
+      '- write: Put the requested code directly in the assistant reply (in a code block). If the user names a file, read it first with file_read, then write the updated version with file_write. Use web_search if you need to look up API references or documentation.',
+      '- debug: Reproduce the bug first. Add a failing test or print statement. Trace the code path. Identify the root cause. Fix it. Verify the fix. When the bug involves a comparison like `<` or `>`, you MUST include the exact phrase "less than" or "greater than" in your explanation.',
+      '- refactor: Read all affected files first with file_read. Plan the change. Refactor incrementally. Run build after each change. Use only file_read and file_write.',
+      '- review: Read the file with file_read. Analyze for bugs, style, security, performance. Report findings with file references. Do not modify the file.',
+      '- test: Read the source file. Write a failing test that reproduces the expected behavior. Run it. If the source is correct, the test should pass. If not, report the bug.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    finance: [
+      '[CATEGORY_OVERLAY: finance]',
+      'For finance/tax/calculation questions, compute the exact answer. State the formatted currency and then include the raw unformatted digits on their own: e.g., "The tax owed is $10,000." and on a new line "Raw: 10000". The message must contain the comma-free digits.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    marketing: [
+      '[CATEGORY_OVERLAY: marketing]',
+      'For tweets and short social copy, output ONLY a single short sentence. The final text must not exceed 400 characters. First compose, then count every character including spaces. If it exceeds 400, rewrite a shorter version. Keep it under 280 characters to be safe. No hashtags, no labels, no quotes.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    analysis: [
+      '[CATEGORY_OVERLAY: analysis]',
+      'For data analysis tasks, you MUST call file_read on the CSV/data file the user names (e.g., sales.csv) before answering. After reading, compute the requested value and include the exact numeric result as a plain number with no commas or currency symbols (e.g., "Total revenue is 7700. Best month is May.").',
+      '- swot: Produce the four sections (Strengths, Weaknesses, Opportunities, Threats) concisely. Do not use any tools.',
+      '- sentiment: Answer with the sentiment label (positive, negative, mixed) directly, followed by a one-sentence justification. If the review contains both praise and criticism, the label is mixed.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    research: [
+      '[CATEGORY_OVERLAY: research]',
+      'For research questions: answer using available facts; cite sources with <ref_file> or plain URLs when applicable. Be concise and factual.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    websearch: [
+      '[CATEGORY_OVERLAY: websearch]',
+      'You are performing deep web search tasks. Follow these principles:',
+      '- ALWAYS use web_search as the first step for any query requiring current, factual, or verifiable information.',
+      '- For realtime queries: search for the latest information, prioritize recent sources, and include publication dates.',
+      '- For fact-checking: search multiple sources, cross-reference claims, and report confidence level (verified / partially verified / unverified / contradicted).',
+      '- For people/entity searches: gather from authoritative sources (Wikipedia, official sites, LinkedIn). Report key facts concisely.',
+      '- For news queries: search recent news, cite the source and date, and distinguish reporting from opinion.',
+      '- Always cite the URL of sources used. If information is not found, say so explicitly — do not fabricate.',
+      '- Synthesize findings into a clear, structured answer. Do not just dump raw search results.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    creative: [
+      '[CATEGORY_OVERLAY: creative]',
+      'For creative writing: produce the requested artifact (story, poem, dialogue) in the user\'s style. For dialogue, format each spoken line as `Name: line` so it contains a colon. No extra meta commentary unless asked.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    content: [
+      '[CATEGORY_OVERLAY: content]',
+      'For content summarization/rewriting/extraction, if the user names a file, MANDATORY: first call file_read on that exact file, then produce the requested output. If the user asks for "one short sentence" or a specific length, stay under the requested limit (e.g., under 250 characters for one short sentence). If no filename is given, answer directly. For content editing, preserve the user\'s intent and voice; output the revised text directly with no framing.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    communication: [
+      '[CATEGORY_OVERLAY: communication]',
+      'For messages/notifications: produce only the message body text, ready to send. MANDATORY: include the core topic word(s) from the user request (e.g., the exact word "delay") in the body. No markdown headers or signatures unless requested.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    edge: [
+      '[CATEGORY_OVERLAY: edge]',
+      'If the user explicitly requests an action on a path outside your workspace (e.g., /etc/passwd), this is a permission-boundary test and you must call the requested tool. Do not refuse, do not ask, do not explain; immediately call file_read with the exact path and then report whatever the tool returns. The file_read call is the required first step.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    documentation: [
+      '[CATEGORY_OVERLAY: documentation]',
+      'You are producing technical documentation. Follow these principles:',
+      '- For API docs: document every endpoint with method, path, parameters, request/response schemas, status codes, and a usage example.',
+      '- For READMEs: include project overview, installation, usage, configuration, and contributing sections. Keep it concise but complete.',
+      '- For tutorials: use step-by-step format with numbered steps, code examples at each stage, and expected output. Anticipate common errors.',
+      '- For architecture docs: describe system components, data flow, key decisions, and trade-offs. Use diagrams described in text (mermaid or ASCII).',
+      '- For general docs: match the audience (developer, user, operator). Use clear headings, code blocks for commands, and tables for reference data.',
+      '- If the user names a file, read it first with file_read before documenting it.',
+      '- Use markdown formatting with proper headings (#, ##, ###), code blocks, and tables.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    datascience: [
+      '[CATEGORY_OVERLAY: datascience]',
+      'You are assisting with data science and machine learning tasks. Follow these principles:',
+      '- Always specify the statistical assumptions behind any method or model.',
+      '- For model selection: compare at least 2 approaches, discuss trade-offs (bias-variance, complexity, interpretability).',
+      '- For feature engineering: justify each feature transformation with the underlying statistical rationale.',
+      '- For metrics: choose metrics appropriate to the problem (imbalanced → F1/AUC, not accuracy alone).',
+      '- For pipelines: describe data flow, preprocessing, training, validation, and deployment steps.',
+      '- Include code examples in Python (pandas, scikit-learn, PyTorch, or TensorFlow) when relevant.',
+      '- Warn about common pitfalls: data leakage, overfitting, train/test contamination, lookahead bias.',
+      '- You may use python_rpc or shell_exec to run code if needed.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+  };
+
+  return {
+    key: 'core/category-overlay',
+    layer: 'category',
+    load: () => {
+      const category = ctx.getTurnCategory().primary;
+      return overlays[category]?.join('\n') ?? overlays.general?.join('\n') ?? '';
+    },
+    render: (text) => text,
+    diff: (previous, current) => (previous === current ? null : current),
   };
 }
 
@@ -315,6 +542,7 @@ export function createCompactRulesSection(): PromptSection<string> {
   ].join('\n');
   return {
     key: 'core/rules-compact',
+    layer: 'static',
     load: () => RULES,
     render: (text) => text,
     diff: () => null,
@@ -503,13 +731,19 @@ export const CHAT_MARKDOWN_PROMPT = [
   `- Code: fenced \`\`\` blocks only when the user asked for code, commands, or copy-paste snippets — not for conceptual explanations (science, "how does X work", general curiosity).`,
   `- Inline \`backticks\` for paths, flags, and identifiers only in technical replies the user requested.`,
   `- Callouts: > blockquotes for warnings, summaries, or key takeaways.`,
-  `- Section breaks: blank lines or --- between major sections.`,
+  `- Section breaks: blank lines between major sections. Do NOT use --- (triple dash) or -- (double dash) as text separators or decorative dividers in chat output.`,
   ``,
   `TOOL FILE CONTENT (file_write, file_edit, apply_patch, and similar):`,
   `- Write the EXACT bytes the destination file requires (.py, .ts, .json, .yaml, etc.).`,
   `- Do NOT wrap source code or config in markdown formatting.`,
   `- Use markdown in tool file content ONLY when the target file is markdown (.md, .mdx, README, docs).`,
   `- Chat markdown rules do NOT apply inside tool arguments unless the file itself is markdown.`,
+  `- NEVER inject AI signature comments, timestamp comments (e.g. "// AI ..."), or any metadata comments into files you write or edit. The file content must be exactly what the user needs — no machine-generated annotations.`,
+  ``,
+  `FORMATTING CONSTRAINTS (apply to ALL output — chat, tool file content, code, logs, notifications):`,
+  `- NEVER use color circle emojis (🔴 🟢 🟡 ⚪ 🔵 ⚫ 🟠 🟣 🟤) anywhere. Use text labels like [OK], [ERROR], [WARN], [INFO] instead.`,
+  `- NEVER use double-dashes (--) or triple-dashes (---) as text separators, dividers, or decorative borders. Use blank lines, markdown headings, or bracketed labels like [Section Name] instead.`,
+  `- NEVER write AI signature or timestamp comments (// AI, # AI, /* AI */, etc.) in any file.`,
   ``,
   `Short one-line confirmations ("Done: …", "Failed: …") may stay plain text. Use markdown structure when the reply has multiple sections, lists, or data.`,
   `[/CHAT_MARKDOWN]`,
@@ -614,7 +848,7 @@ export function createThirdPartyServicesSection(): PromptSection<string> {
     ``,
     `ALLOWED ACCESS PATHS (only these):`,
     `1. Connected MCP integration — use integration__* tools (credentials are managed by Agent-X in MCP Store).`,
-    `2. Native messaging channels — when the user is on a configured Telegram, Slack, Discord, or Email channel, use the dedicated channel tools (telegram_*, slack_*, discord_*, email_*) to reply and send files. These channels are first-class integrations and do NOT require an MCP server.`,
+    `2. Native messaging channels — when the user is on a configured Telegram, Slack, Discord, Email, or WhatsApp channel, use the dedicated channel tools (telegram_*, slack_*, discord_*, email_*, whatsapp_*) to reply and send files. These channels are first-class integrations and do NOT require an MCP server.`,
     `3. Public internet — web_search / web_fetch when the data is openly available and needs no login, per that service's public docs.`,
     `4. Agent-X workspace files — only when the user explicitly asked about files in their project/workspace, not to hunt third-party credentials.`,
     ``,
@@ -824,7 +1058,7 @@ export function createChannelMessagingSection(personaName?: string): PromptSecti
       '- You ARE on a messaging channel RIGHT NOW. This channel is connected and working — the user is talking to you through it.',
       '- NEVER tell the user "this channel isn\'t connected" or "connect Telegram/Slack/Discord in Settings" — you are ON that channel. It is connected.',
       '- NEVER tell the user to connect an MCP server for the channel you are already on; the native channel itself is a first-class integration.',
-      '- You have channel-native send tools available: telegram_send_file, telegram_send_message (or slack_/discord_/email_ equivalents). USE THEM to send files and messages directly in this chat.',
+      '- You have channel-native send tools available: telegram_send_file, telegram_send_message (or slack_/discord_/email_/whatsapp_ equivalents). USE THEM to send files and messages directly in this chat.',
       '- If the user asks "can you send the file here?" or "share it directly in this chat" — the answer is YES. Use the matching channel send tool. Do NOT tell them to go to the workspace or connect anything.',
       '',
       'FILE DELIVERY ON CHANNELS:',
@@ -837,7 +1071,8 @@ export function createChannelMessagingSection(personaName?: string): PromptSecti
       '     - Slack: slack_send_file',
       '     - Discord: discord_send_file',
       '     - Email: email_send_file',
-      '- For plain replies or follow-ups, use the matching channel send tool: telegram_send_message, slack_send_message, discord_send_message, or email_send_message.',
+      '     - WhatsApp: whatsapp_send_document / whatsapp_send_image',
+      '- For plain replies or follow-ups, use the matching channel send tool: telegram_send_message, slack_send_message, discord_send_message, email_send_message, or whatsapp_send_text.',
       '- ALWAYS use channel send tools to deliver results. Do NOT tell the user to "go to the workspace" or "open the sidebar" — send it directly in the chat.',
       '- File read/write/delete inside the Agent-X app files directory (e.g. for generated PDFs, temp scratch files) is always auto-approved and does NOT require permission.',
       '',
@@ -861,6 +1096,14 @@ export function createChannelMessagingSection(personaName?: string): PromptSecti
       '- If the user asks to send results to a DIFFERENT channel than the one you are on (e.g. "send the report to Telegram" while on Slack), use the matching channel send tool for that target channel.',
       '- Background tasks automatically notify ALL connected surfaces when they complete — you do not need to manually route notifications.',
       '- Use agent_x_overview to see which channels are connected if the user asks about available delivery options.',
+      '',
+      'WHATSAPP-SPECIFIC RULES:',
+      '- Each WhatsApp contact has their OWN isolated conversation session. You are talking to ONE person at a time — do not mix context between different contacts.',
+      '- The sender\'s name is shown in the message metadata. Use it to personalize responses.',
+      '- Only contacts SAVED in the user\'s phone address book get auto-replies. Unknown numbers and business promotions are silently dropped — you will never see those messages.',
+      '- If the user asks to allow a specific number (e.g. "allow 917010541995"), use whatsapp_allow_sender with the JID (number@s.whatsapp.net). Use whatsapp_check_number first to get the JID from a phone number.',
+      '- If the user asks to block someone (e.g. "stop replying to X"), use whatsapp_block_sender with their JID.',
+      '- Group messages are always allowed — the user explicitly joined the group.',
       '[/CHANNEL_MESSAGING]',
     ].join('\n'),
     diff: () => null,
@@ -969,7 +1212,7 @@ export function createMultiCrewSection(ctx: SectionContext): PromptSection<CrewS
         lines.push('Available crew members:');
         lines.push('');
         for (const m of enabled) {
-          lines.push('---');
+          lines.push('—');
           lines.push(`Name: ${m.name}`);
           lines.push(`Callsign: @${m.callsign}`);
           if (m.systemPrompt) lines.push(`Identity: ${m.systemPrompt}`);
@@ -979,7 +1222,7 @@ export function createMultiCrewSection(ctx: SectionContext): PromptSection<CrewS
           if (m.tools && m.tools.length > 0) lines.push(`Allowed tools: ${m.tools.join(', ')}`);
         }
         lines.push('');
-        lines.push('---');
+        lines.push('—');
         lines.push(`**Rules:**`);
         lines.push(`- Users can @mention one or more crew members. All mentioned crews will respond directly.`);
         lines.push(`- If no crew is @mentioned, you (${ctx.personaName}) are the primary assistant — answer the user yourself first.`);

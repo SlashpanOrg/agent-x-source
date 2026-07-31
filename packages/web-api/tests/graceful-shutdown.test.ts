@@ -27,6 +27,7 @@ vi.mock('../src/engine.js', () => ({
   applyPerformanceSettings: vi.fn(),
   applyPerformanceGovernor: vi.fn(),
   setEngineDEK: vi.fn(),
+  setAgentMetricsApi: vi.fn(),
 }));
 
 vi.mock('../src/channels-sync.js', () => ({

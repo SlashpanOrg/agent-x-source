@@ -93,7 +93,7 @@ export class DiscordBridge {
         const channelId = this.lastChannelByUser.get(userId);
         if (!channelId || !this.client) return;
         this.permToolIds.set(permId, details.toolId);
-        const riskEmoji = details.riskLevel === 'high' ? '🔴' : details.riskLevel === 'medium' ? '🟡' : '🟢';
+        const riskEmoji = details.riskLevel === 'high' ? '[HIGH]' : details.riskLevel === 'medium' ? '[MED]' : '[LOW]';
         const automationNote = details.forAutomation ? '\n\nThis tool is required for a scheduled automation.' : '';
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder().setCustomId(`perm:${permId}:allow_once`).setLabel('Allow Once').setStyle(ButtonStyle.Success),

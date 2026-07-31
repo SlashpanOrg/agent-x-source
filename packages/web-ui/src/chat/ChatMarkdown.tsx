@@ -99,8 +99,9 @@ function HierarchyDiagramBlock({ code }: { code: string }) {
       <CodeBlockBody>
         <Box
           component="pre"
+          className="ax-scroll-x"
           sx={{
-            m: 0, p: 0, overflowX: 'auto',
+            m: 0, p: 0,
             fontFamily: "'JetBrains Mono', monospace",
             fontSize: CODE_BLOCK_TOKENS.monoFontSize,
             lineHeight: CODE_BLOCK_TOKENS.treeLineHeight,
@@ -196,7 +197,7 @@ function SimpleCodeBlock({ code, language }: { code: string; language?: string }
           {language}
         </Box>
       )}
-      <Box sx={{ p: 1, overflowX: 'auto' }}>
+      <Box className="ax-scroll-x" sx={{ p: 1 }}>
         <Box component="pre" sx={{
           m: 0,
           fontFamily: "'JetBrains Mono', monospace",

@@ -1,13 +1,14 @@
 import type { Agent } from '@agentx/engine';
 import { automationRunSessionId, generateAxId, getLogger, sanitizeAutomationNotificationBody } from '@agentx/shared';
 import type { TelemetryEvent } from '@agentx/shared';
-import { effectiveAutomationNotifyChannels, getNotificationChannelStatus } from '@agentx/engine';
+import { effectiveAutomationNotifyChannels, getNotificationChannelStatus, getCurrentTraceId, getCurrentSpanId, startAppSpan } from '@agentx/engine';
 import { createAgent, getEngine, awaitEngineStorageReady, rewireTelegramChannelPermissions } from '../engine.js';
 import { getTelegramRuntimeHints } from '../channels-sync.js';
 import { getPgBoss, getAutomationQueueName } from './boss.js';
 import { AutomationService, deliverExternalNotifications } from './service.js';
 import { automationRunSessionMatchesTask, telemetryEventToPersistedLog } from './log-utils.js';
 import { getActiveWorkspacePath } from '../workspace.js';
+import { metricsRegistry } from '../metrics/MetricsRegistry.js';
 
 const AUTOMATION_INSTRUCTION_PREFIX = `[Scheduled automation]`;
 
@@ -56,13 +57,16 @@ function emitAutomationTelemetry(
       sessionId,
       automationTaskId: taskId,
       timestamp: new Date().toISOString(),
+      domain: 'APP',
+      traceId: getCurrentTraceId(),
+      spanId: getCurrentSpanId(),
       ...extra,
     } as unknown as TelemetryEvent);
   } catch { /* best-effort */ }
 }
 
-export async function triggerAutomationRun(taskId: string, service: AutomationService): Promise<void> {
-  await runAutomationTurn(taskId, service);
+export async function triggerAutomationRun(taskId: string, service: AutomationService, trigger: 'schedule' | 'event' | 'manual' = 'manual'): Promise<void> {
+  await runAutomationTurn(taskId, service, undefined, undefined, trigger);
 }
 
 async function waitUntilTargetRunTime(
@@ -88,6 +92,7 @@ async function runAutomationTurn(
   service: AutomationService,
   jobStartedAt?: string,
   targetRunAt?: string,
+  trigger: 'schedule' | 'event' | 'manual' = 'schedule',
 ): Promise<void> {
   const triggeredAt = jobStartedAt ?? new Date().toISOString();
   const runId = generateAxId('run');
@@ -133,92 +138,135 @@ async function runAutomationTurn(
     });
   });
 
-  emitAutomationTelemetry('automation_run_started', resolvedTaskId, { title: task.title });
-
-  const scopePath = resolveAutomationScopePath(task, eng);
-  const session = eng.sessionManager.ensureAutomationRunSession(
-    resolvedTaskId,
-    cfg.provider.activeProvider as import('@agentx/shared').ProviderId,
-    cfg.provider.activeModel,
-    scopePath,
-    task.title,
-  );
-
-  const agent = createAgent(cfg, session, {
-    attachToEngine: false,
-    automationRun: true,
-    delegatedWorker: true,
+  const runStartedAt = process.hrtime.bigint();
+  const { span, withContext } = startAppSpan('automation.run', 'automation', 'automation_run', {
+    'automation.id': resolvedTaskId,
+    'automation.run.id': runId,
+    'automation.name': task.title,
+    'automation.trigger': trigger,
+    'automation.status': 'running',
   });
-  await restorePermissionSnapshot(agent, task.permissionSnapshot as Array<{ toolName: string; decision: string }>);
 
-  const runExecutor = agent.getToolExecutor();
-  runExecutor?.setPermissionRequestHandler(async () => 'allow_once');
+  await withContext(() => (async () => {
+    emitAutomationTelemetry('automation_run_started', resolvedTaskId, { title: task.title });
 
-  agent.clearHistory();
+    const scopePath = resolveAutomationScopePath(task, eng);
+    const session = eng.sessionManager.ensureAutomationRunSession(
+      resolvedTaskId,
+      cfg.provider.activeProvider as import('@agentx/shared').ProviderId,
+      cfg.provider.activeModel,
+      scopePath,
+      task.title,
+    );
 
-  await waitUntilTargetRunTime(targetRunAt, resolvedTaskId, runId, service);
+    const agent = createAgent(cfg, session, {
+      attachToEngine: false,
+      automationRun: true,
+      delegatedWorker: true,
+    });
+    await restorePermissionSnapshot(agent, task.permissionSnapshot as Array<{ toolName: string; decision: string }>);
 
-  const prompt = buildAutomationPrompt(task.title, task.instruction);
-  try {
-    const message = await agent.sendMessage(prompt, { sourceChannel: task.sourceChannel });
+    const runExecutor = agent.getToolExecutor();
+    runExecutor?.setPermissionRequestHandler(async () => 'allow_once');
+
+    agent.clearHistory();
+
+    await waitUntilTargetRunTime(targetRunAt, resolvedTaskId, runId, service);
+
+    const prompt = buildAutomationPrompt(task.title, task.instruction);
+    const stepId = `${runId}#step`;
+    const stepStartedAt = process.hrtime.bigint();
+    const { span: stepSpan, withContext: withStepContext } = startAppSpan('automation.step', 'automation', 'automation_step', {
+      'automation.run.id': runId,
+      'automation.step.id': stepId,
+      'automation.step.type': 'agent_execution',
+      'automation.step.status': 'running',
+    });
+    let stepEnded = false;
+    try {
+      const message = await withStepContext(() => agent.sendMessage(prompt, { sourceChannel: task.sourceChannel }));
+      const stepDurationMs = Math.round(Number(process.hrtime.bigint() - stepStartedAt) / 1e6);
+      stepSpan.setAttribute('automation.step.status', 'success');
+      stepSpan.setAttribute('automation.step.duration_ms', stepDurationMs);
+      metricsRegistry.incrementCounter('automation_steps_total', { type: 'agent_execution', status: 'success' });
+      stepSpan.end();
+      stepEnded = true;
       const rawBody = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
-      const body = sanitizeAutomationNotificationBody(rawBody, { title: task.title }).slice(0, 4000);
+        const body = sanitizeAutomationNotificationBody(rawBody, { title: task.title }).slice(0, 4000);
+        const channelStatus = getNotificationChannelStatus(cfg, getTelegramRuntimeHints());
+        const deliveryChannels = effectiveAutomationNotifyChannels(task.notifyChannels, task, channelStatus);
+        const notification = await service.publishNotification({
+          taskId: task.id,
+          kind: 'automation_success',
+          title: `✓ ${task.title}`,
+          body,
+          channels: deliveryChannels,
+          task,
+          payload: { taskId: task.id, displayId: task.displayId, runSessionId: sessionId, runId },
+        });
+      await deliverExternalNotifications(notification, task, eng);
+      await service.recordRun(resolvedTaskId, 'success', trigger);
+      if (task.scheduleType === 'recurring') {
+        const refreshed = await service.getTask(resolvedTaskId);
+        if (refreshed) await service.scheduleNextRecurringRun(refreshed);
+      }
+      getLogger().info('AUTOMATION_WORKER', `Task ${task.displayId} (${resolvedTaskId}) completed`);
+      span.setAttribute('automation.status', 'success');
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      if (!stepEnded) {
+        const stepDurationMs = Math.round(Number(process.hrtime.bigint() - stepStartedAt) / 1e6);
+        stepSpan.setAttribute('automation.step.status', 'failed');
+        stepSpan.setAttribute('automation.step.duration_ms', stepDurationMs);
+        stepSpan.recordError(errMsg);
+        metricsRegistry.incrementCounter('automation_steps_total', { type: 'agent_execution', status: 'failed' });
+        stepSpan.end();
+        stepEnded = true;
+      }
+      void service.appendRunLog(resolvedTaskId, runId, {
+        level: 'err',
+        label: 'FAILED',
+        detail: errMsg.slice(0, 500),
+        eventType: 'automation_run_failed',
+      }).catch(() => {});
       const channelStatus = getNotificationChannelStatus(cfg, getTelegramRuntimeHints());
       const deliveryChannels = effectiveAutomationNotifyChannels(task.notifyChannels, task, channelStatus);
       const notification = await service.publishNotification({
         taskId: task.id,
-        kind: 'automation_success',
-        title: `✓ ${task.title}`,
-        body,
+        kind: 'automation_failure',
+        title: `✗ ${task.title}`,
+        body: errMsg.slice(0, 2000),
         channels: deliveryChannels,
         task,
-        payload: { taskId: task.id, displayId: task.displayId, runSessionId: sessionId, runId },
+        payload: { taskId: task.id, displayId: task.displayId, error: errMsg, runSessionId: sessionId, runId },
       });
-    await deliverExternalNotifications(notification, task, eng);
-    await service.recordRun(resolvedTaskId, 'success');
-    if (task.scheduleType === 'recurring') {
-      const refreshed = await service.getTask(resolvedTaskId);
-      if (refreshed) await service.scheduleNextRecurringRun(refreshed);
+      await deliverExternalNotifications(notification, task, eng);
+      await service.recordRun(resolvedTaskId, 'failed', trigger);
+      runStatus = 'failed';
+      span.setAttribute('automation.status', 'failed');
+      span.recordError(errMsg);
+      getLogger().error('AUTOMATION_WORKER', `Task ${task.displayId} (${resolvedTaskId}) failed: ${errMsg}`);
+      throw e;
+    } finally {
+      const runDurationMs = Math.round(Number(process.hrtime.bigint() - runStartedAt) / 1e6);
+      span.setAttribute('automation.duration_ms', runDurationMs);
+      span.setAttribute('automation.status', runStatus);
+      metricsRegistry.incrementCounter('automation_runs_total', { trigger, status: runStatus });
+      emitAutomationTelemetry('automation_run_ended', resolvedTaskId, { status: runStatus, durationMs: runDurationMs });
+      span.end();
+      unsubTelemetry();
+      try {
+        if (eng.agent && typeof (eng.agent as Agent).bindPermissionHandler === 'function') {
+          (eng.agent as Agent).bindPermissionHandler();
+        }
+        rewireTelegramChannelPermissions(eng);
+      } catch { /* best-effort */ }
+      try {
+        agent.sessionLogger?.close?.();
+        agent.endSession();
+      } catch { /* best-effort */ }
     }
-    getLogger().info('AUTOMATION_WORKER', `Task ${task.displayId} (${resolvedTaskId}) completed`);
-  } catch (e) {
-    const errMsg = e instanceof Error ? e.message : String(e);
-    void service.appendRunLog(resolvedTaskId, runId, {
-      level: 'err',
-      label: 'FAILED',
-      detail: errMsg.slice(0, 500),
-      eventType: 'automation_run_failed',
-    }).catch(() => {});
-    const channelStatus = getNotificationChannelStatus(cfg, getTelegramRuntimeHints());
-    const deliveryChannels = effectiveAutomationNotifyChannels(task.notifyChannels, task, channelStatus);
-    const notification = await service.publishNotification({
-      taskId: task.id,
-      kind: 'automation_failure',
-      title: `✗ ${task.title}`,
-      body: errMsg.slice(0, 2000),
-      channels: deliveryChannels,
-      task,
-      payload: { taskId: task.id, displayId: task.displayId, error: errMsg, runSessionId: sessionId, runId },
-    });
-    await deliverExternalNotifications(notification, task, eng);
-    await service.recordRun(resolvedTaskId, 'failed');
-    runStatus = 'failed';
-    getLogger().error('AUTOMATION_WORKER', `Task ${task.displayId} (${resolvedTaskId}) failed: ${errMsg}`);
-    throw e;
-  } finally {
-    emitAutomationTelemetry('automation_run_ended', resolvedTaskId, { status: runStatus });
-    unsubTelemetry();
-    try {
-      if (eng.agent && typeof (eng.agent as Agent).bindPermissionHandler === 'function') {
-        (eng.agent as Agent).bindPermissionHandler();
-      }
-      rewireTelegramChannelPermissions(eng);
-    } catch { /* best-effort */ }
-    try {
-      agent.sessionLogger?.close?.();
-      agent.endSession();
-    } catch { /* best-effort */ }
-  }
+  })());
 }
 
 const attachedQueues = new Set<string>();

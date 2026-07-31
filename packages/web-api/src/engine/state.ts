@@ -6,6 +6,8 @@ import {
   CrewManager,
   createDefaultToolkit,
   DefaultTelemetryBus,
+  initObservability,
+  type ObservabilityHandle,
   MemoryVectorStore,
   LLMEmbeddingProvider,
   RAGEngine,
@@ -38,6 +40,13 @@ import {
   type ServiceContext,
   getSubAgentServiceInstance,
   getPersonaStore,
+  GeoLocationService,
+  setGeoLocationServiceInstance,
+  startAppSpan,
+  channelMetricSource,
+  setDbMetricsSink,
+  setSpanMetricsSink,
+  type AgentMetricsApi,
 } from '@agentx/engine';
 import type { AgentXConfig, TelemetryBus, StorageAdapter, ChannelBindingId, ChannelSessionBinding, ClientSituation } from '@agentx/shared';
 import {
@@ -51,6 +60,7 @@ import { existsSync } from 'node:fs';
 // Pool type resolved via PostgresStorageAdapter's return type to avoid pg type resolution issues
 import { DeferredStorageAdapter } from '../deferred-storage.js';
 import { ensureChannelAgent } from './channels.js';
+import { metricsRegistry } from '../metrics/MetricsRegistry.js';
 
 export interface EngineState {
   configManager: ConfigManager;
@@ -64,6 +74,7 @@ export interface EngineState {
   toolkit: ReturnType<typeof createDefaultToolkit>;
   configured: boolean;
   telemetry: TelemetryBus;
+  observabilityHandle?: ObservabilityHandle;
   rag: RAGEngine | null;
   pluginRegistry: PluginRegistry;
   gateway: Gateway | null;
@@ -82,6 +93,8 @@ export interface EngineState {
   discordBridge: DiscordBridge | null;
   slackBridge: SlackBridge | null;
   emailBridge: EmailBridge | null;
+  /** WhatsApp session lifecycle service (null until WhatsApp is enabled + linked). */
+  whatsappSessionService: import('@agentx/engine').WhatsAppSessionService | null;
   redisRuntime: RedisCacheRuntime | null;
   webhookRuntime: WebhookNotifierRuntime | null;
   channelSessionBindings?: Partial<Record<ChannelBindingId, ChannelSessionBinding>>;
@@ -89,6 +102,8 @@ export interface EngineState {
   boundSessionAgents?: Map<string, Agent>;
   /** Latest client situation from the app (location + timezone). Used by channel agents. */
   clientSituation: ClientSituation | null;
+  /** Server-side geolocation service (IP-based, refreshes every 15 min). */
+  geoLocationService: GeoLocationService | null;
   dek: Buffer | null;
   integrationHub: IntegrationHub;
 }
@@ -98,6 +113,19 @@ let state: EngineState | null = null;
 let channelsBootstrappedAfterAuth = false;
 /** Optional SSE/log hook while storage connects, migrates, and seeds (setup wizard). */
 let storageProgressCallback: ((line: string) => void) | undefined;
+
+/**
+ * Adapter that exposes the web-api {@link ApiService.getAgentMetrics} values to
+ * the engine's {@link AgentMetricsApi} (used by the observability MetricsSampler
+ * to publish AGENT-domain metrics). Set from `index.ts` immediately after the
+ * ApiService is created, before `storageReady` resolves and `initObservability`
+ * runs, so the agent metric source is wired at init time (§8.2).
+ */
+let agentMetricsApi: AgentMetricsApi | null = null;
+
+export function setAgentMetricsApi(api: AgentMetricsApi): void {
+  agentMetricsApi = api;
+}
 
 export function setStorageProgressCallback(cb: ((line: string) => void) | undefined): void {
   storageProgressCallback = cb;
@@ -343,12 +371,25 @@ export function getEngine(): EngineState {
     discordBridge: null,
     slackBridge: null,
     emailBridge: null,
+    whatsappSessionService: null,
     redisRuntime: null,
     webhookRuntime: null,
     clientSituation: null,
+    geoLocationService: null,
     dek: null,
     integrationHub,
   };
+
+  // Start the server-side geolocation service — resolves location from IP
+  // address and refreshes every 15 minutes. Syncs to all agents on update.
+  const geoService = new GeoLocationService({
+    onUpdate: (situation) => {
+      setCurrentClientSituation(situation);
+    },
+  });
+  state.geoLocationService = geoService;
+  setGeoLocationServiceInstance(geoService);
+  geoService.start();
 
   // Wire the channel service agent resolver to the engine's channel agent factory.
   if (serviceContext.channelService instanceof ChannelService) {
@@ -386,6 +427,46 @@ export function getEngine(): EngineState {
           getLogger().info('CREW_MGR', `Recovered ${restored} missing crew(s) from session host snapshots`);
         }
         await state.crewManager.flushPersist();
+      }
+      if (state && pgAdapter) {
+        try {
+          // Bridge DB query metrics from the engine's PostgresStorageAdapter
+          // instrumentation into the web-api MetricsRegistry so they show up
+          // in the /metrics endpoint and are persisted via the sampler.
+          setDbMetricsSink({
+            incrementCounter: (name, labels, value) => metricsRegistry.incrementCounter(name, labels, value),
+            recordHistogram: (name, labels, valueSeconds) => metricsRegistry.recordHistogram(name, labels, valueSeconds),
+          });
+          // Bridge span-derived metrics (tokens, cost, tool calls, turn
+          // duration) from the PostgresSpanExporter into the web-api
+          // MetricsRegistry so the Prometheus `/api/metrics` endpoint and the
+          // MetricsSampler both see them (§8.2).
+          setSpanMetricsSink({
+            incrementCounter: (name, labels, value) => metricsRegistry.incrementCounter(name, labels, value),
+            recordHistogram: (name, labels, valueSeconds) => metricsRegistry.recordHistogram(name, labels, valueSeconds),
+          });
+          state.observabilityHandle = await initObservability(pgAdapter.getPool()!, {
+            telemetryBus: state.telemetry,
+            // AGENT-domain metrics (turns, tool latency, queue depth, cache hit
+            // rate) sourced from the ApiService adapter set via
+            // `setAgentMetricsApi` in index.ts (§8.2).
+            api: agentMetricsApi ?? undefined,
+            metricSources: [
+              // Expose web-api MetricsRegistry counters/histograms/gauges to the
+              // MetricsSampler so APP-domain metrics are persisted to the
+              // observability.database alongside AGENT-domain metrics.
+              {
+                name: 'web-api-registry',
+                snapshot: () => metricsRegistry.snapshot(),
+              },
+              // Channel event counters (discord/slack/telegram/whatsapp) from
+              // the engine package's in-memory channel-metrics module.
+              channelMetricSource,
+            ],
+          });
+        } catch (e) {
+          getLogger().error('OBSERVABILITY_INIT', e instanceof Error ? e.message : String(e));
+        }
       }
       await healDatabaseStore(store);
       startPeriodicDatabaseHeal(store);
@@ -502,6 +583,106 @@ export function setEngineDEK(dek: Buffer | null): void {
  * `await storageAdapter.flushWrites()` / `crewManager.flushPersist()` first.
  */
 export function clearEngine(): void {
+  const shutdownRoot = startAppSpan('app.shutdown', 'shutdown', 'app_shutdown');
+  const shutdownStart = Date.now();
+
+  // shutdown.engine — end all agent sessions
+  const enginePhase = startAppSpan('shutdown.engine', 'shutdown', 'shutdown_engine');
+  const engineStart = Date.now();
+  try {
+    if (state?.agent) {
+      state.agent?.sessionLogger?.close();
+      state.agent.endSession();
+    }
+    if (state?.channelAgents) {
+      for (const agent of state.channelAgents.values()) {
+        agent?.sessionLogger?.close();
+        agent.endSession();
+      }
+      state.channelAgents.clear();
+    }
+    if (state?.channelAgent) {
+      state.channelAgent?.sessionLogger?.close();
+      state.channelAgent.endSession();
+      state.channelAgent = null;
+    }
+    if (state?.boundSessionAgents) {
+      for (const agent of state.boundSessionAgents.values()) {
+        agent?.sessionLogger?.close();
+        agent.endSession();
+      }
+      state.boundSessionAgents.clear();
+    }
+    state = null;
+    resetCatalogSeedInflight();
+  } catch (e) {
+    enginePhase.span.recordError(`Engine teardown failed: ${e instanceof Error ? e.message : e}`);
+  }
+  enginePhase.span.setAttribute('startup.phase', 'shutdown.engine');
+  enginePhase.span.setAttribute('startup.duration_ms', Date.now() - engineStart);
+  enginePhase.span.end();
+
+  // shutdown.observability — best-effort observability flush marker
+  const obsPhase = startAppSpan('shutdown.observability', 'shutdown', 'shutdown_observability');
+  const obsStart = Date.now();
+  obsPhase.span.setAttribute('startup.phase', 'shutdown.observability');
+  obsPhase.span.setAttribute('startup.duration_ms', Date.now() - obsStart);
+  obsPhase.span.end();
+
+  shutdownRoot.span.setAttribute('shutdown.duration_ms', Date.now() - shutdownStart);
+  shutdownRoot.span.end();
+  metricsRegistry.incrementCounter('app_shutdowns_total', {}, 1);
+}
+
+/** Flush durable writes then clear — use when swapping storage backends. */
+export async function clearEngineDurable(): Promise<void> {
+  const prev = state;
+  if (!prev) return;
+
+  const shutdownRoot = startAppSpan('app.shutdown', 'shutdown', 'app_shutdown');
+  const shutdownStart = Date.now();
+
+  // shutdown.engine — flush durable writes
+  const enginePhase = startAppSpan('shutdown.engine', 'shutdown', 'shutdown_engine');
+  const engineStart = Date.now();
+  try {
+    await prev.crewManager.flushPersist();
+  } catch (e) {
+    getLogger().warn('CLEAR_ENGINE', `crew flushPersist failed: ${e instanceof Error ? e.message : e}`);
+    enginePhase.span.recordError(`crew flushPersist failed: ${e instanceof Error ? e.message : e}`);
+  }
+  try {
+    if (prev.storageAdapter.flushWrites) {
+      await prev.storageAdapter.flushWrites();
+    }
+  } catch (e) {
+    getLogger().warn('CLEAR_ENGINE', `flushWrites failed: ${e instanceof Error ? e.message : e}`);
+    enginePhase.span.recordError(`flushWrites failed: ${e instanceof Error ? e.message : e}`);
+  }
+  enginePhase.span.setAttribute('startup.phase', 'shutdown.engine');
+  enginePhase.span.setAttribute('startup.duration_ms', Date.now() - engineStart);
+  enginePhase.span.end();
+
+  // shutdown.ws — no WebSocket in state.ts, but mark the phase for completeness
+  const wsPhase = startAppSpan('shutdown.ws', 'shutdown', 'shutdown_ws');
+  const wsStart = Date.now();
+  wsPhase.span.setAttribute('startup.phase', 'shutdown.ws');
+  wsPhase.span.setAttribute('startup.duration_ms', Date.now() - wsStart);
+  wsPhase.span.end();
+
+  // shutdown.observability — close storage adapter (observability flush)
+  const obsPhase = startAppSpan('shutdown.observability', 'shutdown', 'shutdown_observability');
+  const obsStart = Date.now();
+  try {
+    prev.storageAdapter.close?.();
+  } catch (e) {
+    obsPhase.span.recordError(`storageAdapter.close failed: ${e instanceof Error ? e.message : e}`);
+  }
+  obsPhase.span.setAttribute('startup.phase', 'shutdown.observability');
+  obsPhase.span.setAttribute('startup.duration_ms', Date.now() - obsStart);
+  obsPhase.span.end();
+
+  // Now clear in-memory state (without re-entering the span wrapper).
   if (state?.agent) {
     state.agent?.sessionLogger?.close();
     state.agent.endSession();
@@ -527,26 +708,8 @@ export function clearEngine(): void {
   }
   state = null;
   resetCatalogSeedInflight();
-}
 
-/** Flush durable writes then clear — use when swapping storage backends. */
-export async function clearEngineDurable(): Promise<void> {
-  const prev = state;
-  if (!prev) return;
-  try {
-    await prev.crewManager.flushPersist();
-  } catch (e) {
-    getLogger().warn('CLEAR_ENGINE', `crew flushPersist failed: ${e instanceof Error ? e.message : e}`);
-  }
-  try {
-    if (prev.storageAdapter.flushWrites) {
-      await prev.storageAdapter.flushWrites();
-    }
-  } catch (e) {
-    getLogger().warn('CLEAR_ENGINE', `flushWrites failed: ${e instanceof Error ? e.message : e}`);
-  }
-  clearEngine();
-  try {
-    prev.storageAdapter.close?.();
-  } catch { /* best-effort */ }
+  shutdownRoot.span.setAttribute('shutdown.duration_ms', Date.now() - shutdownStart);
+  shutdownRoot.span.end();
+  metricsRegistry.incrementCounter('app_shutdowns_total', {}, 1);
 }

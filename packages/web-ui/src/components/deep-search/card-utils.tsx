@@ -74,16 +74,8 @@ export const searchResultsRowSx = {
   display: 'flex',
   flexWrap: 'nowrap',
   gap: 0.65,
-  overflowX: 'auto',
-  overflowY: 'hidden',
   WebkitOverflowScrolling: 'touch',
   p: 0.75,
-  scrollbarWidth: 'thin',
-  '&::-webkit-scrollbar': { height: 6 },
-  '&::-webkit-scrollbar-thumb': {
-    bgcolor: colors.border.default,
-    borderRadius: 3,
-  },
 } as const;
 
 export function OpenLinkHint() {

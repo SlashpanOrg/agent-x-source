@@ -55,15 +55,15 @@ export function createChannelAdapter(channel: string): ChannelAdapter {
     renderUpdate: (update: VisualUpdate): string | null => {
       switch (update.type) {
         case 'text_update':
-          return channel === 'discord' || channel === 'telegram' ? update.unstableText : null;
+          return channel === 'discord' || channel === 'telegram' || channel === 'whatsapp' ? update.unstableText : null;
         case 'tool_card':
-          return channel === 'discord' || channel === 'telegram'
+          return channel === 'discord' || channel === 'telegram' || channel === 'whatsapp'
             ? `**${update.card.icon} ${update.card.label}**\n${update.card.detail || ''}\n_${update.card.status}_`
             : null;
         case 'tool_card_update':
           return null;
         case 'thinking_update':
-          return channel === 'discord' || channel === 'telegram'
+          return channel === 'discord' || channel === 'telegram' || channel === 'whatsapp'
             ? `_${(update.state.content ?? '').slice(0, 200)}_`
             : null;
         case 'compaction_toast':

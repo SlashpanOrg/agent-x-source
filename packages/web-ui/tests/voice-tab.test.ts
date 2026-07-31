@@ -55,9 +55,9 @@ describe('applyVoicePreset', () => {
     expect(cfg.mode?.web).toBe('push-to-talk');
   });
 
-  it('forces local duplex leftovers back to push-to-talk', () => {
+  it('keeps local duplex when selected', () => {
     const cfg = applyVoicePreset(mergeVoiceConfig({ engine: 'stt_llm_tts', mode: { web: 'duplex' } }));
-    expect(cfg.mode?.web).toBe('push-to-talk');
+    expect(cfg.mode?.web).toBe('duplex');
   });
 
   it('keeps xAI on duplex', () => {
@@ -66,14 +66,14 @@ describe('applyVoicePreset', () => {
   });
 });
 
-describe('mergeVoiceConfig local duplex coerce', () => {
-  it('coerces stale local duplex to push-to-talk', () => {
+describe('mergeVoiceConfig local duplex support', () => {
+  it('preserves local duplex mode', () => {
     const cfg = mergeVoiceConfig({
       enabled: true,
       engine: 'stt_llm_tts',
       mode: { web: 'duplex' },
     });
-    expect(cfg.mode?.web).toBe('push-to-talk');
+    expect(cfg.mode?.web).toBe('duplex');
   });
 });
 

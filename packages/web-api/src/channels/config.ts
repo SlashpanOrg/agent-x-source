@@ -6,6 +6,9 @@ import {
   EmailBridge,
   EmailBridgeAdapter,
   ChannelService,
+  WhatsAppSessionService,
+  WhatsAppBridgeAdapter,
+  setWhatsAppSessionServiceInstance,
 } from '@agentx/engine';
 import type { AgentXConfig } from '@agentx/shared';
 import { parseAllowedUserIds } from '@agentx/shared';
@@ -48,10 +51,17 @@ export async function applyChannelsConfig(cfg?: AgentXConfig): Promise<void> {
     getLogger().warn('CHANNELS', telegramRuntime.lastStartError);
   }
 
-  // Discord/Slack/Email are now routed through the unified ChannelService.
+  // Discord/Slack/Email/WhatsApp are now routed through the unified ChannelService.
   const channelService = eng.serviceContext?.channelService as ChannelService | undefined;
   if (channelService) {
     await channelService.stop();
+
+    // Stop any existing WhatsApp session before re-evaluating config
+    if (eng.whatsappSessionService) {
+      try { await eng.whatsappSessionService.stop(); } catch { /* best-effort */ }
+      eng.whatsappSessionService = null;
+      setWhatsAppSessionServiceInstance(null);
+    }
 
     // Discord inbound (bot)
     const discord = ch?.discord;
@@ -109,6 +119,48 @@ export async function applyChannelsConfig(cfg?: AgentXConfig): Promise<void> {
       } catch (e) {
         getLogger().warn('CHANNELS', `Email inbound start failed: ${e instanceof Error ? e.message : String(e)}`);
       }
+    }
+
+    // WhatsApp inbound/outbound (single session, QR/pairing-code linking)
+    // Auto-pause: on startup, we always create the session service and attempt
+    // to connect. If the connection fails (protocol break, library
+    // incompatibility, etc.), the service enters a paused state. The UI shows
+    // a retry button so the user can manually try again.
+    const whatsapp = ch?.whatsapp;
+    if (wantsInbound(whatsapp) && eng.pgPool && eng.dek) {
+      const sessionService = new WhatsAppSessionService({
+        pool: eng.pgPool,
+        dek: eng.dek,
+        engine: whatsapp?.engine ?? 'baileys',
+      });
+      try {
+        // Boot-time reconciliation: auto-restart if previously authenticated.
+        // If this fails, reconcileOnBoot() sets the paused flag internally.
+        await sessionService.reconcileOnBoot();
+        // NOTE: We do NOT call link() here for first-time setup. If there's no
+        // previous session, reconcileOnBoot() returns without starting the
+        // engine. The user should explicitly click "Connect with QR" in the
+        // wizard or settings page to start the link flow. Auto-starting link()
+        // here would generate a QR before the user is ready to scan it, and
+        // the QR could expire by the time the user sees it.
+        // reconcileOnBoot() already calls link() if a previous READY session
+        // exists (returning user), so we only need to handle the case where
+        // reconcile didn't auto-start.
+      } catch (e) {
+        getLogger().warn('CHANNELS', `WhatsApp startup failed: ${e instanceof Error ? e.message : String(e)} — entering paused state`);
+        sessionService.paused = true;
+      }
+      // Always register the bridge and store the service, even if paused —
+      // the bridge and tool helpers check the paused flag at runtime.
+      const adapter = new WhatsAppBridgeAdapter({
+        sessionService,
+        autoReplyMode: whatsapp?.autoReplyMode ?? 'saved_contacts',
+        extraAllowedJids: whatsapp?.allowedJids,
+        blockedJids: whatsapp?.blockedJids,
+      });
+      channelService.registerBridge('whatsapp', adapter);
+      eng.whatsappSessionService = sessionService;
+      setWhatsAppSessionServiceInstance(sessionService);
     }
 
     await channelService.start();

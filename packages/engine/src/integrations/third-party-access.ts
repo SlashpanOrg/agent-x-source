@@ -88,9 +88,15 @@ const SERVICE_INTENTS: ReadonlyArray<{
     category: 'github',
     providerIds: ['github'],
     reason: 'GitHub remote request — requires GitHub MCP',
+    // NOTE: deliberately does NOT match a bare mention of "github" (e.g. "I was
+    // building a github project", "push this to github") — that's local git/shell
+    // work the agent already has tools for. Only match when the user is asking for
+    // something that actually needs the GitHub *API* (issues, PRs, notifications,
+    // gists, account info) rather than plain git operations on a local repo.
     patterns: [
-      /\b(?:my\s+)?github\b/i,
-      /\bgithub\s+(?:repo|issue|pr|pull\s+request|notification)s?\b/i,
+      /\b(?:check|list|show|read|open|create|close|merge|review|reply\s+to)\s+(?:my\s+)?github\s+(?:issue|pr|pull\s+request|notification|gist|repo)s?\b/i,
+      /\bmy\s+github\s+(?:issues|prs|pull\s+requests|notifications|profile|account|stars?|followers?|gists?|repos?)\b/i,
+      /\bgithub\s+(?:notification|gist)s?\b/i,
     ],
   },
   {
@@ -296,6 +302,10 @@ export interface ResolveThirdPartyAccessOpts {
   driveReadIntent?: boolean;
   /** Tool IDs actually registered in the toolkit after sync (source of truth for hints) */
   registeredIntegrationToolIds?: string[];
+  /** Native (builtin, non-integration) tool IDs in the registry — used to skip
+   * "[INTEGRATION REQUIRED/UNAVAILABLE]" hints for providers that have native
+   * tool equivalents (e.g. WhatsApp via Baileys). */
+  nativeToolIds?: string[];
 }
 
 /**
@@ -376,8 +386,25 @@ export function resolveThirdPartyAccess(opts: ResolveThirdPartyAccessOpts): Thir
     ]),
   ];
 
-  if (providerIds.length === 0 && !genericExternal && !serviceIntent) {
+  // A bare catalog-name substring match (mentionedIds) is NOT sufficient on its own
+  // to block local exploration — that would false-positive on any incidental mention
+  // of a service name (e.g. "I was building a github project", "slack" as an English
+  // word). Only proceed when there's an actual service intent (action + service) or
+  // "my/our ... account/workspace" language pairing the mention with account access.
+  if (!serviceIntent && !genericExternal) {
     return {};
+  }
+
+  // If every mentioned provider has native (builtin) tool equivalents, don't
+  // generate an MCP "integration required" hint — the native tools handle it.
+  // This prevents the agent from telling the user to "connect WhatsApp in MCP
+  // Store" when WhatsApp is actually a native Baileys-based integration.
+  const nativeIds = opts.nativeToolIds ?? [];
+  if (providerIds.length > 0 && nativeIds.length > 0) {
+    const allCoveredByNative = providerIds.every((pid) => providerHasNativeTools(pid, nativeIds));
+    if (allCoveredByNative && !genericExternal) {
+      return {};
+    }
   }
 
   const category = serviceIntent?.category ?? 'third-party app';
@@ -445,9 +472,17 @@ export function resolveMentionedProviderAccess(
   userText: string,
   snapshot: IntegrationTurnSnapshotRef,
   registeredIntegrationToolIds: string[] = [],
+  nativeToolIds: string[] = [],
 ): ThirdPartyAccessResolution | undefined {
   for (const entry of snapshot.unavailable) {
     if (!mentionsProvider(userText, entry.providerId, entry.name)) continue;
+    // If native (builtin) tools cover this provider, don't tell the agent the
+    // integration is "unavailable" — the native tools handle it. This prevents
+    // the agent from confusing MCP integrations with native tools (e.g.
+    // WhatsApp has native Baileys-based tools, not just the MCP Business API).
+    if (providerHasNativeTools(entry.providerId, nativeToolIds)) {
+      return undefined;
+    }
     return {
       promptHint: [
         `[INTEGRATION UNAVAILABLE] ${entry.name} MCP is not connected`,
@@ -474,4 +509,22 @@ export function resolveMentionedProviderAccess(
   }
 
   return undefined;
+}
+
+/**
+ * Check if native (builtin) tools exist in the registry for a provider that
+ * also has an MCP catalog entry. This lets us skip the "[INTEGRATION
+ * UNAVAILABLE]" hint when the user mentions a service that's handled by
+ * native tools (e.g. WhatsApp via Baileys) rather than MCP.
+ *
+ * Maps MCP provider IDs to native tool ID prefixes.
+ */
+const NATIVE_TOOL_PROVIDER_PREFIXES: Record<string, string> = {
+  whatsapp: 'whatsapp_',
+};
+
+function providerHasNativeTools(providerId: string, nativeToolIds: string[]): boolean {
+  const prefix = NATIVE_TOOL_PROVIDER_PREFIXES[providerId];
+  if (!prefix) return false;
+  return nativeToolIds.some((id) => id.startsWith(prefix));
 }

@@ -45,5 +45,5 @@ export interface CrewCallTranscriptLine {
   text: string;
   at: number;
   /** Persisted call divider — render as a rule, not a spoken turn. */
-  divider?: 'daytime' | 'time' | 'duration';
+  divider?: 'daytime' | 'time' | 'duration' | 'new_conversation';
 }

@@ -1,0 +1,338 @@
+/** Trace list page (§11.4) — filter bar + results table + pagination + auto-refresh. */
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import Box from '@mui/material/Box';
+import Typography from '@mui/material/Typography';
+import Table from '@mui/material/Table';
+import TableBody from '@mui/material/TableBody';
+import TableCell from '@mui/material/TableCell';
+import TableHead from '@mui/material/TableHead';
+import TableRow from '@mui/material/TableRow';
+import TableSortLabel from '@mui/material/TableSortLabel';
+import Button from '@mui/material/Button';
+import TextField from '@mui/material/TextField';
+import Chip from '@mui/material/Chip';
+import Skeleton from '@mui/material/Skeleton';
+import Alert from '@mui/material/Alert';
+import ToggleButton from '@mui/material/ToggleButton';
+import TimelineIcon from '@mui/icons-material/Timeline';
+import { getTrace, listTraces, type ListTracesResponse } from '../api';
+import type { TraceSummary, TraceDetail, SpanNode } from '@agentx/shared';
+import Collapse from '@mui/material/Collapse';
+import IconButton from '@mui/material/IconButton';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
+import { useObs } from '../context';
+import { StatusBadge } from '../components/StatusBadge';
+import { DomainBadge } from '../components/DomainToggle';
+import { FilterChips } from '../components/FilterChips';
+import { ObsPanel, ObsPageHeader } from '../components/ObsPanel';
+import { obs, obsMonoSx, obsBtnGhostSx, obsInputSx } from '../obs-theme';
+import { alphaColor } from '../../theme';
+
+const STATUSES = ['running', 'ok', 'error', 'cancelled'] as const;
+const AGENT_KINDS = ['turn', 'autonomous_run', 'crew_mission', 'task_executor'] as const;
+const APP_KINDS = ['http_request', 'ws_connection', 'auth', 'db_query', 'channel_event', 'automation_run', 'startup', 'integration_call', 'job'] as const;
+
+type SortField = 'started_at' | 'duration_ms' | 'input_tokens' | 'output_tokens' | 'tool_call_count';
+type SortDir = 'asc' | 'desc';
+
+export function TraceListPage() {
+  const { domain, timeRange, refreshTick } = useObs();
+  const [data, setData] = useState<ListTracesResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [cursor, setCursor] = useState<string | undefined>(undefined);
+  const [allTraces, setAllTraces] = useState<TraceSummary[]>([]);
+
+  // Filters
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [kindFilter, setKindFilter] = useState<string[]>([]);
+  const [sessionId, setSessionId] = useState('');
+  const [query, setQuery] = useState('');
+  const [errorsOnly, setErrorsOnly] = useState(false);
+  const [sortField, setSortField] = useState<SortField>('started_at');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  const kinds = domain === 'agent' ? AGENT_KINDS : domain === 'app' ? APP_KINDS : [...AGENT_KINDS, ...APP_KINDS];
+
+  const fetchTraces = useCallback(async (reset: boolean) => {
+    setLoading(reset);
+    setError('');
+    try {
+      const res = await listTraces({
+        domain: domain === 'both' ? undefined : domain,
+        sessionId: sessionId || undefined,
+        status: errorsOnly ? 'error' : (statusFilter.length > 0 ? statusFilter.join(',') : undefined),
+        kind: kindFilter.length > 0 ? kindFilter.join(',') : undefined,
+        from: timeRange.from,
+        to: timeRange.to,
+        q: query || undefined,
+        limit: 50,
+        cursor: reset ? undefined : cursor,
+      });
+      if (reset) {
+        setAllTraces(res.traces);
+      } else {
+        setAllTraces((prev) => [...prev, ...res.traces]);
+      }
+      setData(res);
+      setCursor(res.nextCursor);
+    } catch (e: unknown) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [domain, sessionId, statusFilter, kindFilter, errorsOnly, query, timeRange, cursor]);
+
+  // Initial load + filter changes.
+  useEffect(() => {
+    setCursor(undefined);
+    fetchTraces(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [domain, timeRange.from, timeRange.to, sessionId, statusFilter, kindFilter, errorsOnly, query, refreshTick]);
+
+  // Sort the traces in-memory.
+  const sortedTraces = useMemo(() => {
+    const sorted = [...allTraces];
+    sorted.sort((a, b) => {
+      const av = a[sortField] ?? 0;
+      const bv = b[sortField] ?? 0;
+      const cmp = (av as number) - (bv as number);
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return sorted;
+  }, [allTraces, sortField, sortDir]);
+
+  const maxDuration = useMemo(() => Math.max(1, ...sortedTraces.map((t) => t.duration_ms ?? 0)), [sortedTraces]);
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDir((d) => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDir('desc');
+    }
+  };
+
+  const resetFilters = () => { setStatusFilter([]); setKindFilter([]); setSessionId(''); setQuery(''); setErrorsOnly(false); };
+
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+      <ObsPageHeader
+        icon={<TimelineIcon sx={{ fontSize: 18 }} />}
+        title="Traces"
+        subtitle={data ? `${sortedTraces.length} result${sortedTraces.length !== 1 ? 's' : ''} in range` : undefined}
+      />
+
+      {/* Filter bar */}
+      <ObsPanel>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+            <FilterChips options={STATUSES} selected={statusFilter} onChange={setStatusFilter} label="Status" />
+            <FilterChips options={kinds as unknown as string[]} selected={kindFilter} onChange={setKindFilter} label="Kind" />
+            <ToggleButton
+              size="small"
+              value="errors"
+              selected={errorsOnly}
+              onChange={(_, v) => setErrorsOnly(v)}
+              sx={{
+                px: 1.25, color: errorsOnly ? obs.accent.alert : obs.text.dim,
+                bgcolor: errorsOnly ? alphaColor(obs.accent.alert, 0.12) : 'transparent',
+                border: `1px solid ${errorsOnly ? alphaColor(obs.accent.alert, 0.4) : obs.border.default}`,
+              }}
+            >
+              Errors only
+            </ToggleButton>
+          </Box>
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            <TextField
+              size="small" placeholder="Session ID" value={sessionId}
+              onChange={(e) => setSessionId(e.target.value)} sx={{ width: 200, ...obsInputSx }}
+            />
+            <TextField
+              size="small" placeholder="Search traces…" value={query}
+              onChange={(e) => setQuery(e.target.value)} sx={{ width: 200, ...obsInputSx }}
+            />
+            <Button size="small" onClick={resetFilters} sx={obsBtnGhostSx}>Reset filters</Button>
+          </Box>
+        </Box>
+      </ObsPanel>
+
+      {error && <Alert severity="error">{error}</Alert>}
+
+      {/* Results */}
+      <ObsPanel noBodyPadding>
+        <Box className="ax-scroll-x">
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell />{/* expand */}
+                <TableCell>Domain</TableCell>
+                <TableCell>Status</TableCell>
+                <TableCell>
+                  <TableSortLabel active={sortField === 'started_at'} direction={sortDir} onClick={() => handleSort('started_at')}>
+                    Started
+                  </TableSortLabel>
+                </TableCell>
+                <TableCell>
+                  <TableSortLabel active={sortField === 'duration_ms'} direction={sortDir} onClick={() => handleSort('duration_ms')}>
+                    Duration
+                  </TableSortLabel>
+                </TableCell>
+                <TableCell>Kind</TableCell>
+                <TableCell>Session</TableCell>
+                <TableCell>Tokens</TableCell>
+                <TableCell>Tool calls</TableCell>
+                <TableCell>Error</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {loading && allTraces.length === 0 ? (
+                Array.from({ length: 8 }).map((_, i) => (
+                  <TableRow key={i}>
+                    {Array.from({ length: 10 }).map((_, j) => (
+                      <TableCell key={j}><Skeleton height={18} sx={{ bgcolor: obs.bg.hud }} /></TableCell>
+                    ))}
+                  </TableRow>
+                ))
+              ) : sortedTraces.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={10} align="center">
+                    <Typography sx={{ ...obsMonoSx, fontSize: '0.68rem', color: obs.text.dim, py: 3 }}>
+                      No traces found. Try adjusting filters.
+                    </Typography>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                sortedTraces.map((t) => (
+                  <TraceRow key={t.trace_id} trace={t} maxDuration={maxDuration} />
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </Box>
+      </ObsPanel>
+
+      {/* Pagination */}
+      {cursor && (
+        <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+          <Button size="small" onClick={() => fetchTraces(false)} disabled={loading} sx={obsBtnGhostSx}>
+            Load more
+          </Button>
+        </Box>
+      )}
+      {data && (
+        <Typography sx={{ ...obsMonoSx, fontSize: '0.6rem', color: obs.text.dim, textAlign: 'center' }}>
+          Showing {sortedTraces.length} trace{sortedTraces.length !== 1 ? 's' : ''}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
+function TraceRow({ trace, maxDuration }: { trace: TraceSummary; maxDuration: number }) {
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState<TraceDetail | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+
+  useEffect(() => {
+    if (!open || detail) return;
+    let cancelled = false;
+    setLoadingDetail(true);
+    getTrace(trace.trace_id)
+      .then((d) => { if (!cancelled) setDetail(d); })
+      .catch(() => { /* ignore — preview is best effort */ })
+      .finally(() => { if (!cancelled) setLoadingDetail(false); });
+    return () => { cancelled = true; };
+  }, [open, detail, trace.trace_id]);
+
+  const rootSpan = useMemo<SpanNode | null>(() => {
+    if (!detail) return null;
+    return detail.spans.find((s) => s.span_id === detail.root_span_id) ?? detail.spans[0] ?? null;
+  }, [detail]);
+
+  const childSpans = useMemo<SpanNode[]>(() => {
+    if (!rootSpan || !detail) return [];
+    return detail.spans
+      .filter((s) => s.parent_span_id === rootSpan.span_id)
+      .sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime())
+      .slice(0, 4);
+  }, [rootSpan, detail]);
+
+  return (
+    <>
+      <TableRow hover sx={{ cursor: 'pointer' }} onClick={() => navigate(`/trace/${trace.trace_id}`)}>
+        <TableCell>
+          <IconButton size="small" sx={{ color: obs.text.dim }} onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}>
+            {open ? <KeyboardArrowUpIcon fontSize="small" /> : <KeyboardArrowDownIcon fontSize="small" />}
+          </IconButton>
+        </TableCell>
+        <TableCell><DomainBadge domain={trace.domain} /></TableCell>
+        <TableCell><StatusBadge status={trace.status} /></TableCell>
+        <TableCell sx={obsMonoSx} title={new Date(trace.started_at).toISOString()}>{new Date(trace.started_at).toLocaleTimeString()}</TableCell>
+        <TableCell>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Box component="span" sx={{ ...obsMonoSx, fontSize: '0.68rem', minWidth: 46 }}>{trace.duration_ms != null ? `${trace.duration_ms}ms` : '—'}</Box>
+            {trace.duration_ms != null && (
+              <Box sx={{ width: 40, height: 3, bgcolor: obs.border.default, borderRadius: 2, overflow: 'hidden' }}>
+                <Box sx={{ width: `${(trace.duration_ms / maxDuration) * 100}%`, height: '100%', bgcolor: obs.accent.hud }} />
+              </Box>
+            )}
+          </Box>
+        </TableCell>
+        <TableCell sx={{ ...obsMonoSx, fontSize: '0.65rem' }}>{trace.kind}</TableCell>
+        <TableCell>
+          {trace.session_id ? (
+            <Chip size="small" label={trace.session_id.slice(0, 8)} onClick={(e) => { e.stopPropagation(); navigate(`/session/${trace.session_id}`); }} sx={{ ...obsMonoSx, fontSize: '0.62rem', bgcolor: obs.bg.hud, border: `1px solid ${obs.border.default}` }} />
+          ) : '—'}
+        </TableCell>
+        <TableCell sx={obsMonoSx}>{(trace.input_tokens ?? 0) + (trace.output_tokens ?? 0)}</TableCell>
+        <TableCell sx={obsMonoSx}>{trace.tool_call_count ?? 0}</TableCell>
+        <TableCell>
+          {trace.status === 'error' && trace.error ? (
+            <Typography sx={{ ...obsMonoSx, fontSize: '0.62rem', color: obs.accent.alert, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{trace.error}</Typography>
+          ) : '—'}
+        </TableCell>
+      </TableRow>
+      <TableRow>
+        <TableCell colSpan={10} sx={{ p: 0, borderBottom: 'none' }}>
+          <Collapse in={open} timeout="auto" unmountOnExit>
+            <Box sx={{ p: 1.5, bgcolor: alphaColor(obs.accent.hud, 0.04), borderBottom: `1px solid ${obs.border.subtle}` }}>
+              {loadingDetail && !detail ? (
+                <Typography sx={{ ...obsMonoSx, fontSize: '0.62rem', color: obs.text.dim }}>Loading span preview…</Typography>
+              ) : !detail ? (
+                <Typography sx={{ ...obsMonoSx, fontSize: '0.62rem', color: obs.text.dim }}>Click arrow to load preview.</Typography>
+              ) : (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                  {rootSpan ? (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+                      <Typography sx={{ ...obsMonoSx, fontSize: '0.58rem', color: obs.text.dim, letterSpacing: '1px' }}>ROOT</Typography>
+                      <Typography sx={{ ...obsMonoSx, fontSize: '0.72rem', color: obs.text.primary }}>{rootSpan.name}</Typography>
+                      <StatusBadge status={rootSpan.status} />
+                      <Typography sx={{ ...obsMonoSx, fontSize: '0.68rem', color: obs.text.secondary }}>{rootSpan.duration_ms != null ? `${rootSpan.duration_ms}ms` : '—'}</Typography>
+                    </Box>
+                  ) : (
+                    <Typography sx={{ ...obsMonoSx, fontSize: '0.62rem', color: obs.text.dim }}>No spans available.</Typography>
+                  )}
+                  {childSpans.length > 0 && (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.4, pl: 1.5, borderLeft: `1px solid ${obs.border.hud}` }}>
+                      {childSpans.map((s) => (
+                        <Box key={s.span_id} sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                          <Typography sx={{ ...obsMonoSx, fontSize: '0.68rem', color: obs.text.secondary }}>→ {s.name}</Typography>
+                          <StatusBadge status={s.status} />
+                          <Typography sx={{ ...obsMonoSx, fontSize: '0.62rem', color: obs.text.dim }}>{s.duration_ms != null ? `${s.duration_ms}ms` : '—'}</Typography>
+                        </Box>
+                      ))}
+                    </Box>
+                  )}
+                </Box>
+              )}
+            </Box>
+          </Collapse>
+        </TableCell>
+      </TableRow>
+    </>
+  );
+}

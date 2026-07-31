@@ -1,5 +1,12 @@
 export type MetricType = 'counter' | 'gauge' | 'histogram' | 'summary';
 
+/**
+ * Top-level observability domain. Every trace/span/log/metric is tagged with
+ * one of these so the `/observability` UI can segregate AI/agent activity
+ * (`AGENT`) from generic application activity (`APP`) with a single toggle.
+ */
+export type ObservabilityDomain = 'AGENT' | 'APP';
+
 export interface MetricDefinition {
   name: string;
   type: MetricType;

@@ -3,6 +3,8 @@ import type { Agent } from '../agent/Agent.js';
 import { EventEmitter } from 'node:events';
 import type { EngineEvent } from '@agentx/shared';
 import { isChannelUserAllowed } from '@agentx/shared';
+import { withSpan } from '../observability/index.js';
+import { incrementChannelEvent } from '../observability/channel-metrics.js';
 import { MessagingPermissionCoordinator, permissionResultLabel } from '../channels/MessagingPermissionCoordinator.js';
 import { MessagingQuestionnaireCoordinator } from '../channels/MessagingQuestionnaireCoordinator.js';
 import { getRenderer } from '../channels/renderers/index.js';
@@ -327,35 +329,49 @@ export class SlackBridge extends EventEmitter {
 
   async sendMessage(channel: string, content: string, threadTs?: string): Promise<void> {
     if (!this.app) throw new Error('Slack bridge not started');
-    await this.app.client.chat.postMessage({
-      channel,
-      text: content,
-      thread_ts: threadTs,
+    await withSpan('channel.outbound', 'channel', async (span) => {
+      span.setAttribute('trace.domain', 'APP');
+      span.setAttribute('trace.kind', 'channel_event');
+      span.setAttribute('channel.type', 'slack');
+      span.setAttribute('channel.to', channel);
+      span.setAttribute('channel.message_type', 'text');
+      await this.app!.client.chat.postMessage({
+        channel,
+        text: content,
+        thread_ts: threadTs,
+      });
     });
   }
 
   async sendFile(channel: string, file: string | { name: string; content: Buffer }, title?: string, threadTs?: string): Promise<void> {
     if (!this.app) throw new Error('Slack bridge not started');
-    let fileStreamOrBuffer: import('node:fs').ReadStream | Buffer;
-    let filename: string;
-    if (typeof file === 'string') {
-      const { createReadStream } = await import('node:fs');
-      const { basename } = await import('node:path');
-      fileStreamOrBuffer = createReadStream(file);
-      filename = title || basename(file);
-    } else {
-      fileStreamOrBuffer = file.content;
-      filename = title || file.name || 'attachment';
-    }
-    const args = {
-      channel_id: channel,
-      file: fileStreamOrBuffer,
-      filename,
-      title: filename,
-      ...(threadTs ? { thread_ts: threadTs } : {}),
-    };
-    // @ts-expect-error — runtime API accepts these args; types are overly strict for optional thread_ts
-    await this.app.client.files.uploadV2(args);
+    await withSpan('channel.outbound', 'channel', async (span) => {
+      span.setAttribute('trace.domain', 'APP');
+      span.setAttribute('trace.kind', 'channel_event');
+      span.setAttribute('channel.type', 'slack');
+      span.setAttribute('channel.to', channel);
+      span.setAttribute('channel.message_type', 'file');
+      let fileStreamOrBuffer: import('node:fs').ReadStream | Buffer;
+      let filename: string;
+      if (typeof file === 'string') {
+        const { createReadStream } = await import('node:fs');
+        const { basename } = await import('node:path');
+        fileStreamOrBuffer = createReadStream(file);
+        filename = title || basename(file);
+      } else {
+        fileStreamOrBuffer = file.content;
+        filename = title || file.name || 'attachment';
+      }
+      const args = {
+        channel_id: channel,
+        file: fileStreamOrBuffer,
+        filename,
+        title: filename,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+      };
+      // @ts-expect-error — runtime API accepts these args; types are overly strict for optional thread_ts
+      await this.app!.client.files.uploadV2(args);
+    });
   }
 
   getStatus(): SlackBridgeStatus {
@@ -380,130 +396,142 @@ export class SlackBridge extends EventEmitter {
     const threadTs = event.threadTs ?? event.messageTs;
     this.lastThreadByUser.set(event.userId, threadTs);
     this.messageCount++;
-    this.emit('slack_message', event);
+    incrementChannelEvent('slack', 'message');
 
-    if (this.messageHandler) {
-      await this.messageHandler(event, client);
-      return;
-    }
+    await withSpan('channel.inbound', 'channel', async (span) => {
+      span.setAttribute('trace.domain', 'APP');
+      span.setAttribute('trace.kind', 'channel_event');
+      span.setAttribute('channel.type', 'slack');
+      span.setAttribute('channel.event', 'message');
+      span.setAttribute('channel.from', event.userId);
+      span.setAttribute('channel.message_id', event.messageTs);
 
-    let cleanText = event.text;
-    if (this.botUserId) {
-      cleanText = cleanText.replace(new RegExp(`<@${this.botUserId}>\\s*`, 'g'), '').trim();
-    }
+      this.emit('slack_message', event);
 
-    if (this.permissionCoordinator.isAwaitingInstruct(event.userId)) {
-      if (this.permissionCoordinator.consumeInstructText(event.userId, cleanText)) {
+      if (this.messageHandler) {
+        await this.messageHandler(event, client);
+        return;
+      }
+
+      let cleanText = event.text;
+      if (this.botUserId) {
+        cleanText = cleanText.replace(new RegExp(`<@${this.botUserId}>\\s*`, 'g'), '').trim();
+      }
+
+      if (this.permissionCoordinator.isAwaitingInstruct(event.userId)) {
+        if (this.permissionCoordinator.consumeInstructText(event.userId, cleanText)) {
+          await client.chat.postMessage({
+            channel: event.channel,
+            text: '✏️ Instruction sent to the agent.',
+            thread_ts: threadTs,
+          });
+          return;
+        }
+      }
+
+      let agent = this.userAgents.get(event.userId);
+      if (!agent && this.agentFactory) {
+        agent = this.agentFactory(event.userId);
+        this.wireAgentPermissions(agent, event.userId);
+        this.userAgents.set(event.userId, agent);
+        this.attachToolStatusListener(event.userId, agent, event.channel, threadTs);
+      }
+
+      if (!agent) {
         await client.chat.postMessage({
           channel: event.channel,
-          text: '✏️ Instruction sent to the agent.',
+          text: '⚠️ Agent not configured for this workspace.',
           thread_ts: threadTs,
         });
         return;
       }
-    }
 
-    let agent = this.userAgents.get(event.userId);
-    if (!agent && this.agentFactory) {
-      agent = this.agentFactory(event.userId);
-      this.wireAgentPermissions(agent, event.userId);
-      this.userAgents.set(event.userId, agent);
-      this.attachToolStatusListener(event.userId, agent, event.channel, threadTs);
-    }
-
-    if (!agent) {
-      await client.chat.postMessage({
-        channel: event.channel,
-        text: '⚠️ Agent not configured for this workspace.',
-        thread_ts: threadTs,
-      });
-      return;
-    }
-
-    if (tryConsumeMessagingClarification(agent, cleanText)) {
-      return;
-    }
-
-    try {
-      const thinkingMsg = await client.chat.postMessage({
-        channel: event.channel,
-        text: '🤔 Thinking...',
-        thread_ts: threadTs,
-      });
-      const thinkingTs = thinkingMsg.ts as string | undefined;
-
-      // Download and attach files if present
-      if (event.files && event.files.length > 0) {
-        const fileInfos = await this.downloadFiles(event.files);
-        if (fileInfos.length > 0) {
-          cleanText += '\n\n[ATTACHED_FILES]\n' + fileInfos.join('\n');
-        }
+      if (tryConsumeMessagingClarification(agent, cleanText)) {
+        return;
       }
 
-      const exec = agent.getToolExecutor();
-      exec?.setMessagingPermissionMode(true);
-      const unsubClarification = attachMessagingClarificationListener(agent, {
-        userKey: event.userId,
-        threadTs,
-        questionnaireCoordinator: this.questionnaireCoordinator,
-        sendText: (text, ts) => this.sendSlackText(event.channel, text, ts ?? threadTs),
-        sendQuestionnaireStep: (prompt, buttons, ts) =>
-          this.sendSlackQuestionnaireStep(event.channel, prompt, buttons, ts ?? threadTs),
-      });
-
-      let response;
       try {
-        response = await agent.sendMessage(cleanText);
-      } finally {
-        unsubClarification();
-        exec?.setMessagingPermissionMode(false);
-      }
+        const thinkingMsg = await client.chat.postMessage({
+          channel: event.channel,
+          text: '🤔 Thinking...',
+          thread_ts: threadTs,
+        });
+        const thinkingTs = thinkingMsg.ts as string | undefined;
 
-      const content = extractMessagingReplyText(response);
+        // Download and attach files if present
+        if (event.files && event.files.length > 0) {
+          const fileInfos = await this.downloadFiles(event.files);
+          if (fileInfos.length > 0) {
+            cleanText += '\n\n[ATTACHED_FILES]\n' + fileInfos.join('\n');
+          }
+        }
 
-      // Delete the "Thinking..." message now that we have the response
-      if (thinkingTs) {
+        const exec = agent.getToolExecutor();
+        exec?.setMessagingPermissionMode(true);
+        const unsubClarification = attachMessagingClarificationListener(agent, {
+          userKey: event.userId,
+          threadTs,
+          questionnaireCoordinator: this.questionnaireCoordinator,
+          sendText: (text, ts) => this.sendSlackText(event.channel, text, ts ?? threadTs),
+          sendQuestionnaireStep: (prompt, buttons, ts) =>
+            this.sendSlackQuestionnaireStep(event.channel, prompt, buttons, ts ?? threadTs),
+        });
+
+        let response;
         try {
-          await client.chat.delete({
-            channel: event.channel,
-            ts: thinkingTs,
-          });
-        } catch {
-          // If we can't delete, try to update it to something minimal
+          response = await agent.sendMessage(cleanText);
+        } finally {
+          unsubClarification();
+          exec?.setMessagingPermissionMode(false);
+        }
+
+        const content = extractMessagingReplyText(response);
+
+        // Delete the "Thinking..." message now that we have the response
+        if (thinkingTs) {
           try {
-            await client.chat.update({
+            await client.chat.delete({
               channel: event.channel,
               ts: thinkingTs,
-              text: '✅ Done',
             });
-          } catch { /* best effort */ }
+          } catch {
+            // If we can't delete, try to update it to something minimal
+            try {
+              await client.chat.update({
+                channel: event.channel,
+                ts: thinkingTs,
+                text: '✅ Done',
+              });
+            } catch { /* best effort */ }
+          }
         }
-      }
 
-      // Use SlackRenderer for native Block Kit formatting
-      const renderer = getRenderer('slack');
-      const renderResults = renderer.renderMarkdown(content);
-      for (const result of renderResults) {
-        const payload = result.payload as { blocks?: unknown[] };
-        const messageArgs: Record<string, unknown> = {
-          channel: event.channel,
-          text: content.slice(0, 3000),
-          thread_ts: threadTs,
-        };
-        if (payload.blocks) {
-          messageArgs.blocks = payload.blocks;
+        // Use SlackRenderer for native Block Kit formatting
+        const renderer = getRenderer('slack');
+        const renderResults = renderer.renderMarkdown(content);
+        for (const result of renderResults) {
+          const payload = result.payload as { blocks?: unknown[] };
+          const messageArgs: Record<string, unknown> = {
+            channel: event.channel,
+            text: content.slice(0, 3000),
+            thread_ts: threadTs,
+          };
+          if (payload.blocks) {
+            messageArgs.blocks = payload.blocks;
+          }
+          // @ts-expect-error — Slack SDK types are strict about Block shapes; our runtime objects are valid
+          await client.chat.postMessage(messageArgs);
         }
-        // @ts-expect-error — Slack SDK types are strict about Block shapes; our runtime objects are valid
-        await client.chat.postMessage(messageArgs);
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : 'Processing failed';
+        span.recordException(error instanceof Error ? error : new Error(errMsg));
+        await client.chat.postMessage({
+          channel: event.channel,
+          text: `❌ Error: ${errMsg}`,
+          thread_ts: threadTs,
+        });
       }
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : 'Processing failed';
-      await client.chat.postMessage({
-        channel: event.channel,
-        text: `❌ Error: ${errMsg}`,
-        thread_ts: threadTs,
-      });
-    }
+    });
   }
 
   private async sendSlackText(channel: string, text: string, threadTs?: string): Promise<void> {

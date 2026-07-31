@@ -5,6 +5,8 @@ import { AgentEventBus } from '../EventBus.js';
 import { TelegramStore } from './TelegramStore.js';
 import { randomBytes } from 'node:crypto';
 import { getRenderer } from '../channels/renderers/index.js';
+import { withSpan } from '../observability/index.js';
+import { incrementChannelEvent } from '../observability/channel-metrics.js';
 
 export interface TelegramConfig {
   botToken: string;
@@ -143,6 +145,14 @@ export class TelegramBridge {
     }
     this.botUsername = me.result.username;
     this.connected = true;
+    incrementChannelEvent('telegram', 'connect');
+    void withSpan('channel.lifecycle', 'channel', (span) => {
+      span.setAttribute('trace.domain', 'APP');
+      span.setAttribute('trace.kind', 'channel_event');
+      span.setAttribute('channel.type', 'telegram');
+      span.setAttribute('channel.event', 'connect');
+      span.setAttribute('channel.status', 'connected');
+    });
     // Register as the globally active bridge for tool access
     _setActiveTelegramBridge(this);
 
@@ -233,8 +243,19 @@ export class TelegramBridge {
    * Stop the bot.
    */
   stop(): void {
+    const wasConnected = this.connected;
     this.polling = false;
     this.connected = false;
+    if (wasConnected) {
+      incrementChannelEvent('telegram', 'disconnect');
+      void withSpan('channel.lifecycle', 'channel', (span) => {
+        span.setAttribute('trace.domain', 'APP');
+        span.setAttribute('trace.kind', 'channel_event');
+        span.setAttribute('channel.type', 'telegram');
+        span.setAttribute('channel.event', 'disconnect');
+        span.setAttribute('channel.status', 'disconnected');
+      });
+    }
     _clearActiveTelegramBridge();
     if (this.pollTimeout) {
       clearTimeout(this.pollTimeout);
@@ -356,87 +377,98 @@ export class TelegramBridge {
     }
 
     this.messageCount++;
+    incrementChannelEvent('telegram', 'message');
 
-    // ─── Handle file messages (document, photo, audio, video, voice) ───
-    const doc = msg.document as { file_id: string; file_name?: string; mime_type?: string } | undefined;
-    const photo = msg.photo as Array<{ file_id: string; width: number; height: number }> | undefined;
-    const audio = msg.audio as { file_id: string; file_name?: string; mime_type?: string } | undefined;
-    const video = msg.video as { file_id: string; file_name?: string; mime_type?: string } | undefined;
-    const voice = msg.voice as { file_id: string; mime_type?: string } | undefined;
+    await withSpan('channel.inbound', 'channel', async (span) => {
+      span.setAttribute('trace.domain', 'APP');
+      span.setAttribute('trace.kind', 'channel_event');
+      span.setAttribute('channel.type', 'telegram');
+      span.setAttribute('channel.event', 'message');
+      span.setAttribute('channel.from', fromId != null ? String(fromId) : 'unknown');
+      span.setAttribute('channel.message_id', String(msg.message_id ?? ''));
 
-    const fileInfo = doc
-      ? { fileId: doc.file_id, fileName: doc.file_name ?? 'document', mimeType: doc.mime_type ?? 'application/octet-stream' }
-      : photo?.length
-        ? { fileId: photo[photo.length - 1]!.file_id, fileName: 'photo.jpg', mimeType: 'image/jpeg' }
-        : audio
-          ? { fileId: audio.file_id, fileName: audio.file_name ?? 'audio', mimeType: audio.mime_type ?? 'audio/mpeg' }
-          : video
-            ? { fileId: video.file_id, fileName: video.file_name ?? 'video.mp4', mimeType: video.mime_type ?? 'video/mp4' }
-            : voice
-              ? { fileId: voice.file_id, fileName: 'voice.ogg', mimeType: voice.mime_type ?? 'audio/ogg' }
-              : null;
+      // ─── Handle file messages (document, photo, audio, video, voice) ───
+      const doc = msg.document as { file_id: string; file_name?: string; mime_type?: string } | undefined;
+      const photo = msg.photo as Array<{ file_id: string; width: number; height: number }> | undefined;
+      const audio = msg.audio as { file_id: string; file_name?: string; mime_type?: string } | undefined;
+      const video = msg.video as { file_id: string; file_name?: string; mime_type?: string } | undefined;
+      const voice = msg.voice as { file_id: string; mime_type?: string } | undefined;
 
-    if (fileInfo && this.fileHandler) {
-      const caption = msg.caption as string | undefined;
-      this.fileHandler(fileInfo.fileId, fileInfo.fileName, fileInfo.mimeType, caption, chatId);
-      return;
-    }
+      const fileInfo = doc
+        ? { fileId: doc.file_id, fileName: doc.file_name ?? 'document', mimeType: doc.mime_type ?? 'application/octet-stream' }
+        : photo?.length
+          ? { fileId: photo[photo.length - 1]!.file_id, fileName: 'photo.jpg', mimeType: 'image/jpeg' }
+          : audio
+            ? { fileId: audio.file_id, fileName: audio.file_name ?? 'audio', mimeType: audio.mime_type ?? 'audio/mpeg' }
+            : video
+              ? { fileId: video.file_id, fileName: video.file_name ?? 'video.mp4', mimeType: video.mime_type ?? 'video/mp4' }
+              : voice
+                ? { fileId: voice.file_id, fileName: 'voice.ogg', mimeType: voice.mime_type ?? 'audio/ogg' }
+                : null;
 
-    // If file message but no handler, inform user
-    if (fileInfo && !this.fileHandler) {
-      await this.sendMessage(chatId, '⚠️ File receiving is not supported in this mode.');
-      return;
-    }
-
-    const text = msg.text as string | undefined;
-    if (!text) return;
-
-    getLogger().info('TELEGRAM', `Bridge received chat=${chatId} len=${text.length}${text.startsWith('/') ? ' (command)' : ''}`);
-
-    // Intercept /commands if a handler is registered
-    if (this.commandHandler && text.startsWith('/')) {
-      const [cmd, ...args] = text.slice(1).split(/\s+/);
-      if (cmd) {
-        try {
-          const response = await this.commandHandler(cmd, args, chatId);
-          if (response !== null && response !== undefined) {
-            await this.sendMessage(chatId, response);
-          }
-        } catch { /* fall through to agent */ }
-        // Commands handled — skip agent processing
+      if (fileInfo && this.fileHandler) {
+        const caption = msg.caption as string | undefined;
+        this.fileHandler(fileInfo.fileId, fileInfo.fileName, fileInfo.mimeType, caption, chatId);
         return;
       }
-    }
 
-    // Process through agent
-    if (!this.agent) {
-      await this.sendMessage(chatId, '⚠️ Agent not attached to Telegram bridge.');
-      return;
-    }
-
-    // If a message handler is registered (e.g., daemon queue), delegate to it
-    if (this.messageHandler) {
-      await this.apiCall('sendChatAction', { chat_id: chatId, action: 'typing' });
-      this.messageHandler(text, chatId, msg.message_id as number | undefined);
-      return;
-    }
-
-    try {
-      // Send "typing" indicator
-      await this.apiCall('sendChatAction', { chat_id: chatId, action: 'typing' });
-
-      // Queue the message instead of busy-waiting
-      const response = await this.queueMessage(text, chatId);
-      
-      if (response) {
-        await this.sendMessage(chatId, response);
-      } else {
-        await this.sendMessage(chatId, '(No response generated)');
+      // If file message but no handler, inform user
+      if (fileInfo && !this.fileHandler) {
+        await this.sendMessage(chatId, '⚠️ File receiving is not supported in this mode.');
+        return;
       }
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : 'Processing failed';
-      await this.sendMessage(chatId, `❌ Error: ${errMsg}`);
-    }
+
+      const text = msg.text as string | undefined;
+      if (!text) return;
+
+      getLogger().info('TELEGRAM', `Bridge received chat=${chatId} len=${text.length}${text.startsWith('/') ? ' (command)' : ''}`);
+
+      // Intercept /commands if a handler is registered
+      if (this.commandHandler && text.startsWith('/')) {
+        const [cmd, ...args] = text.slice(1).split(/\s+/);
+        if (cmd) {
+          try {
+            const response = await this.commandHandler(cmd, args, chatId);
+            if (response !== null && response !== undefined) {
+              await this.sendMessage(chatId, response);
+            }
+          } catch { /* fall through to agent */ }
+          // Commands handled — skip agent processing
+          return;
+        }
+      }
+
+      // Process through agent
+      if (!this.agent) {
+        await this.sendMessage(chatId, '⚠️ Agent not attached to Telegram bridge.');
+        return;
+      }
+
+      // If a message handler is registered (e.g., daemon queue), delegate to it
+      if (this.messageHandler) {
+        await this.apiCall('sendChatAction', { chat_id: chatId, action: 'typing' });
+        this.messageHandler(text, chatId, msg.message_id as number | undefined);
+        return;
+      }
+
+      try {
+        // Send "typing" indicator
+        await this.apiCall('sendChatAction', { chat_id: chatId, action: 'typing' });
+
+        // Queue the message instead of busy-waiting
+        const response = await this.queueMessage(text, chatId);
+
+        if (response) {
+          await this.sendMessage(chatId, response);
+        } else {
+          await this.sendMessage(chatId, '(No response generated)');
+        }
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : 'Processing failed';
+        span.recordException(error instanceof Error ? error : new Error(errMsg));
+        await this.sendMessage(chatId, `❌ Error: ${errMsg}`);
+      }
+    });
   }
 
   /**
@@ -661,39 +693,46 @@ export class TelegramBridge {
   }
 
   async sendMessage(chatId: number, text: string): Promise<number[]> {
-    // Use the TelegramRenderer for native MarkdownV2 formatting + chunking
-    const renderer = getRenderer('telegram');
-    const results = renderer.renderMarkdown(text);
-    const sentMessageIds: number[] = [];
+    return withSpan('channel.outbound', 'channel', async (span) => {
+      span.setAttribute('trace.domain', 'APP');
+      span.setAttribute('trace.kind', 'channel_event');
+      span.setAttribute('channel.type', 'telegram');
+      span.setAttribute('channel.to', String(chatId));
+      span.setAttribute('channel.message_type', 'text');
+      // Use the TelegramRenderer for native MarkdownV2 formatting + chunking
+      const renderer = getRenderer('telegram');
+      const results = renderer.renderMarkdown(text);
+      const sentMessageIds: number[] = [];
 
-    for (const result of results) {
-      const payload = result.payload as { text: string; parse_mode?: string; reply_markup?: unknown };
-      const apiParams: Record<string, unknown> = {
-        chat_id: chatId,
-        text: payload.text,
-      };
-      if (payload.parse_mode) apiParams['parse_mode'] = payload.parse_mode;
-      if (payload.reply_markup) apiParams['reply_markup'] = payload.reply_markup;
+      for (const result of results) {
+        const payload = result.payload as { text: string; parse_mode?: string; reply_markup?: unknown };
+        const apiParams: Record<string, unknown> = {
+          chat_id: chatId,
+          text: payload.text,
+        };
+        if (payload.parse_mode) apiParams['parse_mode'] = payload.parse_mode;
+        if (payload.reply_markup) apiParams['reply_markup'] = payload.reply_markup;
 
-      const apiResult = await this.apiCall('sendMessage', apiParams);
-      if (!apiResult.ok) {
-        // Fallback: try plain text without markdown if parsing failed
-        if (apiResult.description?.includes('parse') || apiResult.description?.includes('can\'t parse')) {
-          const plain = await this.apiCall('sendMessage', { chat_id: chatId, text: payload.text });
-          if (!plain.ok) {
-            throw new Error(plain.description ?? 'Failed to send Telegram message');
+        const apiResult = await this.apiCall('sendMessage', apiParams);
+        if (!apiResult.ok) {
+          // Fallback: try plain text without markdown if parsing failed
+          if (apiResult.description?.includes('parse') || apiResult.description?.includes('can\'t parse')) {
+            const plain = await this.apiCall('sendMessage', { chat_id: chatId, text: payload.text });
+            if (!plain.ok) {
+              throw new Error(plain.description ?? 'Failed to send Telegram message');
+            }
+            const mid = plain.result?.message_id as number | undefined;
+            if (mid != null) sentMessageIds.push(mid);
+          } else {
+            throw new Error(apiResult.description ?? 'Failed to send Telegram message');
           }
-          const mid = plain.result?.message_id as number | undefined;
-          if (mid != null) sentMessageIds.push(mid);
         } else {
-          throw new Error(apiResult.description ?? 'Failed to send Telegram message');
+          const mid = apiResult.result?.message_id as number | undefined;
+          if (mid != null) sentMessageIds.push(mid);
         }
-      } else {
-        const mid = apiResult.result?.message_id as number | undefined;
-        if (mid != null) sentMessageIds.push(mid);
       }
-    }
-    return sentMessageIds;
+      return sentMessageIds;
+    });
   }
 
   /**

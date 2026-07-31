@@ -1,0 +1,29 @@
+diff --git a/lib/Socket/messages-recv.js b/lib/Socket/messages-recv.js
+index f2003ac00ef223468c432a1bbe0a0eb02c1453b2..65e34b1c6154596542e26d480b30d4ff377494a6 100644
+--- a/lib/Socket/messages-recv.js
++++ b/lib/Socket/messages-recv.js
+@@ -1260,7 +1260,10 @@ export const makeMessagesRecvSocket = (config) => {
+             ]);
+         }
+         finally {
+-            await sendMessageAck(node).catch(ackErr => logger.error({ ackErr }, 'failed to ack notification'));
++            await sendMessageAck(node).catch(ackErr => {
++                logger.error({ ackErr }, 'failed to ack notification');
++                try { ws?.close(); } catch { /* best-effort */ }
++            });
+         }
+     };
+     const handleMessage = async (node) => {
+diff --git a/lib/Utils/validate-connection.js b/lib/Utils/validate-connection.js
+index f26782b7c248e94c0924d35b2843dd648a4d3bbf..434af50b43da1153099e19a87f948d4ccd50e226 100644
+--- a/lib/Utils/validate-connection.js
++++ b/lib/Utils/validate-connection.js
+@@ -13,7 +13,7 @@ const getUserAgent = (config) => {
+             secondary: config.version[1],
+             tertiary: config.version[2]
+         },
+-        platform: proto.ClientPayload.UserAgent.Platform.WEB,
++        platform: proto.ClientPayload.UserAgent.Platform.MACOS,
+         releaseChannel: proto.ClientPayload.UserAgent.ReleaseChannel.RELEASE,
+         osVersion: '0.1',
+         device: 'Desktop',

@@ -1,6 +1,6 @@
 {
   "name": "agent-x",
-  "version": "0.9.13",
+  "version": "0.9.14",
   "private": true,
   "type": "module",
   "description": "Agent-X — Your AI Wingman",
@@ -15,7 +15,6 @@
     "prestart": "vitest run --run packages/engine/tests/platform-parity.test.ts",
     "check:platform": "vitest run --run packages/engine/tests/platform-parity.test.ts",
     "check:retrieval": "vitest run --run packages/engine/tests/retrieval",
-
     "verify:integrations": "vitest run --run packages/engine/tests/integrations.test.ts packages/engine/tests/integrations-e2e.test.ts",
     "verify:integrations-catalog": "tsx scripts/verify-integrations-catalog.mjs",
     "test:watch": "vitest",
@@ -68,7 +67,9 @@
       "nodemailer@<=8.0.4": ">=8.0.5",
       "vitest@<4.1.0": ">=4.1.0"
     },
-    "patchedDependencies": {}
+    "patchedDependencies": {
+      "@whiskeysockets/baileys@7.0.0-rc13": "patches/@whiskeysockets__baileys@7.0.0-rc13.patch"
+    }
   },
   "redisMemoryServer": {
     "downloadDir": "node_modules/@embedded-redis/redis-binaries",

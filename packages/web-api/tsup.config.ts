@@ -40,8 +40,11 @@ export default defineConfig({
   // resolve ALL platform variants and fails.
   // NOTE: esbuild must stay external — it spawns a native binary via a relative path
   // inside its package; bundling breaks canvas TSX compilation at runtime.
-  noExternal: [/^(?!onnxruntime-|pdfjs-dist|@napi-rs\/keyring|@napi-rs\/canvas|esbuild).*$/],
-  external: ['onnxruntime-node', 'onnxruntime-web', 'onnxruntime-common', 'pdfjs-dist', '@napi-rs/keyring', '@napi-rs/canvas', 'esbuild'],
+  // NOTE: @aws-sdk/client-s3 must stay external — unzipper has an optional
+  // require() for it that breaks bundling when it's not installed. It's only
+  // used for S3-backed zip extraction which we don't use.
+  noExternal: [/^(?!onnxruntime-|pdfjs-dist|@napi-rs\/keyring|@napi-rs\/canvas|esbuild|@aws-sdk\/client-s3).*$/],
+  external: ['onnxruntime-node', 'onnxruntime-web', 'onnxruntime-common', 'pdfjs-dist', '@napi-rs/keyring', '@napi-rs/canvas', 'esbuild', '@aws-sdk/client-s3'],
   banner: {
     js: "import { createRequire as __bannerCr } from 'module'; const require = __bannerCr(import.meta.url); import { fileURLToPath as __futp } from 'node:url'; import { dirname as __dn } from 'node:path'; const __filename = __futp(import.meta.url); const __dirname = __dn(__filename);",
   },

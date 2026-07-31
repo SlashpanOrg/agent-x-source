@@ -5,13 +5,15 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getLogger, getDataDir, VERSION } from '@agentx/shared';
-import { getEngine, awaitEngineStorageReady } from './engine.js';
-import { ensureLoginShellPath, configureHttpKeepAlive } from '@agentx/engine';
+import { getEngine, awaitEngineStorageReady, setAgentMetricsApi } from './engine.js';
+import { getObservabilityHandle } from '@agentx/engine';
+import { ensureLoginShellPath, configureHttpKeepAlive, startAppSpan } from '@agentx/engine';
 import { authMiddleware, createAuthRouter } from './auth.js';
 import { errorHandler } from './middleware/error.js';
 import { requestIdMiddleware } from './middleware/request-id.js';
 import { requestLogger } from './middleware/request-logger.js';
 import { requestMetrics } from './middleware/request-metrics.js';
+import { requestObservabilityMiddleware } from './middleware/request-observability.js';
 import { setDefaultEmbeddingCacheDir } from '@agentx/engine';
 import { setupWebSocket, shutdownWebSocket } from './ws.js';
 import { setupVoiceWebSocket } from './voice-ws.js';
@@ -33,6 +35,11 @@ import { router as healthRouter } from './routes/health.js';
 import { router as metricsRouter } from './routes/metrics.js';
 import { router as legacyRouter } from './routes/legacy.js';
 import { router as knowledgeBaseRouter } from './routes/knowledge-base.js';
+import { observabilityRouter } from './routes/observability/index.js';
+import { devRouter } from './routes/observability/dev.js';
+import { loadGlobalDevMode } from './middleware/dev-mode.js';
+import { createPromptBenchmarkRouter } from './routes/prompt-benchmark.js';
+import { createStaticRouter } from './routes/legacy/static.js';
 import { DATA_DIR, SESSIONS_DIR, UPLOADS_DIR, UI_DIST } from './api-helpers.js';
 
 const PORT = Number(process.env['AGENTX_PORT'] || process.env['PORT']) || 3333;
@@ -109,17 +116,24 @@ if (startupErrors.length > 0) {
 }
 
 const api = createApiService();
+// Expose the ApiService's agent metrics to the observability MetricsSampler as
+// an AgentMetricsApi adapter (§8.2). Set before `storageReady` resolves so the
+// agent metric source is wired when `initObservability` runs in state.ts.
+setAgentMetricsApi({
+  getAgentMetrics: () => {
+    const m = api.getAgentMetrics();
+    return {
+      turnsTotal: m.turnsTotal,
+      toolLatencyAvgMs: m.toolLatencyAvg * 1000,
+      toolLatencyP95Ms: m.toolLatencyP95 * 1000,
+      toolCallCount: m.toolLatencyCount,
+      queueDepth: m.queueDepth,
+      memoryCacheHitRate: m.memoryCacheHitRate,
+    };
+  },
+});
 const app: Express = express();
 app.use(express.json({ limit: '50mb' }));
-
-// Auth routes (must be before auth middleware)
-app.use('/api', createAuthRouter());
-
-// Gmail MCP OAuth callback
-app.get('/oauth2callback', (req, res) => { void handleMcpStdioOAuthCallback(req, res); });
-
-// Auth middleware
-app.use(authMiddleware);
 
 // Global middleware
 const corsOrigin = process.env.AGENTX_CORS_ORIGIN;
@@ -140,11 +154,16 @@ app.use((_req, res, next) => {
 // Request ID
 app.use(requestIdMiddleware);
 
-// Structured request logging
-app.use(requestLogger);
+// HTTP request observability (metrics + spans). This is placed BEFORE auth so
+// auth spans (middleware, session_validate, login, status, ...) become children of
+// the HTTP root span instead of creating separate root traces that flood the list.
+app.use(requestObservabilityMiddleware);
 
-// HTTP request metrics
-app.use(requestMetrics);
+// Auth middleware (runs after HTTP observability is active; sets req.agentxSession).
+app.use(authMiddleware);
+
+// Structured request logging (after auth so the session is available for logs).
+app.use(requestLogger);
 
 // Security headers
 app.use((_req, res, next) => {
@@ -153,6 +172,12 @@ app.use((_req, res, next) => {
   res.setHeader('X-XSS-Protection', '1; mode=block');
   next();
 });
+
+// Auth routes (after request observability so auth operations are children of the HTTP span).
+app.use('/api', createAuthRouter());
+
+// Gmail MCP OAuth callback
+app.get('/oauth2callback', (req, res) => { void handleMcpStdioOAuthCallback(req, res); });
 
 // Existing service routers
 app.use('/api', neuralCortexRouter());
@@ -165,10 +190,68 @@ registerMarkdownRoutes(app);
 
 // New route modules
 app.use('/', healthRouter({ api }));
+app.use('/api', createPromptBenchmarkRouter());
 app.use('/api/jobs', jobsRouter({ api }));
 app.use('/', metricsRouter({ api }));
 app.use('/', legacyRouter({ api }));
 app.use('/api', knowledgeBaseRouter({ api }));
+
+// ── Observability API + UI (Phase 5) ────────────────────────────────────────
+// The data endpoints are gated by authMiddleware (above) + requireDeveloperMode
+// (inside the router). The dev-mode status/verify endpoints are NOT gated by
+// dev mode (they're needed to unlock it).
+//
+// NOTE: `initObservability` runs asynchronously inside the engine bootstrap
+// (after `storageReady` resolves in state.ts), so `getObservabilityHandle()`
+// returns undefined at module-eval time when these routes are mounted. We
+// therefore resolve the handle **lazily on each request** and build the
+// observability router on first hit after the handle is available. This lets
+// the dev-mode endpoints (status/verify/enable/disable — which don't touch the
+// store) work immediately, and the data endpoints light up once observability
+// finishes initializing. If observability never initializes (e.g. storage
+// deferred), data endpoints return 503 but dev endpoints still work.
+let obsRouter: express.Router | undefined;
+let obsRouterHandle: unknown = null;
+// Dev-only router used before observability initializes. devRouter ignores the
+// store/handle (it only touches authManager + session flags), so a stub context
+// is safe. Built once and cached.
+let devOnlyRouterCache: express.Router | undefined;
+app.use('/api/observability', (req, res, next) => {
+  const handle = getObservabilityHandle();
+  if (handle) {
+    if (!obsRouter || obsRouterHandle !== handle) {
+      obsRouter = observabilityRouter({ api, store: handle.store, handle });
+      obsRouterHandle = handle;
+    }
+    return obsRouter(req, res, next);
+  }
+  // Observability not initialized yet. The dev-mode endpoints don't need the
+  // store, so serve /dev/* from the dev-only router instead of returning 503.
+  if (req.path === '/dev' || req.path.startsWith('/dev/')) {
+    if (!devOnlyRouterCache) {
+      // devRouter ignores ctx (store/handle) — only authManager + session flags.
+      devOnlyRouterCache = devRouter({ api } as never);
+    }
+    return devOnlyRouterCache(req, res, next);
+  }
+  res.status(503).json({ error: 'observability-not-initialized', message: 'Observability is not initialized.' });
+});
+
+// Static-serve the observability UI at /observability (SPA fallback for deep links).
+// The build:observability script emits dist/observability/observability.html.
+const OBS_UI_DIST = join(UI_DIST, 'observability');
+const OBS_UI_HTML = join(OBS_UI_DIST, 'observability.html');
+if (existsSync(OBS_UI_DIST)) {
+  // Serve static assets; do not auto-serve index.html for directory requests.
+  app.use('/observability', express.static(OBS_UI_DIST, { index: false }));
+  // SPA fallback for /observability, /observability/, and all deep links.
+  app.get(/^\/observability(?:\/(.*))?$/, (_req, res) => {
+    res.sendFile(OBS_UI_HTML);
+  });
+}
+
+// Main web UI SPA fallback/static assets. Must be after API/ws/observability routes.
+app.use(createStaticRouter());
 
 // Global error handler
 app.use(errorHandler);
@@ -181,10 +264,16 @@ attachWebSocketUpgradeRouter(server);
 export { app, server, registerEmbeddedPostgresController };
 
 export function startServer(port = PORT): ReturnType<typeof server.listen> {
-  // Enable keep-alive for all provider HTTP/HTTPS clients.
-  if (process.env['HTTP_KEEP_ALIVE'] !== '0') {
-    configureHttpKeepAlive();
-  }
+  const { span: startupSpan, withContext } = startAppSpan('app.startup', 'automation', 'startup', {
+    'startup.component': 'web-api',
+    'server.port': port,
+    'server.host': HOST,
+  });
+  return withContext(() => {
+    // Enable keep-alive for all provider HTTP/HTTPS clients.
+    if (process.env['HTTP_KEEP_ALIVE'] !== '0') {
+      configureHttpKeepAlive();
+    }
 
   const publicUrl = (process.env['AGENTX_PUBLIC_URL'] ?? `http://localhost:${port}`).replace(/\/$/, '');
   getEngine().integrationHub.setRedirectBaseUrl(publicUrl);
@@ -232,6 +321,7 @@ export function startServer(port = PORT): ReturnType<typeof server.listen> {
     // others (e.g. automation service initialization).
     try {
       await awaitEngineStorageReady();
+      loadGlobalDevMode(api.getConfigManager().load().developer?.devMode ?? false);
     } catch (e) {
       getLogger().warn('STARTUP', `Engine storage ready failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -261,6 +351,8 @@ export function startServer(port = PORT): ReturnType<typeof server.listen> {
       getLogger().warn('STARTUP', `Knowledge base manager init failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     getLogger().info('SERVER', `Agent-X web API listening on ${HOST}:${port} (v${VERSION})`);
+    startupSpan.end();
+  });
   });
 }
 

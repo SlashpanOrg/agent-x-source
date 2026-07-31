@@ -13,6 +13,7 @@ import { Footer } from '../components/Footer';
 import { MigrationUpgrade } from '../components/MigrationUpgrade';
 import { useVoiceOptional } from '../components/voice/VoiceProvider';
 import { useLocationPermission } from '../hooks/useLocationPermission';
+import { useGeoLocation } from '../hooks/useGeoLocation';
 import { usePageVisible } from '../hooks/usePageVisible';
 import { webuiActive, crewCatalog, crews, clientSituation as clientSituationApi, type CatalogSeedStatusResponse, type Crew } from '../api';
 import type { HealthStatus } from '../api';
@@ -80,6 +81,7 @@ export function DockingStation() {
   const { serverOnline, refreshHealth, healthData } = useApp();
   const voice = useVoiceOptional();
   const location = useLocationPermission(true);
+  const geoLocation = useGeoLocation();
   const navigate = useNavigate();
   const [checking, setChecking] = useState(true);
   const [visibleLines, setVisibleLines] = useState(0);
@@ -203,14 +205,6 @@ export function DockingStation() {
     return () => clearTimeout(timeout);
   }, [visibleLines, lines]);
 
-  const locationColor =
-    location.state === 'granted' ? colors.accent.green
-      : location.state === 'ip_approx' ? colors.accent.blue
-        : location.state === 'vpn_blocked' ? colors.accent.orange
-          : location.state === 'denied' ? colors.accent.red
-            : location.state === 'unavailable' ? colors.text.dim
-              : colors.accent.orange;
-
   const voiceColor = !voice || !voiceModuleEnabled
     ? colors.text.dim
     : voice.warmupPhase === 'ready' ? colors.accent.green
@@ -282,17 +276,19 @@ export function DockingStation() {
             <>
               <StatusRow
                 label="Location"
-                value={location.label}
-                color={locationColor}
-                checking={location.state === 'checking'}
-                onClick={(location.state === 'denied' || location.state === 'vpn_blocked')
-                  ? () => { void location.refresh(); }
+                value={geoLocation.cityLabel}
+                color={geoLocation.resolved && !geoLocation.vpnSuspected
+                  ? colors.accent.green
+                  : geoLocation.vpnSuspected
+                    ? colors.accent.orange
+                    : colors.text.dim}
+                checking={geoLocation.loading}
+                onClick={!geoLocation.resolved || geoLocation.vpnSuspected
+                  ? () => { void geoLocation.refresh(); }
                   : undefined}
-                title={location.state === 'denied'
-                  ? 'Click to request location again'
-                  : location.state === 'vpn_blocked'
-                    ? 'VPN/proxy detected — click to retry'
-                    : undefined}
+                title={geoLocation.resolved
+                  ? geoLocation.fullLabel
+                  : 'Click to retry location detection'}
               />
               {voiceModuleEnabled && (
               <StatusRow
@@ -437,7 +433,7 @@ function StatusRow({
       <Typography sx={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.55rem', color: colors.text.dim }}>
         {label}
       </Typography>
-      {checking ? (
+      {checking && !value ? (
         <CircularProgress size={8} sx={{ color: colors.text.dim }} />
       ) : (
         <Typography sx={{
@@ -450,6 +446,7 @@ function StatusRow({
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
+          ...(checking ? { opacity: 0.5 } : {}),
         }}>
           {value}
         </Typography>

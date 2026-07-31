@@ -6,6 +6,7 @@ import { generateText } from 'ai';
 import { getLogger } from '@agentx/shared';
 import type { AgentXConfig, SessionEvent } from '@agentx/shared';
 import { createAiSdkModel } from './AiSdkBridge.js';
+import { withSpan } from '../observability/tracer.js';
 import type { Agent } from './Agent.js';
 import type { TaskPlan, TaskStep, FailureRecord } from './TaskExecutor.js';
 import { tryShellExec, extractJsonObject, extractJsonArray, ANALYSIS_SYSTEM_PROMPT } from './task-executor-helpers.js';
@@ -64,12 +65,23 @@ export async function analyzeProject(
       }
 
       const model = createAiSdkModel(ctx.config, ctx.apiKey);
-      const result = await generateText({
-        model,
-        system: ANALYSIS_SYSTEM_PROMPT,
-        prompt: `User goal: ${goal}\n\nProject context:\n${projectContext}\n\nAnalyze this project and the goal.`,
-        temperature: 0.2,
-        maxRetries: 1,
+      const messages = [
+        { role: 'system' as const, content: ANALYSIS_SYSTEM_PROMPT },
+        { role: 'user' as const, content: `User goal: ${goal}\n\nProject context:\n${projectContext}\n\nAnalyze this project and the goal.` },
+      ];
+      const result = await withSpan('llm.analyze_project', 'llm', async (span) => {
+        span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+        span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+        span.setAttribute('llm.input_messages', JSON.stringify(messages));
+        span.setAttribute('session.id', ctx.sessionId);
+        const r = await generateText({
+          model,
+          messages,
+          temperature: 0.2,
+          maxRetries: 1,
+        });
+        span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+        return r;
       });
 
       const parsed = extractJsonObject<{ projectType: string; techStack: string[]; conventions: string[]; keyFiles: string[]; risks: string[] }>(result.text);
@@ -215,17 +227,28 @@ export async function suggestNewSubtasks(
   if (completedCount < 2) return [];
 
   const model = createAiSdkModel(ctx.config, ctx.apiKey);
-  const result = await generateText({
-    model,
-    system: `You are a project manager. Given the goal, current plan, and just-completed step, determine if new sub-tasks are needed.
+  const messages = [
+    { role: 'system' as const, content: `You are a project manager. Given the goal, current plan, and just-completed step, determine if new sub-tasks are needed.
 
 Return a JSON array of additional steps, or empty array if none needed.
 Each step: { "description": "...", "expectedOutcome": "..." }
 
-Only add steps that are genuinely necessary — don't over-engineer.`,
-    prompt: `Goal: ${goal}\n\nCompleted steps: ${plan.steps.filter(s => s.status === 'completed').map((s, idx) => `\n${idx + 1}. ${s.description}`).join('')}\n\nJust completed: ${step.description}\nResult: ${(step.result || '').slice(0, 500)}\n\nAre there any new sub-tasks that this step uncovered?`,
-    temperature: 0.2,
-    maxRetries: 1,
+Only add steps that are genuinely necessary — don't over-engineer.` },
+    { role: 'user' as const, content: `Goal: ${goal}\n\nCompleted steps: ${plan.steps.filter(s => s.status === 'completed').map((s, idx) => `\n${idx + 1}. ${s.description}`).join('')}\n\nJust completed: ${step.description}\nResult: ${(step.result || '').slice(0, 500)}\n\nAre there any new sub-tasks that this step uncovered?` },
+  ];
+  const result = await withSpan('llm.suggest_subtasks', 'llm', async (span) => {
+    span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+    span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+    span.setAttribute('llm.input_messages', JSON.stringify(messages));
+    span.setAttribute('session.id', ctx.sessionId);
+    const r = await generateText({
+      model,
+      messages,
+      temperature: 0.2,
+      maxRetries: 1,
+    });
+    span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+    return r;
   });
 
   const parsed = extractJsonArray(result.text);
@@ -294,19 +317,30 @@ export async function saveTaskMemory(ctx: AnalysisContext, plan: TaskPlan): Prom
   if (completedSteps === 0) return;
 
   const model = createAiSdkModel(ctx.config, ctx.apiKey);
-  const memoryResult = await generateText({
-    model,
-    system: `Extract learnings from this completed task. Return JSON:
+  const messages = [
+    { role: 'system' as const, content: `Extract learnings from this completed task. Return JSON:
 {
   "projectType": "detected project type",
   "patterns": ["coding patterns used"],
   "painPoints": ["issues encountered"],
   "keyFiles": ["files created or modified"],
   "suggestions": ["what to do differently next time"]
-}`,
-    prompt: `Goal: ${plan.goal}\n\nSteps:\n${plan.steps.map((s, i) => `${i + 1}. [${s.status}] ${s.description}`).join('\n')}\n\nExtract learnings.`,
-    temperature: 0.2,
-    maxRetries: 1,
+}` },
+    { role: 'user' as const, content: `Goal: ${plan.goal}\n\nSteps:\n${plan.steps.map((s, i) => `${i + 1}. [${s.status}] ${s.description}`).join('\n')}\n\nExtract learnings.` },
+  ];
+  const memoryResult = await withSpan('llm.save_task_memory', 'llm', async (span) => {
+    span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+    span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+    span.setAttribute('llm.input_messages', JSON.stringify(messages));
+    span.setAttribute('session.id', ctx.sessionId);
+    const r = await generateText({
+      model,
+      messages,
+      temperature: 0.2,
+      maxRetries: 1,
+    });
+    span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+    return r;
   });
 
   try {

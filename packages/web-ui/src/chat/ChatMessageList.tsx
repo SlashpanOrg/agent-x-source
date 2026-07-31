@@ -1,4 +1,4 @@
-import { memo, useCallback, type MouseEvent } from 'react';
+import { memo, useCallback, useRef, type MouseEvent } from 'react';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import ReplayIcon from '@mui/icons-material/Replay';
@@ -16,6 +16,7 @@ interface ChatMessageListProps {
   bottomRef: React.RefObject<HTMLDivElement | null>;
   onOpenChildSession?: (props: { childSessionId: string; label: string; kind: 'sub_agent' | 'crew_worker'; status: 'running' | 'done' | 'error'; task?: string }) => void;
   onQuestionnaireRespond?: (messageId: string, response: string) => void;
+  onQuestionnaireCancel?: (messageId: string) => void;
   onCrewRosterPickerSubmit?: (messageId: string, selected: CrewMatchCandidate[]) => void;
   onCrewRosterPickerSkip?: (messageId: string, dismissForSession?: boolean) => void;
   onViewCrewDossier?: (candidate: CrewMatchCandidate) => void;
@@ -32,9 +33,15 @@ interface ChatMessageListProps {
 }
 
 /** Virtual-ish message list — content-visibility keeps long sessions smooth. */
-export const ChatMessageList = memo(function ChatMessageList({ items, loadingSteps, onResend, bottomRef, onOpenChildSession, onQuestionnaireRespond, onCrewRosterPickerSubmit, onCrewRosterPickerSkip, onViewCrewDossier, onViewCrewByCallsign, pendingFeedbackMessageId, onTurnFeedback, onSaveMarkdown, feedbackSubmitting, turnStreaming, turnActivityLabel, freezeLayout }: ChatMessageListProps) {
+export const ChatMessageList = memo(function ChatMessageList({ items, loadingSteps, onResend, bottomRef, onOpenChildSession, onQuestionnaireRespond, onQuestionnaireCancel, onCrewRosterPickerSubmit, onCrewRosterPickerSkip, onViewCrewDossier, onViewCrewByCallsign, pendingFeedbackMessageId, onTurnFeedback, onSaveMarkdown, feedbackSubmitting, turnStreaming, turnActivityLabel, freezeLayout }: ChatMessageListProps) {
+  // Track items.length in a ref so renderMessage doesn't recreate on every
+  // message addition during streaming. The callback only needs the current
+  // count to determine if a message is "last" — a ref avoids the dep churn.
+  const itemsLenRef = useRef(items.length);
+  itemsLenRef.current = items.length;
+
   const renderMessage = useCallback((msg: UIMessage, idx: number) => {
-    const isLast = idx === items.length - 1;
+    const isLast = idx === itemsLenRef.current - 1;
     const hasText = !!(msg.content?.trim() || msg.parts?.some((p) => p.type === 'text' && p.content?.trim()));
     const hasQuestionnaire = msg.parts?.some((p) => p.type === 'questionnaire');
     const hasCrewPicker = msg.parts?.some((p) => p.type === 'crew_roster_picker');
@@ -49,6 +56,7 @@ export const ChatMessageList = memo(function ChatMessageList({ items, loadingSte
         loadingSteps={showLoading ? loadingSteps : null}
         onOpenChildSession={onOpenChildSession}
         onQuestionnaireRespond={onQuestionnaireRespond}
+        onQuestionnaireCancel={onQuestionnaireCancel}
         onCrewRosterPickerSubmit={onCrewRosterPickerSubmit}
         onCrewRosterPickerSkip={onCrewRosterPickerSkip}
         onViewCrewDossier={onViewCrewDossier}
@@ -58,7 +66,7 @@ export const ChatMessageList = memo(function ChatMessageList({ items, loadingSte
         feedbackSubmitting={feedbackSubmitting}
       />
     );
-  }, [items.length, loadingSteps, onOpenChildSession, onQuestionnaireRespond, onCrewRosterPickerSubmit, onCrewRosterPickerSkip, onViewCrewDossier, onViewCrewByCallsign, pendingFeedbackMessageId, onTurnFeedback, onSaveMarkdown, feedbackSubmitting]);
+  }, [loadingSteps, onOpenChildSession, onQuestionnaireRespond, onQuestionnaireCancel, onCrewRosterPickerSubmit, onCrewRosterPickerSkip, onViewCrewDossier, onViewCrewByCallsign, pendingFeedbackMessageId, onTurnFeedback, onSaveMarkdown, feedbackSubmitting]);
 
   const onLinkClickCapture = useCallback((event: MouseEvent<HTMLDivElement>) => {
     handleExternalAnchorClick(event);
@@ -67,15 +75,22 @@ export const ChatMessageList = memo(function ChatMessageList({ items, loadingSte
   return (
     <Box onClickCapture={onLinkClickCapture}>
       {items.map(({ msg, isLastUser }, idx) => {
-        const keepVisible = freezeLayout || idx >= items.length - 2;
+        // Keep the last 3 messages always rendered (no content-visibility)
+        // for smooth streaming and to avoid scroll jumps near the tail.
+        const keepVisible = freezeLayout || idx >= items.length - 3;
         return (
         <Box
           key={msg.id}
           data-message-id={msg.id}
           sx={keepVisible ? undefined : {
             contentVisibility: 'auto',
-            containIntrinsicSize: '0 120px',
-            contain: 'layout style paint',
+            // Use a realistic intrinsic size so the browser reserves enough
+            // space for off-screen content, reducing scroll jumps when
+            // content is revealed. 160px matches the virtualization estimate.
+            containIntrinsicSize: 'auto 160px',
+            // Full containment including 'size' so off-screen content doesn't
+            // affect layout calculations at all.
+            contain: 'layout style paint size',
           }}
         >
           {renderMessage(msg, idx)}

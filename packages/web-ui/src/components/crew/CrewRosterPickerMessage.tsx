@@ -13,7 +13,7 @@ import { CrewRecruitCard } from './CrewRecruitCard';
 
 export interface CrewRosterPickerRecord {
   id: string;
-  status: 'pending' | 'answered' | 'skipped';
+  status: 'pending' | 'answered' | 'skipped' | 'expired';
   evaluation: CrewSuggestionEvaluation;
   pendingUserText: string;
   selectedCandidateIds?: string[];
@@ -231,15 +231,12 @@ export function CrewRosterPickerMessage({
         </Typography>
       </Box>
 
-      <Box sx={{
+      <Box className="ax-scroll-x" sx={{
         display: 'flex',
         gap: 1,
         px: 1.25,
         pb: 1.25,
-        overflowX: 'auto',
         scrollSnapType: 'x mandatory',
-        '&::-webkit-scrollbar': { height: 6 },
-        '&::-webkit-scrollbar-thumb': { bgcolor: crewTheme.border.default, borderRadius: 3 },
       }}>
         {candidates.map((c, i) => (
           <Box key={c.id} sx={{ minWidth: 248, maxWidth: 272, flexShrink: 0, scrollSnapAlign: 'start' }}>

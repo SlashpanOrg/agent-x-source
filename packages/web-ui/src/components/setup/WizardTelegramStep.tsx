@@ -31,6 +31,33 @@ export function WizardTelegramStep({
   initialBotLabel,
   initialChatLabel,
 }: WizardTelegramStepProps) {
+  return (
+    <WizardStepShell
+      codename="MODULE · TELEGRAM RELAY"
+      title="Establish Field Link"
+      subtitle="Connect a Telegram bot to receive and send missions from your phone. Credentials are stored encrypted on this machine."
+      icon={<SendIcon sx={{ fontSize: 24 }} />}
+    >
+      <WizardTelegramFields
+        alreadyLinked={alreadyLinked}
+        initialBotLabel={initialBotLabel}
+        initialChatLabel={initialChatLabel}
+        onLinkedChange={onLinkedChange}
+      />
+    </WizardStepShell>
+  );
+}
+
+/**
+ * Inner content of the Telegram step — no shell wrapper. Used by
+ * WizardChannelStep which provides its own shell.
+ */
+export function WizardTelegramFields({
+  onLinkedChange,
+  alreadyLinked,
+  initialBotLabel,
+  initialChatLabel,
+}: WizardTelegramStepProps) {
   const [token, setToken] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -125,14 +152,8 @@ export function WizardTelegramStep({
   };
 
   return (
-    <WizardStepShell
-      codename="MODULE · TELEGRAM RELAY"
-      title="Establish Field Link"
-      subtitle="Connect a Telegram bot to receive and send missions from your phone. Credentials are stored encrypted on this machine."
-      icon={<SendIcon sx={{ fontSize: 24 }} />}
-    >
-      <Box sx={{ position: 'relative', zIndex: 1 }}>
-        <WizardStatusLine label="PROTOCOL" value="Telegram Bot API" />
+    <Box sx={{ position: 'relative', zIndex: 1 }}>
+      <WizardStatusLine label="PROTOCOL" value="Telegram Bot API" />
         <WizardStatusLine label="INBOUND" value="Text · voice notes · files" />
         <WizardStatusLine label="REQUIREMENT" value="@BotFather token" />
 
@@ -270,7 +291,6 @@ export function WizardTelegramStep({
           Skip to configure later in Settings → Channels
         </Typography>
       </Box>
-    </WizardStepShell>
   );
 }
 

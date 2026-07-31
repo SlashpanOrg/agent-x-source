@@ -16,6 +16,8 @@ import { getEngine } from './engine.js';
 import { getSessionDir } from './api-helpers.js';
 import { persistMessageDirect } from './ws.js';
 import { getActiveWorkspacePath } from './workspace.js';
+import { getOrCreateCrewVoiceProfile, type CrewVoiceProfile } from './crew-voice-profiles.js';
+import { mergeVoiceConfig } from '@agentx/engine';
 
 function crewInfo(crew: Crew) {
   return {
@@ -295,6 +297,19 @@ export async function postCrewChatVoiceSession(req: Request, res: Response): Pro
       } catch { /* best-effort */ }
     }
 
+    // Assign a stable voice profile for this crew on first call (random pick
+    // from both Kokoro and xAI catalogs). Persisted to crew-voice-profiles.json
+    // and never changed after first write — gives each crew member a
+    // consistent voice identity across calls and engine switches.
+    let crewVoiceProfile: CrewVoiceProfile | undefined;
+    try {
+      const voiceConfig = mergeVoiceConfig(cfg.voice);
+      const xaiApiKey = voiceConfig.xai?.apiKey ?? process.env['XAI_API_KEY'];
+      crewVoiceProfile = await getOrCreateCrewVoiceProfile(crew.callsign, xaiApiKey);
+    } catch (err) {
+      getLogger().warn('POST_CREW_CHAT_VOICE_SESSION', `Voice profile assignment failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     res.json({
       sessionId: voiceSession.id,
       textSessionId,
@@ -302,6 +317,7 @@ export async function postCrewChatVoiceSession(req: Request, res: Response): Pro
       crew: crewInfo(crew),
       session: sessionToInfo(voiceSession, crew),
       voiceSessionId: voiceId,
+      crewVoiceProfile,
     });
   } catch (e: unknown) {
     getLogger().error('POST_CREW_CHAT_VOICE_SESSION', e instanceof Error ? e : String(e));

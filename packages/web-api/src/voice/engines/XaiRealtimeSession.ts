@@ -73,6 +73,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   private state: VoiceEngineState = 'idle';
   private transport: WebSocketVoiceTransport;
   private xaiWs?: WebSocket;
+  private xaiPingTimer?: ReturnType<typeof setInterval>;
   private config: AgentXConfig;
   private voiceConfig: VoiceConfig;
   private toolService: ToolService;
@@ -329,6 +330,12 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       ws.on('open', () => {
         this.suppressXaiSocketTeardown = false;
         getLogger().info('XAI_VOICE', 'xAI realtime WebSocket open');
+        // Keepalive: ping xAI every 20s to prevent idle-timeout disconnects
+        // during long responses with brief audio gaps (thinking between sentences).
+        this.xaiPingTimer = setInterval(() => {
+          if (this.xaiWs !== ws || this.xaiWs.readyState !== WebSocket.OPEN) return;
+          try { this.xaiWs.ping(); } catch { /* ignore */ }
+        }, 20_000);
         void this.refreshToolsAndSessionUpdate().catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           if (this.maybeRetryConnectWithoutConversationId(message)) return;
@@ -389,6 +396,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   }
 
   private disconnectXai(): void {
+    if (this.xaiPingTimer) {
+      clearInterval(this.xaiPingTimer);
+      this.xaiPingTimer = undefined;
+    }
     if (this.xaiWs) {
       try { this.xaiWs.terminate(); } catch { /* ignore */ }
       this.xaiWs = undefined;
@@ -415,11 +426,11 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       const timedOut = await Promise.race([
         syncPromise.then((sync) => ({ sync, timedOut: false as const })),
         new Promise<{ sync: null; timedOut: true }>((resolve) => {
-          setTimeout(() => resolve({ sync: null, timedOut: true }), 4_000);
+          setTimeout(() => resolve({ sync: null, timedOut: true }), 8_000);
         }),
       ]);
       if (timedOut.timedOut) {
-        getLogger().warn('XAI_VOICE', 'Integration tool sync timed out — continuing with base tools');
+        getLogger().warn('XAI_VOICE', 'Integration tool sync timed out (8s) — continuing with base tools');
         // prepareForAgentTurn may still hold the toolkit bridge — restore now so
         // local voice / chat keep working while sync finishes in the background.
         restorePrimaryToolkitBridge();

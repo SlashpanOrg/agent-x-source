@@ -15,6 +15,7 @@ import NotificationsIcon from '@mui/icons-material/Notifications';
 import KeyboardVoiceIcon from '@mui/icons-material/KeyboardVoice';
 import SecurityIcon from '@mui/icons-material/Security';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
+import BugReportIcon from '@mui/icons-material/BugReport';
 import { CheckCircle } from './CheckCircle';
 import { config, personaApi, settingsPermissions, type AgentXConfig, type AgentPersonaConfig } from '../api';
 import { useApp } from '../store/AppContext';
@@ -36,6 +37,7 @@ import { useLocalModelSupported } from '../hooks/useSystemCapabilities';
 import { KnowledgeTab } from './settings/KnowledgeTab';
 import { PermissionsTab } from './settings/PermissionsTab';
 import { GeneralTab } from './settings/GeneralTab';
+import { DeveloperTab } from './settings/DeveloperTab';
 
 type SettingsTab =
   | 'general'
@@ -48,7 +50,8 @@ type SettingsTab =
   | 'channels'
   | 'performance'
   | 'voice'
-  | 'permissions';
+  | 'permissions'
+  | 'developer';
 
 type SaveFlash = 'idle' | 'saving' | 'saved' | 'error' | 'persona';
 
@@ -64,6 +67,7 @@ const ALL_TABS: Array<{ id: SettingsTab; label: string; icon: React.ReactNode }>
   { id: 'tools', label: 'Search', icon: <TravelExploreIcon sx={{ fontSize: 14 }} /> },
   { id: 'persistence', label: 'Storage', icon: <StorageIcon sx={{ fontSize: 14 }} /> },
   { id: 'permissions', label: 'Permissions', icon: <SecurityIcon sx={{ fontSize: 14 }} /> },
+  { id: 'developer', label: 'Developer', icon: <BugReportIcon sx={{ fontSize: 14 }} /> },
 ];
 
 const AUTOSAVE_MS = 700;
@@ -229,13 +233,12 @@ export function SettingsPanel() {
         action={headerAction}
       />
 
-      <Box sx={{
+      <Box className="ax-scroll-x" sx={{
         flexShrink: 0,
         display: 'flex',
         borderBottom: `1px solid ${settingsTheme.border.default}`,
         px: 3,
         bgcolor: settingsTheme.bg.panel,
-        overflowX: 'auto',
       }}>
         {tabs.map((tab) => (
           <Button key={tab.id} onClick={() => setActiveTab(tab.id)} sx={settingsTabSx(activeTab === tab.id)}>
@@ -244,7 +247,7 @@ export function SettingsPanel() {
         ))}
       </Box>
 
-      <Box sx={{ flex: 1, overflow: 'auto', px: 3, pt: 1.5, pb: 3 }}>
+      <Box className="ax-scroll" sx={{ flex: 1, px: 3, pt: 1.5, pb: 3 }}>
         {activeTab === 'general' && <GeneralTab cfg={cfg} onChange={updateCfg} />}
         {activeTab === 'persona' && (
           personaLoading ? (
@@ -289,6 +292,7 @@ export function SettingsPanel() {
             onChange={(permissions) => updateCfg({ ...cfg, permissions })}
           />
         )}
+        {activeTab === 'developer' && <DeveloperTab />}
       </Box>
     </Box>
   );

@@ -181,6 +181,12 @@ export type EngineEvent =
   | { type: 'assistance_required'; sessionId: string; checkpointId: string; step: { description: string; expectedOutcome: string; error?: string }; failures: Array<{ description: string; failureReason: string; attemptNumber: number }>; consecutiveCheckpoints: number; message: string }
   // Progress events for self-healing autonomous loop
   | { type: 'task_progress'; phase: string; stepIndex: number; completed: number; total: number }
+  | { type: 'category_detected'; primary: string; sub?: string; confidence: number; reasoningMode: string; relevantToolCategories: string[] }
+  | { type: 'prompt_section_inventory'; sections: Array<{ key: string; layer: string; length: number }> }
+  | { type: 'tool_policy_applied'; choice: 'auto' | 'none' | 'required'; allowedIds?: string[]; stepCap: number; category: string; sub?: string }
+  | { type: 'verification_gate_triggered'; filePath: string; reason: string }
+  | { type: 'read_before_write_blocked'; filePath: string; reason: string }
+  | { type: 'safety_gate_blocked'; operation: string; reason: string }
   | { type: 'completion_finished'; message: string };
 
 export interface FormattedResponse {

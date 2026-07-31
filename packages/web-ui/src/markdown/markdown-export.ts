@@ -1,6 +1,7 @@
 import type { UIMessage } from '../chat/types';
 import { deriveMarkdownTitle, sanitizeMarkdownDeliverable } from '@agentx/shared/browser';
 import { displayContent } from '../chat/utils';
+import { buildPrintHtml } from './print-template';
 
 /** Serialize a chat message into markdown for document storage (preserves chart parts). */
 export function messageToMarkdownDocument(message: UIMessage): string {
@@ -165,7 +166,99 @@ function inlineComputedColorsForPdf(cloneRoot: HTMLElement): void {
   }
 }
 
-/** Capture a DOM subtree and produce a multi-page PDF blob (WYSIWYG). */
+// ─── Print-engine path (vector PDF) ─────────────────────────────────────────
+
+/**
+ * Export markdown to a **vector PDF** using Chromium's native print engine
+ * via Electron's `webContents.printToPDF()`.
+ *
+ * This produces:
+ * - Selectable, searchable text (not rasterized pixels)
+ * - Crisp shapes at any zoom level
+ * - CSS-controlled page breaks (`break-inside: avoid` on cards/tables)
+ * - Images embedded at original quality
+ * - Dramatically smaller file sizes
+ *
+ * Falls back to `exportElementToPdfBlob` (html2canvas rasterization) if the
+ * desktop print bridge is unavailable (e.g. running in a browser).
+ *
+ * @param markdown  The raw markdown string to export.
+ * @param title     Optional document title (used in the HTML <title>).
+ * @param fallbackRoot  Optional DOM element for html2canvas fallback.
+ */
+export async function exportMarkdownToPdfBlob(
+  markdown: string,
+  title?: string,
+  fallbackRoot?: HTMLElement | null,
+): Promise<Blob> {
+  // ─── Primary path: Electron print engine (vector PDF) ───
+  if (window.agentx?.printToPdf) {
+    try {
+      const html = buildPrintHtml(markdown, title);
+      const result = await window.agentx.printToPdf(html);
+      if (result.ok && result.data) {
+        return new Blob([result.data.buffer as ArrayBuffer], { type: 'application/pdf' });
+      }
+      // If the print engine failed, fall through to html2canvas
+      console.warn('[pdf-export] print engine failed, falling back to html2canvas:', result.error);
+    } catch (err) {
+      console.warn('[pdf-export] print engine error, falling back to html2canvas:', err);
+    }
+  }
+
+  // ─── Fallback path: html2canvas rasterization ───
+  if (!fallbackRoot) {
+    throw new Error('PDF export requires either the desktop print engine or a DOM element for html2canvas fallback');
+  }
+  return exportElementToPdfBlob(fallbackRoot);
+}
+
+/**
+ * Collect natural page-break candidate y-coordinates (in CSS pixels, relative to
+ * the export root's top) from block-level element boundaries.  Each candidate
+ * marks the bottom edge of a top-level block so page breaks snap to box edges
+ * instead of slicing through the middle of a card/table/paragraph.
+ *
+ * Only direct children (and a few well-known wrapper descendants like table
+ * rows) are considered — this keeps the candidate set small and avoids breaking
+ * inside inline elements.
+ */
+function collectBreakPoints(root: HTMLElement): number[] {
+  const rootTop = root.getBoundingClientRect().top + window.scrollY;
+  const candidates: number[] = [];
+
+  // Direct block-level children of the export root — these are the "cards",
+  // headings, paragraphs, tables, lists, etc. that should not be split.
+  const blockSelector = [
+    ':scope > *',
+    ':scope > * > *',          // one level of wrapper (e.g. styled divs)
+    'table tr',                // table rows are natural break points
+    'li',                      // list items
+  ].join(', ');
+
+  const elements = root.querySelectorAll(blockSelector);
+  for (const el of elements) {
+    if (!(el instanceof HTMLElement)) continue;
+    const rect = el.getBoundingClientRect();
+    const bottomY = rect.bottom - rootTop + window.scrollY;
+    if (bottomY > 0 && bottomY < root.scrollHeight) {
+      candidates.push(bottomY);
+    }
+  }
+
+  // Deduplicate, sort ascending, and also include 0 and full height as
+  // sentinel boundaries.
+  candidates.push(0);
+  candidates.push(root.scrollHeight);
+  const unique = [...new Set(candidates)].sort((a, b) => a - b);
+  return unique;
+}
+
+/** Capture a DOM subtree and produce a multi-page PDF blob (WYSIWYG).
+ *
+ * Page breaks are snapped to block-element boundaries so content boxes (cards,
+ * tables, paragraphs) are never cut in the middle.
+ */
 export async function exportElementToPdfBlob(root: HTMLElement): Promise<Blob> {
   const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
     import('html2canvas'),
@@ -173,6 +266,10 @@ export async function exportElementToPdfBlob(root: HTMLElement): Promise<Blob> {
   ]);
 
   await new Promise((r) => setTimeout(r, 400));
+
+  // Collect break points BEFORE canvas capture (DOM must be intact for
+  // getBoundingClientRect to return correct positions).
+  const breakPointsCss = collectBreakPoints(root);
 
   const backgroundColor = getComputedStyle(root).backgroundColor || '#ffffff';
 
@@ -191,33 +288,96 @@ export async function exportElementToPdfBlob(root: HTMLElement): Promise<Blob> {
     },
   });
 
-  const imgData = canvas.toDataURL('image/png');
   const pdf = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' });
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
   const margin = 24;
   const contentWidth = pageWidth - margin * 2;
-  const imgWidth = contentWidth;
-  const imgHeight = (canvas.height * imgWidth) / canvas.width;
+  const contentHeight = pageHeight - margin * 2;
 
-  let heightLeft = imgHeight;
-  let position = margin;
+  // Scale factor: CSS pixels → canvas pixels (Y axis)
+  const scaleY = canvas.height / root.scrollHeight;
+  // The rendered image height in PDF points
+  const imgHeightPt = (canvas.height * contentWidth) / canvas.width;
 
   const fillPageBackground = () => {
     pdf.setFillColor(backgroundColor);
     pdf.rect(0, 0, pageWidth, pageHeight, 'F');
   };
 
-  fillPageBackground();
-  pdf.addImage(imgData, 'PNG', margin, position, imgWidth, imgHeight);
-  heightLeft -= pageHeight - margin * 2;
+  // ─── Smart pagination: snap page breaks to element boundaries ───
+  //
+  // Walk through the break-point candidates and greedily fill each page with
+  // as many blocks as fit.  When the next break point would overflow the page,
+  // start a new page.  This ensures page boundaries always fall on box edges.
+  //
+  // If there are not enough break points (e.g. one giant block), fall back to
+  // hard slicing for that page so we never overflow.
 
-  while (heightLeft > 0) {
-    position = margin - (imgHeight - heightLeft);
-    pdf.addPage();
+  // Convert CSS break points to PDF-point Y coordinates (from top of image)
+  const breakPointsPt = breakPointsCss.map((y) => (y * scaleY * contentWidth) / canvas.width);
+
+  // Build the list of page regions: [startY, endY] in PDF points
+  const pages: Array<{ start: number; end: number }> = [];
+  let cursor = 0; // current Y position in the full image (PDF points)
+
+  while (cursor < imgHeightPt - 1) {
+    const pageLimit = cursor + contentHeight;
+    // Find the last break point that fits within this page
+    let bestBreak = -1;
+    for (const bp of breakPointsPt) {
+      if (bp > cursor + 1 && bp <= pageLimit) {
+        bestBreak = bp;
+      } else if (bp > pageLimit) {
+        break;
+      }
+    }
+
+    let endY: number;
+    if (bestBreak > 0) {
+      // Snap to the element boundary
+      endY = bestBreak;
+    } else {
+      // No break point fits — hard slice (rare: one block taller than a page)
+      endY = Math.min(pageLimit, imgHeightPt);
+    }
+
+    pages.push({ start: cursor, end: endY });
+    cursor = endY;
+  }
+
+  // Ensure at least one page
+  if (pages.length === 0) {
+    pages.push({ start: 0, end: Math.min(contentHeight, imgHeightPt) });
+  }
+
+  // ─── Render each page by cropping the full canvas ───
+  for (let i = 0; i < pages.length; i++) {
+    const { start, end } = pages[i];
+    const sliceHeightPt = end - start;
+    // Convert PDF-point coordinates back to canvas pixels for cropping
+    const srcY = Math.round((start * canvas.width) / contentWidth);
+    const srcH = Math.round((sliceHeightPt * canvas.width) / contentWidth);
+
+    // Create a cropped canvas for this page
+    const pageCanvas = document.createElement('canvas');
+    pageCanvas.width = canvas.width;
+    pageCanvas.height = srcH;
+    const pageCtx = pageCanvas.getContext('2d');
+    if (!pageCtx) continue;
+    // Fill with background color to avoid transparent edges
+    pageCtx.fillStyle = backgroundColor;
+    pageCtx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+    pageCtx.drawImage(canvas, 0, srcY, canvas.width, srcH, 0, 0, canvas.width, srcH);
+
+    const pageImgData = pageCanvas.toDataURL('image/png');
+
+    if (i > 0) {
+      pdf.addPage();
+    }
     fillPageBackground();
-    pdf.addImage(imgData, 'PNG', margin, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight - margin * 2;
+    // Place the cropped slice at the top of the content area
+    pdf.addImage(pageImgData, 'PNG', margin, margin, contentWidth, sliceHeightPt);
   }
 
   return pdf.output('blob');

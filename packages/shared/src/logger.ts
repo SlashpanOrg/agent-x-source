@@ -27,6 +27,54 @@ export interface LogEntry {
 }
 
 /**
+ * Record handed to a registered {@link LogSink}. Mirrors {@link LogEntry} but
+ * uses the observability-friendly field names (`scope`/`payload`) so the
+ * Postgres log exporter can persist it directly. The sink is invoked from
+ * within `Logger.write` after the level gate has passed, with the current
+ * trace/span context captured by the sink itself (not the logger).
+ */
+export interface LogSinkRecord {
+  timestamp: string;
+  level: 'debug' | 'info' | 'warn' | 'error';
+  /** The logger `code` (e.g. 'AI_SDK', 'TURN_JOURNEY'). */
+  scope: string;
+  message: string;
+  payload?: Record<string, unknown>;
+  stack?: string;
+}
+
+/**
+ * A durable log sink — e.g. the observability {@code PostgresLogExporter}.
+ * Sinks must never throw: the logger wraps each call in try/catch, but a sink
+ * that fails repeatedly should back off on its own.
+ */
+export interface LogSink {
+  log(record: LogSinkRecord): void;
+}
+
+const SINK_LEVEL_MAP: Record<string, number> = { debug: 0, info: 1, warn: 2, error: 3 };
+
+/** Registered log sinks (e.g. the PostgresLogExporter). Fan-out is best-effort. */
+const logSinks: LogSink[] = [];
+/** Minimum level for a record to be forwarded to sinks (separate from console/file level). */
+let sinkMinLevel: number = SINK_LEVEL_MAP[process.env['AGENTX_OBS_LOG_LEVEL'] ?? 'info'] ?? 1;
+
+/**
+ * Register a durable log sink. Every log call (that passes the sink level gate)
+ * is fan-out delivered to each registered sink. Sink failures are swallowed.
+ */
+export function registerLogSink(sink: LogSink): void {
+  if (!logSinks.includes(sink)) logSinks.push(sink);
+  // Re-read the env in case it was set after module load.
+  sinkMinLevel = SINK_LEVEL_MAP[process.env['AGENTX_OBS_LOG_LEVEL'] ?? 'info'] ?? 1;
+}
+
+/** Remove all registered log sinks (called on observability shutdown). */
+export function clearLogSinks(): void {
+  logSinks.length = 0;
+}
+
+/**
  * Durable ring buffer for log entries before they hit disk.
  * Prevents event-loop blocking by batching writes.
  */
@@ -128,6 +176,28 @@ export class Logger {
         stream.write(JSON.stringify(entry) + '\n');
       } catch {
         // Best-effort
+      }
+    }
+
+    // Fan-out to registered durable sinks (e.g. PostgresLogExporter).
+    // The sink level gate is independent of the console/file level so that
+    // `AGENTX_OBS_LOG_LEVEL=warn` can suppress info/debug persistence without
+    // silencing the console. A sink failure never breaks logging.
+    if (logSinks.length > 0 && (SINK_LEVEL_MAP[entry.level] ?? 0) >= sinkMinLevel) {
+      const record: LogSinkRecord = {
+        timestamp: entry.timestamp,
+        level: entry.level,
+        scope: entry.code,
+        message: entry.message,
+        payload: entry.context,
+        stack: entry.stack,
+      };
+      for (const sink of logSinks) {
+        try {
+          sink.log(record);
+        } catch {
+          // A sink must never crash the app over logging.
+        }
       }
     }
   }

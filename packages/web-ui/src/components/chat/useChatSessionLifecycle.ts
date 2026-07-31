@@ -223,7 +223,33 @@ export function useChatSessionLifecycle({
     const windowed = withFeedback.length > MESSAGE_PAGE_SIZE
       ? withFeedback.slice(-MESSAGE_PAGE_SIZE)
       : withFeedback;
-    setMessages(windowed);
+
+    // If the backend reports no active turn, expire any pending
+    // questionnaires/crew-roster-pickers so the UI doesn't show actionable
+    // prompts for a turn that's already done/cancelled. This handles the
+    // case where a turn was stopped (either by the user or by a server
+    // restart) but the questionnaire status was never updated in the DB.
+    const turnPhaseForExpiry = turnState?.phase;
+    const turnIsActive = turnPhaseForExpiry
+      && turnPhaseForExpiry !== 'idle'
+      && turnPhaseForExpiry !== 'done'
+      && turnPhaseForExpiry !== 'cancelled';
+    const expirePendingInteractions = (msgs: typeof windowed) => turnIsActive
+      ? msgs
+      : msgs.map((m) => ({
+          ...m,
+          parts: m.parts?.map((p) => {
+            if (p.type === 'questionnaire' && p.questionnaire?.status === 'pending') {
+              return { ...p, questionnaire: { ...p.questionnaire, status: 'expired' as const } };
+            }
+            if (p.type === 'crew_roster_picker' && p.crewRosterPicker?.status === 'pending') {
+              return { ...p, crewRosterPicker: { ...p.crewRosterPicker, status: 'expired' as const } };
+            }
+            return p;
+          }),
+        }));
+
+    setMessages(expirePendingInteractions(windowed));
     setHasOlderMessages((messagesMeta?.truncated ?? false) || withFeedback.length > MESSAGE_PAGE_SIZE);
     setIsCrewPrivateSession(shell.crewPrivate);
     setCrewPrivateHost(shell.privateHost);
@@ -266,7 +292,7 @@ export function useChatSessionLifecycle({
         elapsedMs: turnState?.startedAt ? Date.now() - turnState.startedAt : 0,
       });
       setCurrentStep(turnState?.stage ?? 'Working…');
-      const lastMapped = withFeedback[withFeedback.length - 1];
+      const lastMapped = windowed[windowed.length - 1];
       const live = buildActiveTurnAssistantMessage({
         turnId: turnState?.turnId,
         partialContent: turnState?.partialContent,
@@ -275,7 +301,7 @@ export function useChatSessionLifecycle({
       });
       if (lastMapped?.role === 'assistant') {
         // Merge live tools/subagents onto the existing assistant row (streaming or not).
-        setMessages([...withFeedback.slice(0, -1), {
+        setMessages([...windowed.slice(0, -1), {
           ...lastMapped,
           ...live,
           id: lastMapped.id,
@@ -286,7 +312,7 @@ export function useChatSessionLifecycle({
           streaming: true,
         }]);
       } else {
-        setMessages([...withFeedback, live]);
+        setMessages([...windowed, live]);
       }
       // Allow SSE telemetry events to flow (otherwise isInitialLoadRef would gate them).
       isInitialLoadRef.current = false;

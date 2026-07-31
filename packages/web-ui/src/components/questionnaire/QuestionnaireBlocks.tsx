@@ -63,12 +63,14 @@ function CustomAnswerField({
   onSubmit,
   onSkip,
   label = 'Or type a custom answer',
+  disabled = false,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSubmit: () => void;
   onSkip: () => void;
   label?: string;
+  disabled?: boolean;
 }) {
   return (
     <Box sx={{ px: 1.25, pb: 0.5 }}>
@@ -89,7 +91,9 @@ function CustomAnswerField({
           if (e.key === 'Escape') { e.preventDefault(); onSkip(); }
         }}
         placeholder="Custom answer…"
-        style={{ ...fieldInputStyle, fontSize: '0.65rem' }}
+        disabled={disabled}
+        readOnly={disabled}
+        style={{ ...fieldInputStyle, fontSize: '0.65rem', ...(disabled ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}
       />
     </Box>
   );
@@ -105,6 +109,7 @@ interface ChoiceListProps {
   onToggleMulti: (value: string) => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   listRef: React.RefObject<HTMLDivElement | null>;
+  disabled?: boolean;
 }
 
 /** Options may arrive corrupted as nested `{label}` objects from older model tool args. */
@@ -134,6 +139,7 @@ function ChoiceList({
   onToggleMulti,
   onKeyDown,
   listRef,
+  disabled = false,
 }: ChoiceListProps) {
   return (
     <Box
@@ -145,11 +151,11 @@ function ChoiceList({
       {options.map((opt, idx) => {
         const value = choiceText(opt.value) || choiceText(opt.label) || `option_${idx}`;
         const label = choiceText(opt.label) || value;
-        const isDisabled = opt.disabled === true;
+        const isDisabled = disabled || opt.disabled === true;
         const checked = mode === 'single'
           ? selected === value
           : (selected as Set<string>).has(value);
-        const focused = focusIdx === idx;
+        const focused = !disabled && focusIdx === idx;
 
         return (
           <Box
@@ -163,7 +169,7 @@ function ChoiceList({
               if (mode === 'single') onSelectSingle(value);
               else onToggleMulti(value);
             }}
-            onMouseEnter={() => onFocusIdx(idx)}
+            onMouseEnter={() => { if (!disabled) onFocusIdx(idx); }}
             sx={{
               display: 'flex',
               alignItems: 'flex-start',
@@ -172,7 +178,7 @@ function ChoiceList({
               py: 0.5,
               borderRadius: '8px',
               cursor: isDisabled ? 'not-allowed' : 'pointer',
-              opacity: isDisabled ? 0.45 : 1,
+              opacity: isDisabled ? 0.5 : 1,
               bgcolor: focused || checked ? `${alphaColor(colors.accent.blue, '10')}` : 'transparent',
               border: `1px solid ${focused && !isDisabled ? alphaColor(colors.accent.blue, '50') : 'transparent'}`,
             }}
@@ -214,6 +220,7 @@ interface QuestionBlockRendererProps {
   listRef: React.RefObject<HTMLDivElement | null>;
   onSubmit: () => void;
   onSkip: () => void;
+  disabled?: boolean;
 }
 
 export function QuestionBlockRenderer({
@@ -225,6 +232,7 @@ export function QuestionBlockRenderer({
   listRef,
   onSubmit,
   onSkip,
+  disabled = false,
 }: QuestionBlockRendererProps) {
   const customKey = `${question.id}${QUESTIONNAIRE_CUSTOM_SUFFIX}`;
   const customValue = (state[customKey] as string) ?? '';
@@ -273,6 +281,7 @@ export function QuestionBlockRenderer({
           onToggleMulti={() => {}}
           onKeyDown={handleListKeyDown}
           listRef={listRef}
+          disabled={disabled}
         />
         {question.allowCustom !== false && (
           <CustomAnswerField
@@ -280,6 +289,7 @@ export function QuestionBlockRenderer({
             onChange={(v) => onStateChange(customKey, v)}
             onSubmit={onSubmit}
             onSkip={onSkip}
+            disabled={disabled}
           />
         )}
       </>
@@ -311,6 +321,7 @@ export function QuestionBlockRenderer({
           }}
           onKeyDown={handleListKeyDown}
           listRef={listRef}
+          disabled={disabled}
         />
         {question.allowCustom !== false && (
           <CustomAnswerField
@@ -318,6 +329,7 @@ export function QuestionBlockRenderer({
             onChange={(v) => onStateChange(customKey, v)}
             onSubmit={onSubmit}
             onSkip={onSkip}
+            disabled={disabled}
           />
         )}
       </>
@@ -337,7 +349,9 @@ export function QuestionBlockRenderer({
           }}
           placeholder={question.placeholder ?? 'Type your answer…'}
           rows={3}
-          style={{ ...fieldInputStyle, resize: 'vertical', minHeight: 56 }}
+          disabled={disabled}
+          readOnly={disabled}
+          style={{ ...fieldInputStyle, resize: 'vertical', minHeight: 56, ...(disabled ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}
         />
       ) : (
         <input
@@ -349,7 +363,9 @@ export function QuestionBlockRenderer({
             if (e.key === 'Escape') { e.preventDefault(); onSkip(); }
           }}
           placeholder={question.placeholder ?? 'Type your answer…'}
-          style={fieldInputStyle}
+          disabled={disabled}
+          readOnly={disabled}
+          style={{ ...fieldInputStyle, ...(disabled ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}
         />
       )}
     </Box>

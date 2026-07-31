@@ -62,17 +62,17 @@ describe('enrichProviderSetupWizard', () => {
   });
 
   it('merges non-developer copy for known providers without overriding catalog copy', () => {
-    const slackLike: IntegrationProvider = {
+    const githubLike: IntegrationProvider = {
       ...baseProvider,
-      id: 'slack',
-      category: 'communication',
+      id: 'github',
+      category: 'dev_ops',
     };
-    const enriched = enrichProviderSetupWizard(slackLike);
+    const enriched = enrichProviderSetupWizard(githubLike);
     expect(enriched.highlights?.length).toBeGreaterThan(0);
-    expect(enriched.auth.connectGuide?.some((g) => g.link?.includes('api.slack.com'))).toBe(true);
+    expect(enriched.auth.connectGuide?.some((g) => g.link?.includes('github.com'))).toBe(true);
 
     const withOwnCopy: IntegrationProvider = {
-      ...slackLike,
+      ...githubLike,
       highlights: ['Catalog-authored highlight'],
     };
     const enriched2 = enrichProviderSetupWizard(withOwnCopy);

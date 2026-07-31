@@ -346,7 +346,7 @@ export interface ProviderCredentialsContext {
         activeProfile?: string;
         apiKey?: string;
         baseUrl?: string;
-        profiles?: Record<string, { apiKey?: string; baseUrl?: string }>;
+        profiles?: Record<string, { apiKey?: string; baseUrl?: string; apiType?: string; label?: string }>;
       }>;
     };
   };
@@ -363,6 +363,25 @@ export function getProviderCredentials(ctx: ProviderCredentialsContext): { apiKe
   return {
     apiKey: profile?.apiKey ?? providerSettings.apiKey,
     baseUrl: profile?.baseUrl ?? providerSettings.baseUrl,
+  };
+}
+
+/**
+ * Resolve extra factory options for the active provider. Currently only the
+ * `custom` provider uses these (wire-protocol selection + display name from
+ * the active profile label). Returns `undefined` for built-in providers so
+ * the factory falls back to its default behaviour.
+ */
+export function getProviderFactoryOptions(ctx: ProviderCredentialsContext): { apiType?: string; displayName?: string } | undefined {
+  if (ctx.config.provider.activeProvider !== 'custom') return undefined;
+  const providerSettings = ctx.config.provider.providers?.['custom'];
+  if (!providerSettings) return undefined;
+  const activeProfileId = providerSettings.activeProfile;
+  const profile = activeProfileId ? providerSettings.profiles?.[activeProfileId] : undefined;
+  const fallbackProfile = providerSettings.profiles ? Object.values(providerSettings.profiles)[0] : undefined;
+  return {
+    apiType: profile?.apiType ?? fallbackProfile?.apiType ?? 'openai-compatible',
+    displayName: profile?.label ?? fallbackProfile?.label ?? 'Custom',
   };
 }
 

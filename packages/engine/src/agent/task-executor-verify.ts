@@ -2,6 +2,7 @@ import { generateText } from 'ai';
 import { getLogger } from '@agentx/shared';
 import type { AgentXConfig } from '@agentx/shared';
 import { createAiSdkModel } from './AiSdkBridge.js';
+import { withSpan } from '../observability/tracer.js';
 import type { Agent } from './Agent.js';
 import type { TaskStep } from './TaskExecutor.js';
 import { DEBUG_SYSTEM_PROMPT, VERIFY_SYSTEM_PROMPT, FINAL_VERIFY_SYSTEM_PROMPT, extractJsonObject, tryShellExec } from './task-executor-helpers.js';
@@ -32,9 +33,8 @@ export async function lintStepConventions(ctx: VerifyDebugContext, step: TaskSte
   if (!fileRefs) return result;
 
   const model = createAiSdkModel(ctx.config, ctx.apiKey);
-  const lintResult = await generateText({
-    model,
-    system: `You are a code convention enforcer. Given project conventions and the step result, identify any convention violations.
+  const messages = [
+    { role: 'system' as const, content: `You are a code convention enforcer. Given project conventions and the step result, identify any convention violations.
 
 Project conventions:
 ${ctx.conventions.map((c, i) => `${i + 1}. ${c}`).join('\n')}
@@ -45,10 +45,21 @@ Return a JSON object:
   "fixInstructions": "specific instructions to fix the violations"
 }
 
-If no violations, return { "violations": [] }.`,
-    prompt: `Step: ${step.description}\n\nStep result:\n${result.slice(0, 3000)}`,
-    temperature: 0.1,
-    maxRetries: 1,
+If no violations, return { "violations": [] }.` },
+    { role: 'user' as const, content: `Step: ${step.description}\n\nStep result:\n${result.slice(0, 3000)}` },
+  ];
+  const lintResult = await withSpan('llm.lint_conventions', 'llm', async (span) => {
+    span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+    span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+    span.setAttribute('llm.input_messages', JSON.stringify(messages));
+    const r = await generateText({
+      model,
+      messages,
+      temperature: 0.1,
+      maxRetries: 1,
+    });
+    span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+    return r;
   });
 
   const lintParsed = extractJsonObject<{ violations: string[]; fixInstructions: string }>(lintResult.text);
@@ -129,12 +140,22 @@ export async function runDebugCycle(ctx: VerifyDebugContext, step: TaskStep, res
       if (fixAttempt < 2) {
         getLogger().info('TASK_EXECUTOR', `Debug attempt ${fixAttempt + 1}: analyzing build failure`);
         const model = createAiSdkModel(ctx.config, ctx.apiKey);
-        const debugResult = await generateText({
-          model,
-          system: DEBUG_SYSTEM_PROMPT,
-          prompt: `Goal: ${goal}\nStep: ${step.description}\n\nBuild/test output:\n${allOutput.slice(0, 4000)}\n\nAnalyze the failure and fix it.`,
-          temperature: 0.3,
-          maxRetries: 1,
+        const messages = [
+          { role: 'system' as const, content: DEBUG_SYSTEM_PROMPT },
+          { role: 'user' as const, content: `Goal: ${goal}\nStep: ${step.description}\n\nBuild/test output:\n${allOutput.slice(0, 4000)}\n\nAnalyze the failure and fix it.` },
+        ];
+        const debugResult = await withSpan('llm.debug_failure', 'llm', async (span) => {
+          span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+          span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+          span.setAttribute('llm.input_messages', JSON.stringify(messages));
+          const r = await generateText({
+            model,
+            messages,
+            temperature: 0.3,
+            maxRetries: 1,
+          });
+          span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+          return r;
         });
 
         const fixPrompt = `The following build/test failed for step "${step.description}":\n\n${allOutput.slice(0, 3000)}\n\nFix the issues. The debug analysis says:\n\n${debugResult.text.slice(0, 1000)}`;
@@ -195,14 +216,24 @@ export async function generateAndRunTests(
 
     const testFilePath = inferTestPath(file);
 
-    const genResult = await generateText({
-      model,
-      system: `You are a test generation expert. Given a source file, generate a test file for it.
+    const messages = [
+      { role: 'system' as const, content: `You are a test generation expert. Given a source file, generate a test file for it.
 Use the appropriate test framework for the language (Jest/Vitest for TS/JS, pytest for Python, Go test, etc.).
-Return ONLY the test file content. No markdown, no explanation.`,
-      prompt: `Source file: ${file}\n\nSource content:\n${sourceContent.slice(0, 4000)}\n\nGoal context: ${goal}\nStep: ${step.description}\n\nGenerate a comprehensive test file at path: ${testFilePath}`,
-      temperature: 0.2,
-      maxRetries: 1,
+Return ONLY the test file content. No markdown, no explanation.` },
+      { role: 'user' as const, content: `Source file: ${file}\n\nSource content:\n${sourceContent.slice(0, 4000)}\n\nGoal context: ${goal}\nStep: ${step.description}\n\nGenerate a comprehensive test file at path: ${testFilePath}` },
+    ];
+    const genResult = await withSpan('llm.generate_test', 'llm', async (span) => {
+      span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+      span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+      span.setAttribute('llm.input_messages', JSON.stringify(messages));
+      const r = await generateText({
+        model,
+        messages,
+        temperature: 0.2,
+        maxRetries: 1,
+      });
+      span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+      return r;
     });
 
     if (!genResult.text.trim()) continue;
@@ -225,12 +256,22 @@ Return ONLY the test file content. No markdown, no explanation.`,
       if (testOutput.toLowerCase().includes('error') || testOutput.toLowerCase().includes('fail')) {
         // One fix attempt for generated tests
         if (fixCount < 1) {
-          const fixResult = await generateText({
-            model,
-            system: 'Fix the test file. Return ONLY the corrected file content.',
-            prompt: `Test file ${testFilePath} has failures:\n\n${testOutput.slice(0, 2000)}\n\nFix the test file.`,
-            temperature: 0.2,
-            maxRetries: 1,
+          const messages = [
+            { role: 'system' as const, content: 'Fix the test file. Return ONLY the corrected file content.' },
+            { role: 'user' as const, content: `Test file ${testFilePath} has failures:\n\n${testOutput.slice(0, 2000)}\n\nFix the test file.` },
+          ];
+          const fixResult = await withSpan('llm.fix_test', 'llm', async (span) => {
+            span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+            span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+            span.setAttribute('llm.input_messages', JSON.stringify(messages));
+            const r = await generateText({
+              model,
+              messages,
+              temperature: 0.2,
+              maxRetries: 1,
+            });
+            span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+            return r;
           });
           if (fixResult.text.trim()) {
             await tryShellExec(ctx.agent, `node -e "require('fs').writeFileSync('${testFilePath.replace(/'/g, "\\'")}', ${JSON.stringify(fixResult.text)})"`);
@@ -279,12 +320,22 @@ export async function verifyStep(
   result: string,
 ): Promise<{ passed: boolean; reason: string }> {
   const model = createAiSdkModel(ctx.config, ctx.apiKey);
-  const verifyResult = await generateText({
-    model,
-    system: VERIFY_SYSTEM_PROMPT,
-    prompt: `Step: ${step.description}\nExpected: ${step.expectedOutcome}\n\nResult:\n${result.slice(0, 3000)}`,
-    temperature: 0.1,
-    maxRetries: 1,
+  const messages = [
+    { role: 'system' as const, content: VERIFY_SYSTEM_PROMPT },
+    { role: 'user' as const, content: `Step: ${step.description}\nExpected: ${step.expectedOutcome}\n\nResult:\n${result.slice(0, 3000)}` },
+  ];
+  const verifyResult = await withSpan('llm.verify_step', 'llm', async (span) => {
+    span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+    span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+    span.setAttribute('llm.input_messages', JSON.stringify(messages));
+    const r = await generateText({
+      model,
+      messages,
+      temperature: 0.1,
+      maxRetries: 1,
+    });
+    span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+    return r;
   });
 
   const parsed = extractJsonObject<{ passed: boolean; reason: string }>(verifyResult.text);
@@ -308,12 +359,22 @@ export async function verifyGoal(
     `${i + 1}. ${s.description} — ${s.status}${s.result ? ': ' + s.result.slice(0, 200) : ''}`
   ).join('\n');
 
-  const verifyResult = await generateText({
-    model,
-    system: FINAL_VERIFY_SYSTEM_PROMPT,
-    prompt: `Original goal: ${goal}\n\nCompleted steps:\n${stepsSummary}\n\nWas the goal fully achieved?`,
-    temperature: 0.1,
-    maxRetries: 1,
+  const messages = [
+    { role: 'system' as const, content: FINAL_VERIFY_SYSTEM_PROMPT },
+    { role: 'user' as const, content: `Original goal: ${goal}\n\nCompleted steps:\n${stepsSummary}\n\nWas the goal fully achieved?` },
+  ];
+  const verifyResult = await withSpan('llm.verify_goal', 'llm', async (span) => {
+    span.setAttribute('gen_ai.system', ctx.config.provider.activeProvider);
+    span.setAttribute('gen_ai.request.model', ctx.config.provider.activeModel);
+    span.setAttribute('llm.input_messages', JSON.stringify(messages));
+    const r = await generateText({
+      model,
+      messages,
+      temperature: 0.1,
+      maxRetries: 1,
+    });
+    span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: r.text }]));
+    return r;
   });
 
   const parsed = extractJsonObject<{ achieved: boolean; reason: string; gaps?: string[] }>(verifyResult.text);

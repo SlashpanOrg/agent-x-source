@@ -102,6 +102,7 @@ type SessionList = Pick<ChatSessionStateReturn, SessionListKey>;
 const MODEL_DATA_KEYS = [
   'currentModel', 'currentProvider', 'currentProviderId',
   'providerList', 'modelList', 'loadingModels', 'configLoaded',
+  'providerSwitchPending', 'initiateProviderSwitch', 'confirmProviderSwitch', 'cancelProviderSwitch',
 ] as const;
 
 type ModelDataKey = typeof MODEL_DATA_KEYS[number];
@@ -223,7 +224,7 @@ type InputHandlers = Pick<ChatSessionStateReturn, InputHandlerKey>;
 
 // ─── Thread handler keys ───
 const THREAD_HANDLER_KEYS = [
-  'handleResend', 'handleQuestionnaireRespond',
+  'handleResend', 'handleQuestionnaireRespond', 'handleQuestionnaireCancel',
   'handleCrewRosterPickerSubmit', 'handleCrewRosterPickerSkip',
   'handleTurnFeedback', 'handleSaveMarkdown', 'handleViewCrewDossier', 'handleViewCrewByCallsign',
 ] as const;

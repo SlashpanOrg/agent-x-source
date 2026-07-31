@@ -12,6 +12,7 @@ import { streamText, stepCountIs } from 'ai';
 import { ConcurrencyLimiter } from '../../concurrency/ConcurrencyLimiter.js';
 import { getLlmConcurrencyLimits } from '../../performance/PerformanceGovernor.js';
 import { createAiSdkModel, createAiSdkTools } from '../../agent/AiSdkBridge.js';
+import { withSpan } from '../../observability/tracer.js';
 import { createAiSdkStreamHandler } from '../../agent/AiSdkStreamHandler.js';
 import { buildCompletionMessages } from '../../agent/context-profile.js';
 import { modelMessageContentToText, estimateToolSchemaChars } from '../../agent/agent-helpers.js';
@@ -109,26 +110,28 @@ export class TurnOrchestrator implements ITurnOrchestrator {
     }
 
     const compact = this.host.usesCompactContext();
-    const tools = createAiSdkTools(
-      registry,
-      executor,
-      sessionId,
-      emit,
-      async (questionnaire: QuestionnairePayload) => {
-        if (this.host.isDelegatedWorker) {
-          return 'Proceed with your best judgment using available read-only tools and context.';
-        }
-        return this.host.waitForQuestionnaireResponse(questionnaire);
-      },
-      async (instruction, toolsList, timeout, background) =>
-        this.host.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
-      (toolId, success, output, elapsed, args) => {
-        const path = typeof args?.path === 'string' ? args.path : undefined;
-        this.host.toolLedger.record({ name: toolId, success, output, elapsed, path });
-        this.host.toolCallLogForReflection.push({ name: toolId, success, output, elapsed });
-        this.host.turnState.touch();
-      },
-    );
+    return await withSpan('llm.chat', 'llm', async (span) => {
+      const tools = createAiSdkTools(
+        registry,
+        executor,
+        sessionId,
+        emit,
+        async (questionnaire: QuestionnairePayload) => {
+          if (this.host.isDelegatedWorker) {
+            return 'Proceed with your best judgment using available read-only tools and context.';
+          }
+          return this.host.waitForQuestionnaireResponse(questionnaire);
+        },
+        async (instruction, toolsList, timeout, background) =>
+          this.host.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
+        (toolId, success, output, elapsed, args) => {
+          const path = typeof args?.path === 'string' ? args.path : undefined;
+          this.host.toolLedger.record({ name: toolId, success, output, elapsed, path });
+          this.host.toolCallLogForReflection.push({ name: toolId, success, output, elapsed });
+          this.host.turnState.touch();
+        },
+        span,
+      );
 
     if (this.host.options.promptProfile === 'crew_private' || deniesAutonomousCrewTools(this.host.options.contextKind, sessionId)) {
       const denyCrewOrchestration = new Set(['spawn_crew_workers', 'delegate_to_crew', 'crew_response']);
@@ -165,6 +168,11 @@ export class TurnOrchestrator implements ITurnOrchestrator {
     const budget = await this.ensureOutputBudget(aiMessages, tools, rebuildAiMessages);
     aiMessages = budget.messages;
     const turnMaxOutputTokens = budget.maxOutputTokens;
+
+    span.setAttribute('gen_ai.system', this.host.config.provider.activeProvider);
+    span.setAttribute('gen_ai.request.model', this.host.config.provider.activeModel);
+    span.setAttribute('llm.input_messages', JSON.stringify(aiMessages));
+    span.setAttribute('session.id', sessionId);
 
     const streamHandler = createAiSdkStreamHandler(
       emit,
@@ -340,31 +348,41 @@ export class TurnOrchestrator implements ITurnOrchestrator {
                 : `[SYSTEM] The user said: "${aiMessages[aiMessages.length - 1]?.content?.slice(0, 500)}"\n\nUse the appropriate tools to answer. Prefer connected MCP integration tools when the request targets an external service — do not scan the local filesystem as a substitute. Do not return empty.`,
             },
           ];
-          const retryResult = streamText({
-            model: createAiSdkModel(this.host.config, this.host.getApiKey()),
-            messages: retryMessages,
-            ...(textOnlyRetry
-              ? {}
-              : {
-                tools: createAiSdkTools(
-                  this.host.toolRegistry!,
-                  this.host.toolExecutor!,
-                  sessionId,
-                  (e) => this.host.emit(e),
-                  async () => 'continue',
-                  (instruction, toolsList, timeout, background) =>
-                    this.host.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
-                ),
-                stopWhen: stepCountIs(50),
-                toolChoice: 'auto' as const,
-              }),
-            maxRetries: 1,
-            maxOutputTokens: turnMaxOutputTokens,
-            abortSignal,
+          const retryText = await withSpan('llm.retry', 'llm', async (retrySpan) => {
+            retrySpan.setAttribute('gen_ai.system', this.host.config.provider.activeProvider);
+            retrySpan.setAttribute('gen_ai.request.model', this.host.config.provider.activeModel);
+            retrySpan.setAttribute('llm.input_messages', JSON.stringify(retryMessages));
+            retrySpan.setAttribute('session.id', sessionId);
+            const retryResult = streamText({
+              model: createAiSdkModel(this.host.config, this.host.getApiKey()),
+              messages: retryMessages,
+              ...(textOnlyRetry
+                ? {}
+                : {
+                  tools: createAiSdkTools(
+                    this.host.toolRegistry!,
+                    this.host.toolExecutor!,
+                    sessionId,
+                    (e) => this.host.emit(e),
+                    async () => 'continue',
+                    (instruction, toolsList, timeout, background) =>
+                      this.host.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
+                    undefined,
+                    retrySpan,
+                  ),
+                  stopWhen: stepCountIs(50),
+                  toolChoice: 'auto' as const,
+                }),
+              maxRetries: 1,
+              maxOutputTokens: turnMaxOutputTokens,
+              abortSignal,
+            });
+            let retryOutput = '';
+            for await (const chunk of retryResult.fullStream) { streamHandler.handleEvent(chunk); }
+            retryOutput = (streamHandler.getState().accumulatedContent || '').trim();
+            retrySpan.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content: retryOutput }]));
+            return retryOutput;
           });
-          let retryText = '';
-          for await (const chunk of retryResult.fullStream) { streamHandler.handleEvent(chunk); }
-          retryText = (streamHandler.getState().accumulatedContent || '').trim();
           if (retryText) content = text.trim() ? text.trim() + '\n\n' + retryText : retryText;
         } catch (retryErr) {
           getLogger().warn(
@@ -407,6 +425,7 @@ export class TurnOrchestrator implements ITurnOrchestrator {
         createdAt: new Date().toISOString(),
         tokenCount,
       });
+      span.setAttribute('llm.output_messages', JSON.stringify([{ role: 'assistant', content }]));
       return assistantMessage;
     } catch (error) {
       if (error instanceof Error && error.message === 'STEP_CAP_STOP') {
@@ -485,6 +504,7 @@ export class TurnOrchestrator implements ITurnOrchestrator {
         getPerfTracker().turnEnd(sessionId, assistantMessage, Date.now());
       }
     }
+    });
   }
 
   private resolveAbortSignal(turnSignal?: AbortSignal): AbortSignal | undefined {
