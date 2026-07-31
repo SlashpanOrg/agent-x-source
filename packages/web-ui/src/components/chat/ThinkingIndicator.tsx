@@ -2,7 +2,8 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import { coerceDisplayLabel } from '../../chat/utils';
-import { colors, alphaColor } from '../../theme';
+import { colors, alphaColor, getActiveScheme } from '../../theme';
+import { ThinkingOrb } from 'thinking-orbs';
 
 function LoadingStepsIndicator({ steps }: { steps: Array<{ id: string; label: string; status: string }> }) {
   const label = coerceDisplayLabel(steps[0]?.label, 'Working...');
@@ -36,11 +37,13 @@ export function ThinkingIndicator({ label }: { label?: string }) {
           <LoadingStepsIndicator steps={[{ id: '', label: safeLabel, status: 'running' }]} />
         ) : (
           <>
-            <Box sx={{ display: 'flex', gap: 0.4 }}>
-              <Box sx={{ width: 5, height: 5, borderRadius: '50%', bgcolor: colors.accent.purple, animation: 'agentx-pulse 1.4s ease-in-out infinite' }} />
-              <Box sx={{ width: 5, height: 5, borderRadius: '50%', bgcolor: colors.accent.purple, animation: 'agentx-pulse 1.4s ease-in-out 0.2s infinite' }} />
-              <Box sx={{ width: 5, height: 5, borderRadius: '50%', bgcolor: colors.accent.purple, animation: 'agentx-pulse 1.4s ease-in-out 0.4s infinite' }} />
-            </Box>
+            <ThinkingOrb
+              state='working'
+              size={20}
+              theme={getActiveScheme() === 'dark' ? 'dark' : 'light'}
+              aria-label='Thinking…'
+              style={{ flexShrink: 0 }}
+            />
             <Typography sx={{ fontSize: '0.6rem', color: colors.text.dim, fontStyle: 'italic' }}>Thinking...</Typography>
           </>
         )}
