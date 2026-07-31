@@ -119,28 +119,34 @@ export async function webScrape(args: Record<string, unknown>, _context: ToolExe
   if (blocked) return blocked;
 
   try {
-    const response = await fetch(url, {
-      headers: { 'User-Agent': 'AgentX/0.1' },
-      signal: AbortSignal.timeout(15000),
-    });
+    const { hybridFetchAndExtract } = await import('../../search/hybrid-extract.js');
+    const result = await hybridFetchAndExtract(url, { timeout: 15000 });
 
-    const html = await response.text();
-
-    // Basic text extraction — strip HTML tags
-    let text = html
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    if (selector) {
-      text = `(CSS selector "${selector}" requires browser — returning full text)\n${text}`;
+    let output = result.markdown || result.text;
+    if (!output) {
+      return { success: false, output: `Scrape returned no content: ${result.reason}`, error: 'SCRAPE_EMPTY' };
     }
 
-    if (text.length > 30000) text = text.slice(0, 30000) + '\n...(truncated)';
+    if (selector) {
+      output = `(CSS selector "${selector}" requires browser — returning full extracted content)\n${output}`;
+    }
 
-    return { success: true, output: prefixWebExtractOutput(url, text), metadata: { url, length: text.length } };
+    if (output.length > 30000) output = output.slice(0, 30000) + '\n...(truncated)';
+
+    return {
+      success: true,
+      output: prefixWebExtractOutput(url, output),
+      metadata: {
+        url,
+        length: output.length,
+        extractor: result.winner,
+        extractorReason: result.reason,
+        trafilaturaQuality: result.trafilaturaQuality,
+        agentFetchMethod: result.agentFetchMethod,
+        overlap: result.overlap,
+        hasTables: result.hasTables,
+      },
+    };
   } catch (error) {
     return { success: false, output: (error as Error).message, error: 'SCRAPE_ERROR' };
   }
