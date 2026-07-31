@@ -1,8 +1,7 @@
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
-import SmartToyIcon from '@mui/icons-material/SmartToy';
 import { coerceDisplayLabel } from '../../chat/utils';
-import { colors, alphaColor, getActiveScheme } from '../../theme';
+import { colors, getActiveScheme } from '../../theme';
 import { ThinkingOrb } from 'thinking-orbs';
 
 function LoadingStepsIndicator({ steps }: { steps: Array<{ id: string; label: string; status: string }> }) {
@@ -25,14 +24,7 @@ function LoadingStepsIndicator({ steps }: { steps: Array<{ id: string; label: st
 export function ThinkingIndicator({ label }: { label?: string }) {
   const safeLabel = label ? coerceDisplayLabel(label, '') : '';
   return (
-    <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start', mb: 2, animation: 'agentx-fadeIn 0.3s ease-out' }}>
-      <Box sx={{
-        width: 28, height: 28, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        bgcolor: alphaColor(colors.accent.purple, '15'), mt: 0.5, flexShrink: 0,
-      }}>
-        <SmartToyIcon sx={{ fontSize: 15, color: colors.accent.purple }} />
-      </Box>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1.5 }}>
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1.5, mb: 2, animation: 'agentx-fadeIn 0.3s ease-out' }}>
         {safeLabel ? (
           <LoadingStepsIndicator steps={[{ id: '', label: safeLabel, status: 'running' }]} />
         ) : (
@@ -47,7 +39,6 @@ export function ThinkingIndicator({ label }: { label?: string }) {
             <Typography sx={{ fontSize: '0.6rem', color: colors.text.dim, fontStyle: 'italic' }}>Thinking...</Typography>
           </>
         )}
-      </Box>
     </Box>
   );
 }
