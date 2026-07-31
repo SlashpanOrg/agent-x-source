@@ -156,7 +156,7 @@ function ShellExecutionCardImpl({ tool, defaultExpanded = false }: { tool: ToolC
 
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{
-          maxHeight: 80,
+          maxHeight: 140,
           overflow: 'auto',
           px: 1,
           py: 0.5,

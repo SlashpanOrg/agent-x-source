@@ -231,7 +231,7 @@ function CodeSearchCardImpl({ tool, defaultExpanded = false }: { tool: ToolCall;
       {/* ─── Content ─── */}
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{
-          maxHeight: 80,
+          maxHeight: 140,
           overflow: 'auto',
           px: 1,
           py: 0.5,
