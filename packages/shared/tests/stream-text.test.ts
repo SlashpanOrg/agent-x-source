@@ -20,7 +20,15 @@ describe('appendStreamText', () => {
   });
 
   it('handles overlap at boundary', () => {
-    expect(appendStreamText('abc', 'bcd')).toBe('abcd');
+    expect(appendStreamText('abcde', 'cdefg')).toBe('abcdefg');
+  });
+
+  it('does not strip short coincidental overlap (1-2 chars)', () => {
+    // Pure delta "0,000/-" after "Rs. 45,0" — the "0" is NOT an overlap.
+    expect(appendStreamText('Rs. 45,0', '0,000/-')).toBe('Rs. 45,00,000/-');
+    expect(appendStreamText('Rs. 1,0', '0,000/-')).toBe('Rs. 1,00,000/-');
+    // 2-char coincidental match
+    expect(appendStreamText('code', 'def is clean')).toBe('codedef is clean');
   });
 });
 

@@ -14,8 +14,13 @@ export function appendStreamText(accumulated: string, incoming: string): string 
   if (accumulated.endsWith(incoming)) return accumulated;
 
   // Overlap: incoming continues where accumulated left off (normal token delta)
+  // Require at least 3 characters of overlap to avoid false positives where a
+  // pure delta happens to start with the same 1-2 characters that accumulated
+  // ends with (e.g. "Rs. 45,0" + "0,000/-" must NOT strip the "0"). Missed
+  // real overlaps produce duplicate text that repairStreamTextGlitches cleans.
+  const MIN_OVERLAP = 3;
   const maxOverlap = Math.min(accumulated.length, incoming.length);
-  for (let overlap = maxOverlap; overlap > 0; overlap--) {
+  for (let overlap = maxOverlap; overlap >= MIN_OVERLAP; overlap--) {
     if (accumulated.endsWith(incoming.slice(0, overlap))) {
       return accumulated + incoming.slice(overlap);
     }
