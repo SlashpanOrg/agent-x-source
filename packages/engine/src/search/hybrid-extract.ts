@@ -309,8 +309,8 @@ export async function hybridFetchAndExtract(url: string, opts?: { timeout?: numb
 
   // Strategy 1: httpcloak — emulates browser TLS fingerprint (bypasses JA3/JA4 bot detection)
   try {
-    const r = await httpcloak.get(url, { headers, timeout, follow: 5 });
-    const body = r._text ?? '';
+    const r = await httpcloak.get(url, { headers, timeout });
+    const body = r.text ?? '';
     // Heuristic: if the page is a known bot-protection interstitial, fall through
     if (body.length > 500 && !isBotProtectionPage(body)) {
       html = body;
