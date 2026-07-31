@@ -49,6 +49,13 @@ export function extractStreamTextDelta(event: Record<string, unknown>): string {
  * - Spaced token doubles from duplex persist (means means, is is)
  * - Extension doubles (.js.js)
  * - Trailing clause duplicated when stream state desyncs
+ *
+ * NOTE: Numeric glued doubles (e.g. "500500") are intentionally NOT repaired
+ * here. It is impossible to distinguish a legitimate number from a doubled
+ * glitch without streaming context — any heuristic will corrupt valid numbers
+ * (Indian formatting "5,00,000", European "5.000,00", currency amounts, etc.).
+ * The appendStreamText overlap detection handles the root cause at the
+ * streaming layer where context is available.
  */
 export function repairStreamTextGlitches(text: string): string {
   if (!text || text.length < 4) return text;
@@ -61,9 +68,6 @@ export function repairStreamTextGlitches(text: string): string {
     if (next === out) break;
     out = next;
   }
-
-  // Numeric glued doubles: 500500
-  out = out.replace(/\b(\d{1,12})\1\b/g, '$1');
 
   // Extension doubles: .js.js / .tsx.tsx
   out = out.replace(/(\.[A-Za-z][A-Za-z0-9]{0,7})\1\b/g, '$1');
