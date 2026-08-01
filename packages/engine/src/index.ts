@@ -1,3 +1,5 @@
+import './neural/PdfParser.js'; // side-effect: installs DOMMatrix polyfill before pdfjs-dist loads
+
 export { AgentLifecycle } from './agent/AgentLifecycle.js';
 export type { AgentState, LifecycleListener } from './agent/AgentLifecycle.js';
 export { ConfigManager } from './config/index.js';
