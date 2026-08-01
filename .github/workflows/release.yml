@@ -519,6 +519,9 @@ jobs:
           pnpm --filter @agentx/runtime run setup:ffmpeg
           pnpm --filter @agentx/runtime run setup:voice-bundled
           pnpm --filter @agentx/server run build
+          # core-deps is built once on Linux; replace native runtime modules with
+          # this runner's platform-specific binaries before packing the tarball.
+          node packages/web-api/scripts/copy-runtime-deps.js
           node packages/server/scripts/pack-server.mjs
         env:
           AGENTX_PACK_SUFFIX: ${{ matrix.suffix }}
