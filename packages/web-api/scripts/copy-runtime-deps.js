@@ -99,13 +99,15 @@ function copyPackage(name, lookupPaths) {
 
   const targetDir = join(targetModulesDir, name);
   if (existsSync(targetDir)) {
-    if (packageDirLooksComplete(targetDir)) return;
-    console.warn(`Replacing incomplete copy of ${name} at ${targetDir}`);
-    rmSync(targetDir, { recursive: true, force: true });
+    if (!packageDirLooksComplete(targetDir)) {
+      console.warn(`Replacing incomplete copy of ${name} at ${targetDir}`);
+      rmSync(targetDir, { recursive: true, force: true });
+    }
   }
-
-  console.log(`Copying ${name}: ${sourceDir} -> ${targetDir}`);
-  cpSync(sourceDir, targetDir, { recursive: true, dereference: true });
+  if (!existsSync(targetDir)) {
+    console.log(`Copying ${name}: ${sourceDir} -> ${targetDir}`);
+    cpSync(sourceDir, targetDir, { recursive: true, dereference: true });
+  }
 
   // Recursively copy production dependencies from this package's directory
   try {
