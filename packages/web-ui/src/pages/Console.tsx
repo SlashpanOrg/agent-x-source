@@ -212,8 +212,8 @@ export function Console() {
       {/* Main content + right-side logs */}
       <Box sx={{ flex: 1, display: 'flex', minHeight: 0, minWidth: 0 }}>
         <Sidebar active={activePanel} onNavigate={handleNavigate} highlightCrews={false} unreadNotificationCount={unreadNotificationCount} />
-        <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden', flexDirection: isVertical ? 'row' : 'column' }}>
-          <Box sx={{ flex: 1, overflow: 'hidden' }}>
+        <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden', flexDirection: isVertical ? 'row' : 'column', minWidth: 0 }}>
+          <Box sx={{ flex: 1, overflow: 'hidden', minWidth: 0 }}>
             <PanelErrorBoundary>
               <Suspense fallback={<ChatPanelFallback />}>
                 {/* Chat stays mounted (hidden) across panel switches so mid-turn UI is preserved. */}

@@ -1095,6 +1095,24 @@ export function broadcastKnowledgeBaseSourceFailed(payload: { sourceId: string; 
   });
 }
 
+export function broadcastKnowledgeBaseScrapeBatchProgress(payload: {
+  batchId: string;
+  total: number;
+  completed: number;
+  currentIndex: number;
+  currentUrl: string;
+  succeeded: number;
+  failed: number;
+  status: string;
+  sourceIds: string[];
+}): void {
+  broadcast({
+    type: 'knowledge_base_scrape_batch_progress',
+    ...payload,
+    timestamp: new Date().toISOString(),
+  });
+}
+
 /** @deprecated Use broadcastKnowledgeBaseSourceStatus */
 export function broadcastKnowledgeSourceStatus(payload: {
   sourceId: string;

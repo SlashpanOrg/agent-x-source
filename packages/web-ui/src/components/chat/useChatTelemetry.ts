@@ -32,6 +32,10 @@ export interface UseChatTelemetryParams {
   streaming: boolean;
   crewList: Crew[];
   turnActivity: { stage: string; step: number; elapsedMs: number } | null;
+  /** Active permission prompt — used to pause incoming telemetry while the user decides. */
+  permissionPrompt: { requestId: string; tool: string; path: string; riskLevel: string; integrationPreview?: IntegrationActionPreview; forAutomation?: boolean } | null;
+  /** Active questionnaire/crew-picker interaction waiting for user response. */
+  questionnairePending: boolean;
   /** Routed/open session id — used to drop deferred UI when the thread changes. */
   viewSessionKey: string | null;
 
@@ -124,6 +128,8 @@ interface EventHandlerContext {
   tokenReservedRef: React.MutableRefObject<number>;
 
   // Telemetry-only refs
+  isPausedRef: React.MutableRefObject<boolean>;
+  eventQueueRef: React.MutableRefObject<TelemetryEvent[]>;
   streamChunkRAFRef: React.MutableRefObject<number | null>;
   streamChunkPendingRef: React.MutableRefObject<string | null>;
   thinkingPendingRef: React.MutableRefObject<string>;
@@ -682,6 +688,9 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
       }
     } else {
       ctx.setTokenStreaming(0);
+      ctx.isPausedRef.current = true;
+      ctx.setCurrentStep(null);
+      ctx.setTurnActivity(null);
     }
 
     if (msgId && prev.some((m) => m.id === msgId)) {
@@ -794,6 +803,10 @@ const handlePermissionRequired = (ev: TelemetryEvent, ctx: EventHandlerContext):
       integrationPreview: ev.integrationPreview as IntegrationActionPreview | undefined,
       forAutomation: ev.forAutomation === true,
     });
+    ctx.isPausedRef.current = true;
+    ctx.setStreaming(false);
+    ctx.setCurrentStep(null);
+    ctx.setTurnActivity(null);
     return prev;
   });
 };
@@ -1366,7 +1379,7 @@ const telemetryDispatch: Record<string, (ev: TelemetryEvent, ctx: EventHandlerCo
 
 export function useChatTelemetry(params: UseChatTelemetryParams): void {
   const {
-    streaming, crewList, turnActivity, viewSessionKey,
+    streaming, crewList, turnActivity, permissionPrompt, questionnairePending, viewSessionKey,
     isInitialLoadRef, turnActiveRef, activeTurnIdRef, outgoingTurnRef, resendInProgressRef,
     lastTurnFeedbackCandidateRef, viewSessionIdRef, currentSessionIdRef, isCrewPrivateRef,
     crewPrivateHostRef, crewMissionSessionIdRef, crewSuggestionHandledRef, crewGateInFlightRef,
@@ -1394,8 +1407,15 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
   const toolFlushRef = useRef<number | null>(null);
   const pendingUiSessionIdRef = useRef<string | null>(null);
   const lastViewSessionForPendingRef = useRef<string | null>(viewSessionKey);
+  // ─── Prompt-pause queue: while a permission/questionnaire prompt is active, all
+  // non-prompt events are held so the turn does not continue under the user's nose.
+  const isPausedRef = useRef(false);
+  const eventQueueRef = useRef<TelemetryEvent[]>([]);
+  const flushQueueRef = useRef<() => void>(() => {});
 
   const clearDeferredTurnUi = useCallback(() => {
+    isPausedRef.current = false;
+    eventQueueRef.current = [];
     toolBatchRef.current = [];
     if (toolFlushRef.current != null) {
       cancelAnimationFrame(toolFlushRef.current);
@@ -1723,6 +1743,7 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
       crewPrivateHostRef, crewMissionSessionIdRef, crewSuggestionHandledRef,
       crewGateInFlightRef, attachCrewRosterPickerRef, rateLimitSeenRef,
       tokenInputRef, tokenOutputRef, tokenReservedRef,
+      isPausedRef, eventQueueRef,
       streamChunkRAFRef, streamChunkPendingRef, thinkingPendingRef, thinkingFlushRef,
       providerErrorTimerRef, toolBatchRef, toolFlushRef, pendingUiSessionIdRef,
       setMessages, setStreaming, setTurnActivity, setCurrentStep, setTokenStreaming,
@@ -1736,6 +1757,15 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
 
     const handleEvent = (ev: TelemetryEvent) => {
       if (!eventBelongsToViewSession(ev, viewSessionIdRef.current)) return;
+
+      // While a permission/questionnaire prompt is active, hold all subsequent
+      // events so the turn does not continue under the user's prompt. The queue
+      // is flushed once the prompt is cleared.
+      if (ctx.isPausedRef.current) {
+        ctx.eventQueueRef.current.push(ev);
+        lastActivityRef.current = Date.now();
+        return;
+      }
 
       // Reset activity timer on every event from the agent
       const now = Date.now();
@@ -1752,6 +1782,15 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
       const handler = telemetryDispatch[ev.type];
       if (handler) handler(ev, ctx);
     };
+
+    const flushQueue = () => {
+      if (eventQueueRef.current.length === 0) return;
+      isPausedRef.current = false;
+      const queued = eventQueueRef.current;
+      eventQueueRef.current = [];
+      queued.forEach(handleEvent);
+    };
+    flushQueueRef.current = flushQueue;
 
     ensureRenderInstrumentation();
     disconnectRef.current = subscribeOptimizedTelemetry(
@@ -1796,6 +1835,15 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
       disconnectRef.current?.();
     };
   }, []);
+
+  // ─── Prompt-pause flush ─────────────────────────────────────────────────────
+  // When the active permission prompt or pending questionnaire is cleared,
+  // release all queued telemetry events so the turn can resume exactly where
+  // it left off.
+  useEffect(() => {
+    if (permissionPrompt || questionnairePending) return;
+    flushQueueRef.current();
+  }, [permissionPrompt, questionnairePending]);
 
   // Streaming timeout — tracks activity via SSE events.
   // - All SSE events (tool, chunk, status) reset the activity timer.

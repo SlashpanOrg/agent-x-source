@@ -111,8 +111,10 @@ export const ScrollToBottomPill = memo(function ScrollToBottomPill({
     <Box
       onClick={onClick}
       sx={{
+        // Floating: positioned relative to the thread area wrapper (not the
+        // scroll container), so the pill stays put while content scrolls.
         position: 'absolute',
-        bottom: 16,
+        bottom: 12,
         right: 16,
         zIndex: 10,
         width: 32,

@@ -11,6 +11,9 @@ export function resolveNeuralCortexEmbeddingTier(totalMemoryGB: number): Exclude
 export const KnowledgeBaseOrigin = {
   documentUpload: 'kb.document.upload',
   documentReprocess: 'kb.document.reprocess',
+  websiteScrape: 'kb.website.scrape',
+  websiteRescrape: 'kb.website.rescrape',
+  websiteScrapeChild: 'kb.website.scrape.child',
 } as const;
 
 export const CortexOrigin = {

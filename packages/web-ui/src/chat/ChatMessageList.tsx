@@ -88,9 +88,6 @@ export const ChatMessageList = memo(function ChatMessageList({ items, loadingSte
             // space for off-screen content, reducing scroll jumps when
             // content is revealed. 160px matches the virtualization estimate.
             containIntrinsicSize: 'auto 160px',
-            // Full containment including 'size' so off-screen content doesn't
-            // affect layout calculations at all.
-            contain: 'layout style paint size',
           }}
         >
           {renderMessage(msg, idx)}

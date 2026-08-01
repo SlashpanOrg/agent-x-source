@@ -322,7 +322,7 @@ function GitOperationCardImpl({ tool, defaultExpanded = false }: { tool: ToolCal
 
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{
-          maxHeight: 80,
+          maxHeight: 140,
           overflow: 'auto',
           px: 1,
           py: 0.5,

@@ -693,7 +693,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
 
   // ─── Telemetry: SSE subscription, handleEvent, RAF batching, streaming timeout, turn polling (extracted to useChatTelemetry) ───
   useChatTelemetry({
-    streaming, crewList, turnActivity, viewSessionKey: resolvedViewSessionId,
+    streaming, crewList, turnActivity, permissionPrompt, questionnairePending, viewSessionKey: resolvedViewSessionId,
     isInitialLoadRef, turnActiveRef, activeTurnIdRef, outgoingTurnRef, resendInProgressRef,
     lastTurnFeedbackCandidateRef, viewSessionIdRef, currentSessionIdRef, isCrewPrivateRef,
     crewPrivateHostRef, crewMissionSessionIdRef, crewSuggestionHandledRef, crewGateInFlightRef,

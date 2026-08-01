@@ -96,8 +96,73 @@ export interface PageExtract {
 }
 
 export async function fetchAndExtractPage(url: string): Promise<PageExtract | null> {
+  try {
+    const { hybridFetchAndExtract } = await import('./hybrid-extract.js');
+    const result = await hybridFetchAndExtract(url, { timeout: 10000 });
+    if (!result.markdown && !result.text) return null;
+
+    // Use the hybrid-extracted content for the excerpt, but still parse
+    // metadata from the raw HTML for structured fields (og:, JSON-LD, etc.)
+    const html = result.rawHtml;
+    const jsonLd = extractJsonLd(html);
+
+    const title = (result.title
+      || metaContent(html, 'og:title')
+      || metaContent(html, 'twitter:title'))
+      ?? pickJsonLdValue(jsonLd, 'headline')
+      ?? pickJsonLdValue(jsonLd, 'name')
+      ?? '';
+
+    const description = metaContent(html, 'og:description')
+      ?? metaContent(html, 'description')
+      ?? metaContent(html, 'twitter:description')
+      ?? pickJsonLdValue(jsonLd, 'description')
+      ?? '';
+
+    const imageUrl = metaContent(html, 'og:image') ?? metaContent(html, 'twitter:image');
+    const siteName = metaContent(html, 'og:site_name') ?? pickJsonLdValue(jsonLd, 'publisher');
+    const author = metaContent(html, 'author')
+      ?? pickJsonLdValue(jsonLd, 'author')
+      ?? undefined;
+    const publishedAt = metaContent(html, 'article:published_time')
+      ?? pickJsonLdValue(jsonLd, 'datePublished')
+      ?? undefined;
+    const ogType = metaContent(html, 'og:type');
+    const rating = pickJsonLdRating(jsonLd);
+    const duration = metaContent(html, 'video:duration') ?? pickJsonLdValue(jsonLd, 'duration');
+
+    let videoId: string | undefined;
+    const ytMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{6,})/i);
+    if (ytMatch) videoId = ytMatch[1];
+
+    // Use the hybrid-extracted text as the excerpt — it's cleaner and more
+    // complete than the old regex-based extractReadableExcerpt.
+    const excerptText = result.text || description || extractReadableExcerpt(html);
+    const excerpt = excerptText.length > 600 ? excerptText.slice(0, 600) + '…' : excerptText;
+
+    return {
+      title: title.trim(),
+      description: description.trim(),
+      excerpt: excerpt.trim(),
+      imageUrl,
+      siteName,
+      author,
+      publishedAt,
+      ogType,
+      videoId,
+      rating,
+      duration,
+    };
+  } catch {
+    // Fallback to the original fetch + regex approach if hybrid extraction fails
+    return fetchAndExtractPageLegacy(url);
+  }
+}
+
+/** Legacy fetch + regex extraction — used as a fallback if hybrid extraction fails. */
+async function fetchAndExtractPageLegacy(url: string): Promise<PageExtract | null> {
   const response = await fetch(url, {
-    headers: { 'User-Agent': 'AgentX/1.0 (+https://agent-x.local; research bot)' },
+    headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' },
     signal: AbortSignal.timeout(10000),
     redirect: 'follow',
   });

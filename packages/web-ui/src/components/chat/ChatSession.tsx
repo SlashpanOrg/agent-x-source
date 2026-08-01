@@ -49,7 +49,7 @@ export const ChatSession = React.memo(function ChatSession() {
 
   const chatView = (
     <>
-      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, position: 'relative' }}>
+      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
         {/* Header */}
         <ChatHeader panelHeaderRowSx={panelHeaderRowSx} />
 
@@ -78,7 +78,7 @@ export const ChatSession = React.memo(function ChatSession() {
   );
 
   return (
-    <Box sx={{ height: '100%', display: 'flex' }}>
+    <Box sx={{ height: '100%', width: '100%', minWidth: 0, display: 'flex' }}>
       {view === 'sessions' ? (
         <SessionListView />
       ) : (

@@ -31,7 +31,6 @@ import { enrichSessionMessagesForUi, mergeNormalizedMessageForApi } from '../../
 import {
   validate,
   clarificationRespondSchema,
-  generateTitleSchema,
   createSessionSchema,
   turnFeedbackSchema,
   createCheckpointSchema,
@@ -265,7 +264,7 @@ export function createSessionsRouter(): Router {
     }
   });
 
-  r.post('/api/sessions/:id/generate-title', validate(generateTitleSchema), async (req, res) => {
+  r.post('/api/sessions/:id/generate-title', async (req, res) => {
     try {
       const sessionId = req.params['id']!;
       const eng = getEngine();
@@ -309,7 +308,7 @@ export function createSessionsRouter(): Router {
       const title = chunks.join('').trim().replace(/^["']|["']$/g, '').slice(0, 60);
 
       if (title) {
-        eng.sessionManager.updateSession({ title });
+        store.updateSession(sessionId, { title });
       }
       res.json({ title });
     } catch {

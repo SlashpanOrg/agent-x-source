@@ -28,6 +28,8 @@ const externalPackages = [
   '@napi-rs/keyring',
   '@napi-rs/canvas',
   'esbuild',
+  'trafilatura',
+  'httpcloak',
 ];
 
 const copied = new Set();

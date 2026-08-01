@@ -68,6 +68,12 @@ export const searchCardItemSx = {
   width: 220,
   minWidth: 220,
   maxWidth: 220,
+  // Override the .ax-scroll-x > * rule that applies white-space: nowrap to
+  // scroll children — result cards need normal wrapping for their multi-line
+  // typography and line-clamp to work correctly.
+  whiteSpace: 'normal',
+  display: 'flex',
+  flexDirection: 'column',
 } as const;
 
 export const searchResultsRowSx = {

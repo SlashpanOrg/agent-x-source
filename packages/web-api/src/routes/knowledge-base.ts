@@ -251,5 +251,185 @@ export function router(_ctx: ApiContext): Router {
     }
   });
 
+  // ─── Website scrape → RAG ingestion ───
+
+  r.post('/knowledge-base/scrape', async (req: Request, res: Response) => {
+    const svc = await getKnowledgeBaseService();
+    if (!svc) {
+      res.status(503).json({ error: 'Knowledge base unavailable' });
+      return;
+    }
+    const body = req.body as { url?: unknown; sessionId?: unknown; followLinks?: unknown; maxDepth?: unknown; maxLinks?: unknown };
+    const url = typeof body.url === 'string' ? body.url.trim() : '';
+    if (!url || !/^https?:\/\//i.test(url)) {
+      res.status(400).json({ error: 'A valid http(s) URL is required' });
+      return;
+    }
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined;
+    const followLinks = body.followLinks === true;
+    const rawDepth = Number(body.maxDepth);
+    const maxDepth = Number.isNaN(rawDepth) ? 0 : Math.max(0, Math.min(rawDepth, 10));
+    const rawLinks = Number(body.maxLinks);
+    const maxLinks = Number.isNaN(rawLinks) ? 0 : Math.max(0, Math.min(rawLinks, 250));
+    try {
+      const source = await svc.scrapeSource(url, sessionId, { followLinks, maxDepth, maxLinks });
+      broadcastKnowledgeBaseSourceStatus({
+        sourceId: source.id,
+        status: source.status,
+        progress: source.progress,
+        detail: 'scraped',
+      });
+      res.json({ source });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  r.post('/knowledge-base/scan', async (req: Request, res: Response) => {
+    const svc = await getKnowledgeBaseService();
+    if (!svc) {
+      res.status(503).json({ error: 'Knowledge base unavailable' });
+      return;
+    }
+    const body = req.body as { url?: unknown; sessionId?: unknown; maxLinks?: unknown };
+    const url = typeof body.url === 'string' ? body.url.trim() : '';
+    if (!url || !/^https?:\/\//i.test(url)) {
+      res.status(400).json({ error: 'A valid http(s) URL is required' });
+      return;
+    }
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined;
+    const rawLinks = Number(body.maxLinks);
+    const maxLinks = Number.isNaN(rawLinks) ? 250 : Math.max(1, Math.min(rawLinks, 250));
+    try {
+      const result = await svc.scanUrl(url, sessionId, { maxLinks });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  r.post('/knowledge-base/scrape-refs', async (req: Request, res: Response) => {
+    const svc = await getKnowledgeBaseService();
+    if (!svc) {
+      res.status(503).json({ error: 'Knowledge base unavailable' });
+      return;
+    }
+    const body = req.body as { urls?: unknown; sessionId?: unknown; maxDepth?: unknown; maxLinks?: unknown };
+    const urls = Array.isArray(body.urls) ? body.urls.filter((u): u is string => typeof u === 'string') : [];
+    if (urls.length === 0) {
+      res.status(400).json({ error: 'At least one URL is required' });
+      return;
+    }
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined;
+    const rawDepth = Number(body.maxDepth);
+    const maxDepth = Number.isNaN(rawDepth) ? 1 : Math.max(1, Math.min(rawDepth, 10));
+    const rawLinks = Number(body.maxLinks);
+    const maxLinks = Number.isNaN(rawLinks) ? 25 : Math.max(0, Math.min(rawLinks, 250));
+    try {
+      const batchId = await svc.scrapeReferences(urls, sessionId, { maxDepth, maxLinks });
+      res.json({ ok: true, batchId, count: urls.length });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  r.post('/knowledge-base/scrape-batch/:batchId/pause', async (req: Request, res: Response) => {
+    const svc = await getKnowledgeBaseService();
+    if (!svc) { res.status(503).json({ error: 'Knowledge base unavailable' }); return; }
+    svc.pauseBatch(req.params['batchId'] ?? '');
+    res.json({ ok: true });
+  });
+
+  r.post('/knowledge-base/scrape-batch/:batchId/resume', async (req: Request, res: Response) => {
+    const svc = await getKnowledgeBaseService();
+    if (!svc) { res.status(503).json({ error: 'Knowledge base unavailable' }); return; }
+    svc.resumeBatch(req.params['batchId'] ?? '');
+    res.json({ ok: true });
+  });
+
+  r.post('/knowledge-base/scrape-batch/:batchId/cancel', async (req: Request, res: Response) => {
+    const svc = await getKnowledgeBaseService();
+    if (!svc) { res.status(503).json({ error: 'Knowledge base unavailable' }); return; }
+    svc.cancelBatch(req.params['batchId'] ?? '');
+    res.json({ ok: true });
+  });
+
+  r.post('/knowledge-base/:id/rescrape', async (req: Request, res: Response) => {
+    const svc = await getKnowledgeBaseService();
+    if (!svc) {
+      res.status(503).json({ error: 'Knowledge base unavailable' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id) {
+      res.status(400).json({ error: 'id is required' });
+      return;
+    }
+    try {
+      const { source, action } = await svc.rescrapeSource(id);
+      broadcastKnowledgeBaseSourceStatus({
+        sourceId: id,
+        status: source.status,
+        progress: source.progress,
+        detail: `rescrape:${action}`,
+      });
+      res.json({ source, action });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  r.post('/knowledge-base/:id/pause', async (req: Request, res: Response) => {
+    const svc = await getKnowledgeBaseService();
+    if (!svc) {
+      res.status(503).json({ error: 'Knowledge base unavailable' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id) {
+      res.status(400).json({ error: 'id is required' });
+      return;
+    }
+    try {
+      await svc.pauseScrape(id);
+      const source = await svc.getSource(id);
+      broadcastKnowledgeBaseSourceStatus({
+        sourceId: id,
+        status: source?.status ?? 'pending',
+        progress: source?.progress ?? 0,
+        detail: 'paused',
+      });
+      res.json({ source: source ?? { id } });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  r.post('/knowledge-base/:id/resume', async (req: Request, res: Response) => {
+    const svc = await getKnowledgeBaseService();
+    if (!svc) {
+      res.status(503).json({ error: 'Knowledge base unavailable' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id) {
+      res.status(400).json({ error: 'id is required' });
+      return;
+    }
+    try {
+      await svc.resumeScrape(id);
+      const source = await svc.getSource(id);
+      broadcastKnowledgeBaseSourceStatus({
+        sourceId: id,
+        status: source?.status ?? 'pending',
+        progress: source?.progress ?? 0,
+        detail: 'resume',
+      });
+      res.json({ source: source ?? { id } });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   return r;
 }

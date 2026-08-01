@@ -1,7 +1,8 @@
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import type { DeepSearchProgress, DeepSearchResultBundle } from '@agentx/shared/browser';
-import { colors, alphaColor } from '../../theme';
+import { colors, alphaColor, getActiveScheme } from '../../theme';
+import { ThinkingOrb } from 'thinking-orbs';
 import { DeepSearchResultCard } from './DeepSearchResultCard';
 import { ResearchBoardTrigger } from './DeepSearchResearchBoard';
 import { searchResultsRowSx, deepSearchShellSx } from './card-utils';
@@ -17,7 +18,17 @@ function ProgressStrip({ progress, running }: { progress?: DeepSearchProgress; r
       py: 0.45,
       borderBottom: `1px solid ${colors.border.subtle}`,
       bgcolor: `${alphaColor(colors.accent.blue, '08')}`,
+      display: 'flex',
+      alignItems: 'center',
+      gap: 0.75,
     }}>
+      <ThinkingOrb
+        state='searching'
+        size={20}
+        theme={getActiveScheme() === 'dark' ? 'dark' : 'light'}
+        aria-label={`${phase} · ${message}`}
+        style={{ flexShrink: 0 }}
+      />
       <Typography sx={{ fontSize: '0.54rem', color: colors.accent.blue, fontFamily: "'JetBrains Mono', monospace" }}>
         {phase.toUpperCase()} · {message}
         {progress?.searched != null ? ` · scanned ${progress.searched}` : ''}
