@@ -419,6 +419,24 @@ export function createAiSdkTools(
     return output;
   }
 
+  async function promptForLogin(toolId: string, result: ToolResult): Promise<string | null> {
+    if (result.success || result.error !== 'LOGIN_REQUIRED') return null;
+    const metadata = (result.metadata ?? {}) as { url?: string; title?: string };
+    const site = metadata.title || metadata.url || toolId;
+    const q: QuestionnairePayload = {
+      id: 'browser-login-continue',
+      title: 'Login required',
+      questions: [{
+        id: 'continue',
+        prompt: result.output || `Please log in to ${site} and then click Continue, or say "continue".`,
+        type: 'single_choice',
+        options: [{ value: 'continue', label: 'Continue' }],
+      }],
+    };
+    const response = await waitForClarification(q);
+    return `User response: ${response}`;
+  }
+
   if (toolExecutor.setToolOutputHandler) {
     toolExecutor.setToolOutputHandler((output: string) => {
       // Find the currently executing tool call
@@ -578,6 +596,8 @@ export function createAiSdkTools(
             recordCall(targetId, resolved.resolvedArgs, reflectedOutput, result.success);
             onToolExecuted?.(targetId, result.success, reflectedOutput, Date.now() - startTime, resolved.resolvedArgs);
             emit({ type: 'tool_complete', tool: toolDef.id, result, elapsed: Date.now() - startTime, args: args as Record<string, unknown>, callId });
+            const loginResponse = await promptForLogin(targetId, result);
+            if (loginResponse) return loginResponse;
             return result.success ? reflectedOutput : `[TOOL ERROR: ${result.error || 'Unknown'}] ${result.output}`;
           }
 
@@ -707,6 +727,8 @@ export function createAiSdkTools(
                span.setAttribute('tool.elapsed', elapsed);
                if (!result.success) {
                  span.setStatus({ code: SpanStatusCode.ERROR, message: result.error ?? 'tool failed' });
+                 const loginResponse = await promptForLogin(toolDef.id, result);
+                 if (loginResponse) return loginResponse;
                  return `[TOOL ERROR: ${result.error || 'Unknown'}] ${result.output}`;
                }
                return reflectedOutput;

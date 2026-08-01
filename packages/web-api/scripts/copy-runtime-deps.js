@@ -9,6 +9,7 @@
  * dist/node_modules.
  */
 import { readFileSync, cpSync, mkdirSync, existsSync, rmSync, readdirSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +31,7 @@ const externalPackages = [
   'esbuild',
   'trafilatura',
   'httpcloak',
+  'playwright',
 ];
 
 const copied = new Set();
@@ -147,5 +149,38 @@ for (const pkg of externalPackages) {
 
 const esbuildPlatform = esbuildPlatformPackageName();
 copyPackage(esbuildPlatform, lookupDirs);
+
+// The persistent Playwright child is built as a separate ESM entry in the
+// engine package. It must live next to the web-api bundle so the manager
+// can fork it using a relative URL.
+const engineChild = join(workspaceRoot, 'packages', 'engine', 'dist', 'tools', 'builtin', 'playwright-manager-child.js');
+const childDest = join(distDir, 'tools', 'builtin', 'playwright-manager-child.js');
+if (existsSync(engineChild)) {
+  mkdirSync(dirname(childDest), { recursive: true });
+  cpSync(engineChild, childDest);
+  console.log('Copied playwright-manager-child.js to dist/tools/builtin');
+} else {
+  console.warn('playwright-manager-child.js not found in engine dist');
+}
+
+// Playwright's browser binaries are not part of the npm package. Bundle them
+// next to the shipped package so the packaged app works without a separate
+// `npx playwright install` step on the user's machine.
+const bundledBrowsers = join(targetModulesDir, 'playwright-core', '.local-browsers');
+const playwrightCli = join(targetModulesDir, 'playwright', 'cli.js');
+if (existsSync(playwrightCli) && !existsSync(bundledBrowsers)) {
+  try {
+    console.log('Installing Playwright Chromium browsers into package (this may take a minute)...');
+    execSync(`node "${playwrightCli}" install chromium`, {
+      cwd: targetModulesDir,
+      env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: '0' },
+      stdio: 'inherit',
+      timeout: 600000,
+    });
+    console.log('Playwright Chromium browsers installed');
+  } catch (e) {
+    console.warn('Failed to install Playwright browsers; packaged app will need `npx playwright install chromium` at runtime:', e instanceof Error ? e.message : e);
+  }
+}
 
 console.log('Runtime dependencies copied to dist/node_modules');

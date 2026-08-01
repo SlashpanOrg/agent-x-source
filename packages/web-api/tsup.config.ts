@@ -48,8 +48,10 @@ export default defineConfig({
   // NOTE: httpcloak must stay external — its ESM wrapper does
   // createRequire(import.meta.url)./index.js, which becomes a self-require cycle
   // when bundled into the web-api ESM entry.
-  noExternal: [/^(?!onnxruntime-|pdfjs-dist|@napi-rs\/keyring|@napi-rs\/canvas|esbuild|@aws-sdk\/client-s3|trafilatura|httpcloak).*$/],
-  external: ['onnxruntime-node', 'onnxruntime-web', 'onnxruntime-common', 'pdfjs-dist', '@napi-rs/keyring', '@napi-rs/canvas', 'esbuild', '@aws-sdk/client-s3', 'trafilatura', 'httpcloak'],
+  // NOTE: playwright must stay external — it downloads/spawns native Chromium
+  // binaries and has a separate child process entry-point built in the engine.
+  noExternal: [/^(?!onnxruntime-|pdfjs-dist|@napi-rs\/keyring|@napi-rs\/canvas|esbuild|@aws-sdk\/client-s3|trafilatura|httpcloak|playwright).*$/],
+  external: ['onnxruntime-node', 'onnxruntime-web', 'onnxruntime-common', 'pdfjs-dist', '@napi-rs/keyring', '@napi-rs/canvas', 'esbuild', '@aws-sdk/client-s3', 'trafilatura', 'httpcloak', 'playwright'],
   banner: {
     js: "import { createRequire as __bannerCr } from 'module'; const require = __bannerCr(import.meta.url); import { fileURLToPath as __futp } from 'node:url'; import { dirname as __dn } from 'node:path'; const __filename = __futp(import.meta.url); const __dirname = __dn(__filename);",
   },

@@ -391,9 +391,17 @@ export class Agent {
     // while preventing the 52-96 iteration search loops seen in failing sessions.
     const stepCap = 40;
 
+    // If the user explicitly asks to open/browse a URL in a browser, force the
+    // model to call a tool (browser_open/web_browse) instead of replying with
+    // just text or internal reasoning. This fixes cases where cheap/reasoning
+    // models emit long "plans" but never actually invoke the browser tools.
+    const user = this.currentUserMessage.toLowerCase();
+    const wantsBrowser = /\b(open|browse)\b.+\b(in a browser|in the browser|in browser)\b/.test(user) ||
+      /\b(open|browse)\b.+\b(browser)\b/.test(user);
+
     const result: { choice: 'auto' | 'none' | 'required'; allowedIds: string[] | undefined; stepCap: number } = {
-      choice: 'auto',
-      allowedIds: undefined, // undefined = ALL tools available
+      choice: wantsBrowser ? 'required' : 'auto',
+      allowedIds: wantsBrowser ? ['browser_open'] : undefined, // undefined = ALL tools available
       stepCap,
     };
 
