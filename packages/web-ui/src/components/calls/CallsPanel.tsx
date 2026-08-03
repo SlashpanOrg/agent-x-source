@@ -269,7 +269,7 @@ function TranscriptBody({
           line.role === 'operator' ? colors.accent.cyan
             : line.role === 'crew' ? accent
               : colors.text.dim;
-        const label = line.role === 'operator' ? 'You' : line.role === 'crew' ? speakerName : 'System';
+        const label = line.role === 'operator' ? (line.speakerName ?? 'You') : line.role === 'crew' ? speakerName : 'System';
         return (
           <Box key={line.id} sx={{ contain: 'layout style' }}>
             <Typography sx={{ fontFamily: MONO, fontSize: '0.48rem', letterSpacing: '0.06em', color, mb: 0.2 }}>

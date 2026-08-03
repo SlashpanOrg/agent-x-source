@@ -78,6 +78,7 @@ import { ModelRouter } from '../session/ModelRouter.js';
 import type { TaskType } from '../session/ModelRouter.js';
 import { setBackgroundQueueInstance } from '../commands/builtin/tasks.js';
 import { setRecipeEngineInstance } from '../commands/builtin/recipe.js';
+import type { VoiceSessionSpeaker } from '../voice/VoiceSession.js';
 import { RecipeEngine } from '../session/RecipeEngine.js';
 import { setUserCommandRegistryInstance } from '../commands/builtin/commands.js';
 import { getRAGEngineInstance, setIndexerEventBus } from '../commands/builtin/rag_index.js';
@@ -333,6 +334,7 @@ export class Agent {
   private currentDecision: DecisionResult | null = null;
   private currentCategory: CategoryResult | null = null;
   private currentUserMessage = '';
+  private currentSpeaker: VoiceSessionSpeaker | null = null;
 
   private logTurnOutcome(startTime: number, success: boolean, _userMessage: string): void {
     const taskState = this.taskStateManager.getCurrent();
@@ -404,6 +406,14 @@ export class Agent {
       allowedIds: wantsBrowser ? ['browser_open'] : undefined, // undefined = ALL tools available
       stepCap,
     };
+
+    // Voiceprint gate: non-root speakers can only use low-risk tools.
+    // If no speaker is set (non-voice turns), the existing policy applies unchanged.
+    if (this.currentSpeaker && this.currentSpeaker.isRoot !== true) {
+      const lowRiskTools = this.toolRegistry.listByRiskLevel('low');
+      const allowedIds = lowRiskTools.map((t) => t.id);
+      result.allowedIds = allowedIds.length > 0 ? allowedIds : undefined;
+    }
 
     return result;
   }
@@ -1432,6 +1442,7 @@ export class Agent {
         memoryEmbedder: this.memoryEmbedder,
         usesCompactContext: () => this.usesCompactContext(),
         setMemoryContextNodeIds: (ids) => { this._memoryContextNodeIds = ids; },
+        speakerId: this.currentSpeaker?.id,
       } as MemoryContextContext,
     );
   }
@@ -1822,7 +1833,7 @@ export class Agent {
     return r;
   }
 
-  async sendMessage(content: string, options?: { instruction?: string; userId?: string; channelId?: string; sourceChannel?: string; sourceMessageId?: string; retry?: boolean; delegateCrewIds?: string[]; crewSuggestionResolved?: boolean; crewIntakeFromPicker?: boolean; primaryCrewId?: string; forceWebSearch?: boolean; voiceTurn?: boolean; userMessagePersisted?: boolean; voiceContinuation?: boolean; voiceMergeIntoMessage?: { messageId: string; prefixContent: string }; resumeCrewIntake?: { originalUserText: string; intakeAnswer: string; delegateCrewIds: string[]; primaryCrewId?: string }; clientSituation?: ClientSituation | null; attachments?: import('@agentx/shared').TurnAttachment[]; /** How to treat leftover incomplete TASKS at turn start. */ todoDisposition?: 'continue' | 'skip' | 'defer' }): Promise<Message> {
+  async sendMessage(content: string, options?: { instruction?: string; userId?: string; channelId?: string; sourceChannel?: string; sourceMessageId?: string; retry?: boolean; delegateCrewIds?: string[]; crewSuggestionResolved?: boolean; crewIntakeFromPicker?: boolean; primaryCrewId?: string; forceWebSearch?: boolean; voiceTurn?: boolean; userMessagePersisted?: boolean; voiceContinuation?: boolean; voiceMergeIntoMessage?: { messageId: string; prefixContent: string }; resumeCrewIntake?: { originalUserText: string; intakeAnswer: string; delegateCrewIds: string[]; primaryCrewId?: string }; clientSituation?: ClientSituation | null; attachments?: import('@agentx/shared').TurnAttachment[]; /** How to treat leftover incomplete TASKS at turn start. */ todoDisposition?: 'continue' | 'skip' | 'defer'; speaker?: VoiceSessionSpeaker | null }): Promise<Message> {
     const startTime = Date.now();
     const turnId = `turn-${startTime}`;
     this.currentTurnId = turnId;
@@ -1871,6 +1882,7 @@ export class Agent {
       this.turnState.start(this.currentTurnId!, 'receiving');
     this.toolLedger.reset();
     this.codingTurnGuard?.resetForTurn();
+    this.currentSpeaker = options?.speaker ?? null;
     this.partialTurnContent = '';
     this.stepCapExtra = 0;
     this.startTurnHeartbeat('receiving');
@@ -2083,6 +2095,10 @@ export class Agent {
 
     const messageMetadata: Record<string, unknown> = {};
     if (options?.voiceTurn) messageMetadata['voiceTurn'] = true;
+    if (options?.speaker) {
+      messageMetadata['speakerId'] = options.speaker.id;
+      messageMetadata['speakerName'] = options.speaker.name ?? 'anonymous';
+    }
     if (messagingChannelInbound && options?.sourceMessageId) {
       if (options?.sourceChannel) messageMetadata['channel'] = options.sourceChannel;
       messageMetadata['platformMessageId'] = Number(options.sourceMessageId);
@@ -3540,6 +3556,7 @@ export class Agent {
         setUserChatMemoryIngester: (i) => { this.userChatMemoryIngester = i; },
         sessionId: this.sessionId,
         options: this.options,
+        speakerId: this.currentSpeaker?.id,
       } as MemoryExtractionContext,
       userMessage,
       assistantResponse,
@@ -3564,6 +3581,26 @@ export class Agent {
 
   setClientSituation(situation: ClientSituation | null): void {
     this.clientSituation = situation;
+  }
+
+  setCurrentSpeaker(speaker: VoiceSessionSpeaker | null): void {
+    this.currentSpeaker = speaker;
+  }
+
+  getCurrentSpeaker(): VoiceSessionSpeaker | null {
+    return this.currentSpeaker;
+  }
+
+  private speakerContextBlock(speaker: VoiceSessionSpeaker): string {
+    if (speaker.isRoot) {
+      const callsign = speaker.name ?? 'Root';
+      return `[SPEAKER_CONTEXT]\nCurrent speaker: ${callsign} (root). This is the primary owner. Address them by their callsign "${callsign}" whenever you would address them.\n[/SPEAKER_CONTEXT]`;
+    }
+    if (speaker.recognized) {
+      const name = speaker.name ?? 'friend';
+      return `[SPEAKER_CONTEXT]\nCurrent speaker: ${name} (friend). You know this person. Address them by their name "${name}" when it is natural to do so.\n[/SPEAKER_CONTEXT]`;
+    }
+    return `[SPEAKER_CONTEXT]\nCurrent speaker: anonymous (stranger). You do not know this person. Be polite and respond as you would to a stranger. Do not use any saved personal context.\n[/SPEAKER_CONTEXT]`;
   }
 
   applyPersona(persona: AgentPersonaConfig | null): void {
@@ -4054,6 +4091,15 @@ export class Agent {
       const userMsg = userIdx >= 0 ? aiMessages[userIdx] : null;
       if (userMsg && !userMsg.content.includes('[CLIENT_SITUATION]')) {
         aiMessages[userIdx] = { ...userMsg!, content: `${situationBlock}\n\n${userMsg.content}` };
+      }
+    }
+
+    if (this.currentSpeaker) {
+      const speakerBlock = this.speakerContextBlock(this.currentSpeaker);
+      const userIdx = aiMessages.findLastIndex((m) => m.role === 'user');
+      const userMsg = userIdx >= 0 ? aiMessages[userIdx] : null;
+      if (userMsg && !userMsg.content.includes('[SPEAKER_CONTEXT]')) {
+        aiMessages[userIdx] = { ...userMsg!, content: `${speakerBlock}\n\n${userMsg.content}` };
       }
     }
 

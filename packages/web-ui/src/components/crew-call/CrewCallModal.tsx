@@ -11,7 +11,9 @@ import PauseIcon from '@mui/icons-material/Pause';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import MicIcon from '@mui/icons-material/Mic';
 import MinimizeIcon from '@mui/icons-material/Minimize';
+import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
 import { alphaColor, colors } from '../../theme';
+import { VoiceToggleChip } from '../voice/VoiceAgentCard';
 import { friendlyVoiceError } from '../voice/voice-comms-theme';
 import { getCrewAccent } from '../../styles/crew-theme';
 import { VoiceParticleField } from '../voice/VoiceParticleField';
@@ -77,6 +79,7 @@ export function CrewCallModal({
   onRetry,
 }: CrewCallModalProps) {
   const [mousePttHeld, setMousePttHeld] = useState(false);
+  const [voiceprintEnabled, setVoiceprintEnabled] = useState(false);
   const transcriptBoxRef = useRef<HTMLDivElement>(null);
   const focusSinkRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -90,6 +93,12 @@ export function CrewCallModal({
     () => resolveCallParticlePhase(phase, comms, elapsedMs),
     [phase, comms, elapsedMs],
   );
+
+  useEffect(() => {
+    if (linked) {
+      comms.session.setToggles({ voiceprintEnabled });
+    }
+  }, [linked, voiceprintEnabled, comms.session]);
 
   const statusLine = useMemo(() => {
     if (phase === 'failed') return error || 'Call unavailable';
@@ -463,7 +472,7 @@ export function CrewCallModal({
                 line.role === 'operator' ? callTheme.operator
                   : line.role === 'crew' ? accent
                     : callTheme.text.dim;
-              const label = line.role === 'operator' ? 'You' : line.role === 'crew' ? name : 'System';
+              const label = line.role === 'operator' ? (line.speakerName ?? 'You') : line.role === 'crew' ? name : 'System';
               return (
                 <Box key={line.id}>
                   <Typography sx={{ fontFamily: callTheme.mono, fontSize: '0.48rem', letterSpacing: '0.06em', color, mb: 0.15 }}>
@@ -478,7 +487,7 @@ export function CrewCallModal({
             {linked && (comms.session.partialTranscript || '').trim() && (
               <Box sx={{ opacity: 0.7 }}>
                 <Typography sx={{ fontFamily: callTheme.mono, fontSize: '0.48rem', letterSpacing: '0.06em', color: callTheme.operator, mb: 0.15 }}>
-                  You · live
+                  {comms.session.speakerName ?? 'You'} · live
                 </Typography>
                 <Typography sx={{ fontFamily: callTheme.mono, fontSize: '0.65rem', color: callTheme.text.dim }}>
                   {comms.session.partialTranscript}
@@ -501,6 +510,13 @@ export function CrewCallModal({
           flexShrink: 0,
         }}
       >
+        <VoiceToggleChip
+          icon={<RecordVoiceOverIcon sx={{ fontSize: 13 }} />}
+          active={voiceprintEnabled}
+          activeColor={accent}
+          onClick={() => setVoiceprintEnabled((v) => !v)}
+          title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'}
+        />
         {isOnHold ? (
           <Button
             variant="contained"

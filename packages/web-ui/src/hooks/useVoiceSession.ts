@@ -42,6 +42,7 @@ export function useVoiceSession(
   const clientRef = useRef<VoiceSessionClient | null>(null);
   const [state, setState] = useState<VoiceHookState>('idle');
   const [transcript, setTranscript] = useState('');
+  const [speakerName, setSpeakerName] = useState<string | null>(null);
   const [partialTranscript, setPartialTranscript] = useState('');
   const [agentStatus, setAgentStatus] = useState('');
   const [agentText, setAgentText] = useState('');
@@ -197,7 +198,7 @@ export function useVoiceSession(
         onTranscriptPending: () => {
           callbacksRef.current?.onVoiceUserPending?.();
         },
-        onTranscriptFinal: (text, empty) => {
+        onTranscriptFinal: (text, empty, name) => {
           if (empty || !text.trim()) {
             callbacksRef.current?.onVoiceUserDiscarded?.();
             unlockPttTurn();
@@ -205,6 +206,7 @@ export function useVoiceSession(
             setTurnPipeline('agent_thinking');
           }
           callbacksRef.current?.onTranscriptFinal?.(text, Boolean(empty));
+          setSpeakerName(name ?? null);
           setTranscript(text);
           setPartialTranscript('');
           setAgentText('');
@@ -582,7 +584,7 @@ export function useVoiceSession(
     clientRef.current?.setTextOnlyPlayback(true);
   }, []);
 
-  const setToggles = useCallback((toggles: { searchWeb?: boolean; bypassChip?: boolean }) => {
+  const setToggles = useCallback((toggles: { searchWeb?: boolean; bypassChip?: boolean; voiceprintEnabled?: boolean }) => {
     clientRef.current?.setToggles(toggles);
   }, []);
 
@@ -601,6 +603,7 @@ export function useVoiceSession(
     transcript: partialTranscript || transcript,
     partialTranscript,
     finalTranscript: transcript,
+    speakerName,
     agentText,
     playbackLevel,
     agentStatus,

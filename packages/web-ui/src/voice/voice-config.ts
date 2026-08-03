@@ -140,6 +140,7 @@ export function mergeVoiceConfig(input?: VoiceConfig | null): VoiceConfig {
     sidecar: { autoStart: false, idleUnloadMinutes: 5, ...input?.sidecar },
     fillers: { enabled: true, speakToolProgress: true, ...input?.fillers },
     wakeWord: { enabled: false, ...input?.wakeWord },
+    speaker: { identifyThreshold: 0.55, ...input?.speaker },
     downloadedAssets: input?.downloadedAssets ?? [],
     provider: input?.provider,
   };

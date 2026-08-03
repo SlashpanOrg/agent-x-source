@@ -44,6 +44,8 @@ export interface CrewCallTranscriptLine {
   role: 'operator' | 'crew' | 'system';
   text: string;
   at: number;
+  /** Display name for the operator/unknown speaker. */
+  speakerName?: string | null;
   /** Persisted call divider — render as a rule, not a spoken turn. */
   divider?: 'daytime' | 'time' | 'duration' | 'new_conversation';
 }

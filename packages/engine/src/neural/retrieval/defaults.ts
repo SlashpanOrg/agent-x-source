@@ -31,8 +31,8 @@ export const RETRIEVAL_DEFAULTS = {
   evidenceOnlyPrompt: true,
   /** Prefetch candidate limits before gate/rerank. */
   vectorLimit: 8,
-  userProfileLimit: 8,
-  episodicLimit: 5,
+  userProfileLimit: 16,
+  episodicLimit: 8,
   kbChunkLimit: 5,
 } as const;
 

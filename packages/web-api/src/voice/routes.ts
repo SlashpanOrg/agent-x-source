@@ -25,6 +25,12 @@ import {
   formatEnsureError,
 } from './setup.js';
 
+const PASSAGE_FALLBACK = 'The quick brown fox jumps over the lazy dog.';
+
+const PASSAGE_SYSTEM = 'You generate short, random English reading passages. You have no persona, no tools, and no knowledge of the current user. Output only the requested passage, nothing else.';
+
+const PASSAGE_PROMPT = 'Generate a simple, clean 3-4 sentence English passage (about 40-60 words) that a person can read aloud. It should be a random, self-contained statement with a variety of common sounds and words, and it should be different every time. Output only the passage, no labels, no quotes.';
+
 function pickVoiceGreetingFallback(callsign: string, agentName: string): string {
   const fallbacks = callsign
     ? [
@@ -258,6 +264,89 @@ function createVoiceRoutesRouter(): Router {
     }
   });
 
+  async function tryGeneratePassage(): Promise<{ text: string; fallback?: boolean; error?: string }> {
+    try {
+      const engine = getEngine();
+      const config = engine.configManager.load();
+      const { createAiSdkModel } = await import('@agentx/engine');
+      const { generateText } = await import('ai');
+      const model = createAiSdkModel(config);
+      const result = await generateText({
+        model,
+        system: PASSAGE_SYSTEM,
+        prompt: PASSAGE_PROMPT,
+        temperature: 0.85,
+        maxOutputTokens: 120,
+      });
+      const passage = result.text.trim().replace(/^["']|["']$/g, '').slice(0, 300);
+      if (!passage) {
+        return { text: PASSAGE_FALLBACK, fallback: true, error: 'Model returned empty passage' };
+      }
+      return { text: passage };
+    } catch (err) {
+      return { text: PASSAGE_FALLBACK, fallback: true, error: err instanceof Error ? err.message : 'LLM unavailable' };
+    }
+  }
+
+  router.post('/voice/passage', async (_req, res) => {
+    let result = await tryGeneratePassage();
+    if (result.fallback) {
+      // Cold-start retry: some providers fail the first call while the engine or model warms up.
+      await new Promise((resolve) => { setTimeout(resolve, 400); });
+      result = await tryGeneratePassage();
+    }
+    if (result.fallback) {
+      voiceError('Passage generation failed', new Error(result.error ?? 'unknown'));
+    }
+    res.json(result);
+  });
+
+  router.post('/voice/passage/stream', async (_req, res) => {
+    try {
+      const engine = getEngine();
+      const config = engine.configManager.load();
+      const { createAiSdkModel } = await import('@agentx/engine');
+      const { streamText, pipeTextStreamToResponse } = await import('ai');
+      const model = createAiSdkModel(config);
+      const result = streamText({
+        model,
+        system: PASSAGE_SYSTEM,
+        prompt: PASSAGE_PROMPT,
+        temperature: 0.85,
+        maxOutputTokens: 120,
+      });
+      await pipeTextStreamToResponse({
+        response: res,
+        textStream: result.textStream,
+      });
+      return;
+    } catch (err) {
+      voiceError('Passage stream failed, falling back to generateText', err);
+    }
+
+    // Fallback: if the model doesn't support streaming, generate the whole passage.
+    try {
+      const engine = getEngine();
+      const config = engine.configManager.load();
+      const { createAiSdkModel } = await import('@agentx/engine');
+      const { generateText } = await import('ai');
+      const model = createAiSdkModel(config);
+      const result = await generateText({
+        model,
+        system: PASSAGE_SYSTEM,
+        prompt: PASSAGE_PROMPT,
+        temperature: 0.85,
+        maxOutputTokens: 120,
+      });
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.send(result.text.trim().replace(/^["']|["']$/g, '').slice(0, 300) || PASSAGE_FALLBACK);
+    } catch (err) {
+      voiceError('Passage fallback generateText also failed', err);
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.status(500).send(PASSAGE_FALLBACK);
+    }
+  });
+
   router.post('/voice/greeting', async (req, res) => {
     try {
       const engine = getEngine();
@@ -402,6 +491,154 @@ function createVoiceRoutesRouter(): Router {
       return res.status(400).json({ valid: false, error: `xAI API returned ${response.status}: ${raw.slice(0, 200)}` });
     } catch (error) {
       return res.status(500).json({ valid: false, error: error instanceof Error ? error.message : 'xAI validation failed' });
+    }
+  });
+
+  router.get('/voice/speakers', async (_req, res) => {
+    try {
+      const client = await getVoiceSidecarManager().start();
+      const result = await client.speakerList();
+      res.json({ profiles: result.profiles });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to list voiceprints' });
+    }
+  });
+
+  router.post('/voice/speakers', async (req, res) => {
+    const name = String(req.body?.name ?? '').trim();
+    const pcmBase64 = typeof req.body?.pcmBase64 === 'string' ? req.body.pcmBase64 : '';
+    const isRoot = req.body?.isRoot === true;
+    const sampleRate = typeof req.body?.sampleRate === 'number' ? req.body.sampleRate : 16_000;
+    const profileId = typeof req.body?.profileId === 'string' ? req.body.profileId : undefined;
+    if (!pcmBase64) {
+      return res.status(400).json({ error: 'pcmBase64 is required' });
+    }
+    if (!profileId && !name) {
+      return res.status(400).json({ error: 'name is required for a new profile' });
+    }
+    try {
+      const client = await getVoiceSidecarManager().start();
+      const result = await client.speakerEnroll({ name, pcm: pcmBase64, sampleRate, isRoot, profileId });
+      res.json({ profile: result.profile });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to enroll voiceprint' });
+    }
+  });
+
+  router.post('/voice/speakers/:id/root', async (req, res) => {
+    const profileId = String(req.params.id ?? '');
+    if (!profileId) {
+      return res.status(400).json({ error: 'profileId is required' });
+    }
+    try {
+      const client = await getVoiceSidecarManager().start();
+      const result = await client.speakerSetRoot({ profileId });
+      res.json({ profile: result.profile });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to set root voiceprint' });
+    }
+  });
+
+  router.patch('/voice/speakers/:id', async (req, res) => {
+    const profileId = String(req.params.id ?? '');
+    const name = String(req.body?.name ?? '').trim();
+    if (!profileId) {
+      return res.status(400).json({ error: 'profileId is required' });
+    }
+    if (!name) {
+      return res.status(400).json({ error: 'name is required' });
+    }
+    try {
+      const { getVoiceService } = await import('../voice-runtime.js');
+      const profile = await getVoiceService().updateSpeaker(profileId, name);
+      res.json({ profile });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to update voiceprint' });
+    }
+  });
+
+  router.delete('/voice/speakers/:id', async (req, res) => {
+    const profileId = String(req.params.id ?? '');
+    if (!profileId) {
+      return res.status(400).json({ error: 'profileId is required' });
+    }
+    try {
+      const client = await getVoiceSidecarManager().start();
+      const result = await client.speakerDelete({ profileId });
+      res.json({ ok: result.ok });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to delete voiceprint' });
+    }
+  });
+
+  router.delete('/voice/speakers/:id/samples/:sampleId', async (req, res) => {
+    const profileId = String(req.params.id ?? '');
+    const sampleId = String(req.params.sampleId ?? '');
+    if (!profileId || !sampleId) {
+      return res.status(400).json({ error: 'profileId and sampleId are required' });
+    }
+    try {
+      const { getVoiceService } = await import('../voice-runtime.js');
+      const ok = await getVoiceService().deleteSpeakerSample(profileId, sampleId);
+      res.json({ ok });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to delete sample' });
+    }
+  });
+
+  router.post('/voice/speakers/identify', async (req, res) => {
+    const pcmBase64 = typeof req.body?.pcmBase64 === 'string' ? req.body.pcmBase64 : '';
+    const sampleRate = typeof req.body?.sampleRate === 'number' ? req.body.sampleRate : 16_000;
+    const threshold = typeof req.body?.threshold === 'number' ? req.body.threshold : 0.55;
+    if (!pcmBase64) {
+      return res.status(400).json({ error: 'pcmBase64 is required' });
+    }
+    try {
+      const client = await getVoiceSidecarManager().start();
+      const result = await client.speakerIdentify({ pcm: pcmBase64, sampleRate, threshold });
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to identify speaker' });
+    }
+  });
+
+  router.post('/voice/speakers/reset', async (_req, res) => {
+    try {
+      const { getVoiceService } = await import('../voice-runtime.js');
+      const ok = await getVoiceService().resetSpeakers();
+      res.json({ ok });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to reset voiceprints' });
+    }
+  });
+
+  router.post('/voice/speakers/:id/re-record', async (req, res) => {
+    const profileId = String(req.params.id ?? '');
+    const pcmBase64 = typeof req.body?.pcmBase64 === 'string' ? req.body.pcmBase64 : '';
+    if (!profileId) {
+      return res.status(400).json({ error: 'profileId is required' });
+    }
+    if (!pcmBase64) {
+      return res.status(400).json({ error: 'pcmBase64 is required' });
+    }
+    try {
+      const { getVoiceService } = await import('../voice-runtime.js');
+      const service = getVoiceService();
+      const store = service.getSpeakerService();
+      if (!store) {
+        return res.status(503).json({ error: 'Voice sidecar not ready' });
+      }
+      const existing = (await store.list()).find((p) => p.id === profileId);
+      if (!existing) {
+        return res.status(404).json({ error: 'Speaker not found' });
+      }
+      const pcm = Buffer.from(pcmBase64, 'base64');
+      const wasRoot = existing.isRoot;
+      await store.delete(profileId);
+      const profile = await store.add(existing.name, pcm, 16_000, wasRoot);
+      res.json({ profile });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to re-record voiceprint' });
     }
   });
 

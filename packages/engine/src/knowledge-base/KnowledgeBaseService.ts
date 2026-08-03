@@ -168,7 +168,8 @@ export class KnowledgeBaseService {
   }
 
   async search(query: string, topK = 5, sourceId?: string): Promise<KnowledgeSearchResult[]> {
-    return searchKnowledgeBaseDocuments(this.fabric, this.getEmbedder(), this.sourceStore, query, topK, sourceId);
+    const sourceIds = sourceId ? await this.sourceStore.getDescendantSourceIds(sourceId) : undefined;
+    return searchKnowledgeBaseDocuments(this.fabric, this.getEmbedder(), this.sourceStore, query, topK, sourceIds);
   }
 
   async listSources(sessionId?: string): Promise<KnowledgeSource[]> {
@@ -273,15 +274,16 @@ export class KnowledgeBaseService {
   async scrapeSource(
     url: string,
     sessionId?: string,
-    follow: { followLinks?: boolean; maxDepth?: number; maxLinks?: number } = {},
+    follow: { followLinks?: boolean; maxDepth?: number; maxLinks?: number; parentId?: string } = {},
   ): Promise<KnowledgeSource> {
     const opts = {
       followLinks: follow.followLinks ?? false,
       maxDepth: Math.max(0, Math.min(follow.maxDepth ?? 0, 10)),
       maxLinks: Math.max(0, Math.min(follow.maxLinks ?? 0, 250)),
     };
+    const parentId = follow.parentId;
 
-    const root = await this.scrapeOne(url, sessionId, undefined);
+    const root = await this.scrapeOne(url, sessionId, parentId);
 
     const job: ScrapeJob = {
       rootId: root.id,
@@ -574,53 +576,66 @@ export class KnowledgeBaseService {
 
   /**
    * Phase 2 of the scan-then-scrape workflow.
-   * Scrapes each selected URL as its own root source, emitting batch progress
-   * events. If maxDepth > 1, each scraped page's references are also followed
-   * recursively (up to maxLinks per page per depth level).
+   * Scrapes the selected reference URLs under a common root URL. If a rootUrl is
+   * provided, it is first scraped as the parent source; every selected URL is then
+   * ingested as a child of that root. If maxDepth > 1, each selected page's own
+   * references are also followed recursively.
    */
   async scrapeReferences(
     urls: string[],
     sessionId?: string,
-    opts?: { maxDepth?: number; maxLinks?: number },
+    opts?: { maxDepth?: number; maxLinks?: number; rootUrl?: string },
   ): Promise<string> {
     const maxDepth = Math.max(1, Math.min(opts?.maxDepth ?? 1, 10));
     const maxLinks = Math.max(0, Math.min(opts?.maxLinks ?? 25, 250));
+    const rootUrl = opts?.rootUrl;
     const batchId = randomUUID();
     const batchState = { cancelled: false, paused: false };
     this.batchScrapes.set(batchId, batchState);
 
-    const total = urls.length;
+    const targets: string[] = rootUrl ? [rootUrl, ...urls] : urls;
+    const total = targets.length;
     let completed = 0;
     let succeeded = 0;
     let failed = 0;
     const sourceIds: string[] = [];
+    let rootId: string | undefined;
 
     this.emitBatchProgress({
       batchId, total, completed, currentIndex: 0, currentUrl: '',
       succeeded, failed, status: 'running', sourceIds: [],
     });
 
-    for (let i = 0; i < urls.length; i++) {
+    for (let i = 0; i < targets.length; i++) {
       if (batchState.cancelled) break;
       while (batchState.paused && !batchState.cancelled) {
         await new Promise((r) => setTimeout(r, 500));
       }
       if (batchState.cancelled) break;
 
-      const url = urls[i]!;
+      const url = targets[i]!;
       this.emitBatchProgress({
         batchId, total, completed, currentIndex: i + 1, currentUrl: url,
         succeeded, failed, status: 'running', sourceIds: [...sourceIds],
       });
 
       try {
-        const source = await this.scrapeSource(url, sessionId, {
-          followLinks: maxDepth > 1,
-          maxDepth: maxDepth - 1,
-          maxLinks,
-        });
-        sourceIds.push(source.id);
-        succeeded++;
+        const isRoot = i === 0 && rootUrl != null;
+        if (isRoot) {
+          const root = await this.scrapeSource(url, sessionId, { followLinks: false });
+          rootId = root.id;
+          sourceIds.push(root.id);
+          succeeded++;
+        } else {
+          const source = await this.scrapeSource(url, sessionId, {
+            parentId: rootId,
+            followLinks: maxDepth > 1,
+            maxDepth: maxDepth - 1,
+            maxLinks,
+          });
+          sourceIds.push(source.id);
+          succeeded++;
+        }
       } catch (err) {
         failed++;
         this.logger.warn('KB_BATCH_SCRAPE', `Failed to scrape ${url}`, {

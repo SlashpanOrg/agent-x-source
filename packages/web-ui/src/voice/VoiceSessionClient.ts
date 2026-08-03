@@ -35,7 +35,7 @@ export type VoicePermissionChoice = 'allow_once' | 'allow_always' | 'deny' | 'ap
 export interface VoiceSessionClientEvents {
   onStateChange?: (state: VoiceClientState) => void;
   onTranscriptPartial?: (text: string) => void;
-  onTranscriptFinal?: (text: string, empty?: boolean) => void;
+  onTranscriptFinal?: (text: string, empty?: boolean, speakerName?: string | null) => void;
   onTranscriptPending?: () => void;
   onAgentText?: (text: string) => void;
   onError?: (message: string) => void;
@@ -539,8 +539,8 @@ export class VoiceSessionClient {
     }
   }
 
-  /** Update voice-only session toggles (web search, bypass chip). */
-  setToggles(toggles: { searchWeb?: boolean; bypassChip?: boolean }): void {
+  /** Update voice-only session toggles (web search, bypass chip, voiceprint). */
+  setToggles(toggles: { searchWeb?: boolean; bypassChip?: boolean; voiceprintEnabled?: boolean }): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'voice_toggle', ...toggles }));
     }
@@ -585,7 +585,8 @@ export class VoiceSessionClient {
       case 'transcript_final': {
         const text = String(msg.text ?? '');
         const empty = Boolean(msg.empty);
-        this.events.onTranscriptFinal?.(text, empty);
+        const speakerName = typeof msg.speakerName === 'string' ? msg.speakerName : null;
+        this.events.onTranscriptFinal?.(text, empty, speakerName);
         if (empty || !text.trim()) {
           this.setState(this.mode === 'duplex' ? 'listening' : 'ready');
         } else if (!empty && text.trim()) {

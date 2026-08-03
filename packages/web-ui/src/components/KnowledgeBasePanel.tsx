@@ -3,6 +3,7 @@ import { useVirtualGrid } from '../perf/useVirtualGrid';
 import type { KnowledgeSource, KnowledgeSourceStatus } from '@agentx/shared';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
+import Collapse from '@mui/material/Collapse';
 import Chip from '@mui/material/Chip';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
@@ -649,6 +650,7 @@ function UrlScrapeDossier({
   source,
   statusDetail,
   children,
+  cumulative,
   onClose,
   onReprocess,
   onDelete,
@@ -658,6 +660,7 @@ function UrlScrapeDossier({
   source: KnowledgeSource;
   statusDetail?: string;
   children: KnowledgeSource[];
+  cumulative?: { size: number; pageCount: number; chunkCount: number };
   onClose: () => void;
   onReprocess: () => void;
   onDelete: () => void;
@@ -884,9 +887,9 @@ function UrlScrapeDossier({
         </Box>
 
         <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-          <Gauge icon={<StorageIcon sx={{ fontSize: 13 }} />} label="SIZE" value={formatBytes(source.size)} color={colors.accent.blue} />
-          <Gauge icon={<DescriptionIcon sx={{ fontSize: 13 }} />} label="PAGES" value={String(source.pageCount ?? '—')} color={colors.accent.cyan} />
-          <Gauge icon={<LayersIcon sx={{ fontSize: 13 }} />} label="CHUNKS" value={String(source.chunkCount ?? '—')} color={colors.accent.purple} />
+          <Gauge icon={<StorageIcon sx={{ fontSize: 13 }} />} label="SIZE" value={formatBytes(cumulative?.size ?? source.size)} color={colors.accent.blue} />
+          <Gauge icon={<DescriptionIcon sx={{ fontSize: 13 }} />} label="PAGES" value={String(cumulative?.pageCount ?? source.pageCount ?? '—')} color={colors.accent.cyan} />
+          <Gauge icon={<LayersIcon sx={{ fontSize: 13 }} />} label="CHUNKS" value={String(cumulative?.chunkCount ?? source.chunkCount ?? '—')} color={colors.accent.purple} />
           <Gauge icon={<HubIcon sx={{ fontSize: 13 }} />} label="REFS" value={String(childRefs.length)} color={colors.accent.cyan} />
         </Box>
 
@@ -1064,6 +1067,7 @@ function SourceCard({
   childCount,
   expanded,
   onToggle,
+  totals,
 }: {
   source: KnowledgeSource;
   selected: boolean;
@@ -1075,6 +1079,7 @@ function SourceCard({
   childCount?: number;
   expanded?: boolean;
   onToggle?: () => void;
+  totals?: { size: number; pageCount: number; chunkCount: number };
 }) {
   const accent = statusColor(source.status);
   const active = isActiveStatus(source.status);
@@ -1095,7 +1100,7 @@ function SourceCard({
         cursor: 'pointer',
         border: `1px solid ${selected ? alphaColor(accent, 0.6) : colors.border.default}`,
         bgcolor: selected ? alphaColor(accent, 0.06) : colors.bg.tertiary,
-        transition: 'all 0.15s',
+        transition: 'border-color 0.15s, background-color 0.15s',
         ml: isChild ? 1.5 : 0,
         borderLeft: isChild ? `2px solid ${alphaColor(colors.accent.cyan, 0.5)}` : undefined,
         borderTopLeftRadius: isChild ? 0 : 0.5,
@@ -1228,7 +1233,7 @@ function SourceCard({
 
       <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
         <Typography sx={{ fontSize: '0.52rem', color: colors.text.dim, fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {formatBytes(source.size)} · {source.pageCount ?? 0} PG · {source.chunkCount ?? 0} CHK
+          {formatBytes(totals?.size ?? source.size)} · {(totals?.pageCount ?? source.pageCount ?? 0)} PG · {(totals?.chunkCount ?? source.chunkCount ?? 0)} CHK
         </Typography>
         <Typography sx={{ fontSize: '0.52rem', color: colors.text.dim, fontFamily: MONO, flexShrink: 0 }}>
           {formatDate(source.updatedAt)}
@@ -1286,21 +1291,45 @@ export function KnowledgeBasePanel() {
     return map;
   }, [sources]);
 
+  const totalsById = useMemo(() => {
+    const map = new Map<string, { size: number; pageCount: number; chunkCount: number }>();
+    const compute = (id: string): { size: number; pageCount: number; chunkCount: number } => {
+      const cached = map.get(id);
+      if (cached) return cached;
+      const s = sources.find((x) => x.id === id);
+      const children = childrenByParent.get(id) ?? [];
+      let size = s?.size ?? 0;
+      let pageCount = s?.pageCount ?? 0;
+      let chunkCount = s?.chunkCount ?? 0;
+      for (const c of children) {
+        const child = compute(c.id);
+        size += child.size;
+        pageCount += child.pageCount;
+        chunkCount += child.chunkCount;
+      }
+      const t = { size, pageCount, chunkCount };
+      map.set(id, t);
+      return t;
+    };
+    for (const s of sources) compute(s.id);
+    return map;
+  }, [sources, childrenByParent]);
+
   const visibleRows = useMemo(() => {
-    const rows: { source: KnowledgeSource; depth: number; childCount: number }[] = [];
+    const rows: { source: KnowledgeSource; depth: number; childCount: number; totals: { size: number; pageCount: number; chunkCount: number } }[] = [];
     const roots = sources
       .filter((s) => !s.parentId)
       .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     const add = (source: KnowledgeSource, depth: number) => {
       const children = childrenByParent.get(source.id) ?? [];
-      rows.push({ source, depth, childCount: children.length });
+      rows.push({ source, depth, childCount: children.length, totals: totalsById.get(source.id) ?? { size: source.size, pageCount: source.pageCount ?? 0, chunkCount: source.chunkCount ?? 0 } });
       if (expandedParents.has(source.id) && children.length) {
         for (const child of children) add(child, depth + 1);
       }
     };
     for (const root of roots) add(root, 0);
     return rows;
-  }, [sources, childrenByParent, expandedParents]);
+  }, [sources, childrenByParent, expandedParents, totalsById]);
 
   const toggleParent = useCallback((id: string) => {
     setExpandedParents((prev) => {
@@ -1373,11 +1402,8 @@ export function KnowledgeBasePanel() {
   const totalBytes = sources.reduce((sum, s) => sum + (s.size ?? 0), 0);
   const readyCount = sources.filter((s) => s.status === 'ready').length;
   const activeCount = sources.filter((s) => isActiveStatus(s.status)).length;
-  const selectedSource = sources.find((s) => s.id === selectedId) ?? null;
-  const activeSource = sources
-    .filter((s) => isActiveStatus(s.status) || (s.status !== 'ready' && !s.error))
-    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))[0] ?? null;
-  const dossierSource = selectedSource ?? activeSource;
+  const dossierSource = sources.find((s) => s.id === selectedId) ?? null;
+  const dossierTotals = dossierSource ? (totalsById.get(dossierSource.id) ?? null) : null;
 
   const handleScan = useCallback(async (url: string) => {
     return await scan(url);
@@ -1389,8 +1415,8 @@ export function KnowledgeBasePanel() {
     return source;
   }, [scrape, refresh]);
 
-  const handleScrapeRefs = useCallback(async (urls: string[], opts: { maxDepth: number; maxLinks: number }) => {
-    const batchId = await scrapeRefs(urls, undefined, opts);
+  const handleScrapeRefs = useCallback(async (urls: string[], opts: { maxDepth: number; maxLinks: number; rootUrl?: string }) => {
+    const batchId = await scrapeRefs(urls, undefined, { ...opts, rootUrl: opts.rootUrl });
     void refresh();
     return batchId;
   }, [scrapeRefs, refresh]);
@@ -1545,37 +1571,40 @@ export function KnowledgeBasePanel() {
           }}
         />
 
-        {dossierSource && (
-          <Box sx={{ mt: 2.5 }}>
-            <SectionHeader label="SOURCE DOSSIER" />
-            {dossierSource.sourceUrl ? (
-              <UrlScrapeDossier
-                source={dossierSource}
-                statusDetail={ingestDetails[dossierSource.id]}
-                children={childrenByParent.get(dossierSource.id) ?? []}
-                onClose={() => setSelectedId((prev) => (prev === dossierSource.id ? null : prev))}
-                onReprocess={() => void rescrape(dossierSource.id)}
-                onDelete={() => {
-                  void deleteSource(dossierSource.id);
-                  if (selectedId === dossierSource.id) setSelectedId(null);
-                }}
-                onPause={() => void pause(dossierSource.id)}
-                onResume={() => void resume(dossierSource.id)}
-              />
-            ) : (
-              <DossierMonitor
-                source={dossierSource}
-                statusDetail={ingestDetails[dossierSource.id]}
-                onClose={() => setSelectedId((prev) => (prev === dossierSource.id ? null : prev))}
-                onReprocess={() => void (dossierSource.sourceUrl ? rescrape(dossierSource.id) : reprocess(dossierSource.id))}
-                onDelete={() => {
-                  void deleteSource(dossierSource.id);
-                  if (selectedId === dossierSource.id) setSelectedId(null);
-                }}
-              />
-            )}
-          </Box>
-        )}
+        <Box sx={{ mt: 2.5 }}>
+          <Collapse in={dossierSource != null} timeout={{ enter: 320, exit: 260 }} unmountOnExit>
+            <Box>
+              <SectionHeader label="SOURCE DOSSIER" />
+              {dossierSource?.sourceUrl ? (
+                <UrlScrapeDossier
+                  source={dossierSource}
+                  statusDetail={ingestDetails[dossierSource.id]}
+                  children={childrenByParent.get(dossierSource.id) ?? []}
+                  cumulative={dossierTotals ?? undefined}
+                  onClose={() => setSelectedId((prev) => (prev === dossierSource.id ? null : prev))}
+                  onReprocess={() => void rescrape(dossierSource.id)}
+                  onDelete={() => {
+                    void deleteSource(dossierSource.id);
+                    if (selectedId === dossierSource.id) setSelectedId(null);
+                  }}
+                  onPause={() => void pause(dossierSource.id)}
+                  onResume={() => void resume(dossierSource.id)}
+                />
+              ) : dossierSource ? (
+                <DossierMonitor
+                  source={dossierSource}
+                  statusDetail={ingestDetails[dossierSource.id]}
+                  onClose={() => setSelectedId((prev) => (prev === dossierSource.id ? null : prev))}
+                  onReprocess={() => void (dossierSource.sourceUrl ? rescrape(dossierSource.id) : reprocess(dossierSource.id))}
+                  onDelete={() => {
+                    void deleteSource(dossierSource.id);
+                    if (selectedId === dossierSource.id) setSelectedId(null);
+                  }}
+                />
+              ) : null}
+            </Box>
+          </Collapse>
+        </Box>
 
         <Box sx={{ mt: 2.5 }}>
           <SectionHeader label="SOURCE VAULT" count={sources.length} />
@@ -1595,7 +1624,7 @@ export function KnowledgeBasePanel() {
             {vaultVisibleIndices.map((idx) => {
               const row = visibleRows[idx];
               if (!row) return null;
-              const { source, depth, childCount } = row;
+              const { source, depth, childCount, totals } = row;
               const canExpand = childCount > 0;
               return (
                 <SourceCard
@@ -1617,6 +1646,7 @@ export function KnowledgeBasePanel() {
                     void deleteSource(source.id);
                     if (selectedId === source.id) setSelectedId(null);
                   }}
+                  totals={totals}
                 />
               );
             })}

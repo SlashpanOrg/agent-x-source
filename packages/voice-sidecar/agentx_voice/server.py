@@ -8,8 +8,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from typing import Any, Literal
 from urllib.parse import urlparse, parse_qs
+import base64
+
 from agentx_voice import __version__
 from agentx_voice.protocol import SidecarConfig, health_payload
+from agentx_voice.speaker_embedder import SpeakerEmbedder
+from agentx_voice.speaker_store import SpeakerStore
 from agentx_voice.stt_faster_whisper import FasterWhisperStt
 from agentx_voice.tts_kokoro import KokoroTts
 from agentx_voice.vad_silero import SileroVad
@@ -23,6 +27,8 @@ class VoiceRuntime:
         self.stt = FasterWhisperStt(config.data_dir)
         self.kokoro = KokoroTts(config.data_dir)
         self.vad = SileroVad(config.data_dir)
+        self.speaker = SpeakerEmbedder(config.data_dir)
+        self.speaker_store = SpeakerStore(config.data_dir)
         self.active_tts_engine: TtsEngine = "kokoro"
         self.cancelled_request_ids: deque[str] = deque(maxlen=500)
 
@@ -39,6 +45,7 @@ class VoiceRuntime:
 
     def health(self) -> dict[str, Any]:
         tts_loaded = self.kokoro.pipeline is not None
+        speaker_loaded = self.speaker is not None
         return health_payload(
             "ready",
             version=__version__,
@@ -47,8 +54,128 @@ class VoiceRuntime:
                 "ttsEngine": self.active_tts_engine,
                 "ttsLoaded": tts_loaded,
                 "vadLoaded": self.vad.model is not None,
+                "speakerLoaded": speaker_loaded,
             },
         )
+
+    def speaker_extract(self, request: dict[str, Any]) -> dict[str, Any]:
+        pcm = self._get_pcm(request)
+        sample_rate = int(request.get("sampleRate", 16000))
+        embedding = self.speaker.extract(pcm, sample_rate)
+        return {"ok": True, "embedding": embedding}
+
+    def speaker_identify(self, request: dict[str, Any]) -> dict[str, Any]:
+        pcm = self._get_pcm(request)
+        sample_rate = int(request.get("sampleRate", 16000))
+        threshold = float(request.get("threshold", 0.55))
+        embedding = self.speaker.extract(pcm, sample_rate)
+        enrolled = []
+        for p in self.speaker_store.list():
+            for sample in p.get("samples") or []:
+                if sample.get("embedding"):
+                    enrolled.append({"id": p.get("id"), "embedding": sample.get("embedding")})
+            # Backward compat: profiles that only have a top-level embedding.
+            if p.get("embedding") and not p.get("samples"):
+                enrolled.append({"id": p.get("id"), "embedding": p.get("embedding")})
+        result = self.speaker.compare(embedding, enrolled, threshold=threshold)
+        root = self.speaker_store.get_root()
+        matched_profile = self.speaker_store.get(result["matchId"]) if result["matchId"] else None
+        all_profiles = {p.get("id"): p for p in self.speaker_store.list()}
+        matches = [
+            {
+                "speakerId": m["id"],
+                "speakerName": all_profiles.get(m["id"], {}).get("name") if m["id"] in all_profiles else None,
+                "confidence": m["confidence"],
+                "isRoot": (m["id"] == root.get("id")) if (m["id"] and root) else False,
+            }
+            for m in result.get("matches", [])
+        ]
+        return {
+            "ok": True,
+            "speakerId": result["matchId"],
+            "speakerName": matched_profile.get("name") if matched_profile else None,
+            "confidence": result["confidence"],
+            "recognized": result["passed"],
+            "isRoot": (result["matchId"] == root.get("id")) if (result["matchId"] and root) else False,
+            "rootName": root.get("name") if root else None,
+            "matches": matches,
+        }
+
+    def speaker_enroll(self, request: dict[str, Any]) -> dict[str, Any]:
+        name = str(request.get("name") or "").strip()
+        profile_id = str(request.get("profileId") or "").strip() or None
+        if not name and not profile_id:
+            raise ValueError("name is required for a new profile")
+        pcm = self._get_pcm(request)
+        sample_rate = int(request.get("sampleRate", 16000))
+        is_root = bool(request.get("isRoot"))
+        if is_root:
+            self.speaker_store.set_root("")  # clear first; will be set after add
+        embedding = self.speaker.extract(pcm, sample_rate)
+        sample_b64 = base64.b64encode(pcm).decode("ascii")
+
+        existing_name = name
+        if profile_id and not existing_name:
+            existing = self.speaker_store.get(profile_id)
+            existing_name = existing.get("name") if existing else name
+
+        profile = self.speaker_store.add_sample(
+            name=existing_name,
+            is_root=is_root,
+            embedding=embedding,
+            sample_b64=sample_b64,
+            sample_rate=sample_rate,
+            profile_id=profile_id,
+        )
+        if is_root:
+            self.speaker_store.set_root(profile["id"])
+        return {"ok": True, "profile": profile}
+
+    def speaker_list(self) -> dict[str, Any]:
+        return {"ok": True, "profiles": self.speaker_store.list()}
+
+    def speaker_delete(self, request: dict[str, Any]) -> dict[str, Any]:
+        profile_id = str(request.get("profileId") or request.get("id") or "")
+        if not profile_id:
+            raise ValueError("profileId is required")
+        ok = self.speaker_store.delete(profile_id)
+        return {"ok": ok}
+
+    def speaker_delete_sample(self, request: dict[str, Any]) -> dict[str, Any]:
+        profile_id = str(request.get("profileId") or "")
+        sample_id = str(request.get("sampleId") or "")
+        if not profile_id or not sample_id:
+            raise ValueError("profileId and sampleId are required")
+        ok = self.speaker_store.delete_sample(profile_id, sample_id)
+        return {"ok": ok}
+
+    def speaker_set_root(self, request: dict[str, Any]) -> dict[str, Any]:
+        profile_id = str(request.get("profileId") or request.get("id") or "")
+        if not profile_id:
+            raise ValueError("profileId is required")
+        profile = self.speaker_store.set_root(profile_id)
+        return {"ok": True, "profile": profile}
+
+    def speaker_update(self, request: dict[str, Any]) -> dict[str, Any]:
+        profile_id = str(request.get("profileId") or request.get("id") or "")
+        if not profile_id:
+            raise ValueError("profileId is required")
+        name = str(request.get("name") or "").strip()
+        if not name:
+            raise ValueError("name is required")
+        profile = self.speaker_store.update(profile_id, {"name": name})
+        if not profile:
+            raise ValueError(f"Profile {profile_id} not found")
+        return {"ok": True, "profile": profile}
+
+    def _get_pcm(self, request: dict[str, Any]) -> bytes:
+        raw = request.get("_rawPcm")
+        if isinstance(raw, (bytes, bytearray)) and raw:
+            return bytes(raw)
+        b64 = request.get("pcm")
+        if isinstance(b64, str) and b64:
+            return base64.b64decode(b64)
+        raise ValueError("pcm is required")
 
     def warm(self, request: dict[str, Any]) -> dict[str, Any]:
         self.stt.warm(request)
@@ -75,6 +202,10 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
 
         if self.path == "/health":
             self._send_json(self.runtime.health())
+            return
+
+        if self.path == "/speaker/profiles":
+            self._send_json(self.runtime.speaker_list())
             return
 
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -125,11 +256,24 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
         if path == "/cancel":
             return self.runtime.cancel(request)
         if path == "/vad/detect":
-            import base64
             payload = dict(request)
             if isinstance(payload.get("pcm"), str):
                 payload["pcm"] = base64.b64decode(payload["pcm"])
             return self.runtime.vad.detect(payload)
+        if path == "/speaker/extract":
+            return self.runtime.speaker_extract(request)
+        if path == "/speaker/identify":
+            return self.runtime.speaker_identify(request)
+        if path == "/speaker/enroll":
+            return self.runtime.speaker_enroll(request)
+        if path == "/speaker/delete":
+            return self.runtime.speaker_delete(request)
+        if path == "/speaker/delete-sample":
+            return self.runtime.speaker_delete_sample(request)
+        if path == "/speaker/set-root":
+            return self.runtime.speaker_set_root(request)
+        if path == "/speaker/update":
+            return self.runtime.speaker_update(request)
         raise ValueError("Unknown endpoint")
 
     def _handle_tts_stream(self, request: dict[str, Any]) -> None:

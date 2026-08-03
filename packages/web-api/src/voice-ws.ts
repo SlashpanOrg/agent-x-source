@@ -2,6 +2,7 @@ import type { Server, IncomingMessage } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { VoiceService, WebSocketVoiceTransport, mergeVoiceConfig, getPersonaStore, startAppSpan } from '@agentx/engine';
+import type { SpeakerIdentificationResult, VoiceSessionSpeaker } from '@agentx/engine';
 import { XaiRealtimeEngine } from './voice/engines/XaiRealtimeEngine.js';
 import type { VoiceEngineSession } from './voice/engines/types.js';
 import { VoiceStreamSpeakPipeline, VoiceTurnTimingTracker } from './voice-turn-tts.js';
@@ -107,6 +108,8 @@ interface VoiceWsSession {
   searchWeb: boolean;
   /** Toggle: auto-approve tool permissions (bypass chip). */
   bypassChip: boolean;
+  /** Toggle: enable speaker voiceprint recognition for this voice session. */
+  voiceprintEnabled: boolean;
   /** Duplex: pending timer waiting for client playback-finished signal before re-enabling mic. */
   duplexPlaybackResetTimer?: ReturnType<typeof setTimeout>;
   /** Crew-call greeting already issued for this WS session (client or server). */
@@ -601,6 +604,7 @@ async function handleVoiceMessage(ws: WebSocket, data: WebSocket.RawData, isBina
           const eng = getEngine();
           eng.agent?.setBypassPermissions?.(msg.bypassChip);
         }
+        if (typeof msg.voiceprintEnabled === 'boolean') session.voiceprintEnabled = msg.voiceprintEnabled;
       }
       break;
     case 'session_end':
@@ -834,6 +838,7 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
     transport,
     searchWeb: false,
     bypassChip: false,
+    voiceprintEnabled: false,
     ...(clientSituation ? { clientSituation } : {}),
     conversationMode,
     ...(crewVoiceId ? { crewVoiceId } : {}),
@@ -1113,10 +1118,17 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
     ws.send(JSON.stringify({ type: 'transcript_pending' }));
     let transcriptText = '';
     let sttResponse: any = null;
+    let speakerResult: SpeakerIdentificationResult = { speakerId: null, confidence: null, recognized: false, isRoot: false, rootName: null, available: false };
+    const shouldIdentify = session.voiceprintEnabled;
     try {
-      sttResponse = await enqueueSessionStt(session, async () => {
-        return service.streamTranscribeFinalize(pcm, SAMPLE_RATE);
-      });
+      const [stt, identify] = await Promise.all([
+        enqueueSessionStt(session, async () => {
+          return service.streamTranscribeFinalize(pcm, SAMPLE_RATE);
+        }),
+        shouldIdentify ? service.identifySpeaker(pcm, SAMPLE_RATE) : Promise.resolve(speakerResult),
+      ]);
+      sttResponse = stt;
+      speakerResult = identify;
       transcriptText = sttResponse.text?.trim() ?? '';
     } catch (sttErr) {
       // Streaming STT can fail after a preview race; fall back to one-shot PCM STT.
@@ -1124,11 +1136,37 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
         'VOICE',
         `Streaming STT finalize failed — retrying one-shot: ${sttErr instanceof Error ? sttErr.message : String(sttErr)}`,
       );
-      const fallback = await service.transcribePcmBuffer(pcm, SAMPLE_RATE);
+      const [fallback, identify] = await Promise.all([
+        service.transcribePcmBuffer(pcm, SAMPLE_RATE),
+        shouldIdentify ? service.identifySpeaker(pcm, SAMPLE_RATE) : Promise.resolve(speakerResult),
+      ]);
       transcriptText = fallback.text?.trim() ?? '';
       sttResponse = fallback;
+      speakerResult = identify;
     }
     timings.markSttDone();
+
+    if (voiceSession && session.voiceprintEnabled && speakerResult.available && speakerResult.recognized) {
+      voiceSession.speaker = {
+        id: speakerResult.speakerId,
+        name: speakerResult.speakerName ?? 'anonymous',
+        isRoot: speakerResult.isRoot,
+        confidence: speakerResult.confidence,
+        recognized: speakerResult.recognized,
+      };
+    } else if (voiceSession && !session.voiceprintEnabled) {
+      // Voiceprint disabled: treat every speaker as the root user.
+      const root = await getVoiceService().getRootSpeaker();
+      voiceSession.speaker = root ?? { id: null, name: 'Root', isRoot: true, recognized: true, confidence: null };
+    } else if (voiceSession) {
+      // Voiceprint enabled but the match fell below the threshold: send no speaker.
+      voiceSession.speaker = undefined;
+    }
+
+    getLogger().info(
+      'VOICE',
+      `Speaker identify: id=${speakerResult.speakerId} recognized=${speakerResult.recognized} isRoot=${speakerResult.isRoot} confidence=${speakerResult.confidence}`,
+    );
     const sttTimings = sttResponse?.timings;
     if (sttTimings) {
       getLogger().info(
@@ -1153,7 +1191,11 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
       return;
     }
 
-    ws.send(JSON.stringify({ type: 'transcript_final', text }));
+    ws.send(JSON.stringify({
+      type: 'transcript_final',
+      text,
+      ...(voiceSession?.speaker ? { speakerName: voiceSession.speaker.name, speakerId: voiceSession.speaker.id } : {}),
+    }));
     session.turnFinishing = false;
 
     // If a tool is awaiting approval, treat this utterance as the permission decision
@@ -1429,6 +1471,7 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
       }
 
       const turnId = randomUUID();
+      agent.setCurrentSpeaker(voiceSession?.speaker ?? null);
       const turnMessage = await runVoiceAgentPhase(
         agent,
         text,
@@ -1448,6 +1491,7 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
           // Crew calls always get web search (no dashboard toggle required).
           // Dashboard voice still respects the search-web chip.
           ...(crewCall || session.searchWeb ? { forceWebSearch: true } : {}),
+          ...(voiceSession?.speaker ? { speaker: voiceSession.speaker } : {}),
         },
       );
 
@@ -1682,6 +1726,7 @@ function runVoiceAgentPhase(
     userMessagePersisted?: boolean;
     clientSituation?: ClientSituation;
     forceWebSearch?: boolean;
+    speaker?: VoiceSessionSpeaker;
   } = {},
 ): Promise<unknown> {
   const start = (retried: boolean) => new Promise<unknown>((resolve, reject) => {

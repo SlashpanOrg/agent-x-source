@@ -314,19 +314,20 @@ export function router(_ctx: ApiContext): Router {
       res.status(503).json({ error: 'Knowledge base unavailable' });
       return;
     }
-    const body = req.body as { urls?: unknown; sessionId?: unknown; maxDepth?: unknown; maxLinks?: unknown };
+    const body = req.body as { urls?: unknown; rootUrl?: unknown; sessionId?: unknown; maxDepth?: unknown; maxLinks?: unknown };
     const urls = Array.isArray(body.urls) ? body.urls.filter((u): u is string => typeof u === 'string') : [];
     if (urls.length === 0) {
       res.status(400).json({ error: 'At least one URL is required' });
       return;
     }
     const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined;
+    const rootUrl = typeof body.rootUrl === 'string' ? body.rootUrl : undefined;
     const rawDepth = Number(body.maxDepth);
     const maxDepth = Number.isNaN(rawDepth) ? 1 : Math.max(1, Math.min(rawDepth, 10));
     const rawLinks = Number(body.maxLinks);
     const maxLinks = Number.isNaN(rawLinks) ? 25 : Math.max(0, Math.min(rawLinks, 250));
     try {
-      const batchId = await svc.scrapeReferences(urls, sessionId, { maxDepth, maxLinks });
+      const batchId = await svc.scrapeReferences(urls, sessionId, { maxDepth, maxLinks, rootUrl });
       res.json({ ok: true, batchId, count: urls.length });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

@@ -1,6 +1,6 @@
 // Centralized API client for all web-api endpoints
 
-import type { ClientSituation, TurnAttachment, AttachmentReference, AttachmentPreview, KnowledgeSource, KnowledgeSearchResult, KnowledgeSearchRequest, KnowledgeSourceListResponse, ScannedReference } from '@agentx/shared';
+import type { ClientSituation, TurnAttachment, AttachmentReference, AttachmentPreview, KnowledgeSource, KnowledgeSearchResult, KnowledgeSearchRequest, KnowledgeSourceListResponse, ScannedReference, SpeakerProfile } from '@agentx/shared';
 import { AGENTX_AUTH_TOKEN_KEY } from './utils/client-storage';
 import { notifyVoiceConfigUpdated } from './voice/support';
 
@@ -942,11 +942,11 @@ export const knowledgeBase = {
       body: JSON.stringify({ url, sessionId, maxLinks }),
     }),
 
-  /** Scrape selected reference URLs as individual sources. Returns batchId. */
-  scrapeRefs: (urls: string[], sessionId?: string, opts?: { maxDepth?: number; maxLinks?: number }) =>
+  /** Scrape selected reference URLs under an optional root URL. Returns batchId. */
+  scrapeRefs: (urls: string[], sessionId?: string, opts?: { maxDepth?: number; maxLinks?: number; rootUrl?: string }) =>
     request<{ ok: boolean; batchId: string; count: number }>('/knowledge-base/scrape-refs', {
       method: 'POST',
-      body: JSON.stringify({ urls, sessionId, maxDepth: opts?.maxDepth, maxLinks: opts?.maxLinks }),
+      body: JSON.stringify({ urls, sessionId, maxDepth: opts?.maxDepth, maxLinks: opts?.maxLinks, rootUrl: opts?.rootUrl }),
     }),
 
   /** Pause a batch scrape. */
@@ -1435,6 +1435,10 @@ export interface VoiceConfig {
   wakeWord?: {
     enabled?: boolean;
     phrase?: string;
+  };
+  speaker?: {
+    /** ECAPA voiceprint identification threshold (0.0–1.0). Default 0.55. */
+    identifyThreshold?: number;
   };
   downloadedAssets?: VoiceDownloadedAsset[];
   /** Separate provider/model for voice sessions. Falls back to default provider config. */
@@ -2104,6 +2108,43 @@ export const voice = {
     }),
   xaiVoices: () =>
     request<{ voices: Array<{ id: string; name: string; language?: string }> }>('/voice/xai/voices'),
+  speakers: () =>
+    request<{ profiles: SpeakerProfile[] }>('/voice/speakers'),
+  addSpeaker: (name: string, pcmBase64: string, isRoot = false) =>
+    request<{ profile: SpeakerProfile }>('/voice/speakers', {
+      method: 'POST',
+      body: JSON.stringify({ name, pcmBase64, isRoot }),
+    }),
+  identifySpeaker: (pcmBase64: string, threshold?: number) =>
+    request<{ speakerId: string | null; speakerName?: string | null; confidence: number | null; recognized: boolean; isRoot?: boolean; rootName?: string | null; matches?: { speakerId: string | null; speakerName?: string | null; confidence: number | null; isRoot?: boolean }[] }>('/voice/speakers/identify', {
+      method: 'POST',
+      body: JSON.stringify({ pcmBase64, threshold }),
+    }),
+  deleteSpeaker: (id: string) =>
+    request<{ ok: boolean }>(`/voice/speakers/${id}`, { method: 'DELETE' }),
+  setRootSpeaker: (id: string) =>
+    request<{ profile: SpeakerProfile }>(`/voice/speakers/${id}/root`, { method: 'POST' }),
+  resetSpeakers: () =>
+    request<{ ok: boolean }>('/voice/speakers/reset', { method: 'POST' }),
+  reRecordSpeaker: (id: string, pcmBase64: string) =>
+    request<{ profile: SpeakerProfile }>(`/voice/speakers/${id}/re-record`, {
+      method: 'POST',
+      body: JSON.stringify({ pcmBase64 }),
+    }),
+  addSpeakerSample: (profileId: string, pcmBase64: string) =>
+    request<{ profile: SpeakerProfile }>('/voice/speakers', {
+      method: 'POST',
+      body: JSON.stringify({ profileId, pcmBase64 }),
+    }),
+  deleteSpeakerSample: (profileId: string, sampleId: string) =>
+    request<{ ok: boolean }>(`/voice/speakers/${profileId}/samples/${sampleId}`, { method: 'DELETE' }),
+  updateSpeaker: (id: string, name: string) =>
+    request<{ profile: SpeakerProfile }>(`/voice/speakers/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+  passage: () =>
+    request<{ text: string; fallback?: boolean; error?: string }>('/voice/passage', { method: 'POST' }),
   greeting: () =>
     request<{ text: string; fallback?: boolean }>(
       '/voice/greeting',

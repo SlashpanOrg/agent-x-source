@@ -27,6 +27,7 @@ export interface MemoryContextContext {
   memoryEmbedder: EmbeddingProvider | null;
   usesCompactContext(): boolean;
   setMemoryContextNodeIds(ids: string[]): void;
+  speakerId?: string | null;
 }
 
 function packNodes(
@@ -75,6 +76,7 @@ export async function buildMemoryContext(ctx: MemoryContextContext): Promise<{ e
       userProfileLimit: isSuper ? settings.userProfileLimit : 0,
       episodicLimit: settings.episodicLimit,
       minRelevance: settings.minScoreMemory,
+      speakerId: ctx.speakerId,
     });
 
     // Reuse the same query embedding for KB chunk search (one embed per turn).
@@ -187,6 +189,7 @@ export interface MemoryExtractionContext {
   setUserChatMemoryIngester(i: UserChatMemoryIngester): void;
   sessionId: string;
   options: { contextKind?: SessionContextKind };
+  speakerId?: string | null;
 }
 
 /**
@@ -213,9 +216,12 @@ export function extractMemories(
       assistantResponse,
       ctx.sessionId,
       storageSessionId,
+      ctx.speakerId,
     ).catch(() => {});
   }
-  if (!isMemoryFabricSuperSession(ctx.sessionId, ctx.options.contextKind)) return;
+  // User-profile extraction now runs for every session, not just super-sessions,
+  // because user facts are global and highly valuable regardless of where they
+  // were stated. Chat-turn memory still follows the session/super rules above.
   if (!fabric || !embedder) return;
   let userIngester = ctx.userChatMemoryIngester;
   if (!userIngester) {
@@ -227,7 +233,7 @@ export function extractMemories(
     );
     ctx.setUserChatMemoryIngester(userIngester);
   }
-  void userIngester.ingestTurn(userMessage, assistantResponse, ctx.sessionId).catch(() => {});
+  void userIngester.ingestTurn(userMessage, assistantResponse, ctx.sessionId, ctx.speakerId).catch(() => {});
 }
 
 export interface ReformulateQueryContext {

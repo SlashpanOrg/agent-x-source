@@ -13,6 +13,7 @@ export interface VoiceSidecarHealth {
     ttsEngine?: TtsEngine;
     ttsLoaded?: boolean;
     vadLoaded?: boolean;
+    speakerLoaded?: boolean;
   };
   device?: VoiceComputeDevice;
   error?: string;
@@ -122,4 +123,94 @@ export interface VoiceSidecarVadDetectResponse {
   confidence?: number;
   speechStartMs?: number | null;
   speechEndMs?: number | null;
+}
+
+export interface VoiceSidecarSpeakerSample {
+  id: string;
+  embedding?: number[];
+  sampleB64?: string;
+  sampleRate?: number;
+  createdAt?: string;
+}
+
+export interface VoiceSidecarSpeakerProfile {
+  id: string;
+  name: string;
+  isRoot?: boolean;
+  embedding?: number[];
+  sampleB64?: string;
+  samples?: VoiceSidecarSpeakerSample[];
+  createdAt?: string;
+}
+
+export interface VoiceSidecarSpeakerExtractRequest {
+  pcm: string;
+  sampleRate?: number;
+}
+
+export interface VoiceSidecarSpeakerExtractResponse {
+  ok: boolean;
+  embedding: number[];
+}
+
+export interface VoiceSidecarSpeakerIdentifyRequest {
+  pcm: string;
+  sampleRate?: number;
+  threshold?: number;
+}
+
+export interface VoiceSidecarSpeakerIdentifyResponse {
+  ok: boolean;
+  speakerId?: string | null;
+  speakerName?: string | null;
+  confidence?: number | null;
+  recognized?: boolean;
+  isRoot?: boolean;
+  rootName?: string | null;
+  matches?: { speakerId?: string | null; speakerName?: string | null; confidence?: number | null; isRoot?: boolean }[];
+}
+
+export interface VoiceSidecarSpeakerEnrollRequest {
+  name: string;
+  pcm: string;
+  sampleRate?: number;
+  isRoot?: boolean;
+  profileId?: string;
+}
+
+export interface VoiceSidecarSpeakerEnrollResponse {
+  ok: boolean;
+  profile: VoiceSidecarSpeakerProfile;
+}
+
+export interface VoiceSidecarSpeakerListResponse {
+  ok: boolean;
+  profiles: VoiceSidecarSpeakerProfile[];
+}
+
+export interface VoiceSidecarSpeakerDeleteRequest {
+  profileId: string;
+}
+
+export interface VoiceSidecarSpeakerDeleteResponse {
+  ok: boolean;
+}
+
+export interface VoiceSidecarSpeakerSetRootRequest {
+  profileId: string;
+}
+
+export interface VoiceSidecarSpeakerSetRootResponse {
+  ok: boolean;
+  profile?: VoiceSidecarSpeakerProfile | null;
+}
+
+export interface VoiceSidecarSpeakerUpdateRequest {
+  profileId: string;
+  name: string;
+}
+
+export interface VoiceSidecarSpeakerUpdateResponse {
+  ok: boolean;
+  profile?: VoiceSidecarSpeakerProfile | null;
 }

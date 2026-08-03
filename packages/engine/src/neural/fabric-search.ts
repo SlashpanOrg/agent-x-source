@@ -76,8 +76,8 @@ export type FabricSearchOptions = {
   agentId?: string;
   tag?: string;
   sessionId?: string | null;
-  /** Restrict to a single knowledge / memory source (e.g. @kb pin). */
-  sourceId?: string;
+  /** Restrict to one or more knowledge / memory sources (e.g. @kb pin with descendants). */
+  sourceId?: string | string[];
   touch?: boolean;
 };
 
@@ -103,8 +103,9 @@ export async function vectorSearch(
   const params: unknown[] = [vectorValue, limit];
   let sourceClause = '';
   if (options.sourceId) {
-    params.push(options.sourceId);
-    sourceClause = `AND n.source_id = $${params.length}`;
+    const ids = Array.isArray(options.sourceId) ? options.sourceId : [options.sourceId];
+    params.push(ids);
+    sourceClause = `AND n.source_id = ANY($${params.length})`;
   }
 
   const { rows } = await ctx.pool.query<MemoryNode>(
@@ -145,9 +146,11 @@ export async function lexicalSearch(
   const sessionFilter = sessionFilterSql(options.sessionId);
   const params: unknown[] = [q, limit, LEXICAL_HIT_SCORE];
   let sourceClause = '';
+  let sourceIds: string[] | undefined;
   if (options.sourceId) {
-    params.push(options.sourceId);
-    sourceClause = `AND n.source_id = $${params.length}`;
+    sourceIds = Array.isArray(options.sourceId) ? options.sourceId : [options.sourceId];
+    params.push(sourceIds);
+    sourceClause = `AND n.source_id = ANY($${params.length})`;
   }
 
   try {
@@ -157,7 +160,7 @@ export async function lexicalSearch(
     if (!rows.length) {
       const orQuery = buildOrTsQuery(q);
       if (orQuery) {
-        const orParams = [orQuery, limit, LEXICAL_HIT_SCORE, ...(options.sourceId ? [options.sourceId] : [])];
+        const orParams = [orQuery, limit, LEXICAL_HIT_SCORE, ...(sourceIds ? [sourceIds] : [])];
         rows = await runLexicalQuery(ctx, orParams, sessionFilter, sourceClause, options, 'or');
       }
     }

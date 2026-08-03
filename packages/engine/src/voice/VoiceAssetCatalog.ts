@@ -81,6 +81,18 @@ export const VOICE_ASSET_CATALOG: VoiceAssetCatalogEntry[] = [
     license: 'MIT',
     recommended: true,
   },
+  {
+    id: 'speechbrain-ecapa',
+    kind: 'speaker-model',
+    engine: 'speechbrain',
+    displayName: 'SpeechBrain ECAPA (voiceprint)',
+    description: 'ECAPA-TDNN speaker embedding model for voiceprint enrolment and identification.',
+    sizeMB: 45,
+    downloadUrl: 'hf://speechbrain/spkrec-ecapa-voxceleb',
+    deliveryTier: 'download',
+    license: 'Apache-2.0',
+    recommended: false,
+  },
 ];
 
 export function mergeVoiceConfig(input?: VoiceConfig | null): VoiceConfig {

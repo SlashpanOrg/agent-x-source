@@ -167,6 +167,7 @@ def download_from_hf(spec: dict[str, Any], source: dict[str, Any], data_dir: Pat
             "revision": str(source.get("revision") or "main"),
             "local_dir": str(tmp_target),
             "local_dir_use_symlinks": False,
+            "resume_download": True,
         }
         # allow_patterns lets us download only specific files from large repos
         # (e.g. a single voice from a multi-language repo).

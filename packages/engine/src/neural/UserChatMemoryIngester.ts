@@ -23,18 +23,22 @@ export interface UserChatMemoryFact {
 
 const EXTRACTION_PROMPT = `You are a user memory extraction system. Analyze the user message and assistant reply for facts about THE USER that should persist across all future conversations.
 
-Extract ONLY:
-- Personal identity (name, role, location, employer)
-- Preferences (languages, tools, styles, communication)
-- Standing instructions ("always do X", "never do Y", "from now on")
+Extract any of the following when present:
+- Personal identity (name, role, location, employer, pronouns)
+- Preferences (languages, tools, styles, communication, format, tone)
+- Standing instructions ("always do X", "never do Y", "from now on", "do not ...")
+- Goals and priorities the user states
 - Project/context facts the user shares about their work or life
 - Explicit "remember this" requests from the user
+- Important facts the user reveals in answers to the assistant's questions
+- Constraints or rules the user sets for the assistant
 
 Do NOT extract:
 - General knowledge, news, or web search results the assistant looked up
 - Temporary task details unless the user asks to remember them
 - Assistant-generated analysis or summaries of external content
 - Facts about third parties unless the user explicitly ties them to themselves
+- Code snippets, quoted documents, or tool outputs
 
 If the user says "remember" about specific information (including web results), extract that as a user memory.
 
@@ -43,31 +47,12 @@ If nothing is worth remembering, respond with exactly: NONE
 Otherwise respond with one memory per line:
 [category] label | content
 
-Categories: identity, preference, instruction, project, context
+Categories: identity, preference, instruction, goal, project, context, constraint
 - label = short title (max 80 chars)
 - content = one concise sentence the agent should recall later`;
 
-/**
- * Heuristic gate — skip LLM when the user message is unlikely to contain profile facts.
- */
-export function shouldExtractUserChatMemory(userMessage: string): boolean {
-  const lower = userMessage.toLowerCase();
-  const triggers = [
-    'my name', 'call me', 'i am', "i'm", 'remember',
-    'i prefer', 'i like', 'i use', 'i work', 'i live',
-    "don't call", 'always', 'never', 'from now on',
-    'i want you to', 'keep in mind', 'note that',
-    'my project', 'my team', 'my company', 'my stack',
-    'i go by', 'refer to me', 'address me',
-    'your name', 'you are called', 'be called', 'call you',
-    'i need you to know', 'for context', 'just so you know',
-    'i usually', 'i typically', 'my goal', 'my role',
-    'do you remember', 'you remember', 'we discussed', 'we talked',
-    'last time', 'previously', 'earlier', 'old memory', 'past conversation',
-    'what did i say', 'what did we', 'recall', 'my memory',
-  ];
-  return triggers.some((t) => lower.includes(t));
-}
+const MIN_EXTRACT_CHARS = 2;
+const MAX_EXTRACT_CHARS = 3000;
 
 function parseExtraction(response: string): UserChatMemoryFact[] {
   if (!response || response.trim() === 'NONE') return [];
@@ -109,8 +94,14 @@ export class UserChatMemoryIngester {
    * Extract and persist user-profile memories from a conversation turn.
    * Non-blocking — callers should fire-and-forget.
    */
-  async ingestTurn(userMessage: string, assistantResponse: string, sourceSessionId: string): Promise<number> {
-    if (!shouldExtractUserChatMemory(userMessage)) return 0;
+  async ingestTurn(
+    userMessage: string,
+    assistantResponse: string,
+    sourceSessionId: string,
+    speakerId?: string | null,
+  ): Promise<number> {
+    const trimmed = userMessage.trim();
+    if (trimmed.length < MIN_EXTRACT_CHARS || trimmed.length > MAX_EXTRACT_CHARS) return 0;
     // Always queue through the Performance background pool — never drop under pressure.
     return getBackgroundTaskPool().run(async () => {
       const facts = await this.extractFacts(userMessage, assistantResponse);
@@ -132,6 +123,7 @@ export class UserChatMemoryIngester {
             provenance: {
               memoryCategory: fact.category,
               sourceSessionId,
+              speakerId: speakerId ?? undefined,
               ingestedAt: new Date().toISOString(),
             },
           });

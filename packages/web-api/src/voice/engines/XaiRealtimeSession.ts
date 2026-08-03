@@ -21,6 +21,8 @@ import {
 } from '@agentx/shared';
 import { WebSocketVoiceTransport, ToolService, summarizePermissionArgs, buildCrewPrivateIdentityPrompt, getPersonaStore } from '@agentx/engine';
 import type { VoiceEngineSession, VoiceEngineState } from './types.js';
+import type { VoiceSessionSpeaker } from '@agentx/engine';
+import { getVoiceService } from '../../voice-runtime.js';
 import { getEngine } from '../../engine.js';
 import { persistMessageDirect } from '../../ws.js';
 import { buildAgentInstruction, isCrewPrivateSessionRecord } from '../../chat-helpers.js';
@@ -117,6 +119,12 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   private model: string;
   private voice: string;
   private clientSituation?: ClientSituation | null;
+  private realtimeAudioChunks: Buffer[] = [];
+  private realtimeRecording = false;
+  private currentSpeaker: VoiceSessionSpeaker | null = null;
+  private pendingSpeakerPromise: Promise<void> | null = null;
+  private voiceprintEnabled = false;
+  private readonly defaultRootSpeaker: VoiceSessionSpeaker;
 
   constructor(options: {
     ws: WebSocket;
@@ -144,6 +152,13 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     this.xaiUrl = baseWithQuery;
     const scopePath = getAgentFilesDir();
     this.toolService = ToolService.createDefault(scopePath);
+    this.defaultRootSpeaker = {
+      id: null,
+      name: 'Root',
+      isRoot: true,
+      recognized: true,
+      confidence: null,
+    };
     this.setupPermissionHandler();
   }
 
@@ -257,6 +272,9 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   onBinaryAudio(pcm: Buffer): void {
     if (this.closed || !this.xaiWs || this.xaiWs.readyState !== WebSocket.OPEN) return;
     this.xaiWs.send(pcm);
+    if (this.realtimeRecording) {
+      this.realtimeAudioChunks.push(pcm);
+    }
   }
 
   async onClientMessage(msg: Record<string, unknown>): Promise<void> {
@@ -593,6 +611,18 @@ export class XaiRealtimeSession implements VoiceEngineSession {
         parts.push(`Current context:\n${situationParts.join('\n')}`);
       }
     }
+    const effectiveSpeaker = this.currentSpeaker ?? (this.voiceprintEnabled ? null : this.defaultRootSpeaker);
+    if (effectiveSpeaker) {
+      if (effectiveSpeaker.isRoot) {
+        const callsign = effectiveSpeaker.name ?? 'Root';
+        parts.push(`Current speaker: ${callsign} (root). This is the primary owner. Address them by their callsign "${callsign}" whenever you would address them.`);
+      } else if (effectiveSpeaker.recognized) {
+        const name = effectiveSpeaker.name ?? 'friend';
+        parts.push(`Current speaker: ${name} (friend). You know this person. Address them by their name "${name}" when it is natural to do so.`);
+      } else {
+        parts.push(`Current speaker: anonymous (stranger). You do not know this person. Be polite and respond as you would to a stranger. Do not use any saved personal context.`);
+      }
+    }
     return parts.filter(Boolean).join('\n\n');
   }
 
@@ -769,7 +799,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
         this.handleSpeechStarted();
         break;
       case 'input_audio_buffer.speech_stopped':
-        // Server VAD will commit automatically; no action needed.
+        void this.handleSpeechStopped();
         break;
       case 'input_audio_buffer.committed':
         // No-op — transcript events carry the final text.
@@ -784,7 +814,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
         });
         break;
       case 'conversation.item.input_audio_transcription.completed':
-        this.handleUserTranscriptCompleted(event);
+        await this.handleUserTranscriptCompleted(event);
         break;
       case 'response.created':
         this.handleResponseCreated(event);
@@ -1028,14 +1058,20 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     });
   }
 
-  private handleUserTranscriptCompleted(event: Record<string, unknown>): void {
+  private async handleUserTranscriptCompleted(event: Record<string, unknown>): Promise<void> {
+    // Wait for the speaker identification to finish (started in speech_stopped) so
+    // the transcript label and xAI instructions are based on the current speaker.
+    if (this.pendingSpeakerPromise) {
+      await this.pendingSpeakerPromise;
+    }
     const text = String(event.transcript ?? this.userTranscript);
     this.userTranscript = '';
+    const speakerPayload = this.currentSpeaker ? { speakerName: this.currentSpeaker.name } : {};
     if (!text.trim()) {
-      this.transport.sendControl({ type: 'transcript_final', sessionId: this.sessionId, text: '', empty: true });
+      this.transport.sendControl({ type: 'transcript_final', sessionId: this.sessionId, text: '', empty: true, ...speakerPayload });
       return;
     }
-    this.transport.sendControl({ type: 'transcript_final', sessionId: this.sessionId, text, empty: false });
+    this.transport.sendControl({ type: 'transcript_final', sessionId: this.sessionId, text, empty: false, ...speakerPayload });
     this.persistUserMessage(text);
   }
 
@@ -1047,6 +1083,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       provider: 'xai',
       model: this.model,
     };
+    if (this.currentSpeaker) {
+      metadata.speakerId = this.currentSpeaker.id ?? null;
+      metadata.speakerName = this.currentSpeaker.name ?? 'anonymous';
+    }
     if (isCrewVoiceSessionId(id)) {
       const divider = takeCallDividerForPersist(id);
       if (divider) metadata.callDivider = divider;
@@ -1281,6 +1321,9 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     }
     this.currentResponseId = undefined;
     this.speakingStartedAt = 0;
+    this.realtimeAudioChunks = [];
+    this.pendingSpeakerPromise = null;
+    this.realtimeRecording = true;
     void this.transport.stopPlayback();
     this.transport.sendControl({ type: 'agent_status', sessionId: this.sessionId, status: 'listening' });
     // Do not send response.cancel — xAI realtime handles the new user audio
@@ -1291,7 +1334,52 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     this.pendingToolCallIndex = 0;
     this.responseAudioDone = false;
     this.playbackFinished = false;
+    this.currentSpeaker = null;
     this.setState('listening');
+  }
+
+  private handleSpeechStopped(): void {
+    this.realtimeRecording = false;
+    const pcm = Buffer.concat(this.realtimeAudioChunks);
+    this.realtimeAudioChunks = [];
+    if (pcm.length === 0) {
+      this.pendingSpeakerPromise = Promise.resolve();
+      return;
+    }
+    this.pendingSpeakerPromise = this.resolveSpeaker(pcm);
+  }
+
+  private async resolveSpeaker(pcm: Buffer): Promise<void> {
+    if (!this.voiceprintEnabled) {
+      this.currentSpeaker = await getVoiceService().getRootSpeaker();
+      await this.refreshToolsAndSessionUpdate();
+      return;
+    }
+    try {
+      const result = await getVoiceService().identifySpeaker(pcm, VOICE_SAMPLE_RATE);
+      if (!result.available) {
+        getLogger().info('XAI_VOICE', 'Speaker identification unavailable (voiceprint assets not installed)');
+        this.currentSpeaker = null;
+        return;
+      }
+      if (!result.recognized) {
+        getLogger().info('XAI_VOICE', 'Speaker not recognized (below threshold)');
+        this.currentSpeaker = null;
+        return;
+      }
+      this.currentSpeaker = {
+        id: result.speakerId ?? null,
+        name: result.speakerName ?? 'anonymous',
+        isRoot: result.isRoot ?? false,
+        confidence: result.confidence,
+        recognized: result.recognized,
+      };
+      getLogger().info('XAI_VOICE', `Speaker identified: ${this.currentSpeaker.name} (recognized=${result.recognized}, isRoot=${result.isRoot}, confidence=${result.confidence})`);
+      // Refresh instructions so xAI can address the current speaker.
+      await this.refreshToolsAndSessionUpdate();
+    } catch (err) {
+      getLogger().warn('XAI_VOICE', `Speaker identification failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private async handleAudioStart(): Promise<void> {
@@ -1306,11 +1394,23 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       await this.transport.stopPlayback();
     }
     this.userTranscript = '';
+    // In push-to-talk mode the client controls the speech boundaries, so we
+    // record audio here. In VAD mode we wait for xAI's speech_started event.
+    if (this.mode === 'push-to-talk') {
+      this.currentSpeaker = null;
+      this.pendingSpeakerPromise = null;
+      this.realtimeAudioChunks = [];
+      this.realtimeRecording = true;
+    }
     this.setState('listening');
   }
 
   private async handleAudioEnd(): Promise<void> {
     if (this.mode !== 'push-to-talk') return;
+    this.realtimeRecording = false;
+    const pcm = Buffer.concat(this.realtimeAudioChunks);
+    this.realtimeAudioChunks = [];
+    this.pendingSpeakerPromise = pcm.length > 0 ? this.resolveSpeaker(pcm) : Promise.resolve();
     this.sendXai({ type: 'input_audio_buffer.commit' });
     this.setState('processing');
   }
@@ -1374,6 +1474,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       if (this.bypassChip) {
         try { this.toolService.getToolExecutor().getPermissionManager().allowAll(); } catch { /* ignore */ }
       }
+    }
+    if (typeof msg.voiceprintEnabled === 'boolean' && this.voiceprintEnabled !== msg.voiceprintEnabled) {
+      this.voiceprintEnabled = msg.voiceprintEnabled;
+      needsUpdate = true;
     }
     if (needsUpdate) {
       void this.refreshToolsAndSessionUpdate();

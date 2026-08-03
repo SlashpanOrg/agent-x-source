@@ -1,5 +1,5 @@
 import type { Response } from 'express';
-import type { Agent } from '@agentx/engine';
+import type { Agent, VoiceSessionSpeaker } from '@agentx/engine';
 import { applyWebSearchConfigFromAgentConfig, getPersonaStore, isWebSearchAvailableForChat, context } from '@agentx/engine';
 import type { AgentPersonaConfig, AgentXConfig, ClientSituation, Message, StorageAdapter, StorableMessage, TurnAttachment } from '@agentx/shared';
 import { normalizeClientSituation } from '@agentx/shared';
@@ -88,7 +88,12 @@ SELF-HEALING CAPABILITIES:
 YOUR RESPONSIBILITIES:
 - If a file operation fails AFTER auto-healing attempt, inform the user with the attempted paths
 - Do NOT ask the user to specify full paths—the system can find files by name alone
-- Trust the auto-healing system; do not retry failed operations yourself`;
+- Trust the auto-healing system; do not retry failed operations yourself
+
+MEMORY:
+- Use the cortex_memory_search tool to find anything the user (or anyone) previously said or asked about a topic.
+- When the user refers to "I said before", "last time", "remember", or asks whether something was discussed, search memory first.
+- Prioritise user profile facts, then chat history, then documents.`;
 }
 
 export function refreshAgentPersona(agent: Agent): void {
@@ -193,6 +198,8 @@ export function runAgentTurnAsync(
     /** Resolved user attachments (storage id + metadata). */
     attachments?: TurnAttachment[];
     todoDisposition?: 'continue' | 'skip' | 'defer';
+    /** Identified speaker from a voice turn. */
+    speaker?: VoiceSessionSpeaker | null;
     /** Express response used to keep the HTTP parent span open until the async turn finishes. */
     res?: Response;
   },
@@ -345,6 +352,7 @@ export function runAgentTurnAsync(
     ...(extra?.signal ? { signal: extra.signal } : {}),
     ...(extra?.attachments ? { attachments: extra.attachments } : {}),
     ...(extra?.todoDisposition ? { todoDisposition: extra.todoDisposition } : {}),
+    ...(extra?.speaker ? { speaker: extra.speaker } : {}),
   })
     .then((message) => {
       turnCompleted = true;

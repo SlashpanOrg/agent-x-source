@@ -2,14 +2,18 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import type { TtsEngine, VoiceConfig } from '@agentx/shared';
+import { getLogger } from '@agentx/shared';
 import { convertOggToWav16kMono } from './audio/ffmpeg.js';
 import { cleanupVoiceTempDir, VOICE_LIMITS } from './audio/tempCleanup.js';
 import { FillerCache } from './FillerCache.js';
 import { mergeVoiceConfig } from './VoiceAssetCatalog.js';
 import { normalizeTextForSpeech } from './speech/normalize.js';
 import { VoiceProgressSession } from './VoiceProgressSession.js';
-import { VoiceSession } from './VoiceSession.js';
+import { VoiceSession, type VoiceSessionSpeaker } from './VoiceSession.js';
 import { VoiceSidecarManager } from './sidecar/VoiceSidecarManager.js';
+import { SpeakerService } from './SpeakerService.js';
+import type { SpeakerIdentificationResult } from './SpeakerStore.js';
+import type { SpeakerProfile } from '@agentx/shared';
 import { shouldSpeakVoiceAckFiller } from './voiceFillerPolicy.js';
 import type { VoiceSidecarStreamAudioChunk, VoiceSidecarSynthesizeResponse, VoiceSidecarTranscribeResponse } from './sidecar/VoiceSidecarProtocol.js';
 
@@ -68,6 +72,7 @@ export class VoiceService {
   private readonly sidecar: VoiceSidecarManager;
   private readonly sessions = new Map<string, VoiceSession>();
   private readonly fillerCache: FillerCache;
+  private speakerService?: SpeakerService;
   private modelsWarmed = false;
   private warmedConfigKey = '';
   private idleUnloadTimer: ReturnType<typeof setTimeout> | null = null;
@@ -138,9 +143,64 @@ export class VoiceService {
       this.modelsWarmed = true;
       this.warmedConfigKey = configKey;
     }
+    if (!this.speakerService) {
+      this.speakerService = new SpeakerService(client);
+    }
     if (this.pendingIdleUnload) {
       this.pendingIdleUnload = false;
       this.scheduleIdleUnloadIfIdle();
+    }
+  }
+
+  getSpeakerService(): SpeakerService | undefined {
+    return this.speakerService;
+  }
+
+  async getRootSpeaker(): Promise<VoiceSessionSpeaker | null> {
+    if (!this.speakerService) {
+      return null;
+    }
+    const root = await this.speakerService.getRoot().catch(() => null);
+    if (!root) {
+      return { id: null, name: 'Root', isRoot: true, recognized: true, confidence: null };
+    }
+    return {
+      id: root.id ?? null,
+      name: root.name ?? 'Root',
+      isRoot: true,
+      recognized: true,
+      confidence: null,
+    };
+  }
+
+  async resetSpeakers(): Promise<boolean> {
+    if (!this.speakerService) return false;
+    return this.speakerService.clear();
+  }
+
+  async updateSpeaker(profileId: string, name: string): Promise<SpeakerProfile | null> {
+    if (!this.speakerService) return null;
+    return this.speakerService.update(profileId, name);
+  }
+
+  async deleteSpeakerSample(profileId: string, sampleId: string): Promise<boolean> {
+    if (!this.speakerService) return false;
+    return this.speakerService.deleteSample(profileId, sampleId);
+  }
+
+  async identifySpeaker(pcm: Buffer, sampleRate = 16_000, threshold?: number): Promise<SpeakerIdentificationResult> {
+    if (!this.speakerService) {
+      return { speakerId: null, confidence: null, recognized: false, isRoot: false, rootName: null, available: false };
+    }
+    try {
+      const t0 = Date.now();
+      const effectiveThreshold = threshold ?? this.config.speaker?.identifyThreshold ?? 0.55;
+      const result = await this.speakerService.identify(pcm, sampleRate, effectiveThreshold);
+      getLogger().info('VOICE', `Speaker identification latency: ${Date.now() - t0}ms (pcm=${pcm.length} bytes)`);
+      return result;
+    } catch (err) {
+      getLogger().warn('VOICE', `Speaker identification unavailable: ${err instanceof Error ? err.message : String(err)}`);
+      return { speakerId: null, confidence: null, recognized: false, isRoot: false, rootName: null, available: false };
     }
   }
 

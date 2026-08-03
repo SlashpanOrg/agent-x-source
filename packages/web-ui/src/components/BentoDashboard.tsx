@@ -435,6 +435,7 @@ export function BentoDashboard() {
   const [voiceActiveForPulses, setVoiceActiveForPulses] = useState(false);
   const [voiceSearchWeb, setVoiceSearchWeb] = useState(false);
   const [voiceBypassChip, setVoiceBypassChip] = useState(false);
+  const [voiceprintEnabled, setVoiceprintEnabled] = useState(false);
 
   const [subagentTasks, setSubagentTasks] = useState<SubAgentTaskInfo[]>([]);
   const [tasks, setTasks] = useState<AutomationTaskRecord[]>([]);
@@ -729,8 +730,10 @@ export function BentoDashboard() {
               <VoiceAgentHeaderControls
                 searchWeb={voiceSearchWeb}
                 bypassChip={voiceBypassChip}
+                voiceprintEnabled={voiceprintEnabled}
                 onSearchWebChange={setVoiceSearchWeb}
                 onBypassChipChange={setVoiceBypassChip}
+                onVoiceprintEnabledChange={setVoiceprintEnabled}
               />
             }
             voiceAgentCard
@@ -746,6 +749,7 @@ export function BentoDashboard() {
               onActiveChange={setVoiceActiveForPulses}
               searchWeb={voiceSearchWeb}
               bypassChip={voiceBypassChip}
+              voiceprintEnabled={voiceprintEnabled}
             />
           </Panel>
 
