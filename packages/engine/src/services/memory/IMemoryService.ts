@@ -35,6 +35,8 @@ export interface ChatTurnIngestOptions {
   storageSessionId?: string;
   /** Context kind used to resolve storage and super-session rules. */
   contextKind?: import('@agentx/shared').SessionContextKind;
+  /** Optional voice-print speaker id to scope the provenance. */
+  speakerId?: string | null;
 }
 
 export interface SearchOptions {

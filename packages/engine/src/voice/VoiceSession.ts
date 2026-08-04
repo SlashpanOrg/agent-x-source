@@ -2,6 +2,14 @@ import type { VoiceSessionMode, VoiceTransportKind } from '@agentx/shared';
 
 export type VoiceSessionState = 'idle' | 'listening' | 'transcribing' | 'agent_running' | 'speaking' | 'error' | 'closed';
 
+export interface VoiceSessionSpeaker {
+  id?: string | null;
+  name?: string | null;
+  isRoot: boolean;
+  confidence?: number | null;
+  recognized?: boolean;
+}
+
 export interface VoiceSessionOptions {
   sessionId: string;
   transport: VoiceTransportKind;
@@ -18,6 +26,7 @@ export class VoiceSession {
   readonly channelId?: string;
   state: VoiceSessionState = 'idle';
   error?: string;
+  speaker?: VoiceSessionSpeaker;
 
   constructor(options: VoiceSessionOptions) {
     this.sessionId = options.sessionId;

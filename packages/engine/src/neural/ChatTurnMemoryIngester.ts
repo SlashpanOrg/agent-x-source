@@ -38,6 +38,7 @@ export class ChatTurnMemoryIngester {
     assistantResponse: string,
     sourceSessionId: string,
     storageSessionId?: string,
+    speakerId?: string | null,
   ): Promise<boolean> {
     const user = userMessage.trim();
     const assistant = assistantResponse.trim();
@@ -45,7 +46,7 @@ export class ChatTurnMemoryIngester {
       return false;
     }
     return getBackgroundTaskPool().run(() =>
-      this.embedJob(user, assistant, sourceSessionId, storageSessionId),
+      this.embedJob(user, assistant, sourceSessionId, storageSessionId, speakerId),
     );
   }
 
@@ -54,6 +55,7 @@ export class ChatTurnMemoryIngester {
     assistantResponse: string,
     sourceSessionId: string,
     storageSessionId?: string,
+    speakerId?: string | null,
   ): Promise<boolean> {
     try {
       const label = userMessage.slice(0, 80);
@@ -73,6 +75,7 @@ export class ChatTurnMemoryIngester {
         provenance: {
           type: 'chat_turn',
           sourceSessionId,
+          speakerId: speakerId ?? undefined,
           ingestedAt: new Date().toISOString(),
         },
       });

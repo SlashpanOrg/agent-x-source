@@ -9,9 +9,12 @@ export type VoiceAssetKind =
   | 'tts-model'
   | 'tts-voice'
   | 'vad-model'
+  | 'speaker-model'
   | 'helper-binary';
 
 export type SttEngine = 'faster-whisper';
+
+export type SpeakerEngine = 'speechbrain';
 
 export type FasterWhisperComputeType = 'auto' | 'int8' | 'int8_float16' | 'float16' | 'float32';
 
@@ -73,7 +76,7 @@ export interface VoiceSidecarConfig {
 export interface VoiceDownloadedAsset {
   assetId: string;
   kind: VoiceAssetKind;
-  engine?: SttEngine | TtsEngine;
+  engine?: SttEngine | TtsEngine | SpeakerEngine;
   version?: string;
   installedAt: string;
   sizeBytes?: number;
@@ -83,7 +86,7 @@ export interface VoiceDownloadedAsset {
 export interface VoiceAssetCatalogEntry {
   id: string;
   kind: VoiceAssetKind;
-  engine?: SttEngine | TtsEngine;
+  engine?: SttEngine | TtsEngine | SpeakerEngine;
   displayName: string;
   description: string;
   sizeMB: number;
@@ -120,12 +123,35 @@ export interface VoiceConfig {
     enabled?: boolean;
     phrase?: string;
   };
+  speaker?: {
+    /** ECAPA voiceprint identification threshold (0.0–1.0). Default 0.55. */
+    identifyThreshold?: number;
+  };
   downloadedAssets?: VoiceDownloadedAsset[];
   /** Separate provider/model for voice sessions. Falls back to default provider config. */
   provider?: VoiceProviderConfig;
 }
 
 export type VoiceSidecarHealthState = 'not-installed' | 'stopped' | 'starting' | 'ready' | 'crashed';
+
+export interface SpeakerSample {
+  id: string;
+  embedding?: number[];
+  sampleB64?: string;
+  sampleRate?: number;
+  createdAt: string;
+}
+
+export interface SpeakerProfile {
+  id: string;
+  name: string;
+  isRoot: boolean;
+  embedding?: number[];
+  sampleB64?: string;
+  samples?: SpeakerSample[];
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface VoiceCapabilityStatus {
   os: string;

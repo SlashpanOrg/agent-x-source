@@ -13,4 +13,18 @@ export const VOICE_MIN_SPEECH_LEVEL = 0.055;
  * While xAI duplex TTS is playing, only forward mic frames at/above this level.
  * Blocks soft speaker bleed from tripping server VAD barge-in; real talk is louder.
  */
-export const XAI_BARGE_IN_MIC_LEVEL = 0.12;
+export const XAI_BARGE_IN_MIC_LEVEL = 0.05;
+/**
+ * Client-side barge-in trigger: during xAI duplex playback, only sustained
+ * mic energy at or above this level stops playback and switches to listening.
+ * Set above the forward gate so only clear, deliberate user speech triggers it,
+ * not residual echo, ambient noise, coughs, claps, notification sounds, or pen drops.
+ */
+export const XAI_BARGE_IN_TRIGGER_LEVEL = 0.18;
+/**
+ * Number of consecutive mic frames that must exceed XAI_BARGE_IN_TRIGGER_LEVEL
+ * before a client-side barge-in is declared. At ~5ms per AudioWorklet frame,
+ * 8 frames ≈ 40ms of sustained speech — long enough to filter out claps, coughs,
+ * notification sounds, and dropped objects, but short enough to feel instant for real words.
+ */
+export const XAI_BARGE_IN_TRIGGER_FRAMES = 8;

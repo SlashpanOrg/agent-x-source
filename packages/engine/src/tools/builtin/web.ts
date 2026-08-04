@@ -1,8 +1,8 @@
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
-import { execSync } from 'node:child_process';
 import { markdownSourceLink, prefixWebExtractOutput, assertSafeFetchUrl } from '../../search/url-utils.js';
+import { checkPlaywright, runPlaywright } from './browser.js';
 
 function blockedUrlResult(url: string): ToolResult {
   return { success: false, output: `URL blocked by SSRF policy: ${url}`, error: 'SSRF_BLOCKED' };
@@ -234,30 +234,102 @@ export async function webBrowse(args: Record<string, unknown>, context: ToolExec
   if (blocked) return blocked;
 
   // Check if Playwright is available
-  try {
-    execSync('npx playwright --version 2>/dev/null', { timeout: 5000 });
-  } catch {
+  if (!checkPlaywright()) {
     // Fallback to simple fetch for basic scraping
     return webScrape(args, context);
   }
 
-  const script = `
-    const { chromium } = require('playwright');
-    (async () => {
-      const browser = await chromium.launch({ headless: true });
-      const page = await browser.newPage();
-      await page.goto(${JSON.stringify(url)}, { timeout: 30000 });
-      const title = await page.title();
-      const text = await page.evaluate(() => document.body.innerText.slice(0, 50000));
-      await browser.close();
-      console.log(JSON.stringify({ title, text }));
-    })();
+  const loginRequiredSelector = (args['login_required_selector'] as string | undefined) ?? '';
+  const headless = loginRequiredSelector ? args['headless'] === true : args['headless'] !== false;
+  const userDataDir = args['user_data_dir'] as string | undefined;
+  const loginBannerPosition = (args['login_banner_position'] as 'top' | 'bottom' | undefined) ?? 'top';
+  const maxWait = context.timeout - 5000;
+
+  const task = `
+    const url = ${JSON.stringify(url)};
+    const loginRequiredSelector = ${JSON.stringify(loginRequiredSelector)};
+    const headless = ${JSON.stringify(headless)};
+    const loginBannerPosition = ${JSON.stringify(loginBannerPosition)};
+    const maxWait = ${maxWait};
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: ${context.timeout - 1000} });
+    const checkLogin = async () => loginRequiredSelector ? (await page.locator(loginRequiredSelector).count()) > 0 : false;
+    const title = await page.title();
+    const currentUrl = page.url();
+    if (loginRequiredSelector && await checkLogin()) {
+      if (headless) {
+        return JSON.stringify({ loginRequired: true, title, url: currentUrl });
+      } else {
+        await page.evaluate(() => localStorage.removeItem('__agentx_continue__'));
+        const injectBanner = async () => {
+          await page.evaluate((position) => {
+            const id = '__agentx_login_banner__';
+            let el = document.getElementById(id);
+            if (!el && document.body) {
+              el = document.createElement('div');
+              el.id = id;
+              el.style.position = 'fixed';
+              el.style[position] = '0';
+              el.style.left = '0';
+              el.style.width = '100%';
+              el.style.height = '42px';
+              el.style.background = '#111827';
+              el.style.color = '#ffffff';
+              el.style.zIndex = '999999';
+              el.style.display = 'flex';
+              el.style.alignItems = 'center';
+              el.style.justifyContent = 'space-between';
+              el.style.padding = '0 16px';
+              el.style.fontFamily = 'system-ui, sans-serif';
+              el.style.fontSize = '14px';
+              el.style.boxSizing = 'border-box';
+              el.innerHTML = '<span>Agent-X: Please log in to this site, then click Continue.</span><button id="__agentx_continue_btn__" style="background:#10b981;border:none;border-radius:4px;color:#fff;padding:6px 14px;cursor:pointer;font-weight:600;">Continue</button>';
+              document.body.appendChild(el);
+              const btn = document.getElementById('__agentx_continue_btn__');
+              if (btn) btn.onclick = () => localStorage.setItem('__agentx_continue__', '1');
+            }
+          }, loginBannerPosition);
+        };
+        page.on('domcontentloaded', () => { injectBanner().catch(() => {}); });
+        await injectBanner();
+        const start = Date.now();
+        let done = false;
+        while (Date.now() - start < maxWait) {
+          try {
+            done = await page.evaluate(() => localStorage.getItem('__agentx_continue__') === '1');
+          } catch { /* navigation or frame detached; keep polling */ }
+          if (done) break;
+          await page.waitForTimeout(500);
+        }
+        if (!done) throw new Error('Login wait timed out');
+        await page.evaluate(() => localStorage.removeItem('__agentx_continue__'));
+        if (await checkLogin()) {
+          const loginTitle = await page.title();
+          const loginUrl = page.url();
+          return JSON.stringify({ loginFailed: true, title: loginTitle, url: loginUrl, reason: 'Login selector is still present after Continue.' });
+        }
+      }
+    }
+    const finalTitle = await page.title();
+    const finalUrl = page.url();
+    const text = await page.evaluate((n) => (document.body ? document.body.innerText.slice(0, n) : ''), 50000);
+    return JSON.stringify({ title: finalTitle, text, url: finalUrl });
   `;
 
   try {
-    const result = execSync(`node -e ${JSON.stringify(script)}`, { timeout: 30000, encoding: 'utf-8', cwd: context.scopePath });
-    const parsed = JSON.parse(result.trim());
-    return { success: true, output: `Title: ${parsed.title}\n\n${parsed.text}` };
+    const result = await runPlaywright(task, context, { headless, userDataDir, shield: !loginRequiredSelector });
+    const parsed = JSON.parse(result.trim()) as { loginRequired?: boolean; loginFailed?: boolean; title: string; text?: string; url: string; reason?: string };
+    if (parsed.loginRequired) {
+      return {
+        success: false,
+        output: `Login required on "${parsed.title}" (${parsed.url}). Please log in to this site in the opened browser, then click Continue or say "continue" to proceed.`,
+        error: 'LOGIN_REQUIRED',
+        metadata: { url: parsed.url, title: parsed.title },
+      };
+    }
+    if (parsed.loginFailed) {
+      return { success: false, output: `Login not completed on "${parsed.title}" (${parsed.url}). ${parsed.reason ?? ''}`, error: 'LOGIN_FAILED' };
+    }
+    return { success: true, output: `Title: ${parsed.title}\n\n${parsed.text ?? ''}` };
   } catch (error) {
     return { success: false, output: `Browse failed: ${(error as Error).message}`, error: 'BROWSE_ERROR' };
   }

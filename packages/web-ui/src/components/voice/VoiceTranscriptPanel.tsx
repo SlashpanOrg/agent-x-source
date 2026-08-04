@@ -18,6 +18,7 @@ interface TranscriptLine {
   id: string;
   role: 'user' | 'assistant' | 'divider';
   text: string;
+  speakerName?: string | null;
   /** Divider variant (daytime / time / duration / new_conversation) — only for divider lines. */
   dividerVariant?: string;
   /** Raw message — used for dedup and older-page logic. */
@@ -66,7 +67,8 @@ function mapTranscriptLines(messages: ChatMessage[]): TranscriptLine[] {
     if (m.role !== 'user' && m.role !== 'assistant') continue;
     const text = sanitizeVoiceDisplayText(content);
     if (!text) continue;
-    lines.push({ id, role: m.role, text, raw: m });
+    const speakerName = typeof m.metadata?.speakerName === 'string' ? m.metadata.speakerName : null;
+    lines.push({ id, role: m.role, text, speakerName, raw: m });
   }
   return lines;
 }
@@ -77,11 +79,13 @@ function mapTranscriptLines(messages: ChatMessage[]): TranscriptLine[] {
  */
 export function VoiceTranscriptPanel({
   liveUser,
+  liveUserLabel,
   liveAgent,
   refreshToken,
   agentLabel = 'Agent',
 }: {
   liveUser?: string;
+  liveUserLabel?: string | null;
   liveAgent?: string;
   refreshToken?: string | number;
   /** Persona name for agent lines (defaults to "Agent"). */
@@ -357,6 +361,7 @@ export function VoiceTranscriptPanel({
                 role={m.role === 'user' ? 'operator' : 'agent'}
                 text={m.text}
                 agentLabel={agentLabel}
+                speakerName={m.speakerName}
               />
             )
           ))
@@ -368,6 +373,7 @@ export function VoiceTranscriptPanel({
             text={displayUser}
             live={Boolean(liveUserClean)}
             agentLabel={agentLabel}
+            speakerName={liveUserLabel}
           />
         )}
         {showLiveAgent && (
@@ -388,14 +394,16 @@ function LogLine({
   text,
   live,
   agentLabel = 'Agent',
+  speakerName,
 }: {
   role: 'operator' | 'agent';
   text: string;
   live?: boolean;
   agentLabel?: string;
+  speakerName?: string | null;
 }) {
   const color = role === 'operator' ? colors.accent.green : colors.accent.blue;
-  const label = role === 'operator' ? 'You' : agentLabel;
+  const label = role === 'operator' ? (speakerName ?? 'anonymous') : agentLabel;
   return (
     <Box sx={{ opacity: live ? 0.75 : 1 }}>
       <Typography sx={{

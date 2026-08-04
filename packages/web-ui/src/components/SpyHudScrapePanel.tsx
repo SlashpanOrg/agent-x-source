@@ -15,6 +15,7 @@ import InputAdornment from '@mui/material/InputAdornment';
 import Slider from '@mui/material/Slider';
 import Checkbox from '@mui/material/Checkbox';
 import Collapse from '@mui/material/Collapse';
+import Fade from '@mui/material/Fade';
 import LinkIcon from '@mui/icons-material/Link';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import ScanIcon from '@mui/icons-material/Radar';
@@ -36,8 +37,8 @@ interface SpyHudScrapePanelProps {
   onScan: (url: string) => Promise<UrlScanResult>;
   /** Scrape just the root URL and ingest it. */
   onScrapeRoot: (url: string) => Promise<KnowledgeSource>;
-  /** Scrape a batch of reference URLs. Returns batchId. */
-  onScrapeRefs: (urls: string[], opts: { maxDepth: number; maxLinks: number }) => Promise<string>;
+  /** Scrape a batch of reference URLs under the scanned root. Returns batchId. */
+  onScrapeRefs: (urls: string[], opts: { maxDepth: number; maxLinks: number; rootUrl: string }) => Promise<string>;
   /** Pause a batch scrape. */
   onPauseBatch: (batchId: string) => Promise<void>;
   /** Resume a batch scrape. */
@@ -91,6 +92,7 @@ export function SpyHudScrapePanel({
   const [maxDepth, setMaxDepth] = useState(1);
   const [maxLinks, setMaxLinks] = useState(25);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [subPagesExpanded, setSubPagesExpanded] = useState(true);
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [rootScrapedMsg, setRootScrapedMsg] = useState<string | null>(null);
 
@@ -108,6 +110,9 @@ export function SpyHudScrapePanel({
     setError(null);
     setScrapingRoot(true);
     setRootScrapedMsg(null);
+    setShowAdvanced(false);
+    setScanResult(null);
+    setSelectedUrls(new Set());
     try {
       const source = await onScrapeRoot(url);
       setRootScrapedMsg(`Scraped: ${source.name} (${source.size.toLocaleString()} bytes)`);
@@ -129,6 +134,8 @@ export function SpyHudScrapePanel({
     setScanning(true);
     setScanResult(null);
     setSelectedUrls(new Set());
+    setSubPagesExpanded(true);
+    setActiveBatchId(null);
     try {
       const result = await onScan(url);
       setScanResult(result);
@@ -144,8 +151,12 @@ export function SpyHudScrapePanel({
   const handleScrapeSelected = useCallback(async () => {
     if (!scanResult || selectedUrls.size === 0) return;
     setError(null);
+    setShowAdvanced(false);
+    setScanResult(null);
+    setSelectedUrls(new Set());
+    setSubPagesExpanded(false);
     try {
-      const batchId = await onScrapeRefs(Array.from(selectedUrls), { maxDepth, maxLinks });
+      const batchId = await onScrapeRefs(Array.from(selectedUrls), { maxDepth, maxLinks, rootUrl: scanResult.url });
       setActiveBatchId(batchId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -318,7 +329,7 @@ export function SpyHudScrapePanel({
         </Box>
       </Box>
 
-      <Collapse in={showAdvanced}>
+      <Collapse in={showAdvanced} timeout={{ enter: 400, exit: 320 }} unmountOnExit>
         <Box sx={{ px: 1.5, pb: 1 }}>
           {/* Scan button row */}
           <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mb: 1 }}>
@@ -347,154 +358,206 @@ export function SpyHudScrapePanel({
           </Box>
 
           {/* Scanning indicator */}
-          {scanning && !scanResult && (
+          <Fade in={scanning && !scanResult} timeout={300} unmountOnExit>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
               <PendingIcon sx={{ fontSize: 12, color: colors.accent.purple, animation: 'kbPulse 1s ease-in-out infinite' }} />
               <Typography sx={{ fontFamily: MONO, fontSize: '0.6rem', color: colors.accent.purple }}>
                 Scanning root page and discovering references…
               </Typography>
             </Box>
-          )}
+          </Fade>
 
           {/* ─── Scan Report ─── */}
           {scanResult && (
-            <Box
-              sx={{
-                border: `1px solid ${alphaColor(colors.accent.cyan, 0.2)}`,
-                borderRadius: 1,
-                bgcolor: alphaColor(colors.accent.cyan, 0.03),
-                overflow: 'hidden',
-              }}
-            >
-              {/* Scan summary */}
-              <Box sx={{ px: 1, py: 0.5, display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                <CheckCircleIcon sx={{ fontSize: 12, color: colors.accent.green }} />
-                <Typography sx={{ fontFamily: MONO, fontSize: '0.55rem', color: colors.accent.green, fontWeight: 600 }}>
-                  SCAN COMPLETE
-                </Typography>
-                <Typography sx={{ fontFamily: MONO, fontSize: '0.5rem', color: colors.text.dim }}>
-                  {scanResult.references.length} refs · {scanResult.contentLength.toLocaleString()} chars · {scanResult.fetchMethod}
-                </Typography>
-                <Box sx={{ flex: 1 }} />
-                <Typography sx={{ fontFamily: MONO, fontSize: '0.5rem', color: colors.text.secondary, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {scanResult.title}
-                </Typography>
-              </Box>
-
-              {/* Reference table */}
-              {scanResult.references.length > 0 && (
-                <Box sx={{ maxHeight: 200, overflowY: 'auto', borderTop: `1px solid ${colors.border.subtle}`, borderBottom: batchRunning ? 'none' : `1px solid ${colors.border.subtle}` }}>
-                  {/* Header row */}
-                  <Box
+              <Box
+                sx={{
+                  border: `1px solid ${alphaColor(colors.accent.cyan, 0.2)}`,
+                  borderRadius: 1,
+                  bgcolor: alphaColor(colors.accent.cyan, 0.03),
+                  overflow: 'hidden',
+                }}
+              >
+                {/* Main URL header — clickable to expand/collapse sub pages */}
+                <Box
+                  onClick={() => setSubPagesExpanded((v) => !v)}
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    px: 1,
+                    py: 0.5,
+                    cursor: 'pointer',
+                    '&:hover': { bgcolor: alphaColor(colors.accent.cyan, 0.05) },
+                  }}
+                >
+                  <Checkbox
+                    size="small"
+                    checked={selectedUrls.size === scanResult.references.length}
+                    indeterminate={selectedUrls.size > 0 && selectedUrls.size < scanResult.references.length}
+                    onChange={(e) => { e.stopPropagation(); toggleAll(); }}
+                    disabled={batchRunning}
+                    sx={{ p: 0.25, color: colors.accent.cyan, '&.Mui-checked': { color: colors.accent.cyan } }}
+                  />
+                  <CheckCircleIcon sx={{ fontSize: 12, color: colors.accent.green }} />
+                  <Typography sx={{ fontFamily: MONO, fontSize: '0.55rem', color: colors.accent.green, fontWeight: 600 }}>
+                    {scanResult.references.length > 0 ? 'MAIN URL' : 'MAIN URL · NO SUB PAGES'}
+                  </Typography>
+                  <Typography
                     sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 0.5,
-                      px: 1,
-                      py: 0.5,
-                      position: 'sticky',
-                      top: 0,
-                      bgcolor: colors.bg.tertiary,
-                      borderBottom: `1px solid ${colors.border.default}`,
-                      zIndex: 1,
+                      fontFamily: MONO,
+                      fontSize: '0.55rem',
+                      color: colors.text.primary,
+                      flex: 1,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
                     }}
                   >
-                    <Checkbox
-                      size="small"
-                      checked={selectedUrls.size === scanResult.references.length}
-                      indeterminate={selectedUrls.size > 0 && selectedUrls.size < scanResult.references.length}
-                      onChange={toggleAll}
-                      disabled={batchRunning}
-                      sx={{ p: 0.25, color: colors.accent.cyan, '&.Mui-checked': { color: colors.accent.cyan } }}
-                    />
-                    <Typography sx={{ fontFamily: MONO, fontSize: '0.45rem', color: colors.text.dim, letterSpacing: 1, minWidth: 28 }}>SCORE</Typography>
-                    <Typography sx={{ fontFamily: MONO, fontSize: '0.45rem', color: colors.text.dim, letterSpacing: 1, minWidth: 36 }}>TYPE</Typography>
-                    <Typography sx={{ fontFamily: MONO, fontSize: '0.45rem', color: colors.text.dim, letterSpacing: 1, flex: 1 }}>URL</Typography>
-                    <Typography sx={{ fontFamily: MONO, fontSize: '0.45rem', color: colors.text.dim, letterSpacing: 1, minWidth: 60 }}>HOST</Typography>
-                  </Box>
+                    {scanResult.url}
+                  </Typography>
+                  <Typography sx={{ fontFamily: MONO, fontSize: '0.5rem', color: colors.text.dim }}>
+                    {scanResult.references.length} refs · {scanResult.contentLength.toLocaleString()} chars
+                  </Typography>
+                  {subPagesExpanded ? (
+                    <ExpandLessIcon sx={{ fontSize: 16, color: colors.accent.cyan }} />
+                  ) : (
+                    <ExpandMoreIcon sx={{ fontSize: 16, color: colors.accent.cyan }} />
+                  )}
+                </Box>
 
-                  {scanResult.references.map((ref) => {
-                    const selected = selectedUrls.has(ref.url);
-                    const catColor = CATEGORY_COLOR[ref.category];
-                    // Check if this URL is currently being scraped in the batch
-                    const isCurrent = activeProgress?.currentUrl === ref.url;
-                    return (
-                      <Box
-                        key={ref.url}
-                        onClick={() => !batchRunning && toggleUrl(ref.url)}
+                {/* Sub pages — collapsible list of references under the main URL */}
+                <Collapse in={subPagesExpanded} timeout={{ enter: 360, exit: 260 }} unmountOnExit>
+                  <Box sx={{ maxHeight: 220, overflowY: 'auto', borderTop: `1px solid ${colors.border.subtle}` }}>
+                    {scanResult.references.length > 0 ? (
+                      <>
+                        {/* Header row */}
+                        <Box
                         sx={{
                           display: 'flex',
                           alignItems: 'center',
                           gap: 0.5,
                           px: 1,
                           py: 0.5,
-                          cursor: batchRunning ? 'default' : 'pointer',
-                          borderBottom: `1px solid ${alphaColor(colors.border.subtle, 0.5)}`,
-                          '&:hover': batchRunning ? {} : { bgcolor: alphaColor(colors.accent.cyan, 0.05) },
-                          ...(selected ? { bgcolor: alphaColor(colors.accent.cyan, 0.04) } : {}),
-                          ...(isCurrent ? { bgcolor: alphaColor(colors.accent.blue, 0.08) } : {}),
+                          position: 'sticky',
+                          top: 0,
+                          bgcolor: colors.bg.tertiary,
+                          borderBottom: `1px solid ${colors.border.default}`,
+                          zIndex: 1,
                         }}
                       >
-                        <Checkbox
-                          size="small"
-                          checked={selected}
-                          onChange={() => toggleUrl(ref.url)}
-                          onClick={(e) => e.stopPropagation()}
-                          disabled={batchRunning}
-                          sx={{ p: 0.25, color: catColor, '&.Mui-checked': { color: catColor } }}
-                        />
-                        <Typography sx={{ fontFamily: MONO, fontSize: '0.5rem', color: colors.text.secondary, minWidth: 28, fontWeight: 600 }}>
-                          {ref.score}
-                        </Typography>
-                        <Box sx={{ minWidth: 36 }}>
+                        <Box sx={{ width: 20 }} /> {/* checkbox spacer */}
+                        <Typography sx={{ fontFamily: MONO, fontSize: '0.45rem', color: colors.text.dim, letterSpacing: 1, minWidth: 28 }}>SCORE</Typography>
+                        <Typography sx={{ fontFamily: MONO, fontSize: '0.45rem', color: colors.text.dim, letterSpacing: 1, minWidth: 36 }}>TYPE</Typography>
+                        <Typography sx={{ fontFamily: MONO, fontSize: '0.45rem', color: colors.text.dim, letterSpacing: 1, flex: 1 }}>SUB PAGE URL</Typography>
+                        <Typography sx={{ fontFamily: MONO, fontSize: '0.45rem', color: colors.text.dim, letterSpacing: 1, minWidth: 50 }}>STATUS</Typography>
+                      </Box>
+
+                      {scanResult.references.map((ref) => {
+                        const selected = selectedUrls.has(ref.url);
+                        const catColor = CATEGORY_COLOR[ref.category];
+                        const isCurrent = activeProgress?.currentUrl === ref.url;
+                        const status = isCurrent
+                          ? 'scraping'
+                          : activeProgress?.status === 'done'
+                            ? 'done'
+                            : activeProgress
+                              ? 'queued'
+                              : 'pending';
+                        const statusColor = status === 'done' ? colors.accent.green : status === 'scraping' ? colors.accent.blue : status === 'queued' ? colors.accent.orange : colors.text.dim;
+                        return (
                           <Box
+                            key={ref.url}
+                            onClick={() => !batchRunning && toggleUrl(ref.url)}
                             sx={{
-                              display: 'inline-block',
-                              px: 0.4,
-                              py: 0.1,
-                              borderRadius: 0.25,
-                              fontSize: '0.4rem',
-                              fontFamily: MONO,
-                              fontWeight: 700,
-                              color: catColor,
-                              bgcolor: alphaColor(catColor, 0.12),
-                              border: `1px solid ${alphaColor(catColor, 0.3)}`,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 0.5,
+                              px: 1,
+                              py: 0.5,
+                              cursor: batchRunning ? 'default' : 'pointer',
+                              borderBottom: `1px solid ${alphaColor(colors.border.subtle, 0.5)}`,
+                              '&:hover': batchRunning ? {} : { bgcolor: alphaColor(colors.accent.cyan, 0.05) },
+                              ...(selected ? { bgcolor: alphaColor(colors.accent.cyan, 0.04) } : {}),
+                              ...(isCurrent ? { bgcolor: alphaColor(colors.accent.blue, 0.08) } : {}),
                             }}
                           >
-                            {CATEGORY_LABEL[ref.category]}
+                            <Checkbox
+                              size="small"
+                              checked={selected}
+                              onChange={() => toggleUrl(ref.url)}
+                              onClick={(e) => e.stopPropagation()}
+                              disabled={batchRunning}
+                              sx={{ p: 0.25, color: catColor, '&.Mui-checked': { color: catColor } }}
+                            />
+                            <Typography sx={{ fontFamily: MONO, fontSize: '0.5rem', color: colors.text.secondary, minWidth: 28, fontWeight: 600 }}>
+                              {ref.score}
+                            </Typography>
+                            <Box sx={{ minWidth: 36 }}>
+                              <Box
+                                sx={{
+                                  display: 'inline-block',
+                                  px: 0.4,
+                                  py: 0.1,
+                                  borderRadius: 0.25,
+                                  fontSize: '0.4rem',
+                                  fontFamily: MONO,
+                                  fontWeight: 700,
+                                  color: catColor,
+                                  bgcolor: alphaColor(catColor, 0.12),
+                                  border: `1px solid ${alphaColor(catColor, 0.3)}`,
+                                }}
+                              >
+                                {CATEGORY_LABEL[ref.category]}
+                              </Box>
+                            </Box>
+                            <Typography
+                              component="a"
+                              href={ref.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              sx={{
+                                fontFamily: MONO,
+                                fontSize: '0.55rem',
+                                color: isCurrent ? colors.accent.blue : selected ? colors.accent.cyan : colors.text.tertiary,
+                                flex: 1,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                textDecoration: 'none',
+                                '&:hover': { color: colors.accent.cyan, textDecoration: 'underline' },
+                              }}
+                            >
+                              {ref.url}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                fontFamily: MONO,
+                                fontSize: '0.45rem',
+                                color: statusColor,
+                                minWidth: 50,
+                                textTransform: 'capitalize',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.25,
+                              }}
+                            >
+                              {status === 'scraping' && <PendingIcon sx={{ fontSize: 10, color: statusColor, animation: 'kbPulse 1s ease-in-out infinite' }} />}
+                              {status}
+                            </Typography>
                           </Box>
-                        </Box>
-                        <Typography
-                          component="a"
-                          href={ref.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          sx={{
-                            fontFamily: MONO,
-                            fontSize: '0.55rem',
-                            color: isCurrent ? colors.accent.blue : selected ? colors.accent.cyan : colors.text.tertiary,
-                            flex: 1,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                            textDecoration: 'none',
-                            '&:hover': { color: colors.accent.cyan, textDecoration: 'underline' },
-                          }}
-                        >
-                          {ref.url}
-                        </Typography>
-                        {isCurrent && (
-                          <PendingIcon sx={{ fontSize: 10, color: colors.accent.blue, animation: 'kbPulse 1s ease-in-out infinite' }} />
-                        )}
-                        <Typography sx={{ fontFamily: MONO, fontSize: '0.45rem', color: colors.text.dim, minWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {ref.host}
+                        );
+                      })}
+                      </>
+                    ) : (
+                      <Box sx={{ px: 1, py: 1, textAlign: 'center' }}>
+                        <Typography sx={{ fontFamily: MONO, fontSize: '0.5rem', color: colors.text.dim }}>
+                          No sub pages discovered
                         </Typography>
                       </Box>
-                    );
-                  })}
-                </Box>
-              )}
+                    )}
+                  </Box>
+                </Collapse>
 
               {/* Batch progress */}
               {activeProgress && (

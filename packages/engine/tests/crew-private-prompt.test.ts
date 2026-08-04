@@ -36,6 +36,9 @@ describe('buildCrewPrivateIdentityPrompt', () => {
     expect(prompt).toContain('Travel Specialist');
     expect(prompt).toContain('having a tool available does NOT mean');
     expect(prompt.toLowerCase()).toContain('outside your field');
+    expect(prompt).toContain('domain boundaries: ONLY topics related to');
+    expect(prompt).toContain('travel, itineraries');
+    expect(prompt).toContain('do NOT summarize it, explain it');
   });
 });
 
@@ -57,6 +60,8 @@ describe('buildCrewPrivateFastReplyPrompt', () => {
     expect(prompt).toContain('No tools');
     expect(prompt).toContain('No skill lists');
     expect(prompt).toContain('service brochure');
+    expect(prompt).toContain('outside your lane');
+    expect(prompt).toContain('hand off to Agent-X');
   });
 });
 
@@ -75,5 +80,12 @@ describe('createCrewPrivateConductSection', () => {
     expect(conduct).toContain('Having a tool available');
     expect(conduct).toContain('does NOT mean a request is in your domain');
     expect(conduct).toContain('clinician asked to architect software');
+    expect(conduct).toContain('OUT-OF-SCOPE RESPONSE');
+    expect(conduct).toContain('Do NOT call knowledge_base_search');
+    expect(conduct).toContain("That's outside my lane");
+    expect(conduct).toContain('BOUNDARY CHALLENGE');
+    expect(conduct).toContain("You're right — that was outside my lane");
+    expect(conduct).toContain('KNOWLEDGE RETRIEVAL (DOMAIN-GATED)');
+    expect(conduct).toContain('If out-of-domain');
   });
 });

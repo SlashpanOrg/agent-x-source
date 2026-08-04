@@ -130,7 +130,7 @@ export function ComposerMentionMenu({
       .then((sources: KnowledgeSource[]) => {
         if (cancelled) return;
         const mapped = sources
-          .filter((s) => s.status === 'ready' || s.status === 'indexing' || s.status === 'embedding')
+          .filter((s) => !s.parentId && (s.status === 'ready' || s.status === 'indexing' || s.status === 'embedding'))
           .map((s) => ({ sourceId: s.id, name: s.name, mimeType: s.mimeType }));
         setKbSources(mapped);
       })

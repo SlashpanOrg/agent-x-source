@@ -55,11 +55,15 @@ export function mapCallHistoryMessages(
       });
     }
 
+    const speakerName = typeof (m.metadata as Record<string, unknown> | undefined)?.speakerName === 'string'
+      ? (m.metadata as Record<string, unknown>).speakerName as string
+      : null;
     lines.push({
       id,
       role,
       text: cleaned.length > maxLen ? `${cleaned.slice(0, maxLen)}…` : cleaned,
       at,
+      speakerName,
     });
   }
   return lines;

@@ -27,8 +27,11 @@ export type {
 } from './VoiceAssetManifest.js';
 export { VoiceService } from './VoiceService.js';
 export type { VoiceServiceOptions, VoiceSynthesizeOptions, VoiceTranscribeFileOptions, VoiceStreamSynthesizeResult } from './VoiceService.js';
+export { SpeakerStore } from './SpeakerStore.js';
+export type { SpeakerIdentificationResult } from './SpeakerStore.js';
+export { SpeakerService } from './SpeakerService.js';
 export { VoiceSession } from './VoiceSession.js';
-export type { VoiceSessionOptions, VoiceSessionState } from './VoiceSession.js';
+export type { VoiceSessionOptions, VoiceSessionState, VoiceSessionSpeaker } from './VoiceSession.js';
 export { VoiceProgressSession } from './VoiceProgressSession.js';
 export type { VoiceProgressStage } from './VoiceProgressSession.js';
 export { shouldSpeakVoiceAckFiller } from './voiceFillerPolicy.js';

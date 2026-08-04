@@ -64,6 +64,19 @@
           "assets": ["kokoro-v1.0.onnx", "voices-v1.0.bin"]
         }
       ]
+    },
+    {
+      "id": "speechbrain-ecapa",
+      "tier": "download",
+      "kind": "speaker-model",
+      "target": "models/speaker/speechbrain-ecapa",
+      "displayName": "SpeechBrain ECAPA (voiceprint)",
+      "sizeMB": 45,
+      "license": "Apache-2.0",
+      "sha256": null,
+      "sources": [
+        { "type": "hf", "repo": "speechbrain/spkrec-ecapa-voxceleb", "revision": "main", "allowPatterns": ["*.ckpt", "*.yaml", "*.yml", "*.txt", "*.json", "*.pt", "*.pth", "*.bin", "*.safetensors"] }
+      ]
     }
   ]
 }

@@ -17,7 +17,7 @@ export interface UseKnowledgeBaseReturn {
   reprocess: (id: string) => Promise<KnowledgeSource>;
   scrape: (url: string, sessionId?: string, follow?: { followLinks?: boolean; maxDepth?: number; maxLinks?: number }) => Promise<KnowledgeSource>;
   scan: (url: string, sessionId?: string, maxLinks?: number) => Promise<UrlScanResult>;
-  scrapeRefs: (urls: string[], sessionId?: string, opts?: { maxDepth?: number; maxLinks?: number }) => Promise<string>;
+  scrapeRefs: (urls: string[], sessionId?: string, opts?: { maxDepth?: number; maxLinks?: number; rootUrl?: string }) => Promise<string>;
   pauseBatch: (batchId: string) => Promise<void>;
   resumeBatch: (batchId: string) => Promise<void>;
   cancelBatch: (batchId: string) => Promise<void>;
@@ -100,7 +100,7 @@ export function useKnowledgeBase(sessionId?: string): UseKnowledgeBaseReturn {
     return await knowledgeBase.scan(url, sessionId, maxLinks);
   }, []);
 
-  const scrapeRefs = useCallback(async (urls: string[], sessionId?: string, opts?: { maxDepth?: number; maxLinks?: number }) => {
+  const scrapeRefs = useCallback(async (urls: string[], sessionId?: string, opts?: { maxDepth?: number; maxLinks?: number; rootUrl?: string }) => {
     const result = await knowledgeBase.scrapeRefs(urls, sessionId, opts);
     return result.batchId;
   }, []);

@@ -9,13 +9,14 @@ import DialogContent from '@mui/material/DialogContent';
 import MicIcon from '@mui/icons-material/Mic';
 import MicOffIcon from '@mui/icons-material/MicOff';
 import PublicIcon from '@mui/icons-material/Public';
+import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
 import ShieldIcon from '@mui/icons-material/Shield';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 import FiberNewIcon from '@mui/icons-material/FiberNew';
-import { colors, alphaColor, MONO } from '../../theme';
+import { colors, alphaColor, MONO, getActiveScheme } from '../../theme';
 import { useVoiceOptional, useVoiceCommsOptional } from './VoiceProvider';
 import { voiceDisabledReason } from '../../voice/support';
-import { CommsSpinner } from './CommsSpinner';
+import { ThinkingOrb } from 'thinking-orbs';
 import { VoiceParticleField, type ParticlePhase } from './VoiceParticleField';
 import { VoiceTranscriptPanel } from './VoiceTranscriptPanel';
 import { voice as voiceApi, providers as providersApi, models as modelsApi, modelBenchmark, sessions as sessionsApi } from '../../api';
@@ -48,11 +49,13 @@ export function VoiceAgentCard({
   onPhaseChange,
   searchWeb,
   bypassChip,
+  voiceprintEnabled,
 }: {
   onActiveChange?: (active: boolean) => void;
   onPhaseChange?: (phase: ParticlePhase) => void;
   searchWeb: boolean;
   bypassChip: boolean;
+  voiceprintEnabled?: boolean;
 }) {
   const voiceCtx = useVoiceOptional();
   const commsCtx = useVoiceCommsOptional();
@@ -92,9 +95,9 @@ export function VoiceAgentCard({
   // Push toggle state to backend
   useEffect(() => {
     if (voiceActive && sessionReady && comms) {
-      comms.session.setToggles({ searchWeb, bypassChip });
+      comms.session.setToggles({ searchWeb, bypassChip, voiceprintEnabled });
     }
-  }, [voiceActive, sessionReady, searchWeb, bypassChip, comms]);
+  }, [voiceActive, sessionReady, searchWeb, bypassChip, voiceprintEnabled, comms]);
 
   // Derive button phase — connecting stays blue; thinking is orange only after a turn.
   const phase: ButtonPhase = useMemo(() => {
@@ -271,9 +274,9 @@ export function VoiceAgentCard({
               }}
             >
               {phase === 'connecting' ? (
-                <CommsSpinner color={colors.accent.blue} size={26} />
+                <ThinkingOrb state='connecting' size={64} theme={getActiveScheme() === 'dark' ? 'dark' : 'light'} style={{ width: 26, height: 26 }} />
               ) : phase === 'thinking' ? (
-                <CommsSpinner color={colors.accent.orange} size={26} />
+                <ThinkingOrb state='working' size={64} theme={getActiveScheme() === 'dark' ? 'dark' : 'light'} style={{ width: 26, height: 26 }} />
               ) : phase === 'disabled' ? (
                 <MicOffIcon sx={{ fontSize: 24, color: colors.text.dim, opacity: 0.5 }} />
               ) : phase === 'recording' ? (
@@ -327,6 +330,7 @@ export function VoiceAgentCard({
 
       <VoiceTranscriptPanel
         liveUser={liveUser}
+        liveUserLabel={comms?.session.speakerName}
         liveAgent={liveAgent}
         refreshToken={transcriptRefresh}
         agentLabel={personaName}
@@ -486,13 +490,17 @@ export function VoiceToggleChip({
 export function VoiceAgentHeaderToggles({
   searchWeb,
   bypassChip,
+  voiceprintEnabled,
   onSearchWebChange,
   onBypassChipChange,
+  onVoiceprintEnabledChange,
 }: {
   searchWeb: boolean;
   bypassChip: boolean;
+  voiceprintEnabled: boolean;
   onSearchWebChange: (v: boolean) => void;
   onBypassChipChange: (v: boolean) => void;
+  onVoiceprintEnabledChange: (v: boolean) => void;
 }) {
   return (
     <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
@@ -502,6 +510,13 @@ export function VoiceAgentHeaderToggles({
         activeColor={colors.accent.blue}
         onClick={() => onSearchWebChange(!searchWeb)}
         title={searchWeb ? 'Web search enabled' : 'Enable web search'}
+      />
+      <VoiceToggleChip
+        icon={<RecordVoiceOverIcon sx={{ fontSize: 13 }} />}
+        active={voiceprintEnabled}
+        activeColor={colors.accent.blue}
+        onClick={() => onVoiceprintEnabledChange(!voiceprintEnabled)}
+        title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'}
       />
       <VoiceToggleChip
         icon={<ShieldIcon sx={{ fontSize: 13 }} />}
@@ -524,13 +539,17 @@ export function VoiceAgentHeaderToggles({
 export function VoiceAgentHeaderControls({
   searchWeb,
   bypassChip,
+  voiceprintEnabled,
   onSearchWebChange,
   onBypassChipChange,
+  onVoiceprintEnabledChange,
 }: {
   searchWeb: boolean;
   bypassChip: boolean;
+  voiceprintEnabled: boolean;
   onSearchWebChange: (v: boolean) => void;
   onBypassChipChange: (v: boolean) => void;
+  onVoiceprintEnabledChange: (v: boolean) => void;
 }) {
   const [configuredProviders, setConfiguredProviders] = useState<ConfiguredProvider[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -691,6 +710,13 @@ export function VoiceAgentHeaderControls({
         activeColor={colors.accent.blue}
         onClick={() => onSearchWebChange(!searchWeb)}
         title={searchWeb ? 'Web search enabled' : 'Enable web search'}
+      />
+      <VoiceToggleChip
+        icon={<RecordVoiceOverIcon sx={{ fontSize: 13 }} />}
+        active={voiceprintEnabled}
+        activeColor={colors.accent.blue}
+        onClick={() => onVoiceprintEnabledChange(!voiceprintEnabled)}
+        title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'}
       />
       <VoiceToggleChip
         icon={<ShieldIcon sx={{ fontSize: 13 }} />}

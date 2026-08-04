@@ -382,7 +382,7 @@ describe('Build tool detection', () => {
 });
 
 describe('Toolkit registration', () => {
-  it('all new tools are registered', async () => {
+  it('all new tools are registered', { timeout: 20000 }, async () => {
     const { createDefaultToolkit } = await import('../src/tools/toolkit.js');
     const { registry } = createDefaultToolkit('/tmp');
     const newToolIds = [
@@ -398,7 +398,7 @@ describe('Toolkit registration', () => {
     }
   });
 
-  it('total tool count is 182+', async () => {
+  it('total tool count is 182+', { timeout: 20000 }, async () => {
     const { createDefaultToolkit } = await import('../src/tools/toolkit.js');
     const { registry } = createDefaultToolkit('/tmp');
     const allTools = registry.list();

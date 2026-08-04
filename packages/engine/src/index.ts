@@ -185,7 +185,7 @@ export {
 } from './neural/retrieval/index.js';
 
 
-export { UserChatMemoryIngester, USER_PROFILE_TAG, shouldExtractUserChatMemory } from './neural/UserChatMemoryIngester.js';
+export { UserChatMemoryIngester, USER_PROFILE_TAG } from './neural/UserChatMemoryIngester.js';
 export type { UserChatMemoryFact } from './neural/UserChatMemoryIngester.js';
 export { ChatTurnMemoryIngester, CHAT_MEMORY_TAG } from './neural/ChatTurnMemoryIngester.js';
 export { backfillChatMemoryFromSessions } from './neural/ChatHistoryMemoryBackfill.js';

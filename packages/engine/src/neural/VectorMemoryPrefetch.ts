@@ -20,6 +20,8 @@ export interface VectorMemoryPrefetchOptions {
   queryEmbedding?: number[];
   /** Skip graph expand (tests / nested calls). */
   skipExpand?: boolean;
+  /** Voice speaker id to boost (not filter) matching provenance in results. */
+  speakerId?: string | null;
 }
 
 export interface VectorMemoryPrefetchResult {
@@ -88,21 +90,41 @@ export async function vectorMemoryPrefetch(
     return next.slice(0, Math.min(keep, rerankKeep));
   };
 
-  let vector = rankKeep(
-    await retrieveCandidates(fabric, embedding, query, {
-      limit: vectorLimit,
-      overFetch,
-      ...(isSuper ? {} : { sessionId: options.sessionId }),
-    }),
-    vectorLimit,
+  /** Boost matching speaker nodes to the top without removing any candidate. */
+  function boostSpeakerMatches(nodes: MemoryNode[], speaker?: string | null): MemoryNode[] {
+    if (!speaker) return nodes;
+    return [...nodes].sort((a, b) => {
+      const aMatch = a.provenance?.speakerId === speaker ? 1 : 0;
+      const bMatch = b.provenance?.speakerId === speaker ? 1 : 0;
+      return bMatch - aMatch;
+    });
+  }
+
+  const speakerId = options.speakerId;
+
+  let vector = boostSpeakerMatches(
+    rankKeep(
+      await retrieveCandidates(fabric, embedding, query, {
+        limit: vectorLimit,
+        overFetch,
+        ...(isSuper ? {} : { sessionId: options.sessionId }),
+      }),
+      vectorLimit,
+    ),
+    speakerId,
   );
 
   if (!options.skipExpand && vector.length) {
-    vector = await expandEvidenceNeighborhood(fabric, vector, {
-      mode: 'both',
-      minScore: minRelevance,
-    });
-    vector = rankKeep(vector, vectorLimit).slice(0, injectKeep);
+    vector = boostSpeakerMatches(
+      rankKeep(
+        await expandEvidenceNeighborhood(fabric, vector, {
+          mode: 'both',
+          minScore: minRelevance,
+        }),
+        vectorLimit,
+      ),
+      speakerId,
+    ).slice(0, injectKeep);
   } else {
     vector = vector.slice(0, injectKeep);
   }
@@ -115,7 +137,10 @@ export async function vectorMemoryPrefetch(
         sessionId: null,
       })
     : [];
-  const userProfile = rankKeep(userProfileRaw, userProfileLimit).slice(0, Math.min(userProfileLimit, injectKeep));
+  const userProfile = boostSpeakerMatches(
+    rankKeep(userProfileRaw, userProfileLimit).slice(0, Math.min(userProfileLimit, injectKeep)),
+    speakerId,
+  );
 
   let episodic: MemoryNode[] = [];
   if (options.sessionId) {
@@ -124,18 +149,21 @@ export async function vectorMemoryPrefetch(
       semanticLimit: 0,
       graphDepth: 0,
     });
-    episodic = assembled.episodic.slice(0, episodicLimit);
+    episodic = boostSpeakerMatches(assembled.episodic.slice(0, episodicLimit), speakerId);
   }
 
-  const chatScopedRaw = isSuper
-    ? []
-    : await retrieveCandidates(fabric, embedding, query, {
-        limit: vectorLimit,
-        overFetch,
-        tag: CHAT_MEMORY_TAG,
-        sessionId: options.sessionId,
-      });
-  const chatScoped = rankKeep(chatScopedRaw, vectorLimit).slice(0, injectKeep);
+  // Super sessions can also search chat_memory globally (session-scoped NULL) so the
+  // agent can recall exact prior turns, not just extracted user-profile facts.
+  const chatScopedRaw = await retrieveCandidates(fabric, embedding, query, {
+    limit: vectorLimit,
+    overFetch,
+    tag: CHAT_MEMORY_TAG,
+    sessionId: isSuper ? null : options.sessionId,
+  });
+  const chatScoped = boostSpeakerMatches(
+    rankKeep(chatScopedRaw, vectorLimit).slice(0, injectKeep),
+    speakerId,
+  );
 
   const seen = new Set<string>();
   const all: MemoryNode[] = [];

@@ -25,6 +25,36 @@ import {
   formatEnsureError,
 } from './setup.js';
 
+const PASSAGE_FALLBACK = 'The quick brown fox jumps over the lazy dog.';
+
+const PASSAGES = [
+  'The morning sun rose over the quiet village, painting the hills in shades of gold. A gentle breeze carried the scent of fresh bread through the narrow streets. Children laughed as they chased one another toward the old stone bridge.',
+  'Maya opened the book and let the story carry her across the sea. Waves crashed against the cliffs while gulls cried overhead. She imagined the salty air and the creak of wooden sails in the wind.',
+  'The garden was full of colour after the spring rain. Bright tulips stood beside the fence while bees moved from bloom to bloom. A small cat watched from the porch, perfectly still in the sunlight.',
+  'Every Sunday, Leo walked to the market to buy fresh fruit and strong coffee. The vendors called out their best prices as music played from a nearby corner. He always stopped to listen for a little while.',
+  'A single red balloon floated above the crowd in the town square. Families gathered near the fountain, eating ice cream and sharing stories. The clock tower chimed three, and the pigeons scattered into the sky.',
+  'The train rolled through green fields and past sleepy villages. Passengers dozed beside foggy windows while the conductor checked tickets with a friendly nod. Outside, sheep moved slowly across the hillside.',
+  'Nora set her easel beneath the oak tree and mixed her favourite blue. The lake shimmered in the distance, bordered by tall reeds and wildflowers. She painted until the light became too soft to trust.',
+  'The bakery smelled of cinnamon, sugar, and warm dough. An old clock ticked above the counter as the baker arranged croissants on a wooden tray. Customers chatted quietly while rain tapped the window.',
+  'High in the mountains, the air was clean and cold. Hikers followed a narrow trail between pine trees and over rocky streams. Each step revealed a wider view of the valley far below.',
+  'The library was silent except for the turning of pages. Dust drifted through the tall windows, catching the afternoon light. Somewhere in the stacks, a chair scraped softly against the wooden floor.',
+  'Jamie sat on the dock and dangled his feet above the still water. Dragonflies hovered and darted among the reeds. He could hear the distant hum of a motorboat and the call of a loon.',
+  'Autumn leaves crunched beneath her boots as she walked the forest path. The trees wore crowns of orange, red, and yellow. A squirrel paused on a branch, watching her with bright, curious eyes.',
+  'The café was small and warm, with soft music and the clink of cups. Outside, snow began to fall, slowly covering the bicycles parked along the street. She wrapped her hands around her mug and smiled.',
+  'Omar pushed his bicycle along the winding coastal road. The ocean stretched out to the horizon, bright and endless. Seagulls wheeled above the cliffs, their cries lost in the sound of the waves.',
+  'The kitchen filled with the rich smell of garlic, tomatoes, and fresh basil. Grandmother stirred the sauce while the pasta pot bubbled beside her. Everyone knew dinner would be late, and no one minded.',
+  'Stars appeared one by one as the village lights went out. A dog barked somewhere in the distance, then stopped. The night was cool and clear, perfect for walking beneath the moon.',
+  'Elena found an old map in the attic, folded inside a leather envelope. Faint lines marked rivers, forests, and a village that no longer appeared on modern charts. She wondered what stories it still held.',
+  'The workshop smelled of sawdust and oil. Tools hung in neat rows on the wall, each one worn by years of careful work. A radio played quietly in the corner while he sanded the edge of a chair.',
+  'Rain filled the streets with shallow puddles that reflected the neon signs. People hurried past under umbrellas, their footsteps splashing in rhythm. A bus stopped with a hiss, and the doors folded open.',
+  'The lighthouse beam swept across the dark water in slow, steady turns. Below, the waves rolled against the rocks with a sound older than memory. A ship moved along the horizon, small and patient.',
+];
+
+function pickRandomPassage(): { text: string; fallback?: boolean } {
+  const text = PASSAGES[Math.floor(Math.random() * PASSAGES.length)] ?? PASSAGE_FALLBACK;
+  return { text };
+}
+
 function pickVoiceGreetingFallback(callsign: string, agentName: string): string {
   const fallbacks = callsign
     ? [
@@ -258,6 +288,15 @@ function createVoiceRoutesRouter(): Router {
     }
   });
 
+  router.post('/voice/passage', async (_req, res) => {
+    res.json(pickRandomPassage());
+  });
+
+  router.post('/voice/passage/stream', async (_req, res) => {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(pickRandomPassage().text);
+  });
+
   router.post('/voice/greeting', async (req, res) => {
     try {
       const engine = getEngine();
@@ -402,6 +441,154 @@ function createVoiceRoutesRouter(): Router {
       return res.status(400).json({ valid: false, error: `xAI API returned ${response.status}: ${raw.slice(0, 200)}` });
     } catch (error) {
       return res.status(500).json({ valid: false, error: error instanceof Error ? error.message : 'xAI validation failed' });
+    }
+  });
+
+  router.get('/voice/speakers', async (_req, res) => {
+    try {
+      const client = await getVoiceSidecarManager().start();
+      const result = await client.speakerList();
+      res.json({ profiles: result.profiles });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to list voiceprints' });
+    }
+  });
+
+  router.post('/voice/speakers', async (req, res) => {
+    const name = String(req.body?.name ?? '').trim();
+    const pcmBase64 = typeof req.body?.pcmBase64 === 'string' ? req.body.pcmBase64 : '';
+    const isRoot = req.body?.isRoot === true;
+    const sampleRate = typeof req.body?.sampleRate === 'number' ? req.body.sampleRate : 16_000;
+    const profileId = typeof req.body?.profileId === 'string' ? req.body.profileId : undefined;
+    if (!pcmBase64) {
+      return res.status(400).json({ error: 'pcmBase64 is required' });
+    }
+    if (!profileId && !name) {
+      return res.status(400).json({ error: 'name is required for a new profile' });
+    }
+    try {
+      const client = await getVoiceSidecarManager().start();
+      const result = await client.speakerEnroll({ name, pcm: pcmBase64, sampleRate, isRoot, profileId });
+      res.json({ profile: result.profile });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to enroll voiceprint' });
+    }
+  });
+
+  router.post('/voice/speakers/:id/root', async (req, res) => {
+    const profileId = String(req.params.id ?? '');
+    if (!profileId) {
+      return res.status(400).json({ error: 'profileId is required' });
+    }
+    try {
+      const client = await getVoiceSidecarManager().start();
+      const result = await client.speakerSetRoot({ profileId });
+      res.json({ profile: result.profile });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to set root voiceprint' });
+    }
+  });
+
+  router.patch('/voice/speakers/:id', async (req, res) => {
+    const profileId = String(req.params.id ?? '');
+    const name = String(req.body?.name ?? '').trim();
+    if (!profileId) {
+      return res.status(400).json({ error: 'profileId is required' });
+    }
+    if (!name) {
+      return res.status(400).json({ error: 'name is required' });
+    }
+    try {
+      const { getVoiceService } = await import('../voice-runtime.js');
+      const profile = await getVoiceService().updateSpeaker(profileId, name);
+      res.json({ profile });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to update voiceprint' });
+    }
+  });
+
+  router.delete('/voice/speakers/:id', async (req, res) => {
+    const profileId = String(req.params.id ?? '');
+    if (!profileId) {
+      return res.status(400).json({ error: 'profileId is required' });
+    }
+    try {
+      const client = await getVoiceSidecarManager().start();
+      const result = await client.speakerDelete({ profileId });
+      res.json({ ok: result.ok });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to delete voiceprint' });
+    }
+  });
+
+  router.delete('/voice/speakers/:id/samples/:sampleId', async (req, res) => {
+    const profileId = String(req.params.id ?? '');
+    const sampleId = String(req.params.sampleId ?? '');
+    if (!profileId || !sampleId) {
+      return res.status(400).json({ error: 'profileId and sampleId are required' });
+    }
+    try {
+      const { getVoiceService } = await import('../voice-runtime.js');
+      const ok = await getVoiceService().deleteSpeakerSample(profileId, sampleId);
+      res.json({ ok });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to delete sample' });
+    }
+  });
+
+  router.post('/voice/speakers/identify', async (req, res) => {
+    const pcmBase64 = typeof req.body?.pcmBase64 === 'string' ? req.body.pcmBase64 : '';
+    const sampleRate = typeof req.body?.sampleRate === 'number' ? req.body.sampleRate : 16_000;
+    const threshold = typeof req.body?.threshold === 'number' ? req.body.threshold : 0.55;
+    if (!pcmBase64) {
+      return res.status(400).json({ error: 'pcmBase64 is required' });
+    }
+    try {
+      const client = await getVoiceSidecarManager().start();
+      const result = await client.speakerIdentify({ pcm: pcmBase64, sampleRate, threshold });
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to identify speaker' });
+    }
+  });
+
+  router.post('/voice/speakers/reset', async (_req, res) => {
+    try {
+      const { getVoiceService } = await import('../voice-runtime.js');
+      const ok = await getVoiceService().resetSpeakers();
+      res.json({ ok });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to reset voiceprints' });
+    }
+  });
+
+  router.post('/voice/speakers/:id/re-record', async (req, res) => {
+    const profileId = String(req.params.id ?? '');
+    const pcmBase64 = typeof req.body?.pcmBase64 === 'string' ? req.body.pcmBase64 : '';
+    if (!profileId) {
+      return res.status(400).json({ error: 'profileId is required' });
+    }
+    if (!pcmBase64) {
+      return res.status(400).json({ error: 'pcmBase64 is required' });
+    }
+    try {
+      const { getVoiceService } = await import('../voice-runtime.js');
+      const service = getVoiceService();
+      const store = service.getSpeakerService();
+      if (!store) {
+        return res.status(503).json({ error: 'Voice sidecar not ready' });
+      }
+      const existing = (await store.list()).find((p) => p.id === profileId);
+      if (!existing) {
+        return res.status(404).json({ error: 'Speaker not found' });
+      }
+      const pcm = Buffer.from(pcmBase64, 'base64');
+      const wasRoot = existing.isRoot;
+      await store.delete(profileId);
+      const profile = await store.add(existing.name, pcm, 16_000, wasRoot);
+      res.json({ profile });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to re-record voiceprint' });
     }
   });
 

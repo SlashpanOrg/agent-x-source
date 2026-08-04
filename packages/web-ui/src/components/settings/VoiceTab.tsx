@@ -12,6 +12,8 @@ import MenuItem from '@mui/material/MenuItem';
 import Typography from '@mui/material/Typography';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import MicIcon from '@mui/icons-material/Mic';
+import ScienceIcon from '@mui/icons-material/Science';
+import SettingsIcon from '@mui/icons-material/Settings';
 import { voice, type VoiceCapabilityStatus, type VoiceConfig, type VoiceSetupStatus } from '../../api';
 import {
   applyVoicePreset,
@@ -26,6 +28,7 @@ import { markVoiceOutputUnlocked } from '../../voice/support';
 import { useVoiceWarmupSupported, useSystemCapabilities, useCapabilitiesReady } from '../../hooks/useSystemCapabilities';
 import {
   useAllVoiceAssetDownloads,
+  startVoiceAssetDownload,
 } from '../../hooks/useVoiceAssetDownloads';
 import {
   settingsBtnGhostSx,
@@ -40,6 +43,9 @@ import { SettingsCard } from './SettingsCard';
 import { SettingsSectionHeader } from './SettingsSectionHeader';
 import { TtsModelRow } from './TtsModelRow';
 import { VoiceMicTestPanel } from '../VoiceMicTestPanel';
+import { SpeakerLibraryCard } from './SpeakerLibraryCard';
+import { SpoofLabModal } from './SpoofLabModal';
+import { VoiceprintConfigModal } from './VoiceprintConfigModal';
 import { useVoiceOptional } from '../voice/VoiceProvider';
 
 import { colors, alphaColor } from '../../theme';
@@ -94,6 +100,8 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
   const [xaiValidating, setXaiValidating] = useState(false);
   const [xaiStatus, setXaiStatus] = useState<'idle' | 'valid' | 'invalid'>('idle');
   const [xaiModel, setXaiModel] = useState(voiceConfig.xai?.model ?? 'grok-voice-latest');
+  const [spoofOpen, setSpoofOpen] = useState(false);
+  const [voiceprintConfigOpen, setVoiceprintConfigOpen] = useState(false);
 
   useEffect(() => {
     setXaiModel(voiceConfig.xai?.model ?? 'grok-voice-latest');
@@ -109,6 +117,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
   const sysStatus = voiceSysStatus(loading, kitReady, deploying, capabilities, engine);
   const ttsEngine = voiceConfig.tts?.engine ?? 'kokoro';
   const kokoroInstalled = installedAssetIds.has('kokoro-onnx');
+  const ecapaInstalled = installedAssetIds.has('speechbrain-ecapa');
 
   const load = useCallback(async (overrideEngine?: string) => {
     const effEngine = overrideEngine ?? engine;
@@ -190,6 +199,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
       tts: { ...voiceConfig.tts, ...patchValue.tts },
       sidecar: { ...voiceConfig.sidecar, ...patchValue.sidecar },
       fillers: { ...voiceConfig.fillers, ...patchValue.fillers },
+      speaker: { ...voiceConfig.speaker, ...patchValue.speaker },
     }));
   };
 
@@ -308,6 +318,15 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
         voiceId: 'kokoro-af',
       },
     });
+  };
+
+  const downloadAsset = async (assetId: string) => {
+    setError(null);
+    try {
+      await startVoiceAssetDownload(assetId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to start ${assetId} download`);
+    }
   };
 
   const selectVoiceProfile = async (voiceId: string) => {
@@ -822,6 +841,18 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
             onDownload={() => {}}
           />
 
+          <TtsModelRow
+            name="SpeechBrain ECAPA"
+            description="Speaker embedding model for voiceprint recognition and the Voice Prints feature."
+            sizeMB={45}
+            installed={installedAssetIds.has('speechbrain-ecapa')}
+            isDefault={false}
+            canSelect={false}
+            downloadAssetId="speechbrain-ecapa"
+            onSelect={() => {}}
+            onDownload={(assetId) => { void downloadAsset(assetId); }}
+          />
+
           <Box sx={{ mt: 2, pt: 2, borderTop: `1px solid ${settingsTheme.border.default}` }}>
             <Typography sx={{ ...settingsOverlineSx, mb: 1 }}>Voice Profile</Typography>
             {Array.from(new Set(KOKORO_VOICE_PROFILES.map((p) => p.language))).map((language) => (
@@ -969,6 +1000,31 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
             </Box>
           </Box>
         </SettingsCard>
+        )}
+
+        {engine && ecapaInstalled && (
+          <SettingsCard title="Voiceprints" subtitle="Manage voice profiles and anti-spoof tools">
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+              <Button
+                onClick={() => setSpoofOpen(true)}
+                startIcon={<ScienceIcon sx={{ fontSize: 16, color: settingsTheme.accent.hud }} />}
+                sx={{ ...settingsBtnGhostSx, fontSize: '0.62rem', py: 0.5 }}
+              >
+                Spoof Lab
+              </Button>
+              <Button
+                onClick={() => setVoiceprintConfigOpen(true)}
+                startIcon={<SettingsIcon sx={{ fontSize: 16, color: settingsTheme.text.dim }} />}
+                sx={{ ...settingsBtnGhostSx, fontSize: '0.62rem', py: 0.5 }}
+              >
+                Configure
+              </Button>
+            </Box>
+          </SettingsCard>
+        )}
+
+        {engine && (
+          <SpeakerLibraryCard ecapaInstalled={installedAssetIds.has('speechbrain-ecapa')} />
         )}
 
         <SettingsCard
@@ -1243,6 +1299,19 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
         )}
       </>
       )}
+
+      <SpoofLabModal
+        open={spoofOpen}
+        onClose={() => setSpoofOpen(false)}
+        ecapaInstalled={installedAssetIds.has('speechbrain-ecapa')}
+        threshold={voiceConfig.speaker?.identifyThreshold ?? 0.55}
+      />
+      <VoiceprintConfigModal
+        open={voiceprintConfigOpen}
+        onClose={() => setVoiceprintConfigOpen(false)}
+        voiceConfig={voiceConfig}
+        onChange={(patch) => void persistVoice({ ...voiceConfig, ...patch })}
+      />
     </Box>
   );
 }

@@ -31,7 +31,7 @@
     "react-syntax-highlighter": "^15.6.6",
     "recharts": "^2.15.4",
     "remark-gfm": "^4.0.0",
-    "thinking-orbs": "^0.1.1"
+    "thinking-orbs": "^0.2.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^7.0.0",

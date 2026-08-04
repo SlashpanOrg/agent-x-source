@@ -84,16 +84,16 @@ export function CrewCallProvider({ children }: { children: ReactNode }) {
   const callLive = phase === 'connecting' || phase === 'encoding' || phase === 'linked';
   const callModalOpen = phase !== 'idle' && !minimized;
 
-  const pushLine = useCallback((role: CrewCallTranscriptLine['role'], text: string) => {
+  const pushLine = useCallback((role: CrewCallTranscriptLine['role'], text: string, speakerName?: string | null) => {
     const raw = text.trim();
     if (!raw || CALL_EVENT_RE.test(raw)) return;
     const trimmed = role === 'system' ? raw : sanitizeVoiceDisplayText(raw);
     if (!trimmed) return;
     setTranscript((prev) => {
       const last = prev[prev.length - 1];
-      if (last && last.role === role && last.text === trimmed && !last.divider) return prev;
-      if (last && last.role === role && role !== 'system' && !last.divider && trimmed.startsWith(last.text)) {
-        return [...prev.slice(0, -1), { ...last, text: trimmed, at: Date.now() }];
+      if (last && last.role === role && last.text === trimmed && !last.divider && (last.speakerName ?? null) === (speakerName ?? null)) return prev;
+      if (last && last.role === role && role !== 'system' && !last.divider && (last.speakerName ?? null) === (speakerName ?? null) && trimmed.startsWith(last.text)) {
+        return [...prev.slice(0, -1), { ...last, text: trimmed, at: Date.now(), speakerName }];
       }
       const at = Date.now();
       const next: CrewCallTranscriptLine[] = [];
@@ -118,7 +118,7 @@ export function CrewCallProvider({ children }: { children: ReactNode }) {
           });
         }
       }
-      next.push({ id: crypto.randomUUID(), role, text: trimmed, at });
+      next.push({ id: crypto.randomUUID(), role, text: trimmed, at, speakerName });
       return [...prev, ...next].slice(-60);
     });
   }, []);
@@ -174,7 +174,7 @@ export function CrewCallProvider({ children }: { children: ReactNode }) {
       if (empty) return;
       // Operator speech ends hold/resume transcript suppression.
       suppressAgentTranscriptRef.current = false;
-      pushLine('operator', text);
+      pushLine('operator', text, comms.session.speakerName);
     },
   });
 

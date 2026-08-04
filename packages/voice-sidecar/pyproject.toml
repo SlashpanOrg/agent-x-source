@@ -8,11 +8,14 @@ dependencies = []
 [project.optional-dependencies]
 voice = [
   "faster-whisper",
-  "huggingface-hub",
+  "huggingface-hub[hf_xet]>=0.28.0",
   "kokoro-onnx",
   "silero-vad",
   "numpy",
   "soundfile",
+  "torch>=2.0.0",
+  "torchaudio>=2.0.0",
+  "speechbrain>=0.5.16",
 ]
 dev = [
   "pytest",

@@ -1,6 +1,19 @@
 import type {
   VoiceSidecarCancelRequest,
   VoiceSidecarHealth,
+  VoiceSidecarSpeakerDeleteRequest,
+  VoiceSidecarSpeakerDeleteResponse,
+  VoiceSidecarSpeakerEnrollRequest,
+  VoiceSidecarSpeakerEnrollResponse,
+  VoiceSidecarSpeakerExtractRequest,
+  VoiceSidecarSpeakerExtractResponse,
+  VoiceSidecarSpeakerIdentifyRequest,
+  VoiceSidecarSpeakerIdentifyResponse,
+  VoiceSidecarSpeakerListResponse,
+  VoiceSidecarSpeakerSetRootRequest,
+  VoiceSidecarSpeakerSetRootResponse,
+  VoiceSidecarSpeakerUpdateRequest,
+  VoiceSidecarSpeakerUpdateResponse,
   VoiceSidecarStreamSynthesizeRequest,
   VoiceSidecarStreamAudioChunk,
   VoiceSidecarStreamSynthesizeResponse,
@@ -146,6 +159,38 @@ export class VoiceSidecarClient {
 
   async cancel(request: VoiceSidecarCancelRequest): Promise<void> {
     await this.request<{ ok: boolean }>('POST', '/cancel', request, 5_000);
+  }
+
+  speakerList(): Promise<VoiceSidecarSpeakerListResponse> {
+    return this.request<VoiceSidecarSpeakerListResponse>('GET', '/speaker/profiles', undefined, 5_000);
+  }
+
+  speakerExtract(request: VoiceSidecarSpeakerExtractRequest): Promise<VoiceSidecarSpeakerExtractResponse> {
+    return this.request<VoiceSidecarSpeakerExtractResponse>('POST', '/speaker/extract', request, 30_000);
+  }
+
+  speakerIdentify(request: VoiceSidecarSpeakerIdentifyRequest): Promise<VoiceSidecarSpeakerIdentifyResponse> {
+    return this.request<VoiceSidecarSpeakerIdentifyResponse>('POST', '/speaker/identify', request, 30_000);
+  }
+
+  speakerEnroll(request: VoiceSidecarSpeakerEnrollRequest): Promise<VoiceSidecarSpeakerEnrollResponse> {
+    return this.request<VoiceSidecarSpeakerEnrollResponse>('POST', '/speaker/enroll', request, 30_000);
+  }
+
+  speakerDelete(request: VoiceSidecarSpeakerDeleteRequest): Promise<VoiceSidecarSpeakerDeleteResponse> {
+    return this.request<VoiceSidecarSpeakerDeleteResponse>('POST', '/speaker/delete', request, 5_000);
+  }
+
+  speakerDeleteSample(request: { profileId: string; sampleId: string }): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>('POST', '/speaker/delete-sample', request, 5_000);
+  }
+
+  speakerSetRoot(request: VoiceSidecarSpeakerSetRootRequest): Promise<VoiceSidecarSpeakerSetRootResponse> {
+    return this.request<VoiceSidecarSpeakerSetRootResponse>('POST', '/speaker/set-root', request, 5_000);
+  }
+
+  speakerUpdate(request: VoiceSidecarSpeakerUpdateRequest): Promise<VoiceSidecarSpeakerUpdateResponse> {
+    return this.request<VoiceSidecarSpeakerUpdateResponse>('POST', '/speaker/update', request, 5_000);
   }
 
   detectVad(

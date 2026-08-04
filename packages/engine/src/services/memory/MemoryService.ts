@@ -239,13 +239,13 @@ export class MemoryService implements IMemoryService {
     options?: ChatTurnIngestOptions,
   ): Promise<void> {
     try {
-      const { storageSessionId, contextKind } = options ?? {};
+      const { storageSessionId, contextKind, speakerId } = options ?? {};
       const resolvedStorageSessionId =
         storageSessionId ?? resolveMemoryFabricWriteSessionId(sessionId, contextKind);
       const isSuper = isMemoryFabricSuperSession(sessionId, contextKind);
 
       const promises: Promise<unknown>[] = [
-        this.chatTurnIngester.ingestTurn(userMessage, assistantResponse, sessionId, resolvedStorageSessionId),
+        this.chatTurnIngester.ingestTurn(userMessage, assistantResponse, sessionId, resolvedStorageSessionId, speakerId),
       ];
 
       if (isSuper && this.provider && this.model) {
@@ -257,7 +257,7 @@ export class MemoryService implements IMemoryService {
             this.model,
           );
         }
-        promises.push(this.userChatIngester.ingestTurn(userMessage, assistantResponse, sessionId));
+        promises.push(this.userChatIngester.ingestTurn(userMessage, assistantResponse, sessionId, speakerId));
       }
 
       await Promise.all(promises);

@@ -165,6 +165,20 @@ export class KnowledgeBaseSourceStore {
     return rows.map((r) => this.rowToSource(r));
   }
 
+  /** Return the source id plus the ids of all descendant (child) sources. */
+  async getDescendantSourceIds(id: string): Promise<string[]> {
+    const { rows } = await this.pool.query(
+      `WITH RECURSIVE descendants AS (
+        SELECT id FROM memory_sources WHERE id = $1::uuid
+        UNION ALL
+        SELECT s.id FROM memory_sources s INNER JOIN descendants d ON s.parent_id = d.id
+      )
+      SELECT id FROM descendants`,
+      [id],
+    );
+    return rows.map((r) => String(r.id));
+  }
+
   async deleteSource(id: string): Promise<void> {
     await this.pool.query(`DELETE FROM memory_sources WHERE id = $1::uuid`, [id]);
   }

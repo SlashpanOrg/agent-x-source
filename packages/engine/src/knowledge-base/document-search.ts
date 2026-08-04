@@ -53,7 +53,7 @@ export async function searchKnowledgeBaseDocuments(
   sourceStore: KnowledgeBaseSourceStore,
   query: string,
   topK = 5,
-  sourceId?: string,
+  sourceId?: string | string[],
 ): Promise<KnowledgeSearchResult[]> {
   const settings = getRetrievalSettings();
   const embedding = await embedder.embed(query);
@@ -73,9 +73,10 @@ export async function searchKnowledgeBaseDocuments(
       })
     : await fabric.vectorSearch(embedding, searchOpts);
 
+  const sourceIdSet = sourceId ? new Set(Array.isArray(sourceId) ? sourceId : [sourceId]) : null;
   let filtered = vectorHits.filter((n) => n.unitType === 'chunk' || !n.unitType);
-  if (sourceId) {
-    filtered = filtered.filter((n) => n.sourceId === sourceId);
+  if (sourceIdSet) {
+    filtered = filtered.filter((n) => sourceIdSet.has(n.sourceId ?? ''));
   }
   filtered = applyScoreGate(filtered, {
     minScore: settings.minScoreKb,
@@ -84,7 +85,13 @@ export async function searchKnowledgeBaseDocuments(
 
   // Pinned @kb source with READY chunks but weak vector match: still surface text.
   if (filtered.length === 0 && sourceId) {
-    filtered = await fallbackPinnedSourceChunks(fabric, sourceId, query, Math.min(topK, settings.injectKeep));
+    const pinnedIds = Array.isArray(sourceId) ? sourceId : [sourceId];
+    const fallbacks = await Promise.all(
+      pinnedIds.map((sid) =>
+        fallbackPinnedSourceChunks(fabric, sid, query, Math.max(1, Math.floor(Math.min(topK, settings.injectKeep) / pinnedIds.length))),
+      ),
+    );
+    filtered = fallbacks.flat();
   }
 
   if (settings.rerankEnabled) {
@@ -103,7 +110,13 @@ export async function searchKnowledgeBaseDocuments(
 
   // Second chance after expand/gate for pinned sources.
   if (filtered.length === 0 && sourceId) {
-    filtered = await fallbackPinnedSourceChunks(fabric, sourceId, query, Math.min(topK, settings.injectKeep));
+    const pinnedIds = Array.isArray(sourceId) ? sourceId : [sourceId];
+    const fallbacks = await Promise.all(
+      pinnedIds.map((sid) =>
+        fallbackPinnedSourceChunks(fabric, sid, query, Math.max(1, Math.floor(Math.min(topK, settings.injectKeep) / pinnedIds.length))),
+      ),
+    );
+    filtered = fallbacks.flat();
   }
 
   const dense: KnowledgeSearchResult[] = [];
