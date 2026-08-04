@@ -25,7 +25,7 @@ const CODE_EXTENSIONS = new Set([
   '.conf', '.json', '.md', '.txt',
 ]);
 
-const MAX_SIZE_MB = 25;
+const MAX_SIZE_MB = 10 * 1024;
 const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
 
 interface AttachmentRegistry {

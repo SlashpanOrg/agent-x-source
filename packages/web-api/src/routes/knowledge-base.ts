@@ -2,14 +2,23 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import multer from 'multer';
 import { spawn } from 'child_process';
-import type { KnowledgeSearchResult } from '@agentx/shared';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { getDataDir, type KnowledgeSearchResult } from '@agentx/shared';
 import { getKnowledgeBaseService } from '../services/knowledge-base.js';
 import { broadcastKnowledgeBaseSourceStatus } from '../ws.js';
 import type { ApiContext } from '../services/ApiService.js';
 
+const KB_UPLOAD_DIR = join(getDataDir(), 'files', 'attachments', 'temp', 'kb-uploads');
+if (!existsSync(KB_UPLOAD_DIR)) mkdirSync(KB_UPLOAD_DIR, { recursive: true });
+
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 200 * 1024 * 1024 },
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, KB_UPLOAD_DIR),
+    filename: (_req, file, cb) => cb(null, `${randomUUID()}-${file.originalname}`),
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 * 1024 },
 });
 
 export function router(_ctx: ApiContext): Router {
@@ -30,7 +39,7 @@ export function router(_ctx: ApiContext): Router {
       typeof req.body?.sessionId === 'string' ? req.body.sessionId : undefined;
     try {
       const source = await svc.uploadSource(
-        file.buffer,
+        file.path,
         file.originalname,
         file.mimetype || 'application/octet-stream',
         sessionId,

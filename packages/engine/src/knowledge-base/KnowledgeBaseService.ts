@@ -1,6 +1,6 @@
 import type { Pool } from 'pg';
 import { createHash, randomUUID } from 'node:crypto';
-import { getLogger, KnowledgeBaseOrigin, type CreateKnowledgeSourceInput, type KnowledgeSearchResult, type KnowledgeSource, type ScannedReference, type UrlScanResult, type ScrapeBatchProgress } from '@agentx/shared';
+import { getLogger, KnowledgeBaseOrigin, type CreateKnowledgeSourceInput, type KnowledgeSearchResult, type KnowledgeSource, type ScannedReference, type UrlScanResult, type ScrapeBatchProgress, type StoredAttachment } from '@agentx/shared';
 import { getAttachmentService } from '../attachments/index.js';
 import type { MemoryFabric } from '../neural/MemoryFabric.js';
 import { getEmbedderInstance, OnnxEmbeddingProvider } from '../neural/OnnxEmbeddingProvider.js';
@@ -101,18 +101,24 @@ export class KnowledgeBaseService {
     return fresh;
   }
 
-  async uploadSource(buffer: Buffer, filename: string, mimeType: string, sessionId?: string): Promise<KnowledgeSource> {
-    const attachment = await getAttachmentService().saveFromBuffer(
-      sessionId ?? 'global',
-      filename,
-      buffer,
-      mimeType,
-      'upload',
-    );
+  async uploadSource(input: Buffer | string, filename: string, mimeType: string, sessionId?: string): Promise<KnowledgeSource> {
+    const session = sessionId ?? 'global';
+    let attachment: StoredAttachment;
+    if (Buffer.isBuffer(input)) {
+      attachment = await getAttachmentService().saveFromBuffer(session, filename, input, mimeType, 'upload');
+    } else {
+      attachment = await getAttachmentService().registerAttachment({
+        sessionId: session,
+        filename,
+        originalPath: input,
+        mimeType,
+        source: 'upload',
+      });
+    }
     return this.sourceStore.insertSource({
       name: filename,
       mimeType,
-      size: buffer.length,
+      size: attachment.size,
       storageId: attachment.id,
       sessionId,
     } satisfies CreateKnowledgeSourceInput);
