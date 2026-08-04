@@ -152,9 +152,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     this.xaiUrl = baseWithQuery;
     const scopePath = getAgentFilesDir();
     this.toolService = ToolService.createDefault(scopePath);
+    const callsign = this.config.user?.callsign?.trim() || 'Root';
     this.defaultRootSpeaker = {
       id: null,
-      name: 'Root',
+      name: callsign,
       isRoot: true,
       recognized: true,
       confidence: null,
@@ -486,16 +487,20 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     const toolList = registry.list().filter((t) => t.category !== 'ai_meta' && t.category !== 'agent_meta');
     const tools = registry.toSchemas(toolList);
     // VAD threshold is 0–1 where *higher* = louder audio required (fewer false
-    // positives from speaker echo / ambient noise). 0.5 was too sensitive and
-    // randomly cut assistant playback mid-sentence during crew calls.
+    // positives from speaker echo / ambient noise). 0.72 was far too high.
+    // 0.2 catches natural conversational interruptions quickly, while the client
+    // only forwards frames above XAI_BARGE_IN_MIC_LEVEL (0.04) and triggers a
+    // local barge-in above XAI_BARGE_IN_TRIGGER_LEVEL (0.08). The short prefix /
+    // silence values keep the server turn boundary tight so playback stops and
+    // the reply starts with minimal latency.
     // interrupt_response: true cancels the in-progress response on barge-in.
     // create_response: true auto-starts a reply after the user finishes speaking.
     const turnDetection = this.mode === 'duplex'
       ? {
           type: 'server_vad',
-          threshold: 0.72,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 1000,
+          threshold: 0.2,
+          prefix_padding_ms: 50,
+          silence_duration_ms: 100,
           interrupt_response: true,
           create_response: true,
         }
@@ -1309,16 +1314,19 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   }
 
   private handleSpeechStarted(): void {
-    // Barge-in: only act when the assistant is already speaking. Ignoring
-    // speech_started during processing prevents false VAD/noise from aborting a
-    // response before any audio has been produced.
-    if (this.state !== 'speaking') return;
+    // Barge-in: act when the assistant is already generating or speaking.
+    // Ignoring speech_started outside an in-flight response prevents false
+    // VAD/noise from starting an orphan turn, while allowing aborts during the
+    // thinking/processing window before audio begins.
+    if (this.state !== 'speaking' && this.state !== 'processing') return;
+    if (!this.currentResponseId) return;
     // Ignore the first ~450ms of TTS — speaker bleed / AEC settle often fires a
     // spurious speech_started right when playback begins.
     if (this.speakingStartedAt > 0 && Date.now() - this.speakingStartedAt < 450) {
       getLogger().info('XAI_VOICE', 'Ignoring early speech_started during barge-in grace window');
       return;
     }
+    const cancelledResponseId = this.currentResponseId;
     this.currentResponseId = undefined;
     this.speakingStartedAt = 0;
     this.realtimeAudioChunks = [];
@@ -1326,9 +1334,13 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     this.realtimeRecording = true;
     void this.transport.stopPlayback();
     this.transport.sendControl({ type: 'agent_status', sessionId: this.sessionId, status: 'listening' });
-    // Do not send response.cancel — xAI realtime handles the new user audio
-    // automatically and may error on an unsupported cancel message. Old response
-    // audio deltas are ignored because currentResponseId has been cleared.
+    // xAI realtime with server VAD is supposed to cancel automatically when
+    // interrupt_response is true, but empirically the assistant often keeps
+    // talking. Send an explicit response.cancel for the current response so the
+    // server stops generating audio immediately.
+    if (cancelledResponseId) {
+      this.sendXai({ type: 'response.cancel', response_id: cancelledResponseId });
+    }
     this.assistantText = '';
     this.toolCalls = [];
     this.pendingToolCallIndex = 0;
@@ -1350,8 +1362,9 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   }
 
   private async resolveSpeaker(pcm: Buffer): Promise<void> {
+    const callsign = this.config.user?.callsign?.trim() || 'Root';
     if (!this.voiceprintEnabled) {
-      this.currentSpeaker = await getVoiceService().getRootSpeaker();
+      this.currentSpeaker = { ...this.defaultRootSpeaker, name: callsign };
       await this.refreshToolsAndSessionUpdate();
       return;
     }
@@ -1367,12 +1380,13 @@ export class XaiRealtimeSession implements VoiceEngineSession {
         this.currentSpeaker = null;
         return;
       }
+      const isRoot = result.isRoot ?? false;
       this.currentSpeaker = {
         id: result.speakerId ?? null,
-        name: result.speakerName ?? 'anonymous',
-        isRoot: result.isRoot ?? false,
+        name: isRoot ? callsign : (result.speakerName ?? 'anonymous'),
+        isRoot,
         confidence: result.confidence,
-        recognized: result.recognized,
+        recognized: true,
       };
       getLogger().info('XAI_VOICE', `Speaker identified: ${this.currentSpeaker.name} (recognized=${result.recognized}, isRoot=${result.isRoot}, confidence=${result.confidence})`);
       // Refresh instructions so xAI can address the current speaker.
@@ -1421,10 +1435,24 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   }
 
   private async handlePlaybackInterrupted(): Promise<void> {
-    // Avoid response.cancel on xAI realtime; just stop local playback and clear
-    // the user buffer. Old assistant audio deltas are dropped when the response
-    // finishes or when a new response starts.
-    this.sendXai({ type: 'input_audio_buffer.clear' });
+    // Duplex xAI: the user started talking while the assistant was speaking.
+    // Cancel the in-flight response immediately but keep the user's audio in the
+    // input buffer so xAI can transcribe/answer it. In PTT mode, the user is
+    // manually aborting an in-progress playback and has not started a new turn,
+    // so it is safe to discard any buffered user audio.
+    if (this.mode === 'duplex') {
+      const cancelledResponseId = this.currentResponseId;
+      this.currentResponseId = undefined;
+      this.speakingStartedAt = 0;
+      this.realtimeAudioChunks = [];
+      this.pendingSpeakerPromise = null;
+      this.realtimeRecording = true;
+      if (cancelledResponseId) {
+        this.sendXai({ type: 'response.cancel', response_id: cancelledResponseId });
+      }
+    } else {
+      this.sendXai({ type: 'input_audio_buffer.clear' });
+    }
     await this.transport.stopPlayback();
     this.userTranscript = '';
     this.assistantText = '';
@@ -1434,7 +1462,12 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       resolve('deny');
     }
     this.pendingPermissions.clear();
-    this.setState(this.mode === 'duplex' ? 'listening' : 'idle');
+    if (this.mode === 'duplex') {
+      this.setState('listening');
+      this.transport.sendControl({ type: 'agent_status', sessionId: this.sessionId, status: 'listening' });
+    } else {
+      this.setState('idle');
+    }
   }
 
   private handlePermissionResponse(msg: Record<string, unknown>): void {

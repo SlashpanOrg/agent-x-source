@@ -27,9 +27,33 @@ import {
 
 const PASSAGE_FALLBACK = 'The quick brown fox jumps over the lazy dog.';
 
-const PASSAGE_SYSTEM = 'You generate short, random English reading passages. You have no persona, no tools, and no knowledge of the current user. Output only the requested passage, nothing else.';
+const PASSAGES = [
+  'The morning sun rose over the quiet village, painting the hills in shades of gold. A gentle breeze carried the scent of fresh bread through the narrow streets. Children laughed as they chased one another toward the old stone bridge.',
+  'Maya opened the book and let the story carry her across the sea. Waves crashed against the cliffs while gulls cried overhead. She imagined the salty air and the creak of wooden sails in the wind.',
+  'The garden was full of colour after the spring rain. Bright tulips stood beside the fence while bees moved from bloom to bloom. A small cat watched from the porch, perfectly still in the sunlight.',
+  'Every Sunday, Leo walked to the market to buy fresh fruit and strong coffee. The vendors called out their best prices as music played from a nearby corner. He always stopped to listen for a little while.',
+  'A single red balloon floated above the crowd in the town square. Families gathered near the fountain, eating ice cream and sharing stories. The clock tower chimed three, and the pigeons scattered into the sky.',
+  'The train rolled through green fields and past sleepy villages. Passengers dozed beside foggy windows while the conductor checked tickets with a friendly nod. Outside, sheep moved slowly across the hillside.',
+  'Nora set her easel beneath the oak tree and mixed her favourite blue. The lake shimmered in the distance, bordered by tall reeds and wildflowers. She painted until the light became too soft to trust.',
+  'The bakery smelled of cinnamon, sugar, and warm dough. An old clock ticked above the counter as the baker arranged croissants on a wooden tray. Customers chatted quietly while rain tapped the window.',
+  'High in the mountains, the air was clean and cold. Hikers followed a narrow trail between pine trees and over rocky streams. Each step revealed a wider view of the valley far below.',
+  'The library was silent except for the turning of pages. Dust drifted through the tall windows, catching the afternoon light. Somewhere in the stacks, a chair scraped softly against the wooden floor.',
+  'Jamie sat on the dock and dangled his feet above the still water. Dragonflies hovered and darted among the reeds. He could hear the distant hum of a motorboat and the call of a loon.',
+  'Autumn leaves crunched beneath her boots as she walked the forest path. The trees wore crowns of orange, red, and yellow. A squirrel paused on a branch, watching her with bright, curious eyes.',
+  'The café was small and warm, with soft music and the clink of cups. Outside, snow began to fall, slowly covering the bicycles parked along the street. She wrapped her hands around her mug and smiled.',
+  'Omar pushed his bicycle along the winding coastal road. The ocean stretched out to the horizon, bright and endless. Seagulls wheeled above the cliffs, their cries lost in the sound of the waves.',
+  'The kitchen filled with the rich smell of garlic, tomatoes, and fresh basil. Grandmother stirred the sauce while the pasta pot bubbled beside her. Everyone knew dinner would be late, and no one minded.',
+  'Stars appeared one by one as the village lights went out. A dog barked somewhere in the distance, then stopped. The night was cool and clear, perfect for walking beneath the moon.',
+  'Elena found an old map in the attic, folded inside a leather envelope. Faint lines marked rivers, forests, and a village that no longer appeared on modern charts. She wondered what stories it still held.',
+  'The workshop smelled of sawdust and oil. Tools hung in neat rows on the wall, each one worn by years of careful work. A radio played quietly in the corner while he sanded the edge of a chair.',
+  'Rain filled the streets with shallow puddles that reflected the neon signs. People hurried past under umbrellas, their footsteps splashing in rhythm. A bus stopped with a hiss, and the doors folded open.',
+  'The lighthouse beam swept across the dark water in slow, steady turns. Below, the waves rolled against the rocks with a sound older than memory. A ship moved along the horizon, small and patient.',
+];
 
-const PASSAGE_PROMPT = 'Generate a simple, clean 3-4 sentence English passage (about 40-60 words) that a person can read aloud. It should be a random, self-contained statement with a variety of common sounds and words, and it should be different every time. Output only the passage, no labels, no quotes.';
+function pickRandomPassage(): { text: string; fallback?: boolean } {
+  const text = PASSAGES[Math.floor(Math.random() * PASSAGES.length)] ?? PASSAGE_FALLBACK;
+  return { text };
+}
 
 function pickVoiceGreetingFallback(callsign: string, agentName: string): string {
   const fallbacks = callsign
@@ -264,87 +288,13 @@ function createVoiceRoutesRouter(): Router {
     }
   });
 
-  async function tryGeneratePassage(): Promise<{ text: string; fallback?: boolean; error?: string }> {
-    try {
-      const engine = getEngine();
-      const config = engine.configManager.load();
-      const { createAiSdkModel } = await import('@agentx/engine');
-      const { generateText } = await import('ai');
-      const model = createAiSdkModel(config);
-      const result = await generateText({
-        model,
-        system: PASSAGE_SYSTEM,
-        prompt: PASSAGE_PROMPT,
-        temperature: 0.85,
-        maxOutputTokens: 120,
-      });
-      const passage = result.text.trim().replace(/^["']|["']$/g, '').slice(0, 300);
-      if (!passage) {
-        return { text: PASSAGE_FALLBACK, fallback: true, error: 'Model returned empty passage' };
-      }
-      return { text: passage };
-    } catch (err) {
-      return { text: PASSAGE_FALLBACK, fallback: true, error: err instanceof Error ? err.message : 'LLM unavailable' };
-    }
-  }
-
   router.post('/voice/passage', async (_req, res) => {
-    let result = await tryGeneratePassage();
-    if (result.fallback) {
-      // Cold-start retry: some providers fail the first call while the engine or model warms up.
-      await new Promise((resolve) => { setTimeout(resolve, 400); });
-      result = await tryGeneratePassage();
-    }
-    if (result.fallback) {
-      voiceError('Passage generation failed', new Error(result.error ?? 'unknown'));
-    }
-    res.json(result);
+    res.json(pickRandomPassage());
   });
 
   router.post('/voice/passage/stream', async (_req, res) => {
-    try {
-      const engine = getEngine();
-      const config = engine.configManager.load();
-      const { createAiSdkModel } = await import('@agentx/engine');
-      const { streamText, pipeTextStreamToResponse } = await import('ai');
-      const model = createAiSdkModel(config);
-      const result = streamText({
-        model,
-        system: PASSAGE_SYSTEM,
-        prompt: PASSAGE_PROMPT,
-        temperature: 0.85,
-        maxOutputTokens: 120,
-      });
-      await pipeTextStreamToResponse({
-        response: res,
-        textStream: result.textStream,
-      });
-      return;
-    } catch (err) {
-      voiceError('Passage stream failed, falling back to generateText', err);
-    }
-
-    // Fallback: if the model doesn't support streaming, generate the whole passage.
-    try {
-      const engine = getEngine();
-      const config = engine.configManager.load();
-      const { createAiSdkModel } = await import('@agentx/engine');
-      const { generateText } = await import('ai');
-      const model = createAiSdkModel(config);
-      const result = await generateText({
-        model,
-        system: PASSAGE_SYSTEM,
-        prompt: PASSAGE_PROMPT,
-        temperature: 0.85,
-        maxOutputTokens: 120,
-      });
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.send(result.text.trim().replace(/^["']|["']$/g, '').slice(0, 300) || PASSAGE_FALLBACK);
-    } catch (err) {
-      voiceError('Passage fallback generateText also failed', err);
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.status(500).send(PASSAGE_FALLBACK);
-    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(pickRandomPassage().text);
   });
 
   router.post('/voice/greeting', async (req, res) => {

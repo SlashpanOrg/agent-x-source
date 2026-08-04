@@ -1,6 +1,6 @@
 import { syncAuthTokenFromSession } from '../api';
 import { collectClientSituation } from '../client-situation.js';
-import { XAI_BARGE_IN_MIC_LEVEL } from './constants.js';
+import { XAI_BARGE_IN_MIC_LEVEL, XAI_BARGE_IN_TRIGGER_FRAMES, XAI_BARGE_IN_TRIGGER_LEVEL } from './constants.js';
 import { VOICE_SAMPLE_RATE, mergeInt16Chunks } from './pcm.js';
 import { StreamingPlayback } from './playback.js';
 import { VOICE_CAPTURE_PROCESSOR_NAME, VOICE_CAPTURE_PROCESSOR_URL } from './audioWorkletProcessor.js';
@@ -108,8 +108,10 @@ export class VoiceSessionClient {
   /** PTT: mic graph is open but not streaming until armed. */
   private micPrepared = false;
   private captureArmed = false;
-  /** Engine type from `session_ready` — drives duplex barge-in behavior. */
-  private engineType: 'stt_llm_tts' | 'realtime_xai' | undefined;
+  /** Duplex: true once client-side barge-in has fired for this speaking burst. */
+  private duplexBargeInTriggered = false;
+  /** Duplex: consecutive mic frames above the barge-in trigger level. */
+  private duplexSpeechFramesAboveTrigger = 0;
 
   constructor(options: VoiceSessionClientOptions = {}) {
     this.events = options;
@@ -160,6 +162,10 @@ export class VoiceSessionClient {
 
   private setState(state: VoiceClientState): void {
     this.state = state;
+    if (state === 'speaking') {
+      this.duplexBargeInTriggered = false;
+      this.duplexSpeechFramesAboveTrigger = 0;
+    }
     this.events.onStateChange?.(state);
   }
 
@@ -230,7 +236,6 @@ export class VoiceSessionClient {
           return;
         }
         if (msg.type === 'session_ready') {
-          this.engineType = (msg.engine as 'stt_llm_tts' | 'realtime_xai' | undefined) ?? 'stt_llm_tts';
           this.handleControl(msg);
           // Stay on ready until startListening opens the mic — avoids green
           // “listening” UI while permission is still pending.
@@ -309,14 +314,22 @@ export class VoiceSessionClient {
     }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     if (this.mode === 'duplex') {
-      // Local engine: mute mic while speaking (echo/response loops).
-      // xAI: keep streaming for barge-in, but drop soft frames so speaker bleed /
-      // ambient noise does not trip server VAD mid-playback.
+      // Duplex (both local stt_llm_tts and xAI): keep the mic open during agent
+      // playback so client-side VAD can detect user barge-in. Drop soft frames
+      // so speaker bleed and ambient noise don't trigger a false interrupt.
       if (this.state === 'speaking') {
-        if (this.engineType !== 'realtime_xai') return;
         let sum = 0;
         for (let i = 0; i < pcm.length; i += 1) sum += Math.abs(pcm[i]!);
         const level = Math.min(1, sum / Math.max(1, pcm.length) / 8000);
+        if (level >= XAI_BARGE_IN_TRIGGER_LEVEL) {
+          this.duplexSpeechFramesAboveTrigger += 1;
+        } else {
+          this.duplexSpeechFramesAboveTrigger = 0;
+        }
+        if (!this.duplexBargeInTriggered && this.duplexSpeechFramesAboveTrigger >= XAI_BARGE_IN_TRIGGER_FRAMES) {
+          this.duplexBargeInTriggered = true;
+          this.interruptPlayback();
+        }
         if (level < XAI_BARGE_IN_MIC_LEVEL) return;
       }
       this.queueDuplexAudio(pcm);
@@ -514,6 +527,13 @@ export class VoiceSessionClient {
 
   interruptPlayback(): void {
     this.stopPlayback();
+    // In duplex xAI mode, move straight to listening so mic audio keeps flowing
+    // and any late assistant audio frames are dropped by handleBinary.
+    if (this.mode === 'duplex') {
+      this.duplexBargeInTriggered = false;
+      this.duplexSpeechFramesAboveTrigger = 0;
+      this.setState('listening');
+    }
     this.ws?.send(JSON.stringify({ type: 'playback_interrupted' }));
   }
 

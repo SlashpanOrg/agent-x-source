@@ -39,6 +39,8 @@ describe('buildCrewScopeBlock', () => {
     expect(block).toContain('Neurology Educator');
     expect(block).toContain('having a tool available does NOT mean');
     expect(block.toLowerCase()).toContain('outside your field');
+    expect(block).toContain('domain boundaries: ONLY topics related to');
+    expect(block).toContain('do NOT summarize it, explain it');
   });
 });
 

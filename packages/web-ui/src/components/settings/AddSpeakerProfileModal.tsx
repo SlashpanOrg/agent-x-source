@@ -79,13 +79,9 @@ export function AddSpeakerProfileModal({ open, onClose, onSaved, profileId, prof
     voice.passage()
       .then((res) => {
         setPassage(res.text);
-        if (res.fallback) {
-          setPassageError(res.error ?? 'Using fallback passage — LLM not available.');
-        }
       })
       .catch(() => {
-        setPassage('The quick brown fox jumps over the lazy dog.');
-        setPassageError('Using fallback passage — LLM not available.');
+        setPassageError('Could not load a passage. Please close and try again.');
       })
       .finally(() => setPassageLoading(false));
 
@@ -313,7 +309,7 @@ export function AddSpeakerProfileModal({ open, onClose, onSaved, profileId, prof
         {(phase === 'idle' || phase === 'recording') && (
           <>
             <Typography sx={{ ...settingsHelperSx, fontSize: '0.62rem', color: settingsTheme.text.dim, mb: 1 }}>
-              {passageLoading ? 'Thinking up a new passage…' : 'Read this passage aloud to enrol your voiceprint.'}
+              {passageLoading ? 'Loading a fresh passage…' : 'Read this passage aloud to enrol your voiceprint.'}
             </Typography>
             <Box sx={{
               p: 1.25,
@@ -328,29 +324,30 @@ export function AddSpeakerProfileModal({ open, onClose, onSaved, profileId, prof
               justifyContent: 'center',
               gap: 1,
             }}>
-              {passageLoading && (
+              {passageLoading ? (
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <ThinkingOrb
                     state="working"
                     size={20}
                     theme={getActiveScheme() === 'dark' ? 'dark' : 'light'}
-                    aria-label="Thinking…"
+                    aria-label="Loading…"
                     style={{ flexShrink: 0 }}
                   />
                   <Typography sx={{ ...settingsHelperSx, fontSize: '0.6rem', color: settingsTheme.text.dim }}>
-                    Thinking…
+                    Loading a fresh passage…
                   </Typography>
                 </Box>
+              ) : (
+                <Typography sx={{
+                  ...settingsHelperSx,
+                  fontSize: '0.72rem',
+                  color: settingsTheme.text.primary,
+                  textAlign: 'center',
+                  fontStyle: 'italic',
+                }}>
+                  {passage}
+                </Typography>
               )}
-              <Typography sx={{
-                ...settingsHelperSx,
-                fontSize: '0.72rem',
-                color: settingsTheme.text.primary,
-                textAlign: 'center',
-                fontStyle: 'italic',
-              }}>
-                {passage || 'The quick brown fox jumps over the lazy dog.'}
-              </Typography>
               {passageError && (
                 <Typography sx={{ ...settingsHelperSx, fontSize: '0.55rem', color: settingsTheme.accent.amber, textAlign: 'center' }}>
                   {passageError}

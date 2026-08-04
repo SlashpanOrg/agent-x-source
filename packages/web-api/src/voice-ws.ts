@@ -554,7 +554,9 @@ async function handleVoiceMessage(ws: WebSocket, data: WebSocket.RawData, isBina
             clearTimeout(session.duplexPlaybackResetTimer);
             session.duplexPlaybackResetTimer = undefined;
           }
-          session.recording = true;
+          // Reset the local STT/VAD state so the next utterance starts clean,
+          // then open the mic to receive the barge-in audio.
+          await resetDuplexListening(session);
         }
       }
       break;
@@ -773,6 +775,16 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
   if (voiceConfig.engine === 'realtime_xai') {
     const transport = new WebSocketVoiceTransport({ ws, sessionId: voiceWsSessionId, mode, engine: 'realtime_xai' });
     const engine = new XaiRealtimeEngine();
+    // Voiceprint (speaker) identification still runs through the local sidecar even
+    // when xAI handles STT/TTS, so warm it up before the session begins.
+    try {
+      const service = getVoiceService();
+      await service.start();
+      void service.warmFillerCache();
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      getLogger().warn('VOICE', `xAI sidecar warmup failed, voiceprint unavailable: ${raw}`);
+    }
     // Apply per-crew xAI voice override if this is a crew call with a profile.
     const xaiVoiceConfig = crewXaiVoice
       ? { ...voiceConfig, xai: { ...voiceConfig.xai, voice: crewXaiVoice } }
@@ -1146,18 +1158,19 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
     }
     timings.markSttDone();
 
+    const callsign = getEngine().configManager.load().user?.callsign?.trim() || 'Root';
     if (voiceSession && session.voiceprintEnabled && speakerResult.available && speakerResult.recognized) {
+      const isRoot = speakerResult.isRoot;
       voiceSession.speaker = {
         id: speakerResult.speakerId,
-        name: speakerResult.speakerName ?? 'anonymous',
-        isRoot: speakerResult.isRoot,
+        name: isRoot ? callsign : (speakerResult.speakerName ?? 'anonymous'),
+        isRoot,
         confidence: speakerResult.confidence,
-        recognized: speakerResult.recognized,
+        recognized: true,
       };
     } else if (voiceSession && !session.voiceprintEnabled) {
-      // Voiceprint disabled: treat every speaker as the root user.
-      const root = await getVoiceService().getRootSpeaker();
-      voiceSession.speaker = root ?? { id: null, name: 'Root', isRoot: true, recognized: true, confidence: null };
+      // Voiceprint disabled: treat every speaker as the root user and use the configured callsign.
+      voiceSession.speaker = { id: null, name: callsign, isRoot: true, recognized: true, confidence: null };
     } else if (voiceSession) {
       // Voiceprint enabled but the match fell below the threshold: send no speaker.
       voiceSession.speaker = undefined;
@@ -1326,6 +1339,8 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
     const voiceExtractor = new VoiceBlockStreamExtractor();
     const speakPipeline = new VoiceStreamSpeakPipeline(async (unit) => {
       if (session.textOnlyPlayback) return;
+      // If a barge-in already cleared session.speaking, do not start/continue new TTS units.
+      if (!session.speaking && firstSpeakStatusSent) return;
       const t0 = Date.now();
       if (!firstSpeakStatusSent) {
         firstSpeakStatusSent = true;

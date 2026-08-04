@@ -122,17 +122,28 @@ function ephemeralCrewFromRecruitPayload(r: Record<string, unknown>): Crew {
 function resolveOrRecruitCrew(body: {
   crewId?: string;
   recruit?: Record<string, unknown>;
+  persistRecruit?: boolean;
 }): Crew {
   const eng = getEngine();
 
   const r = body.recruit;
   if (r?.['name'] && r?.['systemPrompt']) {
     const callsign = (r['callsign'] as string) || String(r['name']).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
-    const existing = eng.crewManager.list().find((c) => c.callsign.toLowerCase() === callsign.toLowerCase());
+    const existing = eng.crewManager.list().find((c) => c.callsign.toLowerCase() === callsign.toLowerCase())
+      ?? eng.crewManager.list().find((c) => c.id === (r['id'] as string | undefined));
     if (existing) return existing;
 
-    // Private crew chat: use hub identity without persisting to the global roster.
-    return ephemeralCrewFromRecruitPayload(r);
+    const crew = ephemeralCrewFromRecruitPayload(r);
+    if (!body.persistRecruit) return crew;
+
+    // Voice calls should land on the roster so "call again" from the call
+    // history can resolve by crewId instead of failing with crew-not-found.
+    try {
+      return eng.crewManager.create(crew as unknown as import('@agentx/shared').CrewCreateInput);
+    } catch (err) {
+      getLogger().warn('CREW_CHAT', `Failed to persist recruited crew ${crew.id}: ${err instanceof Error ? err.message : String(err)} — using ephemeral`);
+      return crew;
+    }
   }
 
   if (body.crewId) {
@@ -231,14 +242,21 @@ export async function postCrewChatVoiceSession(req: Request, res: Response): Pro
     }
 
     const recruit = body.recruit ? await enrichRecruitFromCatalog(body.recruit) : undefined;
-    let crew: Crew;
+    let crew: Crew | undefined;
     if (body.crewId || recruit) {
-      crew = resolveOrRecruitCrew({ crewId: body.crewId, recruit });
-      if (textSession?.hostCrewId && textSession.hostCrewId !== crew.id) {
-        res.status(400).json({ error: 'text-session-crew-mismatch' });
-        return;
+      try {
+        crew = resolveOrRecruitCrew({ crewId: body.crewId, recruit, persistRecruit: true });
+      } catch {
+        // The provided crewId may point to an ephemeral hub crew that was not
+        // persisted. If we have a matching text session, rebuild from the host
+        // snapshot instead of failing the call.
+        if (!textSession?.hostCrewId || (body.crewId && textSession.hostCrewId !== body.crewId)) {
+          throw new Error('crew-not-found');
+        }
       }
-    } else if (textSession?.hostCrewId) {
+    }
+
+    if (!crew && textSession?.hostCrewId) {
       try {
         crew = resolveOrRecruitCrew({ crewId: textSession.hostCrewId });
       } catch {
@@ -260,8 +278,14 @@ export async function postCrewChatVoiceSession(req: Request, res: Response): Pro
           updatedAt: textSession.updatedAt,
         };
       }
-    } else {
+    }
+
+    if (!crew) {
       res.status(400).json({ error: 'crewId-or-recruit-or-textSessionId-required' });
+      return;
+    }
+    if (textSession?.hostCrewId && textSession.hostCrewId !== crew.id) {
+      res.status(400).json({ error: 'text-session-crew-mismatch' });
       return;
     }
 

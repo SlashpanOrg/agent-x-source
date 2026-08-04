@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import base64
+import logging
 import re
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
+
+_LOGGER = logging.getLogger(__name__)
 
 
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
@@ -36,7 +39,7 @@ class KokoroTts:
         started = time.perf_counter()
         kokoro = self._load()
         voice_id = str(request.get("voiceId") or "kokoro-af")
-        kokoro_voice = _map_voice_id(voice_id)
+        kokoro_voice = _resolve_voice_id(kokoro, voice_id)
 
         try:
             import numpy as np
@@ -45,7 +48,7 @@ class KokoroTts:
             raise RuntimeError("numpy and soundfile are required for Kokoro synthesis.") from exc
 
         samples, sample_rate = kokoro.create(
-            text, voice=kokoro_voice, speed=1.0, lang="en-us"
+            text, voice=kokoro_voice, speed=1.0, lang="en"
         )
         sf.write(output_path, samples, sample_rate)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -65,7 +68,7 @@ class KokoroTts:
         kokoro = self._load()
         t_load = time.perf_counter()
         voice_id = str(request.get("voiceId") or "kokoro-af")
-        kokoro_voice = _map_voice_id(voice_id)
+        kokoro_voice = _resolve_voice_id(kokoro, voice_id)
 
         first_chunk_at = None
         chunk_index = 0
@@ -74,7 +77,7 @@ class KokoroTts:
                 break
             t_synth = time.perf_counter()
             samples, sample_rate = kokoro.create(
-                sentence, voice=kokoro_voice, speed=1.0, lang="en-us"
+                sentence, voice=kokoro_voice, speed=1.0, lang="en"
             )
             pcm = _float_audio_to_pcm16(samples)
             t_emit = time.perf_counter()
@@ -115,14 +118,48 @@ class KokoroTts:
         return self.pipeline
 
 
-_KOKORO_VOICE_MAP = {
+_KOKORO_VOICE_ALIASES = {
     # Legacy alias — keep for backward compatibility with existing configs
     "kokoro-af": "af_heart",
+    "default": "af_heart",
 }
 
 
-def _map_voice_id(voice_id: str) -> str:
-    return _KOKORO_VOICE_MAP.get(voice_id, voice_id)
+def _resolve_voice_id(kokoro: Any, voice_id: str) -> str:
+    """Map aliases and ensure the requested voice exists in the loaded voices.bin.
+
+    Voice profiles can be set dynamically (per-crew, per-callsign, or via settings).
+    If the requested voice is not available in the installed model, fall back to
+    `af_heart` or the first available voice so TTS never aborts mid-turn.
+    """
+    requested = voice_id.strip().lower()
+    canonical = _KOKORO_VOICE_ALIASES.get(requested, requested)
+
+    # Prefer case as returned by kokoro_onnx, but do a case-insensitive membership check
+    # because config/UI values may differ in casing.
+    available = getattr(kokoro, "voices", None) or []
+    by_lower = {str(v).lower(): str(v) for v in available}
+
+    if canonical in by_lower:
+        return by_lower[canonical]
+
+    if canonical != requested:
+        _LOGGER.warning(
+            "Kokoro voice %r (alias for %r) is not available in voices.bin; "
+            "falling back to the bundled default voice.",
+            voice_id,
+            canonical,
+        )
+
+    fallback = by_lower.get("af_heart") or (available[0] if available else "af_heart")
+    _LOGGER.warning(
+        "Kokoro voice %r is not available in voices.bin; "
+        "falling back to %r. Available voices: %s",
+        voice_id,
+        fallback,
+        ", ".join(str(v) for v in available[:10]) + ("..." if len(available) > 10 else ""),
+    )
+    return fallback
 
 
 def _split_sentences(text: str) -> list[str]:

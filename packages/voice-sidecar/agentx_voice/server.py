@@ -9,6 +9,7 @@ from collections import deque
 from typing import Any, Literal
 from urllib.parse import urlparse, parse_qs
 import base64
+import logging
 
 from agentx_voice import __version__
 from agentx_voice.protocol import SidecarConfig, health_payload
@@ -17,6 +18,8 @@ from agentx_voice.speaker_store import SpeakerStore
 from agentx_voice.stt_faster_whisper import FasterWhisperStt
 from agentx_voice.tts_kokoro import KokoroTts
 from agentx_voice.vad_silero import SileroVad
+
+_LOGGER = logging.getLogger(__name__)
 
 TtsEngine = Literal["kokoro"]
 
@@ -288,12 +291,18 @@ class VoiceRequestHandler(BaseHTTPRequestHandler):
         self.send_header("transfer-encoding", "chunked")
         self.end_headers()
 
-        for chunk in chunks_iter:
-            line = json.dumps(chunk).encode("utf-8")
-            self.wfile.write(f"{len(line):x}\r\n".encode("ascii"))
-            self.wfile.write(line)
-            self.wfile.write(b"\r\n")
-            self.wfile.flush()
+        try:
+            for chunk in chunks_iter:
+                line = json.dumps(chunk).encode("utf-8")
+                self.wfile.write(f"{len(line):x}\r\n".encode("ascii"))
+                self.wfile.write(line)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+        except Exception as exc:
+            _LOGGER.error("TTS stream failed: %s", exc, exc_info=True)
+            # Headers are already sent and the body is chunked, so we can only
+            # terminate the stream cleanly. The client will get zero chunks and
+            # close without a misleading 30-second abort timeout.
 
         self.wfile.write(b"0\r\n\r\n")
         self.wfile.flush()

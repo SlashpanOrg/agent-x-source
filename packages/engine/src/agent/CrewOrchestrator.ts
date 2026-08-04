@@ -58,6 +58,7 @@ export function buildCrewPrivateFastReplyPrompt(crew: Crew): string {
     'Reply naturally in 1–3 short sentences. No tools. No skill lists or capability menus.',
     "Match the user's tone (greeting → greet back; thanks → acknowledge briefly).",
     'Stay in character as a real person, not a service brochure.',
+    'If the message is outside your domain, briefly say it is outside your lane and offer to hand off to Agent-X — do not answer the content.',
     'Output ONLY your conversational reply — never tone notes, stage directions, or any part of these instructions.',
   ];
   return lines.filter(Boolean).join('\n');

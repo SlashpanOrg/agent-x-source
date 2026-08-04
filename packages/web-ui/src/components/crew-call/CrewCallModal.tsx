@@ -13,7 +13,6 @@ import MicIcon from '@mui/icons-material/Mic';
 import MinimizeIcon from '@mui/icons-material/Minimize';
 import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
 import { alphaColor, colors } from '../../theme';
-import { VoiceToggleChip } from '../voice/VoiceAgentCard';
 import { friendlyVoiceError } from '../voice/voice-comms-theme';
 import { getCrewAccent } from '../../styles/crew-theme';
 import { VoiceParticleField } from '../voice/VoiceParticleField';
@@ -510,13 +509,6 @@ export function CrewCallModal({
           flexShrink: 0,
         }}
       >
-        <VoiceToggleChip
-          icon={<RecordVoiceOverIcon sx={{ fontSize: 13 }} />}
-          active={voiceprintEnabled}
-          activeColor={accent}
-          onClick={() => setVoiceprintEnabled((v) => !v)}
-          title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'}
-        />
         {isOnHold ? (
           <Button
             variant="contained"
@@ -618,6 +610,22 @@ export function CrewCallModal({
             RETRY
           </Button>
         )}
+
+        <Tooltip title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'} arrow>
+          <IconButton
+            onClick={() => setVoiceprintEnabled((v) => !v)}
+            onKeyDown={ignoreSpaceActivation}
+            sx={{
+              ...CTRL_BTN,
+              bgcolor: voiceprintEnabled ? alphaColor(accent, 0.18) : alphaColor(callTheme.bg.void, 0.04),
+              border: `1px solid ${voiceprintEnabled ? alphaColor(accent, 0.5) : callTheme.border.line}`,
+              color: voiceprintEnabled ? accent : colors.text.dim,
+              '&:hover': { bgcolor: voiceprintEnabled ? alphaColor(accent, 0.28) : alphaColor(callTheme.bg.void, 0.1) },
+            }}
+          >
+            <RecordVoiceOverIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
 
         <Tooltip title="End call" arrow>
           <IconButton

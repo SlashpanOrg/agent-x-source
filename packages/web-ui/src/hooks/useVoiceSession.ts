@@ -64,6 +64,7 @@ export function useVoiceSession(
   const [turnPipeline, setTurnPipeline] = useState<VoiceTurnPipeline>('idle');
   const [pttReady, setPttReady] = useState(false);
   const pttTurnLockedRef = useRef(false);
+  const agentTurnCompleteRef = useRef(false);
   const timerRef = useRef<number | null>(null);
   const pushToTalkActiveRef = useRef(false);
   const pttCaptureActiveRef = useRef(false);
@@ -129,6 +130,10 @@ export function useVoiceSession(
     setTurnPipeline('idle');
     setPttReady(Boolean(clientRef.current?.isPttReady()));
   }, []);
+
+  useEffect(() => {
+    agentTurnCompleteRef.current = agentTurnComplete;
+  }, [agentTurnComplete]);
 
   const syncPttReady = useCallback(() => {
     setPttReady(Boolean(clientRef.current?.isPttReady()));
@@ -281,8 +286,20 @@ export function useVoiceSession(
         onPlaybackIdle: () => {
           setPlaybackActive(false);
           setPlaybackLevel(0);
-          setTurnPipeline('idle');
-          if (pttTurnLockedRef.current) unlockPttTurn();
+          if (agentTurnCompleteRef.current) {
+            // Turn is finished — unlock PTT so the user can start a new turn.
+            setTurnPipeline('idle');
+            if (pttTurnLockedRef.current) unlockPttTurn();
+          } else if (pttTurnLockedRef.current) {
+            // Audio stopped but the turn is still in flight (filler gap, buffering).
+            // Keep the PTT locked and stay in a thinking state so the UI doesn't
+            // flip back to "Hold Space to speak" while the agent is still working.
+            setTurnPipeline((prev) => (
+              prev === 'llm_processing' ? 'llm_processing' : 'agent_thinking'
+            ));
+          } else {
+            setTurnPipeline('idle');
+          }
         },
         onRecordingDiscarded: (reason) => {
           unlockPttTurn();
