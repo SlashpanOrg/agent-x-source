@@ -50,6 +50,7 @@ export function buildManifestFromCategories(
       traits: string[];
       tools?: string[];
       tags?: string[];
+      certifications?: string[];
     }>;
   }>,
   revision = 1,
@@ -75,6 +76,7 @@ export function buildManifestFromCategories(
       traits: crew.traits,
       tools: crew.tools,
       tags: crew.tags,
+      certifications: crew.certifications,
       searchText: buildCrewSearchText({
         name: crew.name,
         title: crew.title,
@@ -85,6 +87,7 @@ export function buildManifestFromCategories(
         traits: crew.traits,
         tools: crew.tools,
         tags: crew.tags,
+        certifications: crew.certifications,
         systemPrompt: crew.systemPrompt,
       }),
     })),

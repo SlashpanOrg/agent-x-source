@@ -287,3 +287,10 @@ export type {
   TraceExportBundle,
 } from './types/observability.js';
 export type { MetricSample, ObservabilityDomain } from './types/telemetry.js';
+
+// Turn modes — needed by web-ui TurnModeChip component
+export type { ThinkingMode, OutputMode } from './types/turn-mode.js';
+export {
+  THINKING_MODE_LABELS,
+  OUTPUT_MODE_LABELS,
+} from './types/turn-mode.js';

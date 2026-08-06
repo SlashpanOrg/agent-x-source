@@ -435,6 +435,17 @@ export function createAiSdkStreamHandler(
               timestamp: Date.now(),
             });
 
+            // Emit tool_executing so the UI shows the tool running during live stream.
+            // Without this, tool activity only appears after a hard-refresh (from DB parts).
+            emit({
+              type: 'tool_executing',
+              tool: toolName,
+              description: `Executing ${toolName}`,
+              startTime: Date.now(),
+              args,
+              callId: toolCallId,
+            });
+
             onSessionEvent?.({ type: 'tool_called', sessionId, sequence: ++sequence, timestamp: Date.now(), payload: { tool: toolName, callId: toolCallId, args } });
           } catch (e) {
             console.error('[AI_SDK_HANDLER] Error processing tool-call event:', e, 'event:', event);
@@ -448,7 +459,7 @@ export function createAiSdkStreamHandler(
             const toolName = event.toolName || 'unknown-tool';
             const toolCallId = event.toolCallId || 'unknown-id';
             let output = '';
-            
+
             if (event.result === null || event.result === undefined) {
               output = '(no output)';
             } else if (typeof event.result === 'string') {
@@ -456,7 +467,7 @@ export function createAiSdkStreamHandler(
             } else {
               output = JSON.stringify(event.result);
             }
-            
+
             persist({
               type: 'tool-result',
               toolName,
@@ -466,11 +477,22 @@ export function createAiSdkStreamHandler(
               timestamp: Date.now(),
             });
 
+            // Emit tool_complete so the UI shows the tool result during live stream.
+            // Without this, tool results only appear after a hard-refresh (from DB parts).
+            emit({
+              type: 'tool_complete',
+              tool: toolName,
+              result: { success: true, output },
+              elapsed: 0,
+              args: {},
+              callId: toolCallId,
+            });
+
             onSessionEvent?.({ type: 'tool_result', sessionId, sequence: ++sequence, timestamp: Date.now(), payload: { tool: toolName, callId: toolCallId, success: true, output, elapsed: 0 } });
-            
+
             // ─── Enhanced: Emit detailed operation events for specific tools ───
             emitDetailedOperationEvent(emit, toolName, output);
-            
+
             const total = state.totalInputTokens + state.totalOutputTokens;
             checkContextWarning(total);
           } catch (e) {
@@ -581,6 +603,15 @@ export function createAiSdkStreamHandler(
 
        case 'tool_executing': {
          persist({ type: 'tool_executing', content: event.tool, timestamp: Date.now() });
+         // Also emit to SSE so the UI shows the tool running during live stream.
+         emit({
+           type: 'tool_executing',
+           tool: event.tool || 'unknown',
+           description: `Executing ${event.tool || 'tool'}`,
+           startTime: Date.now(),
+           args: (event.args as Record<string, unknown>) ?? {},
+           callId: (event.callId as string) ?? undefined,
+         });
          break;
        }
 
@@ -588,7 +619,7 @@ export function createAiSdkStreamHandler(
          const tool = event.tool || 'unknown';
          const result = event.result as { success: boolean; output: string } | undefined;
          const elapsed = event.elapsed || 0;
-         
+
          if (result) {
            state.toolExecutions.push({ tool, success: result.success, output: result.output, elapsed });
            persist({
@@ -597,6 +628,15 @@ export function createAiSdkStreamHandler(
              toolResult: result.output,
              toolSuccess: result.success,
              timestamp: Date.now(),
+           });
+           // Also emit to SSE so the UI shows the tool result during live stream.
+           emit({
+             type: 'tool_complete',
+             tool,
+             result: { success: result.success, output: result.output },
+             elapsed,
+             args: (event.args as Record<string, unknown>) ?? {},
+             callId: (event.callId as string) ?? undefined,
            });
          }
          break;

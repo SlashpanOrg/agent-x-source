@@ -4,9 +4,20 @@ import base64
 import logging
 import re
 import time
+import zipfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
+
+# Python 3.13+ zipfile enforces strict entry overlap checks by default, which
+# rejects some legitimate .npz voice bundle files. Force strict=False globally
+# so Kokoro's voices-v1.0.bin loads without raising a "possible zip bomb" error.
+if 'strict' in (zipfile.ZipFile.__init__.__code__.co_varnames or ()):
+    _orig_zipfile_init = zipfile.ZipFile.__init__
+    def _patched_zipfile_init(self, *args, **kwargs):
+        kwargs.setdefault('strict', False)
+        return _orig_zipfile_init(self, *args, **kwargs)
+    zipfile.ZipFile.__init__ = _patched_zipfile_init
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,7 +59,7 @@ class KokoroTts:
             raise RuntimeError("numpy and soundfile are required for Kokoro synthesis.") from exc
 
         samples, sample_rate = kokoro.create(
-            text, voice=kokoro_voice, speed=1.0, lang="en"
+            text, voice=kokoro_voice, speed=1.0, lang="en-us"
         )
         sf.write(output_path, samples, sample_rate)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -77,7 +88,7 @@ class KokoroTts:
                 break
             t_synth = time.perf_counter()
             samples, sample_rate = kokoro.create(
-                sentence, voice=kokoro_voice, speed=1.0, lang="en"
+                sentence, voice=kokoro_voice, speed=1.0, lang="en-us"
             )
             pcm = _float_audio_to_pcm16(samples)
             t_emit = time.perf_counter()

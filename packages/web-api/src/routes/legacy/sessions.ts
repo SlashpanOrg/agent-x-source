@@ -1109,6 +1109,61 @@ export function createSessionsRouter(): Router {
     }
   });
 
+  // ─── Turn mode persistence (thinking + output modes per session) ───
+  r.get('/api/sessions/:sessionId/turn-modes', (req, res) => {
+    try {
+      const sessionId = req.params['sessionId']!;
+      const eng = getEngine();
+      const record = eng.sessionManager.getStorageAdapter().getSession(sessionId);
+      if (!record) { res.status(404).json({ error: 'not-found' }); return; }
+      res.json({
+        thinkingMode: record.thinkingMode ?? 'medium',
+        outputMode: record.outputMode ?? 'moderate',
+      });
+    } catch (e: unknown) {
+      getLogger().error('GET_API_SESSIONS_TURN_MODES', e instanceof Error ? e : String(e));
+      res.status(500).json({ error: e instanceof Error ? e.message : 'turn-modes-load-failed' });
+    }
+  });
+
+  r.post('/api/sessions/:sessionId/turn-modes', (req, res) => {
+    try {
+      const sessionId = req.params['sessionId']!;
+      const body = req.body as { thinkingMode?: string; outputMode?: string };
+      const updates: { thinkingMode?: string; outputMode?: string } = {};
+      if (body.thinkingMode !== undefined) {
+        if (!['light', 'medium', 'high'].includes(body.thinkingMode)) {
+          res.status(400).json({ error: "thinkingMode must be 'light', 'medium', or 'high'" }); return;
+        }
+        updates.thinkingMode = body.thinkingMode;
+      }
+      if (body.outputMode !== undefined) {
+        if (!['brief', 'moderate', 'detailed'].includes(body.outputMode)) {
+          res.status(400).json({ error: "outputMode must be 'brief', 'moderate', or 'detailed'" }); return;
+        }
+        updates.outputMode = body.outputMode;
+      }
+      const eng = getEngine();
+      const record = eng.sessionManager.getStorageAdapter().getSession(sessionId);
+      if (!record) { res.status(404).json({ error: 'not-found' }); return; }
+      eng.sessionManager.getStorageAdapter().updateSession(sessionId, updates);
+      // Also update the in-memory agent if one is bound to this session
+      const agent = resolveSessionAgent(sessionId);
+      if (agent) {
+        if (updates.thinkingMode) agent.setCurrentThinkingMode(updates.thinkingMode as 'light' | 'medium' | 'high');
+        if (updates.outputMode) agent.setCurrentOutputMode(updates.outputMode as 'brief' | 'moderate' | 'detailed');
+      }
+      res.json({
+        thinkingMode: updates.thinkingMode ?? record.thinkingMode ?? 'medium',
+        outputMode: updates.outputMode ?? record.outputMode ?? 'moderate',
+        ok: true,
+      });
+    } catch (e: unknown) {
+      getLogger().error('POST_API_SESSIONS_TURN_MODES', e instanceof Error ? e : String(e));
+      res.status(500).json({ error: e instanceof Error ? e.message : 'turn-modes-save-failed' });
+    }
+  });
+
   r.delete('/api/sessions', (_req, res) => {
     try {
       const eng = getEngine();

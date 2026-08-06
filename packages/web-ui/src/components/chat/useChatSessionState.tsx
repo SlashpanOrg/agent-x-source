@@ -5,7 +5,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 
-import { chat, sessions, models, crews, crewSuggestions, providers, settings, permissions, sessionPermissions, markdownDocuments, modelBenchmark, type TodoItem, type SessionInfo, type Crew, type ModelInfo, type ConnectionState, type CrewSuggestionEvaluation, type CrewMatchCandidate, type IntegrationActionPreview } from '../../api';
+import { chat, sessions, models, crews, crewSuggestions, providers, settings, permissions, sessionPermissions, sessionTurnModes, markdownDocuments, modelBenchmark, type TodoItem, type SessionInfo, type Crew, type ModelInfo, type ConnectionState, type CrewSuggestionEvaluation, type CrewMatchCandidate, type IntegrationActionPreview } from '../../api';
+import type { ThinkingMode, OutputMode } from '@agentx/shared';
 import type { PrebuiltCrew } from '../crew/hub-types';
 import type { ChatInputBarHandle } from '../ChatInputBar';
 import { readWebSearchForcePreference, writeWebSearchForcePreference } from '../WebSearchGlobeToggle';
@@ -124,6 +125,45 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
   // Unified permission state
   const [bypassPermissions, setBypassPermissionsState] = useState(false);
   const [toolPermissions, setToolPermissions] = useState<Record<string, { targetPath: string | null; decision: string }>>({});
+
+  // Turn modes — thinking effort + output verbosity (persisted per session in DB)
+  const [thinkingMode, setThinkingModeState] = useState<ThinkingMode>('medium');
+  const [outputMode, setOutputModeState] = useState<OutputMode>('moderate');
+
+  // Persist thinking mode to DB and update local state
+  const setThinkingMode = useCallback((mode: ThinkingMode) => {
+    setThinkingModeState(mode);
+    const sid = currentSessionIdRef.current ?? currentSessionId;
+    if (sid) {
+      sessionTurnModes.set(sid, { thinkingMode: mode }).catch(() => { /* best-effort */ });
+    }
+  }, [currentSessionId]);
+
+  // Persist output mode to DB and update local state
+  const setOutputMode = useCallback((mode: OutputMode) => {
+    setOutputModeState(mode);
+    const sid = currentSessionIdRef.current ?? currentSessionId;
+    if (sid) {
+      sessionTurnModes.set(sid, { outputMode: mode }).catch(() => { /* best-effort */ });
+    }
+  }, [currentSessionId]);
+
+  // Restore modes from DB when session changes
+  useEffect(() => {
+    if (!currentSessionId) return;
+    let cancelled = false;
+    sessionTurnModes.get(currentSessionId).then((modes) => {
+      if (cancelled) return;
+      setThinkingModeState(modes.thinkingMode);
+      setOutputModeState(modes.outputMode);
+    }).catch(() => {
+      if (!cancelled) {
+        setThinkingModeState('medium');
+        setOutputModeState('moderate');
+      }
+    });
+    return () => { cancelled = true; };
+  }, [currentSessionId]);
 
   const fetchSessionPermissions = useCallback(async (sessionId: string) => {
     try {
@@ -809,7 +849,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
   } = useChatSend({
     messages, streaming, attachments, currentProvider, currentModel,
     isCrewPrivateSession, webSearchAvailable, webSearchForce, crewSuggestionRequested, currentSessionId,
-    coreSession,
+    coreSession, thinkingMode, outputMode,
     setMessages, setAttachments, setWarnings, setCrewList,
     setTurnActivity, setLoadingSteps, setStreaming,
     setPermissionPrompt, setPendingPermissionCount,
@@ -894,6 +934,10 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     // Unified permission state
     bypassPermissions, toolPermissions,
     setBypassPermissions, toggleBypassPermissions, revokeSessionPermissions, setToolPermission,
+
+    // Turn modes
+    thinkingMode, setThinkingMode,
+    outputMode, setOutputMode,
 
     // Dropdown anchors
     providerMenuAnchor, setProviderMenuAnchor,

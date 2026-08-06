@@ -696,7 +696,12 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
     if (msgId && prev.some((m) => m.id === msgId)) {
       const idx = prev.findIndex((m) => m.id === msgId);
       if (idx >= 0 && msg) {
-        if (isUpdate && !interactionPending) {
+        // Determine whether this message is still actively streaming.
+        // A message_updated event with no interaction pending means the turn
+        // is still in progress — keep streaming: true so the feedback card
+        // doesn't appear prematurely and the UI shows the streaming state.
+        const stillStreaming = isUpdate && !interactionPending;
+        if (stillStreaming) {
           ctx.setStreaming(true);
         } else if (interactionPending) {
           ctx.setStreaming(false);
@@ -713,7 +718,7 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
           ...prev[idx]!,
           content: text || prev[idx]!.content,
           parts: mergedParts,
-          streaming: false,
+          streaming: stillStreaming,
           ...(msg?.attachments ? { attachments: msg.attachments } : {}),
           ...(crew ? { crew } : {}),
         };
@@ -1914,6 +1919,41 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
       }).catch(() => {});
     }, 10000);
     return () => clearInterval(poll);
+  }, [streaming, endTurnUi]);
+
+  // Safety net: periodically check agent state to recover from stuck streaming states.
+  // If the last assistant message has streaming: true but no SSE events have arrived
+  // in 30s, fetch agent state and reconcile.
+  useEffect(() => {
+    const watchdog = setInterval(() => {
+      if (!streaming) return;
+      const lastActivity = lastActivityRef.current;
+      if (lastActivity && Date.now() - lastActivity > 30000) {
+        // No events for 30s while streaming — check if the agent is actually still processing
+        fetch('/api/agent/state', { credentials: 'include' })
+          .then(r => r.json())
+          .then(data => {
+            const viewSessionId = viewSessionIdRef.current;
+            if (!viewSessionId || data.session?.id !== viewSessionId) {
+              endTurnUi();
+              return;
+            }
+            if (!data.processing) {
+              // Agent is not processing but UI thinks it is — end the turn
+              setMessages(prev => {
+                const last = prev[prev.length - 1];
+                if (last?.role === 'assistant' && last.streaming) {
+                  return updateLastMessage(prev, { streaming: false });
+                }
+                return prev;
+              });
+              endTurnUi();
+            }
+          })
+          .catch(() => {});
+      }
+    }, 15000);
+    return () => clearInterval(watchdog);
   }, [streaming, endTurnUi]);
 
 }

@@ -9,6 +9,8 @@ export interface CrewSearchTextInput {
   tools?: string[];
   /** Search synonyms / alternate spellings / related skill terms. */
   tags?: string[];
+  /** Professional certifications (e.g. "AWS Certified Solutions Architect", "CPA"). */
+  certifications?: string[];
   /** Only first ~400 chars of prompt are indexed for privacy. */
   systemPrompt?: string;
 }
@@ -30,6 +32,7 @@ export function buildCrewSearchText(input: CrewSearchTextInput): string {
     ...(input.traits ?? []),
     ...(input.tools ?? []),
     ...(input.tags ?? []),
+    ...(input.certifications ?? []),
     promptSnippet,
   ]
     .join(' ')

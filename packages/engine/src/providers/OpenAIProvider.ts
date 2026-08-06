@@ -8,6 +8,7 @@ import type {
 import { apiRecordToModelInfo, DEFAULT_FALLBACK_CONTEXT_WINDOW } from '@agentx/shared';
 import type { ProviderInterface } from './ProviderInterface.js';
 import { captureResponse } from '../utils/DebugLogger.js';
+import { fetchWithRetry } from './retry.js';
 
 export class OpenAIProvider implements ProviderInterface {
   readonly id: ProviderId = 'openai';
@@ -97,6 +98,9 @@ export class OpenAIProvider implements ProviderInterface {
     if (request.maxTokens !== undefined) {
       body['max_tokens'] = request.maxTokens;
     }
+    if (request.reasoningEffort) {
+      body['reasoning_effort'] = request.reasoningEffort;
+    }
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -105,7 +109,7 @@ export class OpenAIProvider implements ProviderInterface {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
     }
 
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+    const response = await fetchWithRetry(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),

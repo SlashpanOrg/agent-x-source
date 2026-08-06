@@ -202,6 +202,10 @@ export function runAgentTurnAsync(
     speaker?: VoiceSessionSpeaker | null;
     /** Express response used to keep the HTTP parent span open until the async turn finishes. */
     res?: Response;
+    /** Thinking mode — controls tool budget, reasoning depth, retrieval. */
+    thinkingMode?: 'light' | 'medium' | 'high';
+    /** Output mode — controls response verbosity and format. */
+    outputMode?: 'brief' | 'moderate' | 'detailed';
   },
 ): void {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -353,6 +357,8 @@ export function runAgentTurnAsync(
     ...(extra?.attachments ? { attachments: extra.attachments } : {}),
     ...(extra?.todoDisposition ? { todoDisposition: extra.todoDisposition } : {}),
     ...(extra?.speaker ? { speaker: extra.speaker } : {}),
+    ...(extra?.thinkingMode ? { thinkingMode: extra.thinkingMode } : {}),
+    ...(extra?.outputMode ? { outputMode: extra.outputMode } : {}),
   })
     .then((message) => {
       turnCompleted = true;

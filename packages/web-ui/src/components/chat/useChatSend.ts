@@ -46,6 +46,8 @@ export interface UseChatSendInputs {
   crewSuggestionRequested: boolean;
   currentSessionId: string | null;
   coreSession: unknown;
+  thinkingMode: 'light' | 'medium' | 'high';
+  outputMode: 'brief' | 'moderate' | 'detailed';
   // Setters
   setMessages: React.Dispatch<React.SetStateAction<UIMessage[]>>;
   setAttachments: React.Dispatch<React.SetStateAction<FileAttachment[]>>;
@@ -77,7 +79,7 @@ export interface UseChatSendInputs {
 export function useChatSend({
   messages, streaming, attachments, currentProvider, currentModel,
   isCrewPrivateSession, webSearchAvailable, webSearchForce, crewSuggestionRequested, currentSessionId,
-  coreSession,
+  coreSession, thinkingMode, outputMode,
   setMessages, setAttachments, setWarnings, setCrewList,
   setTurnActivity, setLoadingSteps, setStreaming, setCrewSuggestionRequested,
   setPermissionPrompt, setPendingPermissionCount,
@@ -99,6 +101,8 @@ export function useChatSend({
   const webSearchForceRef = useRef(webSearchForce);
   const crewSuggestionRequestedRef = useRef(crewSuggestionRequested);
   const coreSessionRef = useRef(coreSession);
+  const thinkingModeRef = useRef(thinkingMode);
+  const outputModeRef = useRef(outputMode);
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { streamingRef.current = streaming; }, [streaming]);
@@ -112,6 +116,8 @@ export function useChatSend({
   useEffect(() => { crewSuggestionRequestedRef.current = crewSuggestionRequested; }, [crewSuggestionRequested]);
   useEffect(() => { coreSessionRef.current = coreSession; }, [coreSession]);
   useEffect(() => { currentSessionIdRef.current = currentSessionId; }, [currentSessionId]);
+  useEffect(() => { thinkingModeRef.current = thinkingMode; }, [thinkingMode]);
+  useEffect(() => { outputModeRef.current = outputMode; }, [outputMode]);
 
   const assertCanSendAttachments = useCallback((): boolean => {
     const hasImage = attachmentsRef.current.some((a) => isImageMimeType(a.mimeType));
@@ -327,6 +333,8 @@ export function useChatSend({
         clientSituation,
         crewSuggestionRequestedRef.current,
         options?.todoDisposition,
+        thinkingModeRef.current,
+        outputModeRef.current,
       );
       // One-shot: reset the crew suggestion toggle after the request is dispatched.
       if (crewSuggestionRequestedRef.current) {
@@ -487,7 +495,7 @@ export function useChatSend({
 
     try {
       const clientSituation = await collectClientSituation();
-      const result = await chat.send(sanitizeForJson(text), undefined, true, undefined, undefined, undefined, undefined, undefined, undefined, undefined, clientSituation);
+      const result = await chat.send(sanitizeForJson(text), undefined, true, undefined, undefined, undefined, undefined, undefined, undefined, undefined, clientSituation, undefined, undefined, thinkingModeRef.current, outputModeRef.current);
       if (result?.turnId) activeTurnIdRef.current = result.turnId;
       if (result?.async) return;
       setMessages(prev => {
@@ -750,7 +758,7 @@ export function useChatSend({
     const fileRefs = attachmentRefs.length > 0 ? attachmentRefs : undefined;
     setAttachments([]);
     try {
-      const result = await chat.stopAndSend(cleaned, fileRefs);
+      const result = await chat.stopAndSend(cleaned, fileRefs, thinkingModeRef.current, outputModeRef.current);
       if (result?.turnId) activeTurnIdRef.current = result.turnId;
       if (result?.async) return;
       if (result?.message) {
@@ -798,7 +806,7 @@ export function useChatSend({
     const fileRefs = attachmentRefs.length > 0 ? attachmentRefs : undefined;
     setAttachments([]);
     try {
-      const result = await chat.steer(cleaned, fileRefs);
+      const result = await chat.steer(cleaned, fileRefs, thinkingModeRef.current, outputModeRef.current);
       if (result?.turnId) activeTurnIdRef.current = result.turnId;
       if (result?.async) return;
       if (result?.message) {

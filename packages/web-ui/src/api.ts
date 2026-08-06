@@ -415,6 +415,8 @@ export const chat = {
     clientSituation?: ClientSituation,
     crewSuggestionRequested?: boolean,
     todoDisposition?: 'continue' | 'skip' | 'defer',
+    thinkingMode?: 'light' | 'medium' | 'high',
+    outputMode?: 'brief' | 'moderate' | 'detailed',
   ) =>
     postChatAsync('/chat/message', {
       text,
@@ -430,6 +432,8 @@ export const chat = {
       clientSituation,
       crewSuggestionRequested,
       ...(todoDisposition ? { todoDisposition } : {}),
+      ...(thinkingMode ? { thinkingMode } : {}),
+      ...(outputMode ? { outputMode } : {}),
     }),
 
   getTurn: (turnId: string) => request<{ turnId: string; status: string; message?: ChatMessage; error?: string; partialContent?: string }>(`/chat/turn/${turnId}`),
@@ -531,10 +535,10 @@ export const chat = {
   queue: (text: string, attachments?: TurnAttachment[]) => request<{ ok: boolean; queueLength: number }>('/chat/queue', { method: 'POST', body: JSON.stringify({ text, attachments }) }),
   getQueue: () => request<{ queue: Array<{ text: string }>; length: number }>('/chat/queue'),
   clearQueue: () => request<{ ok: boolean }>('/chat/queue', { method: 'DELETE' }),
-  steer: (text: string, attachments?: TurnAttachment[]) =>
-    postChatAsync('/chat/steer', { text, attachments }),
-  stopAndSend: (text: string, attachments?: TurnAttachment[]) =>
-    postChatAsync('/chat/stop-and-send', { text, attachments }),
+  steer: (text: string, attachments?: TurnAttachment[], thinkingMode?: 'light' | 'medium' | 'high', outputMode?: 'brief' | 'moderate' | 'detailed') =>
+    postChatAsync('/chat/steer', { text, attachments, ...(thinkingMode ? { thinkingMode } : {}), ...(outputMode ? { outputMode } : {}) }),
+  stopAndSend: (text: string, attachments?: TurnAttachment[], thinkingMode?: 'light' | 'medium' | 'high', outputMode?: 'brief' | 'moderate' | 'detailed') =>
+    postChatAsync('/chat/stop-and-send', { text, attachments, ...(thinkingMode ? { thinkingMode } : {}), ...(outputMode ? { outputMode } : {}) }),
 };
 
 // ─── Attachments ───
@@ -714,6 +718,17 @@ export const sessionPermissions = {
     request<{ bypassPermissions: boolean; ok: boolean }>(`/sessions/${sessionId}/permissions/revoke`, { method: 'POST' }),
   setTool: (sessionId: string, toolName: string, decision: 'allow_always' | 'deny' | 'revoke') =>
     request<{ ok: boolean }>(`/sessions/${sessionId}/permissions/tool`, { method: 'POST', body: JSON.stringify({ toolName, decision }) }),
+};
+
+export interface SessionTurnModes {
+  thinkingMode: 'light' | 'medium' | 'high';
+  outputMode: 'brief' | 'moderate' | 'detailed';
+}
+
+export const sessionTurnModes = {
+  get: (sessionId: string) => request<SessionTurnModes>(`/sessions/${sessionId}/turn-modes`),
+  set: (sessionId: string, updates: Partial<SessionTurnModes>) =>
+    request<SessionTurnModes & { ok: boolean }>(`/sessions/${sessionId}/turn-modes`, { method: 'POST', body: JSON.stringify(updates) }),
 };
 
 export const settingsPermissions = {

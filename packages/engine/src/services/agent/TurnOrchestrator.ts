@@ -7,6 +7,8 @@ import {
   estimatePromptTokens,
   ContextBudgetExceededError,
   deniesAutonomousCrewTools,
+  THINKING_MODE_REASONING_EFFORT,
+  OUTPUT_MODE_MAX_TOKENS,
 } from '@agentx/shared';
 import { streamText, stepCountIs } from 'ai';
 import { ConcurrencyLimiter } from '../../concurrency/ConcurrencyLimiter.js';
@@ -210,8 +212,15 @@ export class TurnOrchestrator implements ITurnOrchestrator {
         abortSignal,
       );
 
+      // ─── Turn mode: override reasoning effort from thinking mode ───
+      const modeReasoningEffort = THINKING_MODE_REASONING_EFFORT[this.host.currentThinkingMode];
+      const effectiveReasoningEffort = modeReasoningEffort ?? this.host.config.provider.activeReasoningEffort;
+      // ─── Turn mode: output mode caps max output tokens ───
+      const modeMaxTokens = OUTPUT_MODE_MAX_TOKENS[this.host.currentOutputMode];
+      const effectiveMaxOutputTokens = modeMaxTokens > 0 ? Math.min(turnMaxOutputTokens, modeMaxTokens) : turnMaxOutputTokens;
+
       // Log tool setup for debugging
-      getLogger().info('AGENT', `Starting streamText with ${toolCount} tools, model: ${this.host.config.provider.activeModel}, maxOutputTokens: ${turnMaxOutputTokens}`);
+      getLogger().info('AGENT', `Starting streamText with ${toolCount} tools, provider: ${this.host.config.provider.activeProvider}, model: ${this.host.config.provider.activeModel}, reasoningEffort: ${effectiveReasoningEffort ?? '(default)'} (mode: ${this.host.currentThinkingMode}), maxOutputTokens: ${effectiveMaxOutputTokens}`);
 
       let stepCapContinuations = 0;
       const stepBudget = this.host.completionStepBudget();
@@ -219,7 +228,7 @@ export class TurnOrchestrator implements ITurnOrchestrator {
       const googleProviderOptions = this.host.config.provider.activeProvider === 'google'
         ? buildGoogleAiSdkProviderOptions(
           this.host.config.provider.activeModel,
-          this.host.config.provider.activeReasoningEffort,
+          effectiveReasoningEffort,
         )
         : undefined;
       const result = streamText({
@@ -228,8 +237,8 @@ export class TurnOrchestrator implements ITurnOrchestrator {
         tools,
         abortSignal,
         maxRetries: 2,
-        maxOutputTokens: turnMaxOutputTokens,
-        stopWhen: ({ steps }) => steps.length >= stepLimit(),
+        maxOutputTokens: effectiveMaxOutputTokens,
+        stopWhen: ({ steps }) => steps.length >= Math.min(stepLimit(), this.host.modeStepCap),
         toolChoice: 'auto',
         ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
         prepareStep: async ({ stepNumber, messages }) => {

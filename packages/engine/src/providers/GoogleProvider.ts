@@ -1,5 +1,6 @@
 import type { CompletionRequest, CompletionChunk, CompletionToolCall, ModelInfo, ProviderId } from '@agentx/shared';
 import type { ProviderInterface } from './ProviderInterface.js';
+import { fetchWithRetry } from './retry.js';
 import {
   GEMINI_OPENAI_BASE,
   listGeminiModels,
@@ -82,7 +83,7 @@ export class GoogleProvider implements ProviderInterface {
       body['reasoning_effort'] = request.reasoningEffort;
     }
 
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+    const response = await fetchWithRetry(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.apiKey}`,

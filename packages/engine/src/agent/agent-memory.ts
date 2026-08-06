@@ -28,6 +28,30 @@ export interface MemoryContextContext {
   usesCompactContext(): boolean;
   setMemoryContextNodeIds(ids: string[]): void;
   speakerId?: string | null;
+  /** When true, skip retrieval entirely (voice continuation, retry, non-RAG turn). */
+  skipRetrieval?: boolean;
+}
+
+/** Small-talk / acknowledgement patterns that never need RAG retrieval. */
+const SMALL_TALK_PATTERNS = /^(thanks?|thank you|ok|okay|cool|nice|great|got it|sounds good|perfect|sure|yes|no|nope|yep|yeah|nah|stop|continue|go on|keep going|please|alright|roger|acknowledged|understood|done|finished|bye|goodbye|see you|talk later)\b[!.?]*$/i;
+
+/**
+ * Cheap heuristic: determine whether the turn needs RAG retrieval at all.
+ * Returns true if retrieval SHOULD run, false to skip entirely (O(1) for non-RAG turns).
+ */
+function shouldRetrieve(query: string, skipRetrievalFlag?: boolean): boolean {
+  if (skipRetrievalFlag) return false;
+  const trimmed = query.trim();
+  if (!trimmed) return false;
+  // Pure small-talk / acknowledgements → no retrieval needed.
+  if (SMALL_TALK_PATTERNS.test(trimmed)) return false;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  // Very short messages with no question words and no technical nouns → skip.
+  if (words.length < 5) {
+    const hasQuestionWord = words.some((w) => /^(what|how|why|where|when|who|which|whose|whom)$/i.test(w));
+    if (!hasQuestionWord) return false;
+  }
+  return true;
 }
 
 function packNodes(
@@ -64,7 +88,16 @@ export async function buildMemoryContext(ctx: MemoryContextContext): Promise<{ e
     const rawQuery = typeof lastUser?.content === 'string' ? lastUser.content : '';
     if (!rawQuery) return { episodic: '', semantic: '', graph: '' };
 
+    // Fast-path: skip retrieval entirely for non-RAG turns (small-talk, acknowledgements, etc.).
+    // This makes non-RAG turns O(1) regardless of memory fabric size.
+    if (!shouldRetrieve(rawQuery, ctx.skipRetrieval)) {
+      ctx.setMemoryContextNodeIds([]);
+      return { episodic: '', semantic: '', graph: '' };
+    }
+
+    const t0 = performance.now();
     const query = await ctx.reformulateQuery(rawQuery);
+    const tReformulate = performance.now();
     const memorySessionId = ctx.sessionId;
     const isSuper = isMemoryFabricSuperSession(memorySessionId, ctx.options.contextKind);
 
@@ -78,6 +111,7 @@ export async function buildMemoryContext(ctx: MemoryContextContext): Promise<{ e
       minRelevance: settings.minScoreMemory,
       speakerId: ctx.speakerId,
     });
+    const tPrefetch = performance.now();
 
     // Reuse the same query embedding for KB chunk search (one embed per turn).
     let chunkNodes: MemoryNode[] = [];
@@ -115,6 +149,7 @@ export async function buildMemoryContext(ctx: MemoryContextContext): Promise<{ e
         maxPerSource: settings.maxChunksPerSource,
       }).slice(0, Math.min(settings.kbChunkLimit, settings.injectKeep));
     } catch { /* best-effort */ }
+    const tKbSearch = performance.now();
 
     const allNodeIds = new Set(result.all.map((m) => m.id));
     for (const cn of chunkNodes) {
@@ -164,6 +199,16 @@ export async function buildMemoryContext(ctx: MemoryContextContext): Promise<{ e
         maxChars: MAX_CHARS,
       },
     );
+
+    // Per-phase timing — surfaces bottlenecks regardless of provider.
+    const tEnd = performance.now();
+    getLogger().info('RETRIEVAL_TIMING', 'buildMemoryContext', {
+      reformulateMs: Math.round(tReformulate - t0),
+      prefetchMs: Math.round(tPrefetch - tReformulate),
+      kbSearchMs: Math.round(tKbSearch - tPrefetch),
+      packMs: Math.round(tEnd - tKbSearch),
+      totalMs: Math.round(tEnd - t0),
+    });
 
     return {
       episodic: episodicCombined,
@@ -243,11 +288,57 @@ export interface ReformulateQueryContext {
   provider: ProviderInterface;
 }
 
+/** Per-session LRU cache for reformulated queries (avoids re-calling the LLM for identical follow-ups). */
+const REFORMULATE_CACHE = new Map<string, string>();
+const REFORMULATE_CACHE_MAX = 8;
+
+/** Pronouns / deictic words that indicate the query needs context to be standalone. */
+const DEICTIC_WORDS = new Set([
+  'it', 'that', 'this', 'these', 'those', 'they', 'them', 'he', 'she', 'we',
+  'here', 'there', 'now', 'then', 'above', 'below', 'same', 'other',
+]);
+
+/** Question words that indicate the query is already a standalone question. */
+const QUESTION_WORDS = new Set([
+  'what', 'how', 'why', 'where', 'when', 'who', 'which', 'whose', 'whom',
+]);
+
+/** Hard timeout for the reformulation LLM call — never block the turn for >4s on a 150-token rewrite. */
+const REFORMULATE_TIMEOUT_MS = 4_000;
+
+/**
+ * Cheap heuristic: if the query is already standalone, skip the LLM call entirely.
+ * Returns true if the query does NOT need reformulation.
+ */
+function isStandaloneQuery(trimmed: string): boolean {
+  const words = trimmed.toLowerCase().split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
+  // Long, punctuated queries are almost always standalone.
+  if (wordCount > 30 && /[.!?]$/.test(trimmed)) return true;
+  // Questions ending with ? are standalone unless they start with a pronoun.
+  if (trimmed.endsWith('?')) {
+    const firstWord = words[0] ?? '';
+    if (!DEICTIC_WORDS.has(firstWord)) return true;
+  }
+  // If no deictic words are present and the query is reasonably long, it's standalone.
+  if (wordCount >= 5 && !words.some((w) => DEICTIC_WORDS.has(w))) return true;
+  // Question-word-starting queries with enough length are standalone.
+  if (wordCount >= 4 && QUESTION_WORDS.has(words[0] ?? '')) return true;
+  return false;
+}
+
 /**
  * Reformulate a user message into a standalone search query using conversation context.
+ * Layered optimisation: heuristic short-circuit → LRU cache → LLM call with timeout + no-reasoning.
  */
 export async function reformulateQuery(ctx: ReformulateQueryContext, rawQuery: string): Promise<string> {
   const trimmed = rawQuery.trim();
+  if (!trimmed) return trimmed;
+
+  // Layer 1: heuristic short-circuit — skip the LLM call entirely for standalone queries.
+  if (isStandaloneQuery(trimmed)) return trimmed;
+
+  // Existing compact-context heuristic path (kept for backwards compatibility).
   if (ctx.usesCompactContext()) {
     if (trimmed.length > 80) return trimmed;
     const recentUserMsgs = ctx.messages
@@ -259,7 +350,18 @@ export async function reformulateQuery(ctx: ReformulateQueryContext, rawQuery: s
     }
     return trimmed;
   }
-  if (trimmed.length > 120 && /[.!?]$/.test(trimmed)) return trimmed;
+
+  // Layer 2: per-session LRU cache — identical follow-ups reuse the last reformulation.
+  const cacheKey = `${ctx.config.provider.activeModel}:${trimmed}`;
+  const cached = REFORMULATE_CACHE.get(cacheKey);
+  if (cached) {
+    // Move to end (LRU refresh).
+    REFORMULATE_CACHE.delete(cacheKey);
+    REFORMULATE_CACHE.set(cacheKey, cached);
+    return cached;
+  }
+
+  // Existing short-query heuristic (kept for backwards compatibility).
   if (trimmed.split(/\s+/).length <= 3) {
     const recentUserMsgs = ctx.messages
       .filter((m) => m.role === 'user' && typeof m.content === 'string' && m.content.trim().length > 20)
@@ -270,6 +372,8 @@ export async function reformulateQuery(ctx: ReformulateQueryContext, rawQuery: s
     }
     if (recentUserMsgs.length === 0) return trimmed;
   }
+
+  // Layer 3: LLM call with hard timeout + reasoning_effort: 'none' (no thinking needed for a rewrite).
   try {
     const recentContext = ctx.messages
       .slice(-6)
@@ -296,12 +400,23 @@ Rules:
       temperature: 0,
       maxTokens: 150,
       stream: false,
+      reasoningEffort: 'none',
+      signal: AbortSignal.timeout(REFORMULATE_TIMEOUT_MS),
     };
     for await (const chunk of ctx.provider.complete(request)) {
       if (chunk.type === 'text_delta' && chunk.content) reformulated += chunk.content;
     }
     const cleaned = reformulated.trim().replace(/^["']|["']$/g, '');
-    return cleaned || rawQuery;
+    const result = cleaned || rawQuery;
+
+    // Layer 4: store in LRU cache.
+    if (REFORMULATE_CACHE.size >= REFORMULATE_CACHE_MAX) {
+      const oldestKey = REFORMULATE_CACHE.keys().next().value;
+      if (oldestKey) REFORMULATE_CACHE.delete(oldestKey);
+    }
+    REFORMULATE_CACHE.set(cacheKey, result);
+
+    return result;
   } catch {
     return rawQuery;
   }

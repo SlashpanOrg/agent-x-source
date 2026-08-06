@@ -35,5 +35,6 @@ export * from './knowledge-base-events.js';
 export * from './prompt-category.js';
 export * from './templates.js';
 export * from './attachments.js';
+export * from './turn-mode.js';
 export type { TurnAttachment, NormalizedAttachment } from './communication.js';
 export type { StoredAttachment, AttachmentPreview, AttachmentReference } from './attachments.js';

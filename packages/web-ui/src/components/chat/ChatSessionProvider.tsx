@@ -152,6 +152,15 @@ const BYPASS_PERMISSIONS_KEYS = [
 type BypassPermissionsKey = typeof BYPASS_PERMISSIONS_KEYS[number];
 type BypassPermissions = Pick<ChatSessionStateReturn, BypassPermissionsKey>;
 
+// ─── Turn mode keys ───
+const TURN_MODE_KEYS = [
+  'thinkingMode', 'setThinkingMode',
+  'outputMode', 'setOutputMode',
+] as const;
+
+type TurnModeKey = typeof TURN_MODE_KEYS[number];
+type TurnModes = Pick<ChatSessionStateReturn, TurnModeKey>;
+
 // ─── Sidebar keys ───
 const SIDEBAR_KEYS = [
   'tokenExpanded', 'tasksExpanded', 'missionExpanded',
@@ -192,6 +201,7 @@ const SETTER_KEYS = [
   'setProviderList', 'setModelList', 'setLoadingModels', 'setConfigLoaded',
   'setCrewList',
   'setBypassPermissions', 'toggleBypassPermissions', 'revokeSessionPermissions', 'setToolPermission',
+  'setThinkingMode', 'setOutputMode',
   'setProviderMenuAnchor', 'setModelMenuAnchor',
   'setConnState', 'setLastEventAt',
   'setSearchOpen', 'setCheckpointsOpen',
@@ -265,6 +275,7 @@ export const ChatInputGateContext = createContext<InputGate | undefined>(undefin
 export const ChatComposerContext = createContext<Composer | undefined>(undefined);
 export const ChatCrewListContext = createContext<CrewList | undefined>(undefined);
 export const ChatBypassPermissionsContext = createContext<BypassPermissions | undefined>(undefined);
+export const ChatTurnModesContext = createContext<TurnModes | undefined>(undefined);
 export const ChatSidebarContext = createContext<Sidebar | undefined>(undefined);
 export const ChatModalContext = createContext<Modal | undefined>(undefined);
 export const ChatSessionSettersContext = createContext<Setters | undefined>(undefined);
@@ -358,6 +369,11 @@ export function ChatSessionProvider({ sessionId, coreSession, children }: ChatSe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, BYPASS_PERMISSIONS_KEYS.map((k) => state[k]));
 
+  const turnModes = useMemo(() => {
+    return Object.fromEntries(TURN_MODE_KEYS.map((k) => [k, state[k]])) as TurnModes;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, TURN_MODE_KEYS.map((k) => state[k]));
+
   const sidebar = useMemo(() => {
     return Object.fromEntries(SIDEBAR_KEYS.map((k) => [k, state[k]])) as Sidebar;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -411,6 +427,7 @@ export function ChatSessionProvider({ sessionId, coreSession, children }: ChatSe
                             <ChatComposerContext.Provider value={composer}>
                               <ChatCrewListContext.Provider value={crewList}>
                                 <ChatBypassPermissionsContext.Provider value={bypassPermissions}>
+                                  <ChatTurnModesContext.Provider value={turnModes}>
                                     <ChatSidebarContext.Provider value={sidebar}>
                                       <ChatModalContext.Provider value={modal}>
                                         <ChatSessionSettersContext.Provider value={setters}>
@@ -426,6 +443,7 @@ export function ChatSessionProvider({ sessionId, coreSession, children }: ChatSe
                                         </ChatSessionSettersContext.Provider>
                                       </ChatModalContext.Provider>
                                     </ChatSidebarContext.Provider>
+                                  </ChatTurnModesContext.Provider>
                                 </ChatBypassPermissionsContext.Provider>
                               </ChatCrewListContext.Provider>
                             </ChatComposerContext.Provider>
@@ -554,6 +572,13 @@ export function useChatCrewListContext() {
 export function useChatBypassPermissionsContext() {
   const ctx = useContext(ChatBypassPermissionsContext);
   if (!ctx) throw new Error('useChatBypassPermissionsContext must be used within ChatSessionProvider');
+  return ctx;
+}
+
+/** Access turn mode state (thinking + output modes). */
+export function useChatTurnModesContext() {
+  const ctx = useContext(ChatTurnModesContext);
+  if (!ctx) throw new Error('useChatTurnModesContext must be used within ChatSessionProvider');
   return ctx;
 }
 

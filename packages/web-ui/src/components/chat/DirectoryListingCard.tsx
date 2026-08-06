@@ -118,11 +118,11 @@ function DirectoryListingCardImpl({ tool, defaultExpanded = false }: { tool: Too
 
   return (
     <Box sx={{
-      mb: 0.5,
-      border: `1px solid ${isError ? alphaColor(colors.accent.red, '30') : isRunning ? alphaColor(colors.accent.blue, '30') : colors.border.subtle}`,
-      borderRadius: 1,
+      mb: 0.25,
+      border: `1px solid ${isError ? alphaColor(colors.accent.red, '20') : isRunning ? alphaColor(colors.accent.blue, '20') : alphaColor(colors.border.subtle, '50')}`,
+      borderRadius: 0.75,
       overflow: 'hidden',
-      bgcolor: colors.bg.tertiary,
+      bgcolor: 'transparent',
       transition: 'border-color 0.2s',
     }}>
       {/* ─── Header ─── */}
@@ -131,40 +131,30 @@ function DirectoryListingCardImpl({ tool, defaultExpanded = false }: { tool: Too
         sx={{
           display: 'flex',
           alignItems: 'center',
-          gap: 0.75,
-          px: 1,
-          py: 0.5,
+          gap: 0.5,
+          px: 0.75,
+          py: 0.25,
           cursor: 'pointer',
-          bgcolor: colors.bg.secondary,
-          borderBottom: expanded ? `1px solid ${colors.border.subtle}` : 'none',
-          '&:hover': { bgcolor: colors.bg.hover },
+          bgcolor: 'transparent',
+          borderBottom: expanded ? `1px solid ${alphaColor(colors.border.subtle, '50')}` : 'none',
+          '&:hover': { bgcolor: alphaColor(colors.bg.hover, '40') },
         }}
       >
-        <Box sx={{ color: isRunning ? colors.accent.blue : isError ? colors.accent.red : colors.accent.orange, display: 'flex', alignItems: 'center' }}>
-          <FolderIcon sx={{ fontSize: 14 }} />
+        <Box sx={{ color: isRunning ? colors.accent.blue : isError ? colors.accent.red : colors.accent.orange, display: 'flex', alignItems: 'center', opacity: 0.7 }}>
+          <FolderIcon sx={{ fontSize: 12 }} />
         </Box>
 
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography sx={{
-            fontSize: '0.68rem',
+            fontSize: '0.62rem',
             fontFamily: MONO,
-            fontWeight: 600,
-            color: colors.text.primary,
+            fontWeight: 400,
+            color: colors.text.secondary,
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
           }}>
             {displayPath}
-          </Typography>
-          <Typography sx={{
-            fontSize: '0.5rem',
-            fontFamily: MONO,
-            color: colors.text.dim,
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}>
-            {tool.name}
           </Typography>
         </Box>
 
@@ -172,47 +162,42 @@ function DirectoryListingCardImpl({ tool, defaultExpanded = false }: { tool: Too
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
           {isRunning ? (
             <Typography sx={{
-              fontSize: '0.5rem',
+              fontSize: '0.48rem',
               fontFamily: MONO,
               color: colors.accent.blue,
-              fontWeight: 600,
+              fontWeight: 400,
               animation: 'agentx-pulse 1.4s ease-in-out infinite',
             }}>
               {statusLabel}
             </Typography>
           ) : isError ? (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
-              <ErrorIcon sx={{ fontSize: 12, color: colors.accent.red }} />
-              <Typography sx={{ fontSize: '0.5rem', fontFamily: MONO, color: colors.accent.red, fontWeight: 600 }}>
+              <ErrorIcon sx={{ fontSize: 10, color: colors.accent.red }} />
+              <Typography sx={{ fontSize: '0.48rem', fontFamily: MONO, color: colors.accent.red, fontWeight: 400 }}>
                 {statusLabel}
               </Typography>
             </Box>
           ) : (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
-              <CheckCircleIcon sx={{ fontSize: 12, color: colors.accent.green }} />
-              <Typography sx={{ fontSize: '0.5rem', fontFamily: MONO, color: colors.accent.green, fontWeight: 600 }}>
+              <CheckCircleIcon sx={{ fontSize: 10, color: colors.accent.green }} />
+              <Typography sx={{ fontSize: '0.48rem', fontFamily: MONO, color: colors.accent.green, fontWeight: 400 }}>
                 {statusLabel}
               </Typography>
             </Box>
           )}
           {itemCount > 0 && (
-            <Box sx={{
-              fontSize: '0.45rem',
+            <Typography sx={{
+              fontSize: '0.42rem',
               fontFamily: MONO,
               color: colors.text.dim,
-              px: 0.5,
-              py: 0.1,
-              borderRadius: 0.5,
-              bgcolor: colors.bg.tertiary,
-              border: `1px solid ${colors.border.subtle}`,
             }}>
               {itemCount} items
-            </Box>
+            </Typography>
           )}
         </Box>
 
-        <IconButton size="small" sx={{ p: 0.25, color: colors.text.dim }} onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}>
-          {expanded ? <ExpandLessIcon sx={{ fontSize: 14 }} /> : <ExpandMoreIcon sx={{ fontSize: 14 }} />}
+        <IconButton size="small" sx={{ p: 0.15, color: colors.text.dim }} onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}>
+          {expanded ? <ExpandLessIcon sx={{ fontSize: 12 }} /> : <ExpandMoreIcon sx={{ fontSize: 12 }} />}
         </IconButton>
       </Box>
 

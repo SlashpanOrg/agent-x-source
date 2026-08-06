@@ -98,6 +98,10 @@ export const chatMessageSchema = z.object({
     primaryCrewId: z.string().optional(),
   }).optional(),
   clientSituation: clientSituationSchema,
+  /** Thinking mode — controls tool budget, reasoning depth, retrieval. */
+  thinkingMode: z.enum(['light', 'medium', 'high']).optional(),
+  /** Output mode — controls response verbosity and format. */
+  outputMode: z.enum(['brief', 'moderate', 'detailed']).optional(),
 });
 
 export const crewSuggestionEvaluateSchema = z.object({
@@ -176,6 +180,8 @@ export const chatSteerSchema = z.object({
   crewIntakeFromPicker: z.boolean().optional(),
   primaryCrewId: z.string().optional(),
   clientSituation: clientSituationSchema,
+  thinkingMode: z.enum(['light', 'medium', 'high']).optional(),
+  outputMode: z.enum(['brief', 'moderate', 'detailed']).optional(),
 });
 
 export const clarificationRespondSchema = z.object({

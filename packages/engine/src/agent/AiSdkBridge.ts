@@ -786,6 +786,7 @@ export async function* aiSdkStream(
       ...(tools ? { tools, stopWhen: stepCountIs(100), toolChoice: 'auto' as const } : {}),
       temperature: 0,
       maxOutputTokens: resolveMaxOutputTokens(config.maxOutputTokens),
+      maxRetries: 2,
       abortSignal,
     });
 

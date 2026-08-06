@@ -40,8 +40,9 @@ const BENCHMARK_TOOLS = [
   },
 ];
 
-function benchmarkRequest(config: BenchmarkRunConfig, request: CompletionRequest): CompletionRequest {
-  if (config.providerId !== 'google') return request;
+function benchmarkRequest(_config: BenchmarkRunConfig, request: CompletionRequest): CompletionRequest {
+  // Force minimal reasoning for all providers unless the test explicitly opts in.
+  // The benchmark measures capability, not thinking latency.
   return { ...request, reasoningEffort: request.reasoningEffort ?? 'none' };
 }
 

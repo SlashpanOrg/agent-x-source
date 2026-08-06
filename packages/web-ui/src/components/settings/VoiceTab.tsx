@@ -475,8 +475,6 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
             onClick={() => {
               if (voiceConfig.enabled) return;
               const isXai = engine === 'realtime_xai';
-              const ready = engine === 'stt_llm_tts' ? kitReady : xaiConfigured;
-              if (!ready) return;
               void persistVoice({
                 ...voiceConfig,
                 enabled: true,

@@ -195,9 +195,15 @@ export function mergeConfigPreservingSecrets(existing: AgentXConfig, incoming: A
     const prevKey = existing.voice?.xai?.apiKey;
     const incKey = incoming.voice.xai.apiKey;
     const flag = (incoming.voice.xai as { apiKeyConfigured?: boolean }).apiKeyConfigured;
+    const raw = typeof incKey === 'string' ? incKey.trim() : '';
+    const hasNewKey = Boolean(raw) && !isLegacyRedacted(raw);
+    const explicitlyCleared = flag === false;
     let apiKey = prevKey;
-    if (flag === false) apiKey = '';
-    else if (typeof incKey === 'string' && incKey.trim() && !isLegacyRedacted(incKey)) apiKey = incKey.trim();
+    if (explicitlyCleared && !hasNewKey) {
+      apiKey = '';
+    } else if (hasNewKey) {
+      apiKey = raw;
+    }
     merged.voice = {
       ...existing.voice,
       ...incoming.voice,

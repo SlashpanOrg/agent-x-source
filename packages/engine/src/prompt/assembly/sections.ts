@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
-import type { AgentPersonaConfig, ClientSituation, SessionContextKind } from '@agentx/shared';
+import type { AgentPersonaConfig, ClientSituation, SessionContextKind, ThinkingMode, OutputMode } from '@agentx/shared';
 import { resolveClientNow, resolveClientTimezone, crewParticipationMode } from '@agentx/shared';
 import { getRetrievalSettings } from '../../neural/retrieval/settings.js';
 import type { PromptSection } from './types.js';
@@ -46,6 +46,12 @@ export interface SectionContext {
    * user message only; do not resume or completion-gate the old checklist.
    */
   areTodosDeferredThisTurn?: () => boolean;
+  /** Current bypass-permissions state — when false, the agent must ask before permission-requiring actions. */
+  bypassPermissions?: boolean;
+  /** Thinking mode for this turn — controls tool budget, reasoning depth, retrieval. */
+  thinkingMode?: ThinkingMode;
+  /** Output mode for this turn — controls response verbosity and format. */
+  outputMode?: OutputMode;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -156,8 +162,9 @@ export function createWorkingDirectorySection(ctx: SectionContext): PromptSectio
 // Rules — static behavioral rules
 // ─────────────────────────────────────────────────────────────
 
-export function createRulesSection(opts?: { technicalExecutor?: boolean }): PromptSection<string> {
+export function createRulesSection(opts?: { technicalExecutor?: boolean; bypassPermissions?: boolean }): PromptSection<string> {
   const technical = opts?.technicalExecutor === true;
+  const bypassOff = opts?.bypassPermissions === false;
   const RULES = [
     `[RULES]`,
     `AUTONOMOUS EXECUTION:`,
@@ -206,6 +213,23 @@ export function createRulesSection(opts?: { technicalExecutor?: boolean }): Prom
       `- EXCEPTION: PLAN.md and todo_write are internal planning tools — always write them without asking. They are not user-facing deliverables.`,
       `- EXCEPTION: Files inside the Agent-X app files/tmp directory used as intermediate scratch space during multi-step missions — no need to ask for those.`,
       `- When in doubt, ask. A quick "Want this as a file or in chat?" is always better than an unwanted file on the user's system.`,
+      ``,
+    ]),
+    ...(bypassOff ? [
+      `PERMISSION CONSENT (bypass mode is OFF — STRICT, NON-NEGOTIABLE):`,
+      `- Before calling ANY tool that would trigger a permission prompt (file_write, file_edit, shell_exec, web_fetch, integrations, etc.), ASK THE USER FIRST as a plain text inline question.`,
+      `- Ask naturally: "I need to [action description] to proceed. Should I go ahead?" — then STOP and wait for their next message.`,
+      `- Do NOT use ask_clarification for this — just a plain text question in your reply.`,
+      `- Do NOT call the tool preemptively and then ask. Ask first, then act on their response.`,
+      `- Do NOT plan or announce actions that require permission without first getting the user's OK inline.`,
+      `- This is NON-NEGOTIABLE. Proactive ownership does NOT override this. Never trigger a permission modal without the user's prior inline consent.`,
+      `- EXCEPTION: Read-only tools (file_read, grep, glob, web_search, git_status, code_grep, etc.) do NOT require prior consent — they don't trigger permission prompts.`,
+      `- EXCEPTION: If the user explicitly says "go ahead", "do it", "yes", "proceed", or any phrase that directly authorizes the action, proceed immediately without asking again.`,
+      ``,
+    ] : [
+      `PERMISSION CONSENT (bypass mode is ON):`,
+      `- Tool execution permissions are auto-approved. You may proceed with tool calls directly.`,
+      `- File creation consent rules above still apply — ask before creating user-facing files.`,
       ``,
     ]),
     `DELEGATION:`,
@@ -273,12 +297,14 @@ export function createRulesSection(opts?: { technicalExecutor?: boolean }): Prom
       ``,
     ]),
     `RESPONSE FORMAT:`,
-    `- Be concise unless the task requires depth. Adjust length to the task.`,
-    `- Confirmation: "Done: [what]". Error: "Failed: [why] — [fix]".`,
+    `- Lead with the answer. Never open with "Sure!", "Here's…", "Let me…", or "I'll…".`,
+    `- Be concise. One sentence for simple answers. Structure only when the reply has multiple parts.`,
+    `- Confirmation: "Done." Error: "Failed: [why] — [fix]".`,
     `- NEVER repeat what the user said. Never summarize your process. Just deliver.`,
-    `- Be thorough and complete in your domain output.`,
     `- ONLY elaborate if user asks "explain more" / "go deeper".`,
-    `- For multi-section replies in chat, follow [CHAT_MARKDOWN] formatting rules.`,
+    `- For multi-section replies, follow [CHAT_MARKDOWN] formatting rules.`,
+    `- Use tables for comparisons and structured data. Use code blocks only for code/commands.`,
+    `- Leave one blank line between sections. No decorative separators.`,
     ``,
     `CLARIFICATION (STRICT):`,
     `- Open-ended / custom-text questions → plain assistant message text. End your turn and wait for the user's reply. NEVER call ask_clarification.`,
@@ -399,6 +425,87 @@ export function createTaskStateSection(ctx: SectionContext): PromptSection<strin
 }
 
 // ─────────────────────────────────────────────────────────────
+// Turn mode — thinking effort + output verbosity for this turn
+// ─────────────────────────────────────────────────────────────
+
+export function createTurnModeSection(ctx: SectionContext): PromptSection<string> {
+  const thinking = ctx.thinkingMode ?? 'medium';
+  const output = ctx.outputMode ?? 'moderate';
+
+  const THINKING_INSTRUCTIONS: Record<ThinkingMode, string[]> = {
+    light: [
+      `THINKING: Light effort.`,
+      `- Minimal tool usage. Maximum 3 tool calls this turn.`,
+      `- Use knowledge_base_search / RAG ONLY if the user explicitly mentions a document or knowledge source. Otherwise skip retrieval.`,
+      `- Internet access is limited: use web_search with at most 1-3 sites. Do NOT use deep_web_search.`,
+      `- No reasoning effort. Answer directly from context and model knowledge.`,
+      `- If the answer is already in the conversation, use 0 tools.`,
+    ],
+    medium: [
+      `THINKING: Medium effort.`,
+      `- Moderate tool usage. Up to ~50% of available tools this turn.`,
+      `- Use RAG / knowledge_base_search when the question benefits from stored knowledge.`,
+      `- Internet access is available. web_search and deep_web_search are both allowed.`,
+      `- Moderate reasoning effort. Think through the problem, but don't over-analyze.`,
+      `- If the answer is already in conversation context, do not re-search.`,
+    ],
+    high: [
+      `THINKING: High effort.`,
+      `- Use ALL available tools as needed. No tool call limit.`,
+      `- Full TURN_JOURNEY: Memory + RAG + Internet + Self Knowledge. Leave no source unchecked.`,
+      `- Deep web search, knowledge_base_search, MCP integrations, and multi-step research are all available.`,
+      `- Reformulate queries for better retrieval. Extract memories after the turn.`,
+      `- Maximum reasoning effort. Be thorough, systematic, and exhaustive.`,
+    ],
+  };
+
+  const OUTPUT_INSTRUCTIONS: Record<OutputMode, string[]> = {
+    brief: [
+      `OUTPUT: Brief.`,
+      `- Maximum 2-3 sentences. Direct answer only.`,
+      `- No section headings, no bullet lists, no tables. Plain text.`,
+      `- Code blocks only if the user explicitly asked for code.`,
+      `- If the answer is a single word or number, give just that.`,
+      `- No source citations unless the user asks "where did you get that?".`,
+    ],
+    moderate: [
+      `OUTPUT: Moderate.`,
+      `- Max ~500 characters. One section at most.`,
+      `- Tables for structured data (comparisons, metrics). Bullet lists for 3+ items.`,
+      `- Hyperlinks for source citations. No long explanations.`,
+      `- Lead with the answer. Add context only if it changes the answer.`,
+      `- Code blocks only for code/commands.`,
+    ],
+    detailed: [
+      `OUTPUT: Detailed.`,
+      `- Full detailed output. Multiple sections, tables, code blocks, hyperlinks as needed.`,
+      `- Explain the reasoning, not just the conclusion.`,
+      `- HALLUCINATION GUARD: If you are answering from model knowledge without sources, you MUST say "Based on my knowledge (not verified with sources):" before the explanation. If you are not confident, say "I don't have enough information to answer this accurately" rather than guessing.`,
+      `- Never fabricate facts, numbers, citations, or legal provisions. If a specific detail is uncertain, mark it as uncertain.`,
+      `- Structure with ## headings. Use tables for comparisons. Use > blockquotes for key takeaways.`,
+    ],
+  };
+
+  const TURN_MODE = [
+    `[TURN_MODE]`,
+    ...THINKING_INSTRUCTIONS[thinking],
+    ``,
+    ...OUTPUT_INSTRUCTIONS[output],
+    ``,
+    `These mode instructions OVERRIDE the default RESPONSE FORMAT and CHAT_MARKDOWN rules for this turn only.`,
+    `[/TURN_MODE]`,
+  ].join('\n');
+
+  return {
+    key: 'core/turn-mode',
+    layer: 'dynamic',
+    load: () => TURN_MODE,
+    render: (text) => text,
+    diff: (prev, curr) => (prev === curr ? null : curr),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
 // Output format — universal rendering constraints
 // ─────────────────────────────────────────────────────────────
 
@@ -407,11 +514,14 @@ export function createOutputFormatSection(): PromptSection<string> {
     `[OUTPUT_FORMAT]`,
     `1. NEVER use emojis or emoji-style punctuation.`,
     `2. NEVER use Markdown horizontal rules (---, ***, or ___) inside replies.`,
-    `3. If the user gives a length limit (e.g., "max 400 characters", "≤ 50 words", "tweet"), respect it exactly. Output only the final text that fits the constraint.`,
-    `4. Use <ref_file file="..." /> and <ref_snippet file="..." lines="start-end" /> tags for file/line citations when referencing code or files.`,
-    `5. Code blocks are allowed only when code, logs, configs, or exact file contents are requested.`,
-    `6. Do not add AI signature comments (e.g., "// Added by AI", "<!-- Generated ... -->").`,
-    `7. Prefer concise, owner-ready answers. Do not narrate your process unless asked.`,
+    `3. If the user gives a length limit (e.g., "max 400 characters", "≤ 50 words", "tweet"), respect it exactly.`,
+    `4. Use <ref_file file="..." /> and <ref_snippet file="..." lines="start-end" /> tags for file/line citations.`,
+    `5. Code blocks only when code, logs, configs, or exact file contents are requested.`,
+    `6. No AI signature comments (e.g., "// Added by AI", "<!-- Generated ... -->").`,
+    `7. Lead with the answer. Concise, owner-ready. No process narration unless asked.`,
+    `8. One blank line between sections. No decorative separators or dividers.`,
+    `9. Use markdown tables for comparisons, specs, and multi-column data.`,
+    `10. Use [text](url) hyperlinks for source citations — never raw URLs.`,
     `[/OUTPUT_FORMAT]`,
   ].join('\n');
   return {
@@ -538,16 +648,23 @@ export function createCategoryOverlaySection(ctx: SectionContext): PromptSection
 }
 
 /** Short rules for compact/local model context profiles. */
-export function createCompactRulesSection(): PromptSection<string> {
+export function createCompactRulesSection(opts?: { bypassPermissions?: boolean }): PromptSection<string> {
+  const bypassOff = opts?.bypassPermissions === false;
   const RULES = [
     `[RULES]`,
     `ACT IMMEDIATELY — use tools when needed; do not narrate your process.`,
     `Non-trivial work: write PLAN.md, todo_write the checklist, execute phase-by-phase, update both as you go.`,
     `Take ownership of real-world missions (build, research, documents, plans) end-to-end; infer defaults; deliver artifacts.`,
     `FILE CONSENT: before creating/writing/editing any user-facing file, ask in chat "Want this as a file or in chat?" and wait for their answer. Do NOT use ask_clarification — plain text only. Exception: if they explicitly request a file, or it's PLAN.md/todo_write/internal scratch, proceed without asking.`,
+    ...(bypassOff ? [
+      `PERMISSION CONSENT (bypass OFF — STRICT): before calling ANY tool that triggers a permission prompt (file_write, file_edit, shell_exec, web_fetch, integrations, etc.), ASK THE USER FIRST as a plain inline question. Ask first, then act. Read-only tools (file_read, grep, glob, web_search) are exempt. If the user already said "go ahead"/"do it"/"yes", proceed without asking again. NON-NEGOTIABLE — proactive ownership does NOT override this.`,
+    ] : [
+      `PERMISSION CONSENT (bypass ON): tool execution permissions are auto-approved. Proceed with tool calls directly. File creation consent above still applies.`,
+    ]),
     `Use ask_clarification ONLY for single_choice or multi_choice. Open-ended questions → plain chat text.`,
     `Plain language by default — no code or shell unless the user asked for technical help.`,
-    `Be concise. First-person. Answer the latest user message.`,
+    `Be concise. Lead with the answer. First-person. Answer the latest user message.`,
+    `Format: one blank line between sections. Tables for comparisons. Code blocks only for code. No emojis, no --- dividers.`,
     `Follow [TURN_JOURNEY] when present: local docs → knowledge_base_search → MCP → web → model knowledge.`,
     `Live external apps and accounts use MCP integrations or public web only — never shell or filesystem search for credentials (see [THIRD_PARTY_SERVICES]).`,
     `STAY ON TARGET: every tool must advance the current [ACTIVE_TODOS] in_progress item. If stuck, ask. Do not repeat the same search/fetch.`,
@@ -747,30 +864,58 @@ export function createCrewRosterGuideSection(compact = false): PromptSection<str
 export const CHAT_MARKDOWN_PROMPT = [
   `[CHAT_MARKDOWN]`,
   `Applies ONLY to assistant messages shown to the user in chat (Web-UI, TUI, Telegram, Discord, email replies).`,
-  `Use GitHub-Flavored Markdown so the UI can render structured, readable responses:`,
-  `- Section titles: ## or ### headings — never ALL CAPS lines or rows of underscores/dashes as separators.`,
-  `- Lists: - bullets for findings; 1. numbered lists for ordered steps.`,
-  `- Tables: markdown tables for comparisons, metrics, timelines, and multi-column data.`,
-  `- Charts: when data is comparative, temporal, distributional, hierarchical, or relational, prefer a fenced \`\`\`chart JSON block. Supported types include bar, bar_horizontal, bar_grouped, bar_stacked, bar_stacked_100, line, line_multi, line_step, area, area_stacked, area_range, pie, donut, scatter, scatter_fit, bubble, heatmap, histogram, progress, radar, box, treemap, funnel, gauge, bullet, waterfall, pareto, sankey, gantt, timeline, network, slope, dumbbell, kpi_row, sparkline, error_bar, violin, candlestick, sunburst, waffle, chord, geo_points, wordcloud, parallel, circle_pack, and mermaid/sequence/state/er. Keep ≤2 series and ≤24 points unless asked. Example: \`\`\`chart\\n{"v":1,"type":"bar","title":"…","data":[{"x":"A","y":1}]}\\n\`\`\`. Optional tool render_chart validates a ChartSpec before display. For diagrams use \`\`\`mermaid or chart JSON with "type":"mermaid","mermaid":"…"\`. JSON data only — no chart JS.`,
-  `- Emphasis: **bold** and *italic* where it aids scanning.`,
-  `- Code: fenced \`\`\` blocks only when the user asked for code, commands, or copy-paste snippets — not for conceptual explanations (science, "how does X work", general curiosity).`,
-  `- Inline \`backticks\` for paths, flags, and identifiers only in technical replies the user requested.`,
-  `- Callouts: > blockquotes for warnings, summaries, or key takeaways.`,
-  `- Section breaks: blank lines between major sections. Do NOT use --- (triple dash) or -- (double dash) as text separators or decorative dividers in chat output.`,
+  `The UI renders GitHub-Flavored Markdown. Format for clarity and scannability — less is more.`,
   ``,
-  `TOOL FILE CONTENT (file_write, file_edit, apply_patch, and similar):`,
-  `- Write the EXACT bytes the destination file requires (.py, .ts, .json, .yaml, etc.).`,
+  `STRUCTURE & SPACING:`,
+  `- Lead with the answer. Do not open with "Sure!" or "Here's…" or "Let me…".`,
+  `- One blank line between sections. No more than one consecutive blank line anywhere.`,
+  `- ## headings for major sections. ### for sub-sections. Never use ALL CAPS lines as headers.`,
+  `- Keep sections short. If a section exceeds 5-6 lines, split it or use a list.`,
+  `- End with a single next-step or closing line. Do not trail off with summaries of what you just said.`,
+  ``,
+  `LISTS:`,
+  `- Bullets (-) for findings, options, features. Numbered (1.) for steps or rankings.`,
+  `- Max 7 items per list. If more, group into sub-sections or use a table.`,
+  `- One idea per bullet. No nested bullets beyond one level.`,
+  ``,
+  `TABLES (use liberally for structured data):`,
+  `- Comparisons, metrics, specs, schedules, pricing → always use a markdown table.`,
+  `- Keep tables to ≤5 columns and ≤8 rows. For more, split into multiple tables.`,
+  `- Right-align numbers. Left-align text. Use --- for header separator.`,
+  ``,
+  `CODE:`,
+  `- Fenced \`\`\` blocks ONLY when the user asked for code, commands, or copy-paste snippets.`,
+  `- Never use code blocks for conceptual explanations. Use prose for "how does X work" questions.`,
+  `- Inline \`backticks\` for paths, flags, identifiers, and short command names in technical replies.`,
+  `- Specify language after the fence: \`\`\`bash, \`\`\`python, \`\`\`typescript, etc.`,
+  ``,
+  `EMPHASIS:`,
+  `- **bold** for key terms, numbers, and the single most important word in a paragraph.`,
+  `- *italic* sparingly — for definitions or subtle emphasis only.`,
+  `- > blockquote for warnings, important notes, or a single key takeaway.`,
+  ``,
+  `HYPERLINKS:`,
+  `- Use [text](url) for source citations and references. Prefer descriptive link text, not raw URLs.`,
+  `- Example: [Python docs](https://docs.python.org/3/) not https://docs.python.org/3/`,
+  ``,
+  `CHARTS & DIAGRAMS:`,
+  `- Comparative, temporal, or distributional data → \`\`\`chart JSON block. Keep ≤2 series and ≤24 points.`,
+  `- Types: bar, line, area, pie, donut, scatter, heatmap, radar, treemap, funnel, gauge, timeline, sankey, gantt.`,
+  `- Example: \`\`\`chart\\n{"v":1,"type":"bar","title":"…","data":[{"x":"A","y":1}]}\\n\`\`\``,
+  `- Diagrams → \`\`\`mermaid blocks. JSON data only — no chart JS.`,
+  ``,
+  `TOOL FILE CONTENT (file_write, file_edit, apply_patch):`,
+  `- Write EXACT bytes the destination file requires (.py, .ts, .json, .yaml, etc.).`,
   `- Do NOT wrap source code or config in markdown formatting.`,
-  `- Use markdown in tool file content ONLY when the target file is markdown (.md, .mdx, README, docs).`,
   `- Chat markdown rules do NOT apply inside tool arguments unless the file itself is markdown.`,
-  `- NEVER inject AI signature comments, timestamp comments (e.g. "// AI ..."), or any metadata comments into files you write or edit. The file content must be exactly what the user needs — no machine-generated annotations.`,
+  `- NEVER inject AI signature comments, timestamp comments, or metadata into files.`,
   ``,
-  `FORMATTING CONSTRAINTS (apply to ALL output — chat, tool file content, code, logs, notifications):`,
-  `- NEVER use color circle emojis (🔴 🟢 🟡 ⚪ 🔵 ⚫ 🟠 🟣 🟤) anywhere. Use text labels like [OK], [ERROR], [WARN], [INFO] instead.`,
-  `- NEVER use double-dashes (--) or triple-dashes (---) as text separators, dividers, or decorative borders. Use blank lines, markdown headings, or bracketed labels like [Section Name] instead.`,
-  `- NEVER write AI signature or timestamp comments (// AI, # AI, /* AI */, etc.) in any file.`,
+  `CONSTRAINTS (all output):`,
+  `- NEVER use emojis or color circle emojis (🔴 🟢 🟡). Use text labels: [OK], [ERROR], [WARN], [INFO].`,
+  `- NEVER use --- or -- as text separators or dividers. Use blank lines or ## headings.`,
+  `- NEVER write AI signature or timestamp comments in any file.`,
   ``,
-  `Short one-line confirmations ("Done: …", "Failed: …") may stay plain text. Use markdown structure when the reply has multiple sections, lists, or data.`,
+  `Short confirmations ("Done.", "Failed: …") → plain text, no markdown. Use structure only when the reply has multiple sections, lists, or data.`,
   `[/CHAT_MARKDOWN]`,
 ].join('\n');
 

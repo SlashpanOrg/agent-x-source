@@ -6,6 +6,7 @@ import type {
 } from '@agentx/shared';
 import { MIN_OUTPUT_TOKENS } from '@agentx/shared';
 import type { ProviderInterface } from './ProviderInterface.js';
+import { fetchWithRetry } from './retry.js';
 
 export class AnthropicProvider implements ProviderInterface {
   readonly id: ProviderId;
@@ -112,7 +113,17 @@ export class AnthropicProvider implements ProviderInterface {
       }));
     }
 
-    const response = await fetch(`${this.baseUrl}/v1/messages`, {
+    // Map reasoning_effort to Anthropic extended thinking budget.
+    // 'none' → no thinking block; 'low'/'medium'/'high' → budget_tokens mapping.
+    if (request.reasoningEffort && request.reasoningEffort !== 'none') {
+      const budgetMap: Record<string, number> = { low: 2048, medium: 8192, high: 16384 };
+      const budget = budgetMap[request.reasoningEffort];
+      if (budget) {
+        body['thinking'] = { type: 'enabled', budget_tokens: budget };
+      }
+    }
+
+    const response = await fetchWithRetry(`${this.baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
         'x-api-key': this.apiKey,

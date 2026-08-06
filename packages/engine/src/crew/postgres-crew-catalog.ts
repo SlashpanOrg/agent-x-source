@@ -41,6 +41,7 @@ function catalogFromRow(row: Record<string, unknown>): CatalogEntry {
     traits: parseJsonArray(row['traits']),
     tools: parseJsonArray(row['tools']),
     tags: parseJsonArray(row['tags']),
+    certifications: Array.isArray(row['certifications']) ? row['certifications'] as string[] : parseJsonArray(row['certifications']),
     searchText: (row['search_text'] as string) || '',
     hubRevision: Number(row['hub_revision'] ?? 1),
     active: row['active'] !== false && row['active'] !== 0,
@@ -60,7 +61,7 @@ export async function seedPgCatalog(
   let updated = 0;
   const total = manifest.crews.length;
   const BATCH_SIZE = 40;
-  const COLS_PER_ROW = 15;
+  const COLS_PER_ROW = 16;
   const report = (processed: number) => {
     onProgress?.(processed, total);
     markCatalogSeedProgress(processed, total);
@@ -84,12 +85,13 @@ export async function seedPgCatalog(
           crew.tools ? JSON.stringify(crew.tools) : null,
           crew.tags ? JSON.stringify(crew.tags) : null,
           crew.searchText, manifest.revision,
+          crew.certifications ?? [],
         );
       }
       const result = await client.query(
         `INSERT INTO crew_catalog (
           id, callsign, name, title, category_id, category_label, description,
-          system_prompt, tone, expertise, traits, tools, tags, search_text, hub_revision
+          system_prompt, tone, expertise, traits, tools, tags, search_text, hub_revision, certifications
         ) VALUES ${values.join(',')}
         ON CONFLICT(id) DO UPDATE SET
           callsign=EXCLUDED.callsign, name=EXCLUDED.name, title=EXCLUDED.title,
@@ -97,7 +99,8 @@ export async function seedPgCatalog(
           description=EXCLUDED.description, system_prompt=EXCLUDED.system_prompt,
           tone=EXCLUDED.tone, expertise=EXCLUDED.expertise, traits=EXCLUDED.traits,
           tools=EXCLUDED.tools, tags=EXCLUDED.tags, search_text=EXCLUDED.search_text,
-          hub_revision=EXCLUDED.hub_revision, active=TRUE, updated_at=NOW()
+          hub_revision=EXCLUDED.hub_revision, certifications=EXCLUDED.certifications,
+          active=TRUE, updated_at=NOW()
         RETURNING (xmax = 0) AS inserted`,
         params,
       );
@@ -150,6 +153,7 @@ export async function backfillPgCrewSearchColumns(
       traits: crew.traits,
       tools: crew.tools,
       tags: crew.tags,
+      certifications: crew.certifications,
       systemPrompt: crew.systemPrompt,
     });
     const source = crew.source ?? (crew.catalogId ? 'hub' : 'custom');

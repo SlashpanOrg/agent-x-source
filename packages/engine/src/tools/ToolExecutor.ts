@@ -110,6 +110,8 @@ export class ToolExecutor implements ToolPermissionHost {
   private sessionRules: PermissionRule[] = [];
   private agentPermissions: PermissionRule[] = [];
   private userConfigRules: PermissionRule[] = [];
+  /** Per-turn set of tool IDs the user has consented to inline (bypass-mode enforcement). */
+  private pendingToolConsent: Set<string> = new Set();
   private voiceTurnActive = false;
   private sessionContextKind?: SessionContextKind;
   private runtimeConfig: AgentXConfig | null = null;
@@ -293,6 +295,20 @@ export class ToolExecutor implements ToolPermissionHost {
 
   getUserConfigRules(): PermissionRule[] {
     return this.userConfigRules;
+  }
+
+  getPendingToolConsent(): Set<string> | null {
+    return this.pendingToolConsent;
+  }
+
+  /** Grant inline consent for a tool this turn (called when the user says "yes/go ahead"). */
+  grantToolConsent(toolId: string): void {
+    this.pendingToolConsent.add(toolId);
+  }
+
+  /** Clear per-turn consent (called at the end of each turn). */
+  clearToolConsent(): void {
+    this.pendingToolConsent.clear();
   }
 
   getRegistry(): ToolRegistry {

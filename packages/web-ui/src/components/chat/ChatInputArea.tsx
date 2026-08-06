@@ -28,6 +28,7 @@ import {
   useChatInputGateContext,
   useChatComposerContext,
   useChatBypassPermissionsContext,
+  useChatTurnModesContext,
   useChatSessionSettersContext,
   useChatInputHandlersContext,
 } from './ChatSessionProvider';
@@ -40,6 +41,7 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
   const { isCrewPrivateSession, crewPrivateHost } = useChatSessionPrivacyContext();
   const { crewList } = useChatCrewListContext();
   const { bypassPermissions } = useChatBypassPermissionsContext();
+  const { thinkingMode, setThinkingMode, outputMode, setOutputMode } = useChatTurnModesContext();
   const {
     currentModel, currentProvider, currentProviderId, providerList, modelList,
     loadingModels, providerSwitchPending, initiateProviderSwitch, confirmProviderSwitch, cancelProviderSwitch,
@@ -365,6 +367,10 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
             currentProviderId={currentProviderId}
             setTokenTotal={setTokenTotal}
             setTokenReserved={(n: number) => { tokenReservedRef.current = n; setTokenReserved(n); }}
+            thinkingMode={thinkingMode}
+            setThinkingMode={setThinkingMode}
+            outputMode={outputMode}
+            setOutputMode={setOutputMode}
           />
         </Box>
       </Box>

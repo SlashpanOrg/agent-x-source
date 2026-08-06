@@ -14,8 +14,10 @@ import type {
   QuestionnaireRecord,
   ClientSituation,
   StorageAdapter,
+  ThinkingMode,
+  OutputMode,
 } from '@agentx/shared';
-import { FailoverReason, generateMessageId, getLogger, type ChannelKind, getConfigDir, formatClientSituationBlock, isMessagingChannel, formatQuestionnaireForMessagingChannel, shouldUseQuestionnaireClarification, type PermissionHandlerResult, parseChannelBindingFromSessionId, allowsCrewInvolvement, crewParticipationMode, deniesAutonomousCrewTools } from '@agentx/shared';
+import { FailoverReason, generateMessageId, getLogger, type ChannelKind, getConfigDir, formatClientSituationBlock, isMessagingChannel, formatQuestionnaireForMessagingChannel, shouldUseQuestionnaireClarification, type PermissionHandlerResult, parseChannelBindingFromSessionId, allowsCrewInvolvement, crewParticipationMode, deniesAutonomousCrewTools, THINKING_MODE_TOOL_BUDGET, THINKING_MODE_REASONING_EFFORT, THINKING_MODE_SKIP_RETRIEVAL, THINKING_MODE_SKIP_REFORMULATE, THINKING_MODE_SKIP_EXTRACT_MEMORIES, THINKING_MODE_ALLOW_DEEP_SEARCH, OUTPUT_MODE_MAX_TOKENS, DEFAULT_THINKING_MODE, DEFAULT_OUTPUT_MODE, isValidThinkingMode, isValidOutputMode } from '@agentx/shared';
 import { Scope } from '../concurrency/Scope.js';
 import { getAttachmentService } from '../attachments/index.js';
 import { join, resolve, normalize } from 'node:path';
@@ -252,6 +254,10 @@ export interface AgentOptions {
   >;
   /** Skip the empty-response self-healing retry for benchmark/headless callers. */
   skipEmptyResponseRetry?: boolean;
+  /** Thinking mode for this turn — controls tool budget, reasoning depth, retrieval. */
+  thinkingMode?: import('@agentx/shared').ThinkingMode;
+  /** Output mode for this turn — controls response verbosity and format. */
+  outputMode?: import('@agentx/shared').OutputMode;
 }
 
 export class Agent {
@@ -335,6 +341,8 @@ export class Agent {
   private currentCategory: CategoryResult | null = null;
   private currentUserMessage = '';
   private currentSpeaker: VoiceSessionSpeaker | null = null;
+  private currentThinkingMode: ThinkingMode = 'medium';
+  private currentOutputMode: OutputMode = 'moderate';
 
   private logTurnOutcome(startTime: number, success: boolean, _userMessage: string): void {
     const taskState = this.taskStateManager.getCurrent();
@@ -391,7 +399,19 @@ export class Agent {
     // stepCap is a safety net against infinite loops, not a task limiter.
     // 40 steps is enough for complex multi-tool tasks (search → read → write → verify)
     // while preventing the 52-96 iteration search loops seen in failing sessions.
-    const stepCap = 40;
+    // ─── Turn mode: thinking mode enforces a tool call budget ───
+    // light = 3 tool calls, medium = ~50% of available tools, high = unlimited (40 safety net).
+    const modeToolBudget = THINKING_MODE_TOOL_BUDGET[this.currentThinkingMode];
+    let stepCap: number;
+    if (modeToolBudget === -1) {
+      // 50% of available tools (computed at runtime, minimum 5)
+      const toolCount = this.toolExecutor?.getRegistry()?.list().length ?? 20;
+      stepCap = Math.max(5, Math.floor(toolCount / 2));
+    } else if (modeToolBudget > 0) {
+      stepCap = modeToolBudget;
+    } else {
+      stepCap = 40; // unlimited safety net
+    }
 
     // If the user explicitly asks to open/browse a URL in a browser, force the
     // model to call a tool (browser_open/web_browse) instead of replying with
@@ -525,6 +545,16 @@ export class Agent {
     this.toolExecutor?.getPermissionManager().setBypassPermissions(enabled);
     this.sessionPermissionStore.setBypass(enabled);
     this.emit({ type: 'bypass_permissions_changed', enabled, sessionId: this.sessionId });
+  }
+
+  /** Update the thinking mode for subsequent turns (and current turn if in progress). */
+  setCurrentThinkingMode(mode: ThinkingMode): void {
+    this.currentThinkingMode = mode;
+  }
+
+  /** Update the output mode for subsequent turns (and current turn if in progress). */
+  setCurrentOutputMode(mode: OutputMode): void {
+    this.currentOutputMode = mode;
   }
 
   toggleBypassPermissions(): boolean {
@@ -692,6 +722,8 @@ export class Agent {
       options: this.options,
       sessionPermissionStore: this.sessionPermissionStore,
       getPersistStore: () => this.getPersistStore(),
+      thinkingMode: this.currentThinkingMode,
+      outputMode: this.currentOutputMode,
     };
   }
 
@@ -1443,6 +1475,9 @@ export class Agent {
         usesCompactContext: () => this.usesCompactContext(),
         setMemoryContextNodeIds: (ids) => { this._memoryContextNodeIds = ids; },
         speakerId: this.currentSpeaker?.id,
+        // Skip retrieval for voice merges/continuations — the prior turn already loaded context.
+        // Also skip when thinking mode is 'light' — no RAG retrieval for quick turns.
+        skipRetrieval: !!this.pendingVoiceMerge || THINKING_MODE_SKIP_RETRIEVAL[this.currentThinkingMode],
       } as MemoryContextContext,
     );
   }
@@ -1454,6 +1489,8 @@ export class Agent {
    * Falls back to the raw message if reformulation fails.
    */
   private async reformulateQuery(rawQuery: string): Promise<string> {
+    // Skip reformulation in light thinking mode — saves a model call for quick turns.
+    if (THINKING_MODE_SKIP_REFORMULATE[this.currentThinkingMode]) return rawQuery;
     return reformulateQueryHelper(
       {
         usesCompactContext: () => this.usesCompactContext(),
@@ -1833,7 +1870,7 @@ export class Agent {
     return r;
   }
 
-  async sendMessage(content: string, options?: { instruction?: string; userId?: string; channelId?: string; sourceChannel?: string; sourceMessageId?: string; retry?: boolean; delegateCrewIds?: string[]; crewSuggestionResolved?: boolean; crewIntakeFromPicker?: boolean; primaryCrewId?: string; forceWebSearch?: boolean; voiceTurn?: boolean; userMessagePersisted?: boolean; voiceContinuation?: boolean; voiceMergeIntoMessage?: { messageId: string; prefixContent: string }; resumeCrewIntake?: { originalUserText: string; intakeAnswer: string; delegateCrewIds: string[]; primaryCrewId?: string }; clientSituation?: ClientSituation | null; attachments?: import('@agentx/shared').TurnAttachment[]; /** How to treat leftover incomplete TASKS at turn start. */ todoDisposition?: 'continue' | 'skip' | 'defer'; speaker?: VoiceSessionSpeaker | null }): Promise<Message> {
+  async sendMessage(content: string, options?: { instruction?: string; userId?: string; channelId?: string; sourceChannel?: string; sourceMessageId?: string; retry?: boolean; delegateCrewIds?: string[]; crewSuggestionResolved?: boolean; crewIntakeFromPicker?: boolean; primaryCrewId?: string; forceWebSearch?: boolean; voiceTurn?: boolean; userMessagePersisted?: boolean; voiceContinuation?: boolean; voiceMergeIntoMessage?: { messageId: string; prefixContent: string }; resumeCrewIntake?: { originalUserText: string; intakeAnswer: string; delegateCrewIds: string[]; primaryCrewId?: string }; clientSituation?: ClientSituation | null; attachments?: import('@agentx/shared').TurnAttachment[]; /** How to treat leftover incomplete TASKS at turn start. */ todoDisposition?: 'continue' | 'skip' | 'defer'; speaker?: VoiceSessionSpeaker | null; /** Thinking mode — controls tool budget, reasoning depth, retrieval. */ thinkingMode?: ThinkingMode; /** Output mode — controls response verbosity and format. */ outputMode?: OutputMode }): Promise<Message> {
     const startTime = Date.now();
     const turnId = `turn-${startTime}`;
     this.currentTurnId = turnId;
@@ -1940,6 +1977,23 @@ export class Agent {
 
     // Leftover TASKS from a prior turn — honor the user's pre-send disposition.
     this.todoDispositionThisTurn = options?.todoDisposition ?? null;
+
+    // ─── Turn modes: thinking effort + output verbosity ───
+    // If the caller explicitly provides a mode, use it. Otherwise preserve the
+    // currently-set mode (set via setCurrentThinkingMode/setCurrentOutputMode or
+    // a prior sendMessage call). This prevents steer/stop-and-send/voice/automation
+    // paths from silently resetting to defaults.
+    if (isValidThinkingMode(options?.thinkingMode)) {
+      this.currentThinkingMode = options!.thinkingMode!;
+    } else if (!this.currentThinkingMode) {
+      this.currentThinkingMode = DEFAULT_THINKING_MODE;
+    }
+    if (isValidOutputMode(options?.outputMode)) {
+      this.currentOutputMode = options!.outputMode!;
+    } else if (!this.currentOutputMode) {
+      this.currentOutputMode = DEFAULT_OUTPUT_MODE;
+    }
+    getLogger().info('AGENT', `Turn modes: thinking=${this.currentThinkingMode}, output=${this.currentOutputMode}`);
     if (this.todoDispositionThisTurn === 'skip') {
       this.todoManager.clear();
     } else if (this.todoDispositionThisTurn === 'defer' && this.todoManager.hasIncomplete()) {
@@ -2147,6 +2201,43 @@ export class Agent {
     // Reset turn-level permission auto-approve from any prior batch approval
     this.turnApprovedAll = false;
     this.toolExecutor?.getPermissionManager().revokeOneTimePermissions();
+    // Clear per-turn inline tool consent (bypass-mode enforcement).
+    this.toolExecutor?.clearToolConsent();
+
+    // ─── Bypass-mode consent detection ───
+    // When bypass is OFF and the user sends a short affirmative ("yes", "go ahead",
+    // "proceed", "do it", "sure", "ok"), check if the last assistant message asked
+    // for permission. If so, grant consent for the tools mentioned so the agent can
+    // proceed without triggering a permission modal.
+    if (!this.bypassPermissions && this.toolExecutor) {
+      const affirmativePattern = /^(yes|yeah|yep|sure|ok|okay|go ahead|proceed|do it|go for it|please do|that's fine|looks good|approve|approved|confirm|confirmed)\b[!.?]*\s*$/i;
+      if (affirmativePattern.test(cleanContent.trim())) {
+        const lastAssistant = [...this.messages].reverse().find((m) => m.role === 'assistant' && typeof m.content === 'string');
+        if (lastAssistant && typeof lastAssistant.content === 'string') {
+          // Check if the assistant asked for permission (mentions a tool or asks "should I")
+          const askedForPermission = /should i (go ahead|proceed|use|run|call|create|write|execute)|may i (proceed|use|run|call|create|write)|can i (proceed|use|run|call|create|write|go ahead)|want me to (proceed|use|run|call|create|write|go ahead)|i need to (use|run|call|create|write|execute|proceed)/i.test(lastAssistant.content);
+          if (askedForPermission) {
+            // Grant consent for all registered tools that were mentioned in the assistant message.
+            // This is intentionally broad — the user said "yes" to the agent's request.
+            const registry = this.toolExecutor.getRegistry();
+            for (const tool of registry.list()) {
+              const toolName = tool.id ?? tool.name ?? '';
+              if (toolName && lastAssistant.content.toLowerCase().includes(toolName.toLowerCase())) {
+                this.toolExecutor.grantToolConsent(toolName);
+              }
+            }
+            // Also grant consent for the most commonly permission-gated tools if the
+            // assistant asked generically (e.g. "Should I go ahead?").
+            const commonGatedTools = ['file_write', 'file_edit', 'shell_exec', 'web_fetch', 'web_scrape'];
+            for (const t of commonGatedTools) {
+              if (lastAssistant.content.toLowerCase().includes(t.replace(/_/g, ' ')) || lastAssistant.content.toLowerCase().includes(t)) {
+                this.toolExecutor.grantToolConsent(t);
+              }
+            }
+          }
+        }
+      }
+    }
 
     const isCrewPrivate = this.options.promptProfile === 'crew_private';
 
@@ -2753,6 +2844,11 @@ export class Agent {
       }
     }
 
+    // ─── Turn mode: remove deep_web_search when not allowed by thinking mode ───
+    if (!THINKING_MODE_ALLOW_DEEP_SEARCH[this.currentThinkingMode]) {
+      delete tools['deep_web_search'];
+    }
+
     if (integrationHint !== undefined || integrationAccessPolicy !== undefined) {
       const reconciled = reconcileIntegrationHintWithActiveTools(
         integrationHint,
@@ -2780,7 +2876,10 @@ export class Agent {
     });
     const budget = await this.ensureOutputBudget(aiMessages, tools, rebuildAiMessages);
     aiMessages = budget.messages;
-    const turnMaxOutputTokens = budget.maxOutputTokens;
+    // ─── Turn mode: output mode caps max output tokens ───
+    // brief = 300 tokens, moderate = 800, detailed = use model default (no cap).
+    const modeMaxTokens = OUTPUT_MODE_MAX_TOKENS[this.currentOutputMode];
+    const turnMaxOutputTokens = modeMaxTokens > 0 ? Math.min(budget.maxOutputTokens, modeMaxTokens) : budget.maxOutputTokens;
 
     const streamHandler = createAiSdkStreamHandler(
       emit,
@@ -2805,8 +2904,12 @@ export class Agent {
       this.turnState.setStage('thinking');
       this.emit({ type: 'loading_start', stage: 'thinking' });
 
+      // ─── Turn mode: override reasoning effort from thinking mode ───
+      const modeReasoningEffort = THINKING_MODE_REASONING_EFFORT[this.currentThinkingMode];
+      const effectiveReasoningEffort = modeReasoningEffort ?? this.config.provider.activeReasoningEffort;
+
       // Log tool setup for debugging
-      getLogger().info('AGENT', `Starting streamText with ${toolCount} tools, model: ${this.config.provider.activeModel}, maxOutputTokens: ${turnMaxOutputTokens}`);
+      getLogger().info('AGENT', `Starting streamText with ${toolCount} tools, provider: ${this.config.provider.activeProvider}, model: ${this.config.provider.activeModel}, reasoningEffort: ${effectiveReasoningEffort ?? '(default)'} (mode: ${this.currentThinkingMode}), maxOutputTokens: ${turnMaxOutputTokens}`);
 
       let stepCapContinuations = 0;
       const stepBudget = this.completionStepBudget();
@@ -2814,7 +2917,7 @@ export class Agent {
       const googleProviderOptions = this.config.provider.activeProvider === 'google'
         ? buildGoogleAiSdkProviderOptions(
           this.config.provider.activeModel,
-          this.config.provider.activeReasoningEffort,
+          effectiveReasoningEffort,
         )
         : undefined;
       const sdkMessages = await this.buildSdkMessages(aiMessages);
@@ -2945,16 +3048,16 @@ export class Agent {
       } catch (err) {
         streamError = err instanceof Error ? err : new Error(String(err));
         getLogger().warn('AGENT', `streamText failed: ${streamError.message}`);
-        // Surface stream errors (including rate limits) so callers can detect them
+        // Surface stream errors (including rate limits and transient server errors) so callers can detect them
         const errStr = streamError.message || '';
-        const isRateLimit = /429|rate.?limit|too many requests|quota|overloaded/i.test(errStr);
+        const isTransient = /429|rate.?limit|too many requests|quota|overloaded|503|queue is full|service unavailable|bad gateway|502|500|internal server error|timeout|timed out|econnreset|enetunreach|fetch failed/i.test(errStr);
         this.emit({
           type: 'provider_error',
           provider: this.config.provider.activeProvider,
           model: this.config.provider.activeModel,
           message: streamError.message,
-          recoverable: isRateLimit,
-          actions: isRateLimit ? [{ type: 'retry', label: 'Retry' }] : undefined,
+          recoverable: isTransient,
+          actions: isTransient ? [{ type: 'retry', label: 'Retry' }] : undefined,
         });
         if (streamError.name === 'AbortError') {
           throw streamError;
@@ -3544,6 +3647,8 @@ export class Agent {
    * Runs asynchronously and silently — never blocks the main flow.
    */
   private extractMemories(userMessage: string, assistantResponse: string): void {
+    // Skip memory extraction in light thinking mode — saves a model call for quick turns.
+    if (THINKING_MODE_SKIP_EXTRACT_MEMORIES[this.currentThinkingMode]) return;
     extractMemoriesHelper(
       {
         config: this.config,
@@ -3649,6 +3754,9 @@ export class Agent {
       sessionId: this.sessionId,
       getTodos: () => this.todoManager.getItems(),
       areTodosDeferredThisTurn: () => this.todoDispositionThisTurn === 'defer',
+      bypassPermissions: this.bypassPermissions,
+      thinkingMode: this.currentThinkingMode,
+      outputMode: this.currentOutputMode,
     };
   }
 
@@ -3893,6 +4001,7 @@ export class Agent {
     this.messages.push({ role: 'user', content: `/research ${question}` });
     this.turnApprovedAll = false;
     this.toolExecutor?.getPermissionManager().revokeOneTimePermissions();
+    this.toolExecutor?.clearToolConsent();
     const result = await researchHelper(
       {
         sessionId: this.sessionId,

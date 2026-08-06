@@ -419,6 +419,14 @@ export function CrewCallProvider({ children }: { children: ReactNode }) {
     suppressAgentTranscriptRef.current = false;
     setTarget(next);
     setMinimized(false);
+
+    if (!voice?.voiceReady) {
+      setError('Voice engine/kit is not active or enabled. Please enable it first to use this.');
+      setPhase('failed');
+      startGuardRef.current = false;
+      return;
+    }
+
     setPhase('resolving');
     pushLine('system', `Calling ${next.displayName}…`);
 

@@ -50,6 +50,8 @@ export interface Crew {
   tools?: string[];
   /** Search synonyms / alternate spellings / related skill terms — indexed for FTS. */
   tags?: string[];
+  /** Professional certifications (e.g. "AWS Certified Solutions Architect", "CPA"). */
+  certifications?: string[];
   permissions?: PermissionRule[];
   model?: { provider: string; modelId: string };
   protocol?: CollaborationProtocol;
@@ -82,6 +84,7 @@ export interface CrewCreateInput {
   };
   tools?: string[];
   tags?: string[];
+  certifications?: string[];
   permissions?: PermissionRule[];
   model?: { provider: string; modelId: string };
   protocol?: CollaborationProtocol;

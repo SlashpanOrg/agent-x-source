@@ -32,7 +32,7 @@ export class GenericTransport extends BaseTransport {
     const headers = await this.getHeaders(plan);
     const body = JSON.stringify(this.buildRequestBody(plan));
 
-    const response = await fetch(url.toString(), {
+    const response = await this.fetchStreamWithRetry(url.toString(), {
       method: 'POST',
       headers,
       body,

@@ -167,9 +167,14 @@ export function createSystemRouter(): Router {
             const prev = existing.voice?.xai?.apiKey;
             const raw = typeof inc?.apiKey === 'string' ? inc.apiKey.trim() : '';
             const placeholder = !raw || raw === REDACTED_SECRET || raw.includes('•');
+            const hasNewKey = Boolean(raw) && !placeholder;
+            const explicitlyCleared = inc?.apiKeyConfigured === false;
             let apiKey = prev;
-            if (inc?.apiKeyConfigured === false) apiKey = '';
-            else if (!placeholder) apiKey = raw;
+            if (explicitlyCleared && !hasNewKey) {
+              apiKey = '';
+            } else if (hasNewKey) {
+              apiKey = raw;
+            }
             const { apiKeyConfigured: _drop, ...incRest } = inc ?? {};
             return {
               ...existing.voice?.xai,

@@ -33,6 +33,10 @@ export interface StorableSession extends RecordMeta {
   tokenUsed: number;
   tokenAvailable: number;
   compactionCount?: number;
+  /** Persisted thinking mode for this session — controls tool budget, reasoning depth. */
+  thinkingMode?: string | null;
+  /** Persisted output mode for this session — controls response verbosity. */
+  outputMode?: string | null;
 }
 
 export interface StorableMessage extends RecordMeta, Record<string, unknown> {

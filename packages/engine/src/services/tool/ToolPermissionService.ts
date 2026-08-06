@@ -50,6 +50,8 @@ export interface ToolPermissionHost {
   getSessionRules(): PermissionRule[];
   getAgentPermissions(): PermissionRule[];
   getUserConfigRules(): PermissionRule[];
+  /** When bypass is OFF, the agent must ask the user before permission-requiring tools. Returns the set of tool IDs the user has already consented to this turn. */
+  getPendingToolConsent?(): Set<string> | null;
 }
 
 /**
@@ -112,6 +114,29 @@ export class ToolPermissionService {
     const shouldPrompt = host.getAlwaysPromptPermissions() || definition.riskLevel !== 'low';
     if (!shouldPrompt) {
       return { decision: 'allow' };
+    }
+
+    // ─── Bypass-mode consent enforcement (STRICT) ───
+    // When bypass is OFF, the agent must ask the user via a normal inline question
+    // BEFORE calling any tool that would trigger a permission prompt. If no prior
+    // consent was recorded for this tool this turn, deny with an instructive message
+    // so the model knows to ask the user first. This is the hard enforcement layer
+    // that works even if the model ignores the prompt instruction.
+    //
+    // EXCEPTION: Channel sessions have their own permission flow (the channel handler
+    // sends an inline message to Telegram/Slack/etc. where the user approves). The
+    // consent check is specifically for the UI modal path, not channel sessions.
+    const bypassOn = permissionManager.getBypassPermissions();
+    const isChannelSession = isChannelSessionId(sessionId) || host.getMessagingPermissionMode();
+    if (!bypassOn && !isChannelSession) {
+      const consentSet = host.getPendingToolConsent?.();
+      if (consentSet && !consentSet.has(toolId)) {
+        return {
+          decision: 'deny',
+          error: 'PERMISSION_INSTRUCTED',
+          instruction: `Bypass mode is OFF. Ask the user for permission first via a normal inline question (e.g. "I need to use ${definition.name ?? toolId} to proceed. Should I go ahead?") before calling this tool. Do NOT call the tool again until the user says yes.`,
+        };
+      }
     }
 
     const permissionHandler = this.resolvePermissionRequestHandler(host, sessionId);
