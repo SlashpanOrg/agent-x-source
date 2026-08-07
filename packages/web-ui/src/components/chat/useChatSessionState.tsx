@@ -407,6 +407,11 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
   useEffect(() => {
     const candidate = lastTurnFeedbackCandidateRef.current;
     if (!candidate || sessionRestoringRef.current) return;
+    // Do not show the feedback card until the turn is fully complete (turn_state:done).
+    // message_received sets the candidate, but the turn may still be doing post-
+    // processing (memory extraction, skill generation, reflection). The turn-level
+    // `streaming` state stays true until turn_state:done arrives.
+    if (streaming) return;
     const msg = messages.find((m) => m.id === candidate.messageId);
     lastTurnFeedbackCandidateRef.current = null;
     if (!msg || msg.turnFeedback || msg.streaming) return;
@@ -419,7 +424,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     })) {
       setPendingFeedbackMessageId(candidate.messageId);
     }
-  }, [messages]);
+  }, [messages, streaming]);
 
   // ─── Scroll state, refs, effects (extracted to useChatScroll) ───
   const {

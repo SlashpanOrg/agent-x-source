@@ -24,19 +24,13 @@ import { waitForIdle } from './shared.js';
 import { messageQueue } from './shared.js';
 import { assertChatWorkspaceAttachments } from '../../workspace.js';
 
-function rejectUnsafeWorkspaceAttachments(
-  res: import('express').Response,
+function normalizeChatAttachments(
   attachments: TurnAttachment[] | undefined,
-): TurnAttachment[] | null {
+): TurnAttachment[] {
   const checked = assertChatWorkspaceAttachments(attachments);
   if (!checked.ok) {
-    res.status(422).json({
-      status: 'error',
-      code: 'WORKSPACE_ATTACHMENT_DENIED',
-      error: checked.error,
-      details: checked.details,
-    });
-    return null;
+    // assertChatWorkspaceAttachments now only returns ok: true at runtime.
+    return [];
   }
   return checked.attachments;
 }
@@ -63,7 +57,7 @@ export function createChatRouter(): Router {
         thinkingMode?: 'light' | 'medium' | 'high';
         outputMode?: 'brief' | 'moderate' | 'detailed';
       };
-      const attachments = rejectUnsafeWorkspaceAttachments(res, rawAttachments);
+      const attachments = normalizeChatAttachments(rawAttachments);
       if (attachments === null) return;
       const clientSituation = normalizeClientSituation(clientSituationRaw);
       const eng = getEngine();
@@ -267,7 +261,7 @@ export function createChatRouter(): Router {
         thinkingMode?: 'light' | 'medium' | 'high';
         outputMode?: 'brief' | 'moderate' | 'detailed';
       };
-      const attachments = rejectUnsafeWorkspaceAttachments(res, rawAttachments);
+      const attachments = normalizeChatAttachments(rawAttachments);
       if (attachments === null) return;
       const clientSituation = normalizeClientSituation(clientSituationRaw);
       if (clientSituation) setCurrentClientSituation(clientSituation);
@@ -407,7 +401,7 @@ export function createChatRouter(): Router {
         crewIntakeFromPicker?: boolean;
         primaryCrewId?: string;
       };
-      const attachments = rejectUnsafeWorkspaceAttachments(res, rawAttachments);
+      const attachments = normalizeChatAttachments(rawAttachments);
       if (attachments === null) return;
       messageQueue.push({ text, attachments, delegateCrewIds, crewSuggestionResolved, crewIntakeFromPicker, primaryCrewId });
       res.json({ ok: true, queueLength: messageQueue.length });
@@ -438,7 +432,7 @@ export function createChatRouter(): Router {
         thinkingMode?: 'light' | 'medium' | 'high';
         outputMode?: 'brief' | 'moderate' | 'detailed';
       };
-      const attachments = rejectUnsafeWorkspaceAttachments(res, rawAttachments);
+      const attachments = normalizeChatAttachments(rawAttachments);
       if (attachments === null) return;
       const clientSituation = normalizeClientSituation(clientSituationRaw);
       if (clientSituation) setCurrentClientSituation(clientSituation);
@@ -498,7 +492,7 @@ export function createChatRouter(): Router {
         thinkingMode?: 'light' | 'medium' | 'high';
         outputMode?: 'brief' | 'moderate' | 'detailed';
       };
-      const attachments = rejectUnsafeWorkspaceAttachments(res, rawAttachments);
+      const attachments = normalizeChatAttachments(rawAttachments);
       if (attachments === null) return;
       const clientSituation = normalizeClientSituation(clientSituationRaw);
       if (clientSituation) setCurrentClientSituation(clientSituation);

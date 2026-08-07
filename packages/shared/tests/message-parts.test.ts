@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeForJson, stripToolNoise } from '../src/utils/text-sanitize.js';
+import { sanitizeForJson, stripToolNoise, decodeLiteralUnicodeEscapes } from '../src/utils/text-sanitize.js';
 import {
   assignPartsToAssistantMessage,
   appendThinkingDeltaToParts,
   buildPartsFromDbRows,
   normalizeMessageForUi,
   partsCorruptedByCrossTurn,
+  partsTextTruncatesContent,
   sealTrailingThinkingPart,
+  shouldRebuildStoredParts,
+  syncTextPartsWithCanonicalContent,
 } from '../src/utils/message-parts.js';
 
 describe('text-sanitize', () => {
@@ -18,6 +21,25 @@ describe('text-sanitize', () => {
   it('strips tool noise from content', () => {
     const noisy = 'Here is the plan.\n🔧 Calling: file_write({})\n✅ Result: (no output)\nDone.';
     expect(stripToolNoise(noisy)).toBe('Here is the plan.\nDone.');
+  });
+
+  it('decodes literal \\uXXXX escapes and strips zero-width chars', () => {
+    const raw = 'Bangalore-registered + a TN office/\\u200cbranch/correspondence address on file';
+    expect(stripToolNoise(raw)).toBe(
+      'Bangalore-registered + a TN office/branch/correspondence address on file',
+    );
+    expect(decodeLiteralUnicodeEscapes('use \\u0041 and \\u{1F4A1}')).toBe('use A and \u{1F4A1}');
+    // Preserve escapes inside fenced code
+    expect(decodeLiteralUnicodeEscapes('before\n```\n\\u200c\n```\nafter')).toBe('before\n```\n\\u200c\n```\nafter');
+  });
+
+  it('never leaves invisible escape spellings in prose, but keeps them in code', () => {
+    expect(stripToolNoise('A &#x200c; B &zwnj; C U+200C D')).toBe('A  B  C  D');
+    expect(stripToolNoise('see `\\u200c` and ```\n\\u200c\n``` please')).toBe(
+      'see `\\u200c` and ```\n\\u200c\n``` please',
+    );
+    // Nested escaping
+    expect(stripToolNoise('x\\\\u200cy')).toBe('xy');
   });
 });
 
@@ -275,5 +297,20 @@ describe('message-parts', () => {
     parts = appendThinkingDeltaToParts([], paragraph);
     parts = sealTrailingThinkingPart(parts);
     expect(parts[0]?.['sealed']).toBe(true);
+  });
+
+  it('syncTextPartsWithCanonicalContent appends truncated stream suffix', () => {
+    const parts = [
+      { type: 'text' as const, id: 't1', content: 'Hello wor' },
+    ];
+    const synced = syncTextPartsWithCanonicalContent(parts, 'Hello world — done.');
+    expect(synced).toHaveLength(1);
+    expect(synced[0]?.content).toBe('Hello world — done.');
+  });
+
+  it('partsTextTruncatesContent detects coalesce truncation', () => {
+    const parts = [{ type: 'text' as const, id: 't1', content: 'Short prefix' }];
+    expect(partsTextTruncatesContent('Short prefix that continues to the full answer.', parts)).toBe(true);
+    expect(shouldRebuildStoredParts('Short prefix that continues to the full answer.', parts)).toBe(true);
   });
 });

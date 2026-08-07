@@ -578,6 +578,10 @@ export function createAiSdkStreamHandler(
           tokenCount: totalTokens,
         };
 
+        // Emit a terminal stream_chunk so the UI can flush coalesced text before
+        // message_received freezes parts[]. Empty delta — fullContent is authoritative.
+        emit({ type: 'stream_chunk', content: '', fullContent: finalContent });
+
         // Emit completion signal before message_received
         emit({ type: 'completion_finished', message: 'Thought.' });
         

@@ -1,6 +1,11 @@
 import { syncAuthTokenFromSession } from '../api';
 import { collectClientSituation } from '../client-situation.js';
-import { XAI_BARGE_IN_MIC_LEVEL, XAI_BARGE_IN_TRIGGER_FRAMES, XAI_BARGE_IN_TRIGGER_LEVEL } from './constants.js';
+import {
+  XAI_BARGE_IN_MIC_LEVEL,
+  XAI_BARGE_IN_PLAYBACK_GRACE_MS,
+  XAI_BARGE_IN_TRIGGER_FRAMES,
+  XAI_BARGE_IN_TRIGGER_LEVEL,
+} from './constants.js';
 import { VOICE_SAMPLE_RATE, mergeInt16Chunks } from './pcm.js';
 import { StreamingPlayback } from './playback.js';
 import { VOICE_CAPTURE_PROCESSOR_NAME, VOICE_CAPTURE_PROCESSOR_URL } from './audioWorkletProcessor.js';
@@ -37,6 +42,7 @@ export interface VoiceSessionClientEvents {
   onTranscriptPartial?: (text: string) => void;
   onTranscriptFinal?: (text: string, empty?: boolean, speakerName?: string | null) => void;
   onTranscriptPending?: () => void;
+  onWakeIdle?: (active: boolean, until: number) => void;
   onAgentText?: (text: string) => void;
   onError?: (message: string) => void;
   onWarning?: (message: string) => void;
@@ -74,6 +80,10 @@ export interface VoiceSessionClientOptions extends VoiceSessionClientEvents {
    *   Only meaningful for voice-only sessions.
    */
   conversationMode?: 'continue' | 'new';
+  /** When true, the server will require the wake phrase at the start of the first turn. */
+  wakeWord?: boolean;
+  /** Wake phrase for server-side transcript gating. */
+  wakePhrase?: string;
 }
 
 function wsUrl(authToken?: string | null): string {
@@ -90,6 +100,8 @@ export class VoiceSessionClient {
   private readonly chatSessionId?: string;
   private readonly voiceOnly: boolean;
   private readonly conversationMode: 'continue' | 'new';
+  private readonly wakeWord: boolean;
+  private readonly wakePhrase: string;
   private mediaStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
   private workletNode: AudioWorkletNode | null = null;
@@ -112,6 +124,8 @@ export class VoiceSessionClient {
   private duplexBargeInTriggered = false;
   /** Duplex: consecutive mic frames above the barge-in trigger level. */
   private duplexSpeechFramesAboveTrigger = 0;
+  /** Timestamp when the assistant started speaking; used to ignore echo at the start. */
+  private playbackStartAt = 0;
 
   constructor(options: VoiceSessionClientOptions = {}) {
     this.events = options;
@@ -119,6 +133,8 @@ export class VoiceSessionClient {
     this.chatSessionId = options.chatSessionId;
     this.voiceOnly = Boolean(options.voiceOnly);
     this.conversationMode = options.conversationMode ?? 'continue';
+    this.wakeWord = Boolean(options.wakeWord);
+    this.wakePhrase = options.wakePhrase ?? '';
     this.playback.setOnIdle(() => {
       this.events.onPlaybackLevel?.(0);
       this.events.onPlaybackIdle?.();
@@ -165,6 +181,9 @@ export class VoiceSessionClient {
     if (state === 'speaking') {
       this.duplexBargeInTriggered = false;
       this.duplexSpeechFramesAboveTrigger = 0;
+      this.playbackStartAt = Date.now();
+    } else {
+      this.playbackStartAt = 0;
     }
     this.events.onStateChange?.(state);
   }
@@ -219,6 +238,8 @@ export class VoiceSessionClient {
             ...(this.voiceOnly ? { voiceOnly: true } : {}),
             ...(!this.voiceOnly && this.chatSessionId ? { chatSessionId: this.chatSessionId } : {}),
             ...(this.voiceOnly && this.conversationMode !== 'continue' ? { conversationMode: this.conversationMode } : {}),
+            ...(this.wakeWord ? { wakeWord: true } : {}),
+            ...(this.wakeWord && this.wakePhrase ? { wakePhrase: this.wakePhrase } : {}),
             clientSituation,
           }));
         });
@@ -318,15 +339,26 @@ export class VoiceSessionClient {
       // playback so client-side VAD can detect user barge-in. Drop soft frames
       // so speaker bleed and ambient noise don't trigger a false interrupt.
       if (this.state === 'speaking') {
+        // Ignore the mic for a short grace after the assistant begins speaking.
+        // This blocks the initial speaker echo / AEC settle that was causing xAI
+        // to barge-in and cut responses within the first few words.
+        if (Date.now() - this.playbackStartAt < XAI_BARGE_IN_PLAYBACK_GRACE_MS) {
+          return;
+        }
         let sum = 0;
         for (let i = 0; i < pcm.length; i += 1) sum += Math.abs(pcm[i]!);
         const level = Math.min(1, sum / Math.max(1, pcm.length) / 8000);
-        if (level >= XAI_BARGE_IN_TRIGGER_LEVEL) {
+        // Wake mode keeps the mic open continuously; require higher energy for longer
+        // before declaring a barge-in, so speaker echo and brief ambient sounds don’t
+        // cut off the assistant mid-sentence. Manual duplex keeps the fast defaults.
+        const bargeInTriggerLevel = this.wakeWord ? 0.28 : XAI_BARGE_IN_TRIGGER_LEVEL;
+        const bargeInTriggerFrames = this.wakeWord ? 16 : XAI_BARGE_IN_TRIGGER_FRAMES;
+        if (level >= bargeInTriggerLevel) {
           this.duplexSpeechFramesAboveTrigger += 1;
         } else {
           this.duplexSpeechFramesAboveTrigger = 0;
         }
-        if (!this.duplexBargeInTriggered && this.duplexSpeechFramesAboveTrigger >= XAI_BARGE_IN_TRIGGER_FRAMES) {
+        if (!this.duplexBargeInTriggered && this.duplexSpeechFramesAboveTrigger >= bargeInTriggerFrames) {
           this.duplexBargeInTriggered = true;
           this.interruptPlayback();
         }
@@ -382,6 +414,9 @@ export class VoiceSessionClient {
     source.connect(this.workletNode);
     this.workletNode.connect(this.audioContext.destination);
     this.micPrepared = true;
+    // Pre-warm the playback AudioContext so the first assistant chunk doesn't
+    // have to wait for a resume(); this removes the startup jitter on xAI voice.
+    await this.playback.ensureContext();
     if (this.state !== 'processing' && this.state !== 'speaking' && this.state !== 'connecting') {
       this.setState('ready');
     }
@@ -427,6 +462,9 @@ export class VoiceSessionClient {
     this.duplexActive = true;
     this.micPrepared = true;
     this.captureArmed = true;
+    // Pre-warm the playback AudioContext so the first xAI chunk starts cleanly
+    // without the browser's resume-and-play race that was causing startup jitter.
+    await this.playback.ensureContext();
     this.setState('listening');
   }
 
@@ -722,6 +760,12 @@ export class VoiceSessionClient {
         this.events.onError?.(errMsg);
         break;
       }
+      case 'wake_idle':
+        this.events.onWakeIdle?.(
+          Boolean(msg.active),
+          Number(msg.until ?? 0),
+        );
+        break;
       default:
         break;
     }

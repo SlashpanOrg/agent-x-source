@@ -300,6 +300,7 @@ export class VoiceService {
       speakToolProgress: this.config.fillers?.speakToolProgress,
       skipInitialAck,
       onSpeak: async (text) => onSpeak(text),
+      callsign: this.config.callsign,
     });
   }
 

@@ -790,8 +790,8 @@ export function createSessionsRouter(): Router {
       const session = eng.sessionManager.getSessionById(sessionId);
       if (!session) { res.status(404).json({ error: 'not-found' }); return; }
 
-      const { limit, before } = parsed.data;
-      const page = await loadSessionMessagesPage(sessionId, { limit, before });
+      const { limit, before, includeSystem } = parsed.data;
+      const page = await loadSessionMessagesPage(sessionId, { limit, before, includeSystem });
       let parts: Array<Record<string, unknown>> = [];
       try {
         const store = eng.sessionManager.getStorageAdapter?.();

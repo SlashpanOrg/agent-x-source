@@ -213,8 +213,13 @@ export const crewRosterPickerUpdateSchema = z.object({
 });
 
 export const sessionMessagesQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
   before: z.string().min(1).optional(),
+  /** When true, include system/tool ledger messages (parity with session export). */
+  includeSystem: z.preprocess(
+    (v) => v === true || v === 'true' || v === '1',
+    z.boolean().optional(),
+  ),
 });
 
 export const permissionRespondSchema = z.object({

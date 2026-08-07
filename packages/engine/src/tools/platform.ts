@@ -90,7 +90,15 @@ export function getFindCommand(pattern: string): string {
 }
 
 export function getOcrCheckCommand(): string {
-  return `${getWhichCommand()} tesseract 2>nul`;
+  return IS_WINDOWS ? `${getWhichCommand()} tesseract 2>nul` : `${getWhichCommand()} tesseract 2>/dev/null`;
+}
+
+export function getPdftoppmCheckCommand(): string {
+  return IS_WINDOWS ? `${getWhichCommand()} pdftoppm 2>nul` : `${getWhichCommand()} pdftoppm 2>/dev/null`;
+}
+
+export function getPdfinfoCheckCommand(): string {
+  return IS_WINDOWS ? `${getWhichCommand()} pdfinfo 2>nul` : `${getWhichCommand()} pdfinfo 2>/dev/null`;
 }
 
 export function checkCommandExists(command: string): boolean {

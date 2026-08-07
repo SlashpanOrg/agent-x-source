@@ -17,6 +17,8 @@ export interface VoiceProgressSessionOptions {
   skipInitialAck?: boolean;
   /** When ack is skipped, delay heartbeat fillers until the agent runs this long. */
   delayedProgressMs?: number;
+  /** User callsign for personalized ack phrases. */
+  callsign?: string;
 }
 
 export class VoiceProgressSession {
@@ -26,6 +28,7 @@ export class VoiceProgressSession {
   private readonly throttleMs: number;
   private readonly skipInitialAck: boolean;
   private readonly delayedProgressMs: number;
+  private readonly callsign: string;
   private lastSpokenAt = 0;
   private lastLine = '';
   private readonly turnStartedAt = Date.now();
@@ -37,6 +40,7 @@ export class VoiceProgressSession {
     this.throttleMs = options.throttleMs ?? 2500;
     this.skipInitialAck = options.skipInitialAck === true;
     this.delayedProgressMs = options.delayedProgressMs ?? 8000;
+    this.callsign = options.callsign?.trim() || 'sir';
   }
 
   async handleEngineEvent(event: { type?: string; stage?: string; tool?: string }): Promise<void> {
@@ -47,7 +51,7 @@ export class VoiceProgressSession {
 
     if (type === 'loading_start') {
       if (this.skipInitialAck) return;
-      line = pickAckPhrase();
+      line = pickAckPhrase(this.callsign);
       stage = 'ack';
     } else if (type === 'tool_start' && this.speakToolProgress) {
       const tool = event.tool ?? 'tool';

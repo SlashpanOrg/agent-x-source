@@ -130,6 +130,8 @@ export interface VoiceConfig {
   downloadedAssets?: VoiceDownloadedAsset[];
   /** Separate provider/model for voice sessions. Falls back to default provider config. */
   provider?: VoiceProviderConfig;
+  /** User callsign for personalized voice acknowledgements. */
+  callsign?: string;
 }
 
 export type VoiceSidecarHealthState = 'not-installed' | 'stopped' | 'starting' | 'ready' | 'crashed';

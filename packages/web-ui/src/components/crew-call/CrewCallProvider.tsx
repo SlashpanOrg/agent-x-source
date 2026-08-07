@@ -426,6 +426,12 @@ export function CrewCallProvider({ children }: { children: ReactNode }) {
       startGuardRef.current = false;
       return;
     }
+    if (voice?.wakeWordEnabled) {
+      setError('Wake-word mode is active. Disable it in Settings → Voice before placing a call.');
+      setPhase('failed');
+      startGuardRef.current = false;
+      return;
+    }
 
     setPhase('resolving');
     pushLine('system', `Calling ${next.displayName}…`);

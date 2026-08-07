@@ -45,6 +45,10 @@ const CORE_TOOL_PATTERNS = [
   /^whatsapp_/,
   // Document creation tools — needed to build files (PDFs, spreadsheets, etc.) to send back to users
   /^(pdf|docx|xlsx|pptx|csv)_create$/, /^doc_(markdown|html|json|yaml|diagram|latex)$/,
+  // Document / media READ tools — must stay directly callable when users attach
+  // PDFs/images. Hiding pdf_read/image_ocr behind tool_search caused multi-minute
+  // discovery thrash on scanned attachments instead of analysing content.
+  /^(pdf|docx|xlsx|pptx)_read$/, /^image_ocr$/, /^image_view$/,
 ];
 
 const DISCLOSURE_THRESHOLD = 40;

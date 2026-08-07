@@ -65,6 +65,26 @@ function inferTraceKind(spanName: string, attrs: Record<string, unknown>): Trace
   return 'internal';
 }
 
+/** Count tool executions in a trace batch — used when root HTTP spans lack agent.tool_call_count. */
+function countToolCallsInTrace(
+  spans: Array<{ spanContext(): { traceId: string }; name: string; attributes: Record<string, unknown> }>,
+  traceId: string,
+): number {
+  let fromAttr = 0;
+  let fromToolSpans = 0;
+  for (const span of spans) {
+    if (span.spanContext().traceId !== traceId) continue;
+    const attrs = span.attributes ?? {};
+    if (typeof attrs['agent.tool_call_count'] === 'number') {
+      fromAttr = Math.max(fromAttr, attrs['agent.tool_call_count'] as number);
+    }
+    if (attrs['tool.name'] || span.name.startsWith('tool.')) {
+      fromToolSpans += 1;
+    }
+  }
+  return Math.max(fromAttr, fromToolSpans);
+}
+
 // Suppress noisy infrastructure traces from the trace list while still recording
 // HTTP metrics and logging. Spans are dropped for these traces too.
 const SKIP_TRACE_PREFIXES = ['/api/observability/', '/api/auth/', '/api/health'];
@@ -213,7 +233,11 @@ export class PostgresSpanExporter implements SpanExporter {
             : undefined,
         input_tokens: typeof attrs['gen_ai.usage.input_tokens'] === 'number' ? (attrs['gen_ai.usage.input_tokens'] as number) : undefined,
         output_tokens: typeof attrs['gen_ai.usage.output_tokens'] === 'number' ? (attrs['gen_ai.usage.output_tokens'] as number) : undefined,
-        tool_call_count: typeof attrs['agent.tool_call_count'] === 'number' ? (attrs['agent.tool_call_count'] as number) : 0,
+        tool_call_count: (() => {
+          const attrCount = typeof attrs['agent.tool_call_count'] === 'number' ? (attrs['agent.tool_call_count'] as number) : 0;
+          const derived = countToolCallsInTrace(spans, span.spanContext().traceId);
+          return Math.max(attrCount, derived);
+        })(),
         cost_usd: typeof attrs['gen_ai.usage.total_cost'] === 'number' ? (attrs['gen_ai.usage.total_cost'] as number) : 0,
       });
     }
@@ -262,7 +286,7 @@ export class PostgresSpanExporter implements SpanExporter {
             : undefined,
         input_tokens: undefined,
         output_tokens: undefined,
-        tool_call_count: 0,
+        tool_call_count: countToolCallsInTrace(spans, span.trace_id),
         cost_usd: 0,
       });
     }

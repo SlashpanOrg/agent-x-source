@@ -32,6 +32,13 @@ import {
 } from '../../voice-speakable.js';
 import { restorePrimaryToolkitBridge, syncIntegrationToolsIntoToolkit } from '../sync-integration-tools.js';
 import {
+  WAKE_WORD_IDLE_MS,
+  isInWakeIdle,
+  tryStripWakePhrase,
+  normalizeWakePhrase,
+  pickWakeAck,
+} from '../wake-phrase.js';
+import {
   idleMsSince,
   resolveVoiceIdleBand,
   XAI_RESUME_IDLE_MS,
@@ -118,6 +125,9 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   private apiKey: string;
   private model: string;
   private voice: string;
+  private wakeWordEnabled: boolean;
+  private wakePhrase: string;
+  private wakeIdleUntil: number;
   private clientSituation?: ClientSituation | null;
   private realtimeAudioChunks: Buffer[] = [];
   private realtimeRecording = false;
@@ -136,6 +146,8 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     config: AgentXConfig;
     voiceConfig: VoiceConfig;
     apiKey: string;
+    wakeWord?: boolean;
+    wakePhrase?: string;
   }) {
     this.sessionId = options.sessionId;
     this.chatSessionId = options.chatSessionId;
@@ -147,6 +159,9 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     this.apiKey = options.apiKey;
     this.model = this.voiceConfig.xai?.model ?? 'grok-voice-latest';
     this.voice = this.voiceConfig.xai?.voice ?? 'eve';
+    this.wakeWordEnabled = Boolean(options.wakeWord);
+    this.wakePhrase = normalizeWakePhrase(typeof options.wakePhrase === 'string' ? options.wakePhrase : '');
+    this.wakeIdleUntil = 0;
     const baseUrl = this.voiceConfig.xai?.baseUrl ?? XAI_REALTIME_URL;
     const baseWithQuery = baseUrl.includes('?') ? baseUrl : `${baseUrl}?model=${encodeURIComponent(this.model)}`;
     this.xaiUrl = baseWithQuery;
@@ -495,14 +510,19 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     // the reply starts with minimal latency.
     // interrupt_response: true cancels the in-progress response on barge-in.
     // create_response: true auto-starts a reply after the user finishes speaking.
+    // Wake-word mode manages response creation manually so non-wake turns are ignored.
     const turnDetection = this.mode === 'duplex'
       ? {
           type: 'server_vad',
-          threshold: 0.2,
+          // In wake mode the mic is always on; raise the threshold and wait for
+          // longer silence so speaker echo/ambient noise doesn't fragment the user
+          // command or cut the assistant response mid-stream. In normal manual
+          // duplex mode keep the tighter defaults for fast turn-taking.
+          threshold: this.wakeWordEnabled ? 0.30 : 0.2,
           prefix_padding_ms: 50,
-          silence_duration_ms: 100,
+          silence_duration_ms: this.wakeWordEnabled ? 500 : 100,
           interrupt_response: true,
-          create_response: true,
+          create_response: !this.wakeWordEnabled,
         }
       : { type: null };
 
@@ -1069,28 +1089,79 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     if (this.pendingSpeakerPromise) {
       await this.pendingSpeakerPromise;
     }
-    const text = String(event.transcript ?? this.userTranscript);
+    const rawText = String(event.transcript ?? this.userTranscript);
     this.userTranscript = '';
-    const speakerPayload = this.currentSpeaker ? { speakerName: this.currentSpeaker.name } : {};
+    const speaker = this.currentSpeaker ?? (this.voiceprintEnabled ? null : this.defaultRootSpeaker);
+    const speakerPayload = speaker ? { speakerName: speaker.name } : {};
+
+    // Wake-word gating for xAI: non-wake turns outside the idle window are dropped.
+    let text = rawText;
+    let isWakeOnly = false;
+    if (this.wakeWordEnabled && this.mode === 'duplex' && rawText.trim()) {
+      const inIdle = isInWakeIdle(this.wakeIdleUntil);
+      const { startsWith, stripped } = tryStripWakePhrase(rawText, this.wakePhrase);
+      if (!inIdle && !startsWith) {
+        this.transport.sendControl({ type: 'transcript_final', sessionId: this.sessionId, text: '', empty: true, ...speakerPayload });
+        return;
+      }
+      if (startsWith) {
+        isWakeOnly = !stripped.trim();
+        text = stripped;
+        this.wakeIdleUntil = Date.now() + WAKE_WORD_IDLE_MS;
+        this.sendWakeIdle();
+      }
+    }
+
     if (!text.trim()) {
       this.transport.sendControl({ type: 'transcript_final', sessionId: this.sessionId, text: '', empty: true, ...speakerPayload });
+      if (this.wakeWordEnabled && isWakeOnly && this.mode === 'duplex') {
+        this.speakWakeAck();
+      }
       return;
     }
     this.transport.sendControl({ type: 'transcript_final', sessionId: this.sessionId, text, empty: false, ...speakerPayload });
     this.persistUserMessage(text);
+    // xAI only auto-responds when create_response is true. In wake-word mode we
+    // trigger the response after a valid (accepted or idle-continued) turn.
+    if (this.wakeWordEnabled) {
+      this.sendXai({ type: 'response.create' });
+    }
+  }
+
+  /** Notify the client of the current wake-word idle window so the footer can show
+   *  when the wake listener is paused (idle) vs armed (active). */
+  private sendWakeIdle(): void {
+    if (!this.wakeWordEnabled) return;
+    this.transport.sendControl({
+      type: 'wake_idle',
+      sessionId: this.sessionId,
+      until: this.wakeIdleUntil,
+      active: isInWakeIdle(this.wakeIdleUntil),
+    });
+  }
+
+  /** Trigger a short random ack response after the user only says the wake word. */
+  private speakWakeAck(): void {
+    const callsign = this.config.user?.callsign?.trim() || 'sir';
+    const ack = pickWakeAck(callsign);
+    this.sendXai({
+      type: 'response.create',
+      instructions: `Say "${ack}" briefly, then stop and wait for the next user message. Do not say anything else.`,
+    });
   }
 
   private persistUserMessage(text: string): void {
     this.ensureChatSessionRecord();
     const id = this.chatSessionId ?? '__channel__:voice';
+    const speaker = this.currentSpeaker ?? (this.voiceprintEnabled ? null : this.defaultRootSpeaker);
     const metadata: MessageMetadata = {
       engine: 'realtime_xai',
       provider: 'xai',
       model: this.model,
     };
-    if (this.currentSpeaker) {
-      metadata.speakerId = this.currentSpeaker.id ?? null;
-      metadata.speakerName = this.currentSpeaker.name ?? 'anonymous';
+    if (speaker) {
+      metadata.speakerId = speaker.id ?? null;
+      metadata.speakerName = speaker.name ?? 'anonymous';
     }
     if (isCrewVoiceSessionId(id)) {
       const divider = takeCallDividerForPersist(id);
@@ -1320,9 +1391,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     // thinking/processing window before audio begins.
     if (this.state !== 'speaking' && this.state !== 'processing') return;
     if (!this.currentResponseId) return;
-    // Ignore the first ~450ms of TTS — speaker bleed / AEC settle often fires a
-    // spurious speech_started right when playback begins.
-    if (this.speakingStartedAt > 0 && Date.now() - this.speakingStartedAt < 450) {
+    // Ignore the first ~1200ms of TTS — speaker bleed / AEC settle often fires a
+    // spurious speech_started right when playback begins. This window matches the
+    // client-side playback grace so echo can't trip xAI's server-side barge-in.
+    if (this.speakingStartedAt > 0 && Date.now() - this.speakingStartedAt < 1200) {
       getLogger().info('XAI_VOICE', 'Ignoring early speech_started during barge-in grace window');
       return;
     }

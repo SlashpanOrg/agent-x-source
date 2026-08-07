@@ -2,6 +2,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
+import { isUsableExtractedText } from '../../documents/text-quality.js';
 import { resolveScopedPath } from './filesystem.js';
 
 /**
@@ -542,10 +543,25 @@ export async function pdfRead(args: Record<string, unknown>, context: ToolExecut
   try {
     const buffer = readFileSync(filePath);
     const text = extractPdfText(buffer);
-    if (!text.trim()) {
-      return { success: true, output: '(PDF contains no extractable text — it may be image-based/scanned)' };
+    // Fail closed on CID/binary garbage — never return garbled extract as success.
+    if (text.trim() && isUsableExtractedText(text)) {
+      return { success: true, output: truncateOutput(text) };
     }
-    return { success: true, output: truncateOutput(text) };
+    // No usable extractable text — try shell OCR pipeline (pdftoppm → tesseract).
+    try {
+      const { ocrPdfViaShell, cleanupPdfOcrTemp } = await import('../../templates/pdf-ocr.js');
+      const result = await ocrPdfViaShell(filePath, { maxPages: 20, dpi: 200 });
+      const ocrText = result.text.trim();
+      cleanupPdfOcrTemp(result);
+      if (ocrText && isUsableExtractedText(ocrText, { pageCount: result.numPages || undefined })) {
+        return { success: true, output: truncateOutput(`[OCR-extracted text from scanned PDF]\n\n${ocrText}`) };
+      }
+    } catch { /* fall through to message below */ }
+    return {
+      success: false,
+      output: '(PDF contains no usable extractable text and OCR pipeline did not produce output — it may be image-based/scanned with missing OCR tooling)',
+      error: 'PDF_UNREADABLE',
+    };
   } catch (err) {
     return { success: false, output: `Failed to read PDF: ${err instanceof Error ? err.message : String(err)}`, error: 'PDF_READ_ERROR' };
   }
@@ -553,7 +569,12 @@ export async function pdfRead(args: Record<string, unknown>, context: ToolExecut
 
 /** Extract plain text from a PDF buffer (shared with integration bridges). */
 export function extractPdfTextFromBuffer(buffer: Buffer): string {
-  return extractPdfText(buffer);
+  const raw = extractPdfText(buffer);
+  // Garbled binary / CID-mapped content must not short-circuit OCR callers.
+  if (raw.trim().length > 0 && !isUsableExtractedText(raw)) {
+    return '';
+  }
+  return raw;
 }
 
 function extractPdfText(buffer: Buffer): string {

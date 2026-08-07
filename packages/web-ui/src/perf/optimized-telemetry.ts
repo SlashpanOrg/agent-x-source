@@ -26,6 +26,7 @@ export function subscribeOptimizedTelemetry(
 
   return () => {
     scheduler?.flushPending();
+    scheduler?.destroy();
     schedulers.delete(onEvent);
     disconnect();
   };

@@ -1175,7 +1175,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
                     wakeWord: { ...voiceConfig.wakeWord, enabled: e.target.checked },
                   });
                 }}
-                disabled={engine === 'realtime_xai' ? true : !kitReady}
+                disabled={engine === 'realtime_xai' ? !xaiConfigured : !kitReady}
               />
             )}
             label={<Typography sx={{ fontSize: '0.72rem', ...settingsMonoSx }}>Wake word ("{wakePhraseLabel}")</Typography>}

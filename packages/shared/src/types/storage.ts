@@ -230,7 +230,7 @@ export interface StorageAdapter {
   /** Message/part pagination and hydration (optional — primarily Postgres-backed). */
   getMessagesPage?(
     sessionId: string,
-    opts: { limit?: number; before?: string },
+    opts: { limit?: number; before?: string; includeSystem?: boolean },
   ): Promise<{ messages: Array<Record<string, unknown>>; total: number; hasMore: boolean }>;
   getParts?(sessionId: string): Array<Record<string, unknown>>;
   getPartsForMessages?(

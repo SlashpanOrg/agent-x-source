@@ -22,6 +22,10 @@ export interface VoiceCommsContextInput {
   warmupPhase: VoiceWarmupPhase;
   voiceReady: boolean;
   warmupError: string | null;
+  /** Wake-word mode forces a permanent duplex session. */
+  wakeWordEnabled?: boolean;
+  /** Wake phrase used for server-side transcript gating. */
+  wakePhrase?: string;
 }
 
 export interface UseVoiceCommsSessionOptions {
@@ -95,6 +99,8 @@ export function useVoiceCommsSession({
     voiceOnly,
     engine,
     conversationMode,
+    Boolean(voiceCtx?.wakeWordEnabled),
+    voiceCtx?.wakePhrase ?? '',
   );
 
   useEffect(() => {
@@ -115,12 +121,15 @@ export function useVoiceCommsSession({
     void session.ensurePttReady();
   }, [pttEnabled, isDuplex, engine, session.ensurePttReady]);
 
+  const wakeEnabled = Boolean(voiceCtx?.wakeWordEnabled);
+
   useEffect(() => {
     if (!linkEnabled || !isDuplex) return;
     // Link the socket immediately; open the mic when permission is granted.
     // Re-run on `engine` so a Local ↔ xAI swap reconnects when still active.
+    // Also re-run on `wakeEnabled` so toggling wake word rebuilds the session.
     void session.startSession(micReady);
-  }, [linkEnabled, isDuplex, micReady, engine, session.startSession]);
+  }, [linkEnabled, isDuplex, micReady, engine, session.startSession, wakeEnabled]);
 
   useEffect(() => {
     if (active) return;
@@ -244,6 +253,8 @@ export function useVoiceCommsSession({
     relayBusy,
     pushToTalkBlocked,
     statusLabel,
+    wakeIdleActive: session.wakeIdleActive,
+    wakeIdleUntil: session.wakeIdleUntil,
     beginVoice,
     endVoice,
     requestCallKickoff: session.requestCallKickoff,

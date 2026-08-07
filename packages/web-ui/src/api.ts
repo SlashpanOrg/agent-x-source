@@ -629,10 +629,11 @@ export const sessions = {
   submitTurnFeedback: (id: string, body: { messageId: string; rating: 'positive' | 'negative' | 'skipped'; turnSummary?: string; metadata?: Record<string, unknown> }) =>
     request<{ ok: boolean; messageId: string; rating: string }>(`/sessions/${id}/feedback`, { method: 'POST', body: JSON.stringify(body) }),
   listTurnFeedback: (id: string) => request<{ feedback: Array<Record<string, unknown>> }>(`/sessions/${id}/feedback`),
-  getMessagesPage: (id: string, opts?: { limit?: number; before?: string }) => {
+  getMessagesPage: (id: string, opts?: { limit?: number; before?: string; includeSystem?: boolean }) => {
     const params = new URLSearchParams();
     if (opts?.limit != null) params.set('limit', String(opts.limit));
     if (opts?.before) params.set('before', opts.before);
+    if (opts?.includeSystem) params.set('includeSystem', 'true');
     const qs = params.toString();
     return request<{ messages: ChatMessage[]; total: number; hasMore: boolean }>(
       `/sessions/${id}/messages${qs ? `?${qs}` : ''}`,

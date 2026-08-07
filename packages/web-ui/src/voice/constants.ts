@@ -28,3 +28,9 @@ export const XAI_BARGE_IN_TRIGGER_LEVEL = 0.18;
  * notification sounds, and dropped objects, but short enough to feel instant for real words.
  */
 export const XAI_BARGE_IN_TRIGGER_FRAMES = 8;
+/**
+ * After the assistant starts speaking, ignore the mic for this long before
+ * allowing barge-in. This suppresses the first ~1.2s of speaker echo/AEC settle
+ * that was cutting xAI responses within the first few words.
+ */
+export const XAI_BARGE_IN_PLAYBACK_GRACE_MS = 1200;

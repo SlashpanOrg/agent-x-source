@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { ToolPermissionService } from '../src/services/tool/ToolPermissionService.js';
+import { describe, expect, it, vi } from 'vitest';
+import { ToolPermissionService, summarizeToolAction } from '../src/services/tool/ToolPermissionService.js';
 import { PermissionManager } from '../src/tools/permissions/PermissionManager.js';
 import { ToolRegistry } from '../src/tools/ToolRegistry.js';
 import type { ToolDefinition, PermissionRule, PermissionHandlerResult } from '@agentx/shared';
-import type { ToolPermissionHost } from '../src/services/tool/ToolPermissionService.js';
+import type { ToolPermissionHost, PermissionOutcomeEmit } from '../src/services/tool/ToolPermissionService.js';
 
 function buildHost(overrides?: Partial<ToolPermissionHost>): ToolPermissionHost {
   const registry = new ToolRegistry();
@@ -70,21 +70,48 @@ describe('ToolPermissionService', () => {
     expect(result.decision).toBe('allow');
   });
 
-  it('prompts and returns allow_once', async () => {
+  it('clarify-first then prompts and returns allow_once', async () => {
     const registry = new ToolRegistry();
     registry.register(sampleTool());
     const service = new ToolPermissionService();
     const handler = async (): Promise<PermissionHandlerResult> => 'allow_once';
+    const outcomes: PermissionOutcomeEmit[] = [];
     const host = buildHost({
       getRegistry: () => registry,
       getPermissionRequestHandler: () => handler,
+      requestActionConsent: async () => ({ proceed: true, answer: 'Yes' }),
+      grantToolConsent: () => {},
+      emitPermissionOutcome: (o) => outcomes.push(o),
     });
 
     const result = await service.requestPermission(host, 'write_file', {}, 'session', '/project/file.txt');
     expect(result.decision).toBe('allow_once');
+    expect(outcomes.some((o) => o.decision === 'allow_once')).toBe(true);
   });
 
-  it('prompts and grants allow_always', async () => {
+  it('declines when user says No on clarify-first questionnaire', async () => {
+    const registry = new ToolRegistry();
+    registry.register(sampleTool());
+    const service = new ToolPermissionService();
+    let prompted = 0;
+    const outcomes: PermissionOutcomeEmit[] = [];
+    const host = buildHost({
+      getRegistry: () => registry,
+      getPermissionRequestHandler: () => async () => {
+        prompted += 1;
+        return 'allow_once';
+      },
+      requestActionConsent: async () => ({ proceed: false, answer: 'No' }),
+      emitPermissionOutcome: (o) => outcomes.push(o),
+    });
+
+    const result = await service.requestPermission(host, 'write_file', {}, 'session', '/project/file.txt');
+    expect(prompted).toBe(0);
+    expect(result.decision).toBe('deny');
+    expect(outcomes[0]?.decision).toBe('declined_consent');
+  });
+
+  it('prompts and grants allow_always after consent', async () => {
     const registry = new ToolRegistry();
     registry.register(sampleTool());
     const manager = new PermissionManager();
@@ -94,6 +121,8 @@ describe('ToolPermissionService', () => {
       getRegistry: () => registry,
       getPermissionManager: () => manager,
       getPermissionRequestHandler: () => handler,
+      requestActionConsent: async () => ({ proceed: true }),
+      grantToolConsent: () => {},
     });
 
     const result = await service.requestPermission(host, 'write_file', {}, 'session', '/project/file.txt');
@@ -109,15 +138,20 @@ describe('ToolPermissionService', () => {
       type: 'instruct',
       instruction: 'Do not write this file',
     });
+    const outcomes: PermissionOutcomeEmit[] = [];
     const host = buildHost({
       getRegistry: () => registry,
       getPermissionRequestHandler: () => handler,
+      requestActionConsent: async () => ({ proceed: true }),
+      grantToolConsent: () => {},
+      emitPermissionOutcome: (o) => outcomes.push(o),
     });
 
     const result = await service.requestPermission(host, 'write_file', {}, 'session', '/project/file.txt');
     expect(result.decision).toBe('deny');
     expect(result.error).toBe('PERMISSION_INSTRUCTED');
     expect(result.instruction).toBe('Do not write this file');
+    expect(outcomes[0]?.decision).toBe('instructed');
   });
 
   it('skips prompt for exempt read-only tools', async () => {
@@ -161,10 +195,70 @@ describe('ToolPermissionService', () => {
       getAgentPermissions: () => [
         { action: 'tool:write_file', pattern: '*', effect: 'ask' } as PermissionRule,
       ],
+      requestActionConsent: async () => ({ proceed: true }),
+      grantToolConsent: () => {},
     });
 
     const result = await service.requestPermission(host, 'write_file', {}, 'session', '/project/file.txt');
     expect(result.decision).toBe('deny');
     expect(result.error).toBe('PERMISSION_DENIED');
+  });
+
+  it('skips clarify questionnaire when turn consent already recorded, still shows modal', async () => {
+    const registry = new ToolRegistry();
+    registry.register(sampleTool());
+    const manager = new PermissionManager();
+    const service = new ToolPermissionService();
+    let consentCalls = 0;
+    let prompted = 0;
+    const host = buildHost({
+      getRegistry: () => registry,
+      getPermissionManager: () => manager,
+      getPermissionRequestHandler: () => async () => {
+        prompted += 1;
+        return 'allow_once';
+      },
+      getPendingToolConsent: () => new Set(['write_file']),
+      requestActionConsent: async () => {
+        consentCalls += 1;
+        return { proceed: true };
+      },
+    });
+
+    const result = await service.requestPermission(host, 'write_file', {}, 'session', '/project/file.txt');
+    expect(consentCalls).toBe(0);
+    expect(prompted).toBe(1);
+    expect(result.decision).toBe('allow_once');
+  });
+
+  it('serializes: second concurrent permission is denied while first is in flight', async () => {
+    const registry = new ToolRegistry();
+    registry.register(sampleTool());
+    const service = new ToolPermissionService();
+    let releaseConsent!: (v: { proceed: boolean }) => void;
+    const consentGate = new Promise<{ proceed: boolean }>((resolve) => {
+      releaseConsent = resolve;
+    });
+    const host = buildHost({
+      getRegistry: () => registry,
+      getPermissionRequestHandler: () => async () => 'allow_once',
+      requestActionConsent: async () => consentGate,
+      grantToolConsent: () => {},
+    });
+
+    const first = service.requestPermission(host, 'write_file', { path: 'a.txt' }, 'session', 'a.txt');
+    // Let the first flow acquire flowBusy
+    await Promise.resolve();
+    const second = await service.requestPermission(host, 'write_file', { path: 'b.txt' }, 'session', 'b.txt');
+    expect(second.decision).toBe('deny');
+    expect(second.instruction).toMatch(/only one permission/i);
+
+    releaseConsent({ proceed: true });
+    const firstResult = await first;
+    expect(firstResult.decision).toBe('allow_once');
+  });
+
+  it('summarizeToolAction describes file writes clearly', () => {
+    expect(summarizeToolAction('file_write', { path: 'plan.md' }, sampleTool())).toContain('write a file');
   });
 });

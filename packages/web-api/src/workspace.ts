@@ -54,45 +54,37 @@ export function assertValidWorkspacePath(path: string): string {
 
 /**
  * Chat-ingress guard for workspace @file / @folder attachments.
- * - originalPath only allowed with source=workspace
- * - path must resolve inside the active workspace (symlink-safe)
+ * - explicit workspace attachments stay scoped to the active workspace
+ * - direct file references outside the workspace are downgraded to source='mcp'
+ *   and read normally; the user explicitly chose the file for this turn.
  */
 export function assertChatWorkspaceAttachments(
   attachments: TurnAttachment[] | undefined,
   workspaceRoot: string = getActiveWorkspacePath(),
-): { ok: true; attachments: TurnAttachment[] } | { ok: false; error: string; details?: unknown } {
+): { ok: true; attachments: TurnAttachment[] } {
   if (!attachments?.length) return { ok: true, attachments: [] };
 
   const cleaned: TurnAttachment[] = [];
   for (const a of attachments) {
     const hasPath = typeof a.originalPath === 'string' && a.originalPath.length > 0;
-    if (!hasPath && a.source !== 'workspace') {
+    // Anything not claiming to be a workspace ref passes through untouched.
+    if (a.source && a.source !== 'workspace') {
       cleaned.push(a);
       continue;
     }
-
-    if (a.source && a.source !== 'workspace') {
-      return {
-        ok: false,
-        error: 'originalPath is only allowed for workspace attachments',
-        details: { name: a.name, source: a.source },
-      };
-    }
     if (!hasPath) {
-      return {
-        ok: false,
-        error: 'workspace attachments require originalPath',
-        details: { name: a.name },
-      };
+      // No originalPath and no workspace claim — data/url/storageId attachment.
+      cleaned.push(a);
+      continue;
     }
-    if (!isPathInsideRoot(a.originalPath!, workspaceRoot)) {
-      return {
-        ok: false,
-        error: `Attachment path is outside the workspace: ${a.name}`,
-        details: { name: a.name, originalPath: a.originalPath, workspace: workspaceRoot },
-      };
+    if (isPathInsideRoot(a.originalPath!, workspaceRoot)) {
+      // Confirmed workspace path.
+      cleaned.push({ ...a, source: 'workspace', type: a.type ?? 'file' });
+    } else {
+      // Outside the workspace but still a real file path; let the engine register
+      // and read it as a direct chat attachment rather than a workspace ref.
+      cleaned.push({ ...a, source: 'mcp', type: a.type ?? 'file' });
     }
-    cleaned.push({ ...a, source: 'workspace', type: a.type ?? 'file' });
   }
   return { ok: true, attachments: cleaned };
 }

@@ -12,19 +12,19 @@ import { colors, alphaColor } from '../theme';
 import { AttachmentModal } from './AttachmentModal';
 import { normalizeMessageForUi, orderPartsForChatRender } from '@agentx/shared/browser';
 import type { UIMessage, PartEntry, ToolCall } from './types';
-import { displayContent } from './utils';
+import { displayContent, stripToolNoise, stripVoiceChannelBlock, extractVoiceChannelBlock } from './utils';
 import { CrewAwareMarkdown, getWebCrewColor, StreamingMarkdown } from './ChatMarkdown';
 import { collectWebSourceUrls } from './web-source-urls';
 import { ChildSessionInlineCard, type ChildSessionCardProps } from './ChildSessionInlineCard';
 import { ThoughtCollapse } from './ThoughtCollapse';
 import { QuestionnaireMessage } from '../components/questionnaire/QuestionnaireMessage';
+import { PermissionOutcomeChip } from '../components/chat/PermissionOutcomeChip';
 import { CrewRosterPickerMessage } from '../components/crew/CrewRosterPickerMessage';
 import type { CrewMatchCandidate } from '@agentx/shared/browser';
 import { TurnFeedbackBar } from './TurnFeedbackBar';
 import type { TurnFeedbackRating } from '@agentx/shared/browser';
 import { DeepSearchMessageBlock } from './DeepSearchMessageBlock';
 import { formatVoiceTimingMs } from '../voice/timing';
-import { extractVoiceChannelBlock, stripVoiceChannelBlock } from './utils';
 import { ChartBlock } from './ChartBlock';
 import { WorkflowEntryCard } from './WorkflowEntryCard';
 import { usePersonaName } from '../hooks/usePersonaName';
@@ -252,6 +252,7 @@ function renderParts(
     if (p.type === 'chart') return !!p.chartJson;
     if (p.type === 'subagent') return !!p.agent;
     if (p.type === 'questionnaire') return !!p.questionnaire;
+    if (p.type === 'permission') return !!p.permission;
     if (p.type === 'crew_roster_picker') return !!p.crewRosterPicker;
     return false;
   });
@@ -290,13 +291,13 @@ function renderParts(
         return (
           <ThoughtCollapse
             key={part.id}
-            text={part.content}
+            text={stripToolNoise(part.content, { trim: false })}
             live={streaming && isLastPart}
           />
         );
       case 'text':
         if (!part.content) return null;
-        const textContent = stripVoiceChannelBlock(part.content);
+        const textContent = stripVoiceChannelBlock(stripToolNoise(part.content, { trim: false }));
         if (!textContent) return null;
         return streaming
           ? (
@@ -336,6 +337,9 @@ function renderParts(
             }
           />
         );
+      case 'permission':
+        if (!part.permission) return null;
+        return <PermissionOutcomeChip key={part.id} record={part.permission} />;
       case 'crew_roster_picker':
         if (!part.crewRosterPicker) return null;
         return (
@@ -669,7 +673,7 @@ function ChatMessageTurnComponent({ message, loadingSteps, onOpenChildSession, o
       {hasParts || cleanContent || hasQuestionnaire ? contentBlock : null}
       {/* Legacy fallback: thinking blob with no chronological thinking parts. */}
       {!hasParts && thinkingText ? (
-        <ThoughtCollapse text={thinkingText} live={!!message.streaming} />
+        <ThoughtCollapse text={stripToolNoise(thinkingText, { trim: false })} live={!!message.streaming} />
       ) : null}
 
       {orphanSubAgentCards.length > 0 && onOpenChildSession && (
@@ -827,7 +831,7 @@ function propsEqual(prev: { message: UIMessage; loadingSteps?: Array<{ id: strin
   if (pm.voiceTimings?.totalMs !== nm.voiceTimings?.totalMs) return false;
   const isRenderedPart = (p: NonNullable<UIMessage['parts']>[number]) =>
     p.type === 'text' || p.type === 'thinking' || p.type === 'chart' || p.type === 'questionnaire'
-    || p.type === 'crew_roster_picker' || p.type === 'subagent' || p.type === 'tool';
+    || p.type === 'crew_roster_picker' || p.type === 'subagent' || p.type === 'tool' || p.type === 'permission';
   const prevParts = (pm.parts ?? []).filter(isRenderedPart);
   const nextParts = (nm.parts ?? []).filter(isRenderedPart);
   if (pm.parts !== nm.parts) {
@@ -840,6 +844,7 @@ function propsEqual(prev: { message: UIMessage; loadingSteps?: Array<{ id: strin
       if (pp.type === 'thinking' && pp.content !== np.content) return false;
       if (pp.type === 'chart' && pp.chartJson !== np.chartJson) return false;
       if (pp.type === 'questionnaire' && pp.questionnaire?.status !== np.questionnaire?.status) return false;
+      if (pp.type === 'permission' && pp.permission?.decision !== np.permission?.decision) return false;
       if (pp.type === 'subagent' && (pp.agent?.status !== np.agent?.status || pp.agent?.result !== np.agent?.result)) return false;
       if (pp.type === 'tool' && (pp.tool?.status !== np.tool?.status || pp.tool?.result !== np.tool?.result)) return false;
       if (pp.type === 'crew_roster_picker') {

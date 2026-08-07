@@ -5,6 +5,8 @@ export {
   partsCorruptedByCrossTurn,
   partsToolIdsMismatch,
   partsTextExceedsContent,
+  partsTextTruncatesContent,
+  syncTextPartsWithCanonicalContent,
   dedupeToolParts,
   buildPartsFromDbRows,
   assignPartsToAssistantMessage,
@@ -18,6 +20,16 @@ export {
 export type { MessagePart, PersistedToolCall } from './utils/message-parts.js';
 
 export { appendStreamText, repairStreamTextGlitches, extractStreamTextDelta } from './utils/stream-text.js';
+
+export {
+  sanitizeForJson,
+  mapOverNonCodeSegments,
+  decodeLiteralUnicodeEscapes,
+  stripInvisibleFormatChars,
+  stripResidualInvisibleEscapeSpellings,
+  sanitizeAssistantDisplayText,
+  stripToolNoise,
+} from './utils/text-sanitize.js';
 
 export {
   upsertDeepSearchPart,
@@ -65,6 +77,11 @@ export type {
   QuestionnaireAnswerValue,
   QuestionnaireResponseState,
 } from './types/questionnaire.js';
+
+export type {
+  PermissionOutcomeRecord,
+  PermissionOutcomeDecision,
+} from './types/permission-outcome.js';
 
 export type { ClarificationField, ClarificationSource } from './types/events.js';
 

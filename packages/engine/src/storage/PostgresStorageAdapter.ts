@@ -1150,7 +1150,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
 
   async getMessagesPage(
     sessionId: string,
-    opts: { limit?: number; before?: string },
+    opts: { limit?: number; before?: string; includeSystem?: boolean },
   ): Promise<{ messages: Array<Record<string, unknown>>; total: number; hasMore: boolean }> {
     return getMessagesPageImpl(this.messageCtx(), sessionId, opts);
   }

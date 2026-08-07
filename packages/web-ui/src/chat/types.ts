@@ -32,12 +32,13 @@ export interface SubAgent {
 import type { QuestionnaireRecord } from '@agentx/shared/browser';
 
 export interface PartEntry extends Record<string, unknown> {
-  type: 'text' | 'tool' | 'subagent' | 'questionnaire' | 'crew_roster_picker' | 'deep_search' | 'chart' | 'thinking';
+  type: 'text' | 'tool' | 'subagent' | 'questionnaire' | 'crew_roster_picker' | 'deep_search' | 'chart' | 'thinking' | 'permission';
   id: string;
   content?: string;
   tool?: ToolCall;
   agent?: SubAgent;
   questionnaire?: QuestionnaireRecord;
+  permission?: import('@agentx/shared/browser').PermissionOutcomeRecord;
   crewRosterPicker?: import('../components/crew/CrewRosterPickerMessage').CrewRosterPickerRecord;
   /** Canonical ChartSpec JSON for structured chart parts. */
   chartJson?: string;

@@ -29,6 +29,10 @@ export function useVoiceSession(
   engine: VoiceEngineKind = 'stt_llm_tts',
   /** Dashboard voice activation mode: 'continue' (hydrate history) or 'new' (fresh start). */
   conversationMode: 'continue' | 'new' = 'continue',
+  /** Wake-word mode enables server-side transcript gating. */
+  wakeWord = false,
+  /** Wake phrase for server-side gating. */
+  wakePhrase = '',
 ) {
   const chatSessionId = typeof chatSessionIdOrCallbacks === 'string'
     ? chatSessionIdOrCallbacks
@@ -63,6 +67,13 @@ export function useVoiceSession(
   const [playbackActive, setPlaybackActive] = useState(false);
   const [turnPipeline, setTurnPipeline] = useState<VoiceTurnPipeline>('idle');
   const [pttReady, setPttReady] = useState(false);
+  const [wakeIdleUntil, setWakeIdleUntil] = useState(0);
+  const [wakeIdleTick, setWakeIdleTick] = useState(Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setWakeIdleTick(Date.now()), 500);
+    return () => window.clearInterval(id);
+  }, []);
+  const wakeIdleActive = wakeIdleUntil > 0 && wakeIdleTick < wakeIdleUntil;
   const pttTurnLockedRef = useRef(false);
   const agentTurnCompleteRef = useRef(false);
   const timerRef = useRef<number | null>(null);
@@ -84,17 +95,19 @@ export function useVoiceSession(
     if (warningTimerRef.current) window.clearTimeout(warningTimerRef.current);
   }, []);
 
-  // Tear down when mode / chat session / engine changes (not on first mount).
+  // Tear down when mode / chat session / engine / wake word changes (not on first mount).
   // Callers that keep `enabled` true will reconnect via startSession / ensurePttReady.
-  const sessionIdentityRef = useRef({ chatSessionId, mode, engine, conversationMode });
+  const sessionIdentityRef = useRef({ chatSessionId, mode, engine, conversationMode, wakeWord, wakePhrase });
   useEffect(() => {
     const prev = sessionIdentityRef.current;
     const changed =
       prev.chatSessionId !== chatSessionId
       || prev.mode !== mode
       || prev.engine !== engine
-      || prev.conversationMode !== conversationMode;
-    sessionIdentityRef.current = { chatSessionId, mode, engine, conversationMode };
+      || prev.conversationMode !== conversationMode
+      || prev.wakeWord !== wakeWord
+      || prev.wakePhrase !== wakePhrase;
+    sessionIdentityRef.current = { chatSessionId, mode, engine, conversationMode, wakeWord, wakePhrase };
     if (!changed) return;
 
     clientRef.current?.disconnect();
@@ -111,7 +124,7 @@ export function useVoiceSession(
     setPartialTranscript('');
     setError(null);
     stopTimer();
-  }, [chatSessionId, mode, engine, stopTimer]);
+  }, [chatSessionId, mode, engine, conversationMode, wakeWord, wakePhrase, stopTimer]);
 
   useEffect(() => {
     if (!enabled) {
@@ -154,6 +167,8 @@ export function useVoiceSession(
         chatSessionId,
         voiceOnly,
         conversationMode,
+        wakeWord,
+        wakePhrase,
         onStateChange: (nextState) => {
           setState(nextState);
           if (nextState === 'listening' || nextState === 'ready') {
@@ -329,6 +344,9 @@ export function useVoiceSession(
         },
         onPermissionPrompt: (prompt) => setPermissionPrompt(prompt),
         onPermissionResolved: () => setPermissionPrompt(null),
+        onWakeIdle: (_active, until) => {
+          setWakeIdleUntil(until);
+        },
       });
     }
     return clientRef.current;
@@ -641,6 +659,8 @@ export function useVoiceSession(
     mode,
     textOnlyPlayback,
     voiceTimings,
+    wakeIdleActive,
+    wakeIdleUntil,
     permissionPrompt,
     respondToPermission,
     startSession,

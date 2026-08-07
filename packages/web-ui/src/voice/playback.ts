@@ -32,7 +32,13 @@ export class StreamingPlayback {
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
-    const startAt = Math.max(ctx.currentTime, this.nextStartTime);
+    // When nothing is currently playing, schedule the first chunk a few ms in the
+    // future. This prevents the browser from starting with a time in the past and
+    // skipping the first few samples — which was causing the xAI voice to jitter
+    // right at the beginning of playback.
+    const startAt = this.activeSources.length === 0
+      ? ctx.currentTime + 0.05
+      : Math.max(ctx.currentTime, this.nextStartTime);
     source.start(startAt);
     this.nextStartTime = startAt + buffer.duration;
     this.activeSources.push(source);

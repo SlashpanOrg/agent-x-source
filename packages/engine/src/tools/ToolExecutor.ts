@@ -120,6 +120,15 @@ export class ToolExecutor implements ToolPermissionHost {
   private turnAborted = false;
   private permissionPromptHook?: PermissionPromptHook;
   private permissionService: ToolPermissionService;
+  /** Clarify-first consent (questionnaire) before permission modal. */
+  private actionConsentHandler: ((
+    toolId: string,
+    args: Record<string, unknown>,
+    definition: import('@agentx/shared').ToolDefinition,
+  ) => Promise<import('../services/tool/ToolPermissionService.js').ActionConsentResult>) | null = null;
+  private permissionOutcomeHandler: ((
+    outcome: import('../services/tool/ToolPermissionService.js').PermissionOutcomeEmit,
+  ) => void) | null = null;
   /** Per-session file read cache keyed by resolved absolute path. */
   private fileReadCachePerSession = new Map<string, Map<string, { content: string; mtimeMs: number; size: number }>>();
   /** Attachments collected from tool handlers during a turn. */
@@ -311,6 +320,37 @@ export class ToolExecutor implements ToolPermissionHost {
     this.pendingToolConsent.clear();
   }
 
+  setActionConsentHandler(
+    handler: (
+      toolId: string,
+      args: Record<string, unknown>,
+      definition: import('@agentx/shared').ToolDefinition,
+    ) => Promise<import('../services/tool/ToolPermissionService.js').ActionConsentResult>,
+  ): void {
+    this.actionConsentHandler = handler;
+  }
+
+  setPermissionOutcomeHandler(
+    handler: (outcome: import('../services/tool/ToolPermissionService.js').PermissionOutcomeEmit) => void,
+  ): void {
+    this.permissionOutcomeHandler = handler;
+  }
+
+  async requestActionConsent(
+    toolId: string,
+    args: Record<string, unknown>,
+    definition: import('@agentx/shared').ToolDefinition,
+  ): Promise<import('../services/tool/ToolPermissionService.js').ActionConsentResult> {
+    // No clarify UI wired (automation workers, early boot, unit tests) — skip the
+    // questionnaire gate and let the permission modal / bypass path decide.
+    if (!this.actionConsentHandler) return { proceed: true, answer: '' };
+    return this.actionConsentHandler(toolId, args, definition);
+  }
+
+  emitPermissionOutcome(outcome: import('../services/tool/ToolPermissionService.js').PermissionOutcomeEmit): void {
+    this.permissionOutcomeHandler?.(outcome);
+  }
+
   getRegistry(): ToolRegistry {
     return this.registry;
   }
@@ -461,6 +501,11 @@ export class ToolExecutor implements ToolPermissionHost {
       }
     }
 
+    // Sync user-attached file paths into the ScopeGuard so tools can read files
+    // the user explicitly attached to the chat, even if they live outside the
+    // workspace scope. The act of attaching a file IS the user's authorization.
+    this.syncAttachmentAuthorizations(sessionId);
+
     // Check scope for ALL path-like arguments
     const pathKeys = ['path', 'filePath', 'file', 'target', 'from', 'to', 'cwd', 'output', 'source', 'archive', 'file1', 'file2', 'database'];
     let scopePathForHook: string | undefined;
@@ -510,6 +555,9 @@ export class ToolExecutor implements ToolPermissionHost {
         error: permissionResult.error ?? 'PERMISSION_DENIED',
       };
     }
+
+    // Record turn consent so subsequent calls of the same tool don't re-prompt.
+    this.grantToolConsent(toolId);
 
     if (this.turnAborted || options?.signal?.aborted) {
       return {
@@ -642,6 +690,25 @@ export class ToolExecutor implements ToolPermissionHost {
 
   getScopeGuard(): ScopeGuard {
     return this.scopeGuard;
+  }
+
+  /**
+   * Sync all user-attached file paths for the current session into the ScopeGuard
+   * so that tools (file_read, pdf_read, image_ocr, etc.) can read files the user
+   * explicitly attached to the chat, even if they live outside the workspace.
+   *
+   * The user's act of attaching a file IS the authorization to read it — no
+   * scope check or permission prompt should block access to it.
+   */
+  private syncAttachmentAuthorizations(sessionId: string): void {
+    this.scopeGuard.clearAuthorizedAttachmentPaths();
+    try {
+      const service = getAttachmentService();
+      const paths = service.getSessionAttachmentPaths(sessionId);
+      if (paths.length > 0) {
+        this.scopeGuard.authorizeAttachmentPaths(paths);
+      }
+    } catch { /* best-effort — AttachmentService may not be initialized yet */ }
   }
 }
 

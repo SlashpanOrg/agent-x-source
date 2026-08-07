@@ -11,7 +11,6 @@ import {
 import { useLocation } from 'react-router-dom';
 import { voice, personaApi } from '../../api';
 import { getCoreSessionId } from '../../perf/api-cache';
-import { useWakeWord } from '../../hooks/useWakeWord';
 import { useVoiceWarmup, type VoiceWarmupPhase } from '../../hooks/useVoiceWarmup';
 import { useVoiceCommsSession, type VoiceCommsContextInput } from '../../hooks/useVoiceCommsSession';
 import { voiceDisabledReason } from '../../voice/support';
@@ -56,6 +55,8 @@ interface VoiceContextValue {
   retryVoiceWarmup: () => void;
   /** Dashboard voice card active state (persisted across navigation). */
   voiceActive: boolean;
+  /** True when the dashboard voice session is live (manual or wake-word). */
+  commsActive: boolean;
   setVoiceActive: (active: boolean) => void;
   /**
    * Dashboard voice activation mode for the current/next activation:
@@ -117,20 +118,27 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
 
   const voiceReady = voiceEnabled && canRunWeb && !voiceDisabledReason();
 
+  // Session is active for the dashboard (manual) or for wake-word (always when enabled).
+  const commsActive = (voiceActive || wakeWordEnabled) && voiceReady;
+
   // Build the voice context input for useVoiceCommsSession (avoids circular dep
   // on useVoiceOptional when called from within VoiceProvider).
   const commsVoiceContext: VoiceCommsContextInput = useMemo(() => ({
-    voiceConfig,
+    voiceConfig: wakeWordEnabled && voiceConfig
+      ? { ...voiceConfig, mode: { ...voiceConfig.mode, web: 'duplex' } }
+      : voiceConfig,
     warmupPhase: warmup.phase,
     voiceReady,
     warmupError: warmup.error,
-  }), [voiceConfig, warmup.phase, voiceReady, warmup.error]);
+    wakeWordEnabled,
+    wakePhrase,
+  }), [voiceConfig, warmup.phase, voiceReady, warmup.error, wakeWordEnabled, wakePhrase]);
 
   // Dashboard voice-only comms session — lives at VoiceProvider level so the
   // WebSocket stays alive across page navigation. PTT keyboard is gated to the
   // dashboard page only; xAI duplex works on any page.
   const dashboardComms = useVoiceCommsSession({
-    active: voiceActive && voiceReady,
+    active: commsActive,
     voiceOnly: true,
     requestMicOnActivate: true,
     voiceContext: commsVoiceContext,
@@ -181,22 +189,22 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
     }, 400);
   }, [warmup.releaseSidecar, warmup.engineWarmAtLaunch]);
 
-  // Retain/release the voice engine based on dashboard voiceActive state.
-  // This keeps the engine warm as long as the dashboard voice card is active,
+  // Retain/release the voice engine based on active voice session (dashboard or wake-word).
+  // This keeps the engine warm as long as either session is active,
   // even when the user navigates to other pages.
   useEffect(() => {
-    if (voiceActive && voiceReady) {
+    if (commsActive) {
       retainVoiceEngine();
       return () => { releaseVoiceEngine(); };
     }
-  }, [voiceActive, voiceReady, retainVoiceEngine, releaseVoiceEngine]);
+  }, [commsActive, retainVoiceEngine, releaseVoiceEngine]);
 
   const applyVoiceConfigSnapshot = useCallback((cfg: VoiceConfig) => {
     setVoiceConfig(cfg);
-    setVoiceEnabled(Boolean(cfg.enabled));
-    // Wake word uses browser SpeechRecognition; it works with any engine, but the
-    // toggle is disabled for xAI in settings to avoid confusion. Keep it off here.
-    setWakeWordEnabled(Boolean(cfg.wakeWord?.enabled) && cfg.engine !== 'realtime_xai');
+    // Wake word is an active voice feature, so treat voice as enabled if either
+    // the master switch or the wake-word switch is on.
+    setVoiceEnabled(Boolean(cfg.enabled) || Boolean(cfg.wakeWord?.enabled));
+    setWakeWordEnabled(Boolean(cfg.wakeWord?.enabled));
   }, []);
 
   const loadVoiceState = useCallback(async () => {
@@ -208,10 +216,13 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
         personaApi.get().catch(() => ({} as Record<string, never>)),
       ]);
       setVoiceConfig(cfg);
-      setVoiceEnabled(Boolean(cfg.enabled));
-      setWakeWordEnabled(Boolean(cfg.wakeWord?.enabled) && cfg.engine !== 'realtime_xai');
+      // Wake word is an active voice feature, so treat voice as enabled if either
+      // the master switch or the wake-word switch is on.
+      setVoiceEnabled(Boolean(cfg.enabled) || Boolean(cfg.wakeWord?.enabled));
+      setWakeWordEnabled(Boolean(cfg.wakeWord?.enabled));
       const personaName = typeof persona?.name === 'string' ? persona.name : null;
-      setWakePhrase(resolveWakePhrase(personaName));
+      const customPhrase = cfg.wakeWord?.phrase?.trim() ? cfg.wakeWord.phrase : null;
+      setWakePhrase(resolveWakePhrase(customPhrase ?? personaName));
       setCanRunWeb(Boolean(caps.capabilities.canRunWeb));
       if (coreSessionId) setCoreSessionId(coreSessionId);
     } catch {
@@ -221,13 +232,11 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
     }
   }, []);
 
-  // Defer heavy voice config/capability loads until a voice-capable surface or
-  // an active voice session — avoids competing with Crew Hub / settings work.
-  const voiceSurface =
-    isDashboard
-    || location.pathname.includes('/console/chat')
-    || location.pathname.includes('/console/settings')
-    || voiceActive;
+  // Wake word is an always-on feature that can be triggered from any page, so
+  // load voice config/capabilities at app start rather than only on the dashboard
+  // or voice settings page. This ensures the duplex session starts even if the
+  // user lands elsewhere.
+  const voiceSurface = true;
 
   useEffect(() => {
     if (!voiceSurface) return;
@@ -261,14 +270,6 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
     };
   }, [loadVoiceState, applyVoiceConfigSnapshot, voiceSurface]);
 
-  const onWakeWord = useCallback(() => {
-    if (!voiceEnabled || !canRunWeb || voiceDisabledReason()) return;
-    // Wake word activates the dashboard Voice Agent — chat stays text-only.
-    setVoiceActive(true);
-  }, [voiceEnabled, canRunWeb, setVoiceActive]);
-
-  useWakeWord(wakeWordEnabled && voiceEnabled && canRunWeb, wakePhrase, onWakeWord);
-
   const value = useMemo<VoiceContextValue>(() => ({
     coreSessionId,
     voiceReady,
@@ -286,6 +287,7 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
     releaseVoiceSidecar: releaseVoiceEngine,
     retryVoiceWarmup: warmup.retry,
     voiceActive,
+    commsActive,
     setVoiceActive,
     conversationMode,
     setConversationMode,
@@ -305,6 +307,7 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
     releaseVoiceEngine,
     warmup.retry,
     voiceActive,
+    commsActive,
     setVoiceActive,
     conversationMode,
     setConversationMode,

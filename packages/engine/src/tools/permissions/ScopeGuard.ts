@@ -14,6 +14,13 @@ export class ScopeGuard {
   private gitRoot: string | null = null;
   private gitBranch: string | null = null;
   private allowOutsideGit: boolean = false;
+  /**
+   * Paths explicitly authorized by the user by attaching a file to the chat.
+   * These bypass all scope/git/dangerous-path checks (except null bytes) because
+   * the user's act of attaching the file IS the authorization. The agent must be
+   * able to read these files even if they live outside the workspace scope.
+   */
+  private authorizedAttachmentPaths: Set<string> = new Set();
 
   constructor(scopePath: string, gitAware = false) {
     this.scopePath = normalize(resolve(scopePath));
@@ -64,9 +71,17 @@ export class ScopeGuard {
       return { valid: false, resolved: targetPath, error: 'Path contains null bytes' };
     }
 
+    let resolved = normalize(resolve(this.scopePath, targetPath));
+
+    // User-attached files: the act of attaching a file to the chat IS the user's
+    // authorization to read it. These paths bypass ALL scope/git/dangerous-path
+    // checks — the user explicitly chose to share this file with the agent.
+    if (this.isAuthorizedAttachmentPath(targetPath) || this.isAuthorizedAttachmentPath(resolved)) {
+      return { valid: true, resolved };
+    }
+
     // Agent-internal paths (data/tmp) are always allowed — these are app-scoped scratch
     // and deliverable directories, not user workspace, so they never require scope checks.
-    let resolved = normalize(resolve(this.scopePath, targetPath));
     if (isAgentInternalPath(targetPath) || isAgentInternalPath(resolved)) {
       return { valid: true, resolved };
     }
@@ -159,6 +174,50 @@ export class ScopeGuard {
 
   getScopePath(): string {
     return this.scopePath;
+  }
+
+  /**
+   * Register a file path as an authorized attachment for this session.
+   * The user explicitly attached this file to the chat — all scope checks
+   * are bypassed for this path. Both the original path and the internal
+   * storage path are registered.
+   */
+  authorizeAttachmentPath(absPath: string): void {
+    if (!absPath) return;
+    const normalized = normalize(resolve(absPath));
+    this.authorizedAttachmentPaths.add(normalized);
+    // Also resolve symlinks so realpath comparisons match.
+    try {
+      if (existsSync(normalized)) {
+        const real = normalize(realpathSync(normalized));
+        this.authorizedAttachmentPaths.add(real);
+      }
+    } catch { /* best-effort */ }
+  }
+
+  /** Register multiple attachment paths at once. */
+  authorizeAttachmentPaths(absPaths: string[]): void {
+    for (const p of absPaths) this.authorizeAttachmentPath(p);
+  }
+
+  /** Check if a path is an authorized attachment path. */
+  isAuthorizedAttachmentPath(targetPath: string): boolean {
+    if (this.authorizedAttachmentPaths.size === 0) return false;
+    const normalized = normalize(resolve(targetPath));
+    if (this.authorizedAttachmentPaths.has(normalized)) return true;
+    // Check realpath too (symlinks).
+    try {
+      if (existsSync(normalized)) {
+        const real = normalize(realpathSync(normalized));
+        return this.authorizedAttachmentPaths.has(real);
+      }
+    } catch { /* best-effort */ }
+    return false;
+  }
+
+  /** Clear all authorized attachment paths (e.g. on session change). */
+  clearAuthorizedAttachmentPaths(): void {
+    this.authorizedAttachmentPaths.clear();
   }
 
   getGitManager(): GitManager | null {

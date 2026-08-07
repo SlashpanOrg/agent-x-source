@@ -17,9 +17,11 @@ import type {
   ThinkingMode,
   OutputMode,
 } from '@agentx/shared';
-import { FailoverReason, generateMessageId, getLogger, type ChannelKind, getConfigDir, formatClientSituationBlock, isMessagingChannel, formatQuestionnaireForMessagingChannel, shouldUseQuestionnaireClarification, type PermissionHandlerResult, parseChannelBindingFromSessionId, allowsCrewInvolvement, crewParticipationMode, deniesAutonomousCrewTools, THINKING_MODE_TOOL_BUDGET, THINKING_MODE_REASONING_EFFORT, THINKING_MODE_SKIP_RETRIEVAL, THINKING_MODE_SKIP_REFORMULATE, THINKING_MODE_SKIP_EXTRACT_MEMORIES, THINKING_MODE_ALLOW_DEEP_SEARCH, OUTPUT_MODE_MAX_TOKENS, DEFAULT_THINKING_MODE, DEFAULT_OUTPUT_MODE, isValidThinkingMode, isValidOutputMode } from '@agentx/shared';
+import { FailoverReason, generateMessageId, getLogger, type ChannelKind, getConfigDir, formatClientSituationBlock, isMessagingChannel, formatQuestionnaireForMessagingChannel, shouldUseQuestionnaireClarification, type PermissionHandlerResult, type PermissionOutcomeRecord, parseChannelBindingFromSessionId, allowsCrewInvolvement, crewParticipationMode, deniesAutonomousCrewTools, THINKING_MODE_TOOL_BUDGET, THINKING_MODE_REASONING_EFFORT, THINKING_MODE_SKIP_RETRIEVAL, THINKING_MODE_SKIP_REFORMULATE, THINKING_MODE_SKIP_EXTRACT_MEMORIES, THINKING_MODE_ALLOW_DEEP_SEARCH, OUTPUT_MODE_MAX_TOKENS, DEFAULT_THINKING_MODE, DEFAULT_OUTPUT_MODE, isValidThinkingMode, isValidOutputMode } from '@agentx/shared';
+import { summarizeToolAction, type PermissionOutcomeEmit } from '../services/tool/ToolPermissionService.js';
 import { Scope } from '../concurrency/Scope.js';
 import { getAttachmentService } from '../attachments/index.js';
+import { materializeAttachment, cleanupDocumentTemps } from '../documents/DocumentPipeline.js';
 import { join, resolve, normalize } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 
@@ -258,6 +260,16 @@ export interface AgentOptions {
   thinkingMode?: import('@agentx/shared').ThinkingMode;
   /** Output mode for this turn — controls response verbosity and format. */
   outputMode?: import('@agentx/shared').OutputMode;
+}
+
+/** Parse Yes/No from clarify-first questionnaire answers (`Shall I …?: Yes`). */
+function isAffirmativeConsentAnswer(answer: string): boolean {
+  const raw = (answer ?? '').trim();
+  if (!raw || raw === '(skipped)') return false;
+  const afterColon = raw.includes(':') ? raw.slice(raw.lastIndexOf(':') + 1).trim() : raw;
+  const v = afterColon.toLowerCase();
+  if (/^(no|nope|nah|cancel|deny|decline)\b/.test(v)) return false;
+  return /^(yes|yeah|yep|y|sure|ok|okay|go ahead|proceed|do it|allow|approve)\b/.test(v);
 }
 
 export class Agent {
@@ -580,6 +592,7 @@ export class Agent {
     if (!this._inputNormalizer) {
       this._inputNormalizer = new InputNormalizer();
       this._inputNormalizer.setWorkspaceRoot(this.scopePath);
+      this._inputNormalizer.setSessionId(this.sessionId);
     }
     return this._inputNormalizer;
   }
@@ -1543,6 +1556,7 @@ export class Agent {
     this.scopePath = normalize(resolve(path));
     this.toolExecutor?.setScopePath(this.scopePath);
     this._inputNormalizer?.setWorkspaceRoot(this.scopePath);
+    this._inputNormalizer?.setSessionId(this.sessionId);
   }
 
   /**
@@ -3172,16 +3186,24 @@ export class Agent {
           'before i', 'so i can build', 'so i can prepare', 'so i can create',
           'let me know', 'which would you prefer', 'would you prefer',
           'i\'ll ask', 'i will ask', 'need to know', 'a few questions',
+          'question 1 of', 'question 2 of', 'question 3 of', 'question 4 of',
+          'please choose', 'pick one', 'select one', 'reply with',
         ];
         const lowerContent = content.toLowerCase();
         const hasTransition = transitionPhrases.some(p => lowerContent.includes(p));
+        // Free-text choice dumps: "Question N of M" / bullet Yes-No / A) B) lists without ask_clarification
+        const hasTextChoiceDump = (
+          /question\s+\d+\s+of\s+\d+/i.test(content)
+          || (/\b(yes|no)\b/i.test(content) && /^\s*[-*•]\s+/m.test(content) && /\?/.test(content))
+          || (/^\s*([A-D][\).]|[-*•])\s+\S+/m.test(content) && /\b(which|choose|prefer|option|select)\b/i.test(content))
+        );
         const calledClarify = this.toolCallLogForReflection.some(t => t.name === 'ask_clarification');
         const calledAnyTool = this.toolCallLogForReflection.length > 0;
 
-        if (hasTransition && !calledClarify && !this.options.skipEmptyResponseRetry) {
+        if ((hasTransition || hasTextChoiceDump) && !calledClarify && !this.options.skipEmptyResponseRetry) {
           getLogger().warn(
             'AGENT',
-            `Transition-phrase detected (${content.length} chars, ${toolExecs} tools, no ask_clarification) — forcing continuation to call ask_clarification`,
+            `Choice-without-questionnaire detected (${content.length} chars, ${toolExecs} tools, no ask_clarification) — forcing continuation to call ask_clarification`,
           );
           try {
             const contMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
@@ -3189,7 +3211,7 @@ export class Agent {
               { role: 'assistant', content: content || '(prior work)' },
               {
                 role: 'user',
-                content: `[SYSTEM] You just said you would ask the user a question or present choices, but you did NOT call the ask_clarification tool. You MUST call ask_clarification NOW with a single_choice or multi_choice question. Do not output any text — just call the tool. The user is waiting for your structured questionnaire.`,
+                content: `[SYSTEM] You presented a choice question as plain text (or said you would ask), but you did NOT call ask_clarification. You MUST call ask_clarification NOW with a single_choice or multi_choice question (one question only). Do not output any assistant text — just call the tool. Never list Yes/No or A/B options as markdown bullets.`,
               },
             ];
             const contText = await withSpan('llm.transition_retry', 'llm', async (span) => {
@@ -3905,6 +3927,89 @@ export class Agent {
     // Capture values the helper set on the ctx so they persist across _permissionCtx() calls.
     this.permissionQueue = ctx.permissionQueue;
     this.processPermissionQueueFn = ctx.processPermissionQueue;
+    this.bindActionConsentHandlers();
+  }
+
+  /**
+   * Clarify-first + inline outcome chips: before any permission modal, ask
+   * "Shall I …?" via questionnaire; persist each decision as a chat part.
+   */
+  private bindActionConsentHandlers(): void {
+    if (!this.toolExecutor) return;
+
+    this.toolExecutor.setActionConsentHandler(async (toolId, args, definition) => {
+      const summary = summarizeToolAction(toolId, args, definition);
+      const questionnaire: QuestionnairePayload = {
+        id: generateMessageId(),
+        title: 'Confirm action',
+        questions: [{
+          id: 'consent',
+          prompt: `Shall I ${summary}?`,
+          type: 'single_choice',
+          required: true,
+          allowCustom: false,
+          options: [
+            { value: 'Yes', label: 'Yes' },
+            { value: 'No', label: 'No' },
+          ],
+        }],
+        source: this.clarificationSource(),
+      };
+      try {
+        const answer = await this.waitForQuestionnaireResponse(questionnaire);
+        const proceed = isAffirmativeConsentAnswer(answer);
+        return { proceed, answer };
+      } catch {
+        return { proceed: false, answer: '' };
+      }
+    });
+
+    this.toolExecutor.setPermissionOutcomeHandler((outcome) => {
+      this.persistAndEmitPermissionOutcome(outcome);
+    });
+  }
+
+  private persistAndEmitPermissionOutcome(outcome: PermissionOutcomeEmit): void {
+    const decidedAt = new Date().toISOString();
+    const record: PermissionOutcomeRecord = {
+      toolId: outcome.toolId,
+      toolName: outcome.toolName,
+      path: outcome.path,
+      riskLevel: outcome.riskLevel,
+      decision: outcome.decision,
+      label: outcome.label,
+      instruction: outcome.instruction,
+      actionSummary: outcome.actionSummary,
+      decidedAt,
+    };
+    const messageId = generateMessageId();
+    const msg: Message = {
+      id: messageId,
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: '',
+      toolCalls: null,
+      createdAt: decidedAt,
+      tokenCount: 0,
+      parts: [{ type: 'permission', id: messageId, permission: record }],
+    };
+    persistAssistantMessageHelper(this.persistenceCtx(), msg);
+    this.emit({
+      type: 'message_received',
+      message: msg,
+      elapsed: 0,
+    });
+    this.emit({
+      type: 'permission_resolved',
+      tool: outcome.toolId,
+      path: outcome.path,
+      riskLevel: outcome.riskLevel,
+      decision: outcome.decision,
+      label: outcome.label,
+      instruction: outcome.instruction,
+      actionSummary: outcome.actionSummary,
+      decidedAt,
+    });
   }
 
   /**
@@ -4106,6 +4211,11 @@ export class Agent {
     );
   }
 
+  /**
+   * Pre-turn document materialization lives in DocumentPipeline —
+   * attachments are OCR'd / quality-gated before the LLM loop starts.
+   */
+
   private async buildAiMessagesForTurn(opts: {
     lastUserText: string;
     compact: boolean;
@@ -4119,10 +4229,14 @@ export class Agent {
         break;
       }
     }
+    const visionOk = this.modelSupportsVision();
+    const pendingCleanups: string[] = [];
     const messagesWithDocs = await Promise.all(this.messages.map(async (m, idx) => {
       if (m.role !== 'user' || idx !== lastUserIdx) return m;
       const docParts: string[] = [];
-      for (const a of (m as { attachments?: import('@agentx/shared').NormalizedAttachment[] }).attachments ?? []) {
+      const existingAttachments = (m as { attachments?: import('@agentx/shared').NormalizedAttachment[] }).attachments ?? [];
+      const extraAttachments: import('@agentx/shared').NormalizedAttachment[] = [];
+      for (const a of existingAttachments) {
         if (a.type === 'folder') {
           if (a.content && a.content.length > 0) {
             docParts.push(a.content);
@@ -4134,33 +4248,55 @@ export class Agent {
           continue;
         }
         if (a.type !== 'file') continue;
-        let text: string | null = null;
+
+        let absAttachmentPath: string | null = null;
+        if (a.storageId) {
+          absAttachmentPath = await service.resolveAttachmentPath(a.storageId);
+        }
+        let candidateText: string | null = null;
         if (a.content && a.content.length > 0) {
-          text = a.content;
+          candidateText = a.content;
         } else if (a.storageId) {
-          text = await service.extractTextForAgent(a.storageId);
+          candidateText = await service.extractTextForAgent(a.storageId);
         }
-        if (text && text.length > 0) {
-          docParts.push(`[Attachment: ${a.name}]\n${text}`);
-          continue;
-        }
-        const isPdf = (a.mimeType === 'application/pdf') || /\.pdf$/i.test(a.name);
-        if (isPdf) {
-          let pathHint = a.name;
-          if (a.storageId) {
-            const abs = await service.resolveAttachmentPath(a.storageId);
-            if (abs) pathHint = abs;
-          }
-          docParts.push(
-            `[Attachment: ${a.name}]\n`
-            + `[Could not extract PDF text into the prompt. Use the pdf_read tool with path "${pathHint}". `
-            + `Do NOT use file_read on PDF files — it returns binary garbage.]`,
-          );
-        }
+
+        const doc = await materializeAttachment({
+          name: a.name,
+          mimeType: a.mimeType,
+          absPath: absAttachmentPath,
+          candidateText,
+          storageId: a.storageId,
+          attachmentId: a.id,
+          visionOk,
+          getBuffer: a.storageId
+            ? async () => service.getBuffer(a.storageId!)
+            : undefined,
+        });
+        pendingCleanups.push(...doc.cleanupDirs);
+        docParts.push(doc.promptBlock);
+        extraAttachments.push(...doc.visionAttachments);
       }
-      if (docParts.length === 0) return m;
-      return { ...m, content: `${m.content}\n\n${docParts.join('\n\n')}` };
+      if (docParts.length === 0 && extraAttachments.length === 0) return m;
+      return {
+        ...m,
+        content: `${m.content}\n\n${docParts.join('\n\n')}`,
+        attachments: [...existingAttachments, ...extraAttachments],
+      };
     }));
+    if (pendingCleanups.length > 0) {
+      cleanupDocumentTemps([{
+        name: '',
+        path: null,
+        mimeType: '',
+        text: null,
+        method: 'none',
+        confidence: 'none',
+        warnings: [],
+        promptBlock: '',
+        visionAttachments: [],
+        cleanupDirs: pendingCleanups,
+      }]);
+    }
     const aiMessages = buildCompletionMessages(
       messagesWithDocs.map((m) => ({
         role: m.role,
@@ -4575,33 +4711,39 @@ export class Agent {
 
     const service = getAttachmentService();
     const parts: string[] = [];
+    const cleanups: string[] = [];
     for (const a of attachments) {
       if (a.type === 'folder') {
         if (a.content) parts.push(a.content);
         continue;
       }
       if (a.type !== 'file') continue;
-      let text: string | null = a.content && a.content.length > 0 ? a.content : null;
-      if (!text && a.storageId) {
-        text = await service.extractTextForAgent(a.storageId);
+      let candidateText: string | null = a.content && a.content.length > 0 ? a.content : null;
+      if (!candidateText && a.storageId) {
+        candidateText = await service.extractTextForAgent(a.storageId);
       }
-      if (text && text.length > 0) {
-        parts.push(`[Attachment: ${a.name}]\n${text}`);
-        continue;
+      let absPath: string | null = null;
+      if (a.storageId) {
+        absPath = await service.resolveAttachmentPath(a.storageId);
       }
-      const isPdf = (a.mimeType === 'application/pdf') || /\.pdf$/i.test(a.name);
-      if (isPdf) {
-        let pathHint = a.name;
-        if (a.storageId) {
-          const abs = await service.resolveAttachmentPath(a.storageId);
-          if (abs) pathHint = abs;
-        }
-        parts.push(
-          `[Attachment: ${a.name}]\n`
-          + `[Text was not pre-extracted. Use the pdf_read tool with path "${pathHint}". `
-          + `Do NOT use file_read on PDF files.]`,
-        );
-      }
+      const doc = await materializeAttachment({
+        name: a.name,
+        mimeType: a.mimeType,
+        absPath,
+        candidateText,
+        storageId: a.storageId,
+        attachmentId: a.id,
+        visionOk: false,
+        getBuffer: a.storageId ? async () => service.getBuffer(a.storageId!) : undefined,
+      });
+      cleanups.push(...doc.cleanupDirs);
+      parts.push(doc.promptBlock);
+    }
+    if (cleanups.length > 0) {
+      cleanupDocumentTemps([{
+        name: '', path: null, mimeType: '', text: null, method: 'none',
+        confidence: 'none', warnings: [], promptBlock: '', visionAttachments: [], cleanupDirs: cleanups,
+      }]);
     }
     return parts.length > 0 ? `[ATTACHED DOCUMENTS]\n${parts.join('\n\n')}\n[/ATTACHED DOCUMENTS]` : '';
   }

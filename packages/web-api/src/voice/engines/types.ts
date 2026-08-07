@@ -29,6 +29,10 @@ export interface VoiceEngineSessionOptions {
    * voice ID is read from voiceConfig.xai?.voice.
    */
   voiceConfig?: VoiceConfig;
+  /** Wake-word mode: server-side wake-phrase gating. */
+  wakeWord?: boolean;
+  /** Wake phrase for server-side gating. */
+  wakePhrase?: string;
 }
 
 export interface VoiceEngine {

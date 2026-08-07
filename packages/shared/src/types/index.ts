@@ -5,6 +5,7 @@ export * from './tool.js';
 export * from './crew.js';
 export * from './crew-catalog.js';
 export * from './permission.js';
+export * from './permission-outcome.js';
 export * from './config.js';
 export * from './events.js';
 export * from './storage.js';

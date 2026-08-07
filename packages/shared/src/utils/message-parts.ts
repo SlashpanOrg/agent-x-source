@@ -17,13 +17,16 @@ export interface PersistedToolCall {
 import type { QuestionnaireRecord } from '../types/questionnaire.js';
 import type { CrewRosterPickerRecord } from '../types/crew-roster-picker.js';
 import type { DeepSearchProgress, DeepSearchResultBundle } from '../types/deep-search.js';
+import type { PermissionOutcomeRecord } from '../types/permission-outcome.js';
 
 export interface MessagePart extends Record<string, unknown> {
-  type: 'text' | 'tool' | 'subagent' | 'questionnaire' | 'crew_roster_picker' | 'deep_search' | 'chart' | 'thinking';
+  type: 'text' | 'tool' | 'subagent' | 'questionnaire' | 'crew_roster_picker' | 'deep_search' | 'chart' | 'thinking' | 'permission';
   id: string;
   content?: string;
   questionnaire?: QuestionnaireRecord;
   crewRosterPicker?: CrewRosterPickerRecord;
+  /** Completed permission decision chip for chat history. */
+  permission?: PermissionOutcomeRecord;
   /** Canonical ChartSpec JSON string for structured chart parts. */
   chartJson?: string;
   deepSearch?: {
@@ -419,6 +422,22 @@ export function partsTextExceedsContent(content: string, parts: MessagePart[]): 
   return prefix.length >= 20 && partsText.includes(prefix);
 }
 
+/** True when parts text is a truncated prefix of the canonical message content. */
+export function partsTextTruncatesContent(content: string, parts: MessagePart[]): boolean {
+  const partsText = stripToolNoise(textFromParts(parts), { trim: false });
+  const cleanContent = stripToolNoise(content, { trim: false });
+  if (!cleanContent) return false;
+  if (!partsText) return true;
+  if (cleanContent.length <= partsText.length + 8) return false;
+  // Classic coalesce race: UI kept a prefix of the finished assistant text.
+  if (cleanContent.startsWith(partsText)) return true;
+  // Parts collapsed mid-sentence while content holds the finished reply.
+  const lead = Math.min(48, partsText.length);
+  return lead >= 16
+    && cleanContent.includes(partsText.slice(0, lead))
+    && partsText.length / cleanContent.length < 0.9;
+}
+
 /** Decide whether stored parts[] should be discarded in favour of content + toolCalls. */
 export function shouldRebuildStoredParts(
   content: string,
@@ -429,6 +448,7 @@ export function shouldRebuildStoredParts(
   if (partsCorruptedByCrossTurn(content, parts)) return true;
   if (partsToolIdsMismatch(parts, toolCalls)) return true;
   if (partsTextExceedsContent(content, parts)) return true;
+  if (partsTextTruncatesContent(content, parts)) return true;
   return false;
 }
 
@@ -448,6 +468,69 @@ export function rebuildPartsFromCanonical(content: string, toolCalls?: Persisted
     })),
     ...(content ? [{ type: 'text' as const, id: crypto.randomUUID(), content }] : []),
   ], true);
+}
+
+/**
+ * Align live streaming text parts with the canonical finished assistant content.
+ * Fixes the coalesce race where message_received arrives before the last
+ * stream_chunk flush, leaving parts as a truncated prefix of `content`.
+ */
+export function syncTextPartsWithCanonicalContent(
+  parts: MessagePart[] | undefined,
+  canonical: string,
+): MessagePart[] {
+  const content = canonical ?? '';
+  if (!content.trim()) return parts?.length ? parts : [];
+
+  if (!parts?.length) {
+    return [{ type: 'text', id: crypto.randomUUID(), content }];
+  }
+
+  const textIdxs: number[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i]!.type === 'text') textIdxs.push(i);
+  }
+
+  if (textIdxs.length === 0) {
+    return [...parts, { type: 'text', id: crypto.randomUUID(), content }];
+  }
+
+  const joined = textIdxs.map((i) => parts[i]!.content || '').join('');
+  if (joined === content) return parts;
+
+  // Truncated stream: append the missing suffix onto the last text part.
+  if (content.startsWith(joined) && content.length > joined.length) {
+    const lastIdx = textIdxs[textIdxs.length - 1]!;
+    const next = parts.slice();
+    const prev = parts[lastIdx]!;
+    next[lastIdx] = { ...prev, content: (prev.content || '') + content.slice(joined.length) };
+    return next;
+  }
+
+  // Single text bubble — content is authoritative.
+  if (textIdxs.length === 1) {
+    const lastIdx = textIdxs[0]!;
+    const next = parts.slice();
+    next[lastIdx] = { ...parts[lastIdx]!, content };
+    return next;
+  }
+
+  // Interleaved text/tools: keep earlier text segments, put remainder in the last text part.
+  let prefixLen = 0;
+  for (let t = 0; t < textIdxs.length - 1; t++) {
+    prefixLen += (parts[textIdxs[t]!]!.content || '').length;
+  }
+  const prefix = joined.slice(0, prefixLen);
+  if (prefixLen === 0 || content.startsWith(prefix)) {
+    const lastIdx = textIdxs[textIdxs.length - 1]!;
+    const next = parts.slice();
+    next[lastIdx] = { ...parts[lastIdx]!, content: content.slice(prefixLen) };
+    return next;
+  }
+
+  // Fallback: preserve tools/questionnaires; one canonical text block at the end.
+  const nonText = parts.filter((p) => p.type !== 'text');
+  return [...nonText, { type: 'text', id: crypto.randomUUID(), content }];
 }
 
 /**
@@ -628,6 +711,7 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
         };
       }
       if (p.type === 'questionnaire' && p.questionnaire) return p;
+      if (p.type === 'permission' && p.permission) return p;
       if (p.type === 'crew_roster_picker' && p.crewRosterPicker) return p;
       if (p.type === 'deep_search' && p.deepSearch) return p;
       if (p.type === 'chart' && p.chartJson) return p;

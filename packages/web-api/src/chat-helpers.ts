@@ -423,7 +423,7 @@ export function getMessageStore(): StorageAdapter | null {
 
 export async function loadSessionMessagesPage(
   sessionId: string,
-  opts: { limit?: number; before?: string },
+  opts: { limit?: number; before?: string; includeSystem?: boolean },
 ): Promise<{ messages: Array<Record<string, unknown> | StorableMessage>; total: number; hasMore: boolean }> {
   const store = getMessageStore();
   if (!store) return { messages: [], total: 0, hasMore: false };
@@ -435,14 +435,16 @@ export async function loadSessionMessagesPage(
   }
 
   const all = (store.getMessages?.(sessionId) ?? [])
-    .filter((m) => m['role'] === 'user' || m['role'] === 'assistant');
+    .filter((m) => opts.includeSystem
+      ? true
+      : (m['role'] === 'user' || m['role'] === 'assistant'));
   const total = all.length;
   let slice = all;
   if (opts.before) {
     const idx = all.findIndex((m) => m['id'] === opts.before);
     slice = idx > 0 ? all.slice(0, idx) : [];
   }
-  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), opts.includeSystem ? 500 : 200);
   const messages = slice.slice(-limit);
   const hasMore = slice.length > limit || (opts.before ? all.findIndex((m) => m['id'] === opts.before) > limit : total > limit);
   return { messages, total, hasMore };

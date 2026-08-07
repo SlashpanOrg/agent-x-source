@@ -1,43 +1,40 @@
-/** Pool of short acknowledgment phrases for the instant voice ack filler.
- *  Each turn picks one at random, avoiding the last few picks so the same
- *  phrase doesn't repeat near itself. */
-export const VOICE_ACK_PHRASES = [
-  'Got it.',
-  'On it.',
-  'Understood.',
-  'Right away.',
-  'Let me check.',
-  'Looking into that.',
-  'Sure thing.',
-  'Coming right up.',
-  'One moment.',
-  'I\'m on it.',
-  'Noted.',
-  'Will do.',
-  'Absolutely.',
-  'Of course.',
-  'Let me see.',
-  'Checking now.',
-  'Sounds good.',
-  'You got it.',
-  'Makes sense.',
-  'Let\'s do it.',
+/** Pool of short butler-style acknowledgment templates for the instant voice ack
+ *  filler. {{callsign}} is replaced by the user's configured callsign. Each turn
+ *  picks one at random, avoiding the last few picks so the same phrase doesn't
+ *  repeat near itself. */
+export const BUTLER_ACK_TEMPLATES = [
+  'Yes, {{callsign}}.',
+  'At your service, {{callsign}}.',
+  'I am listening, {{callsign}}.',
+  'Awaiting your command, {{callsign}}.',
+  'How may I assist you, {{callsign}}?',
+  'Your command, {{callsign}}?',
+  'I am ready, {{callsign}}.',
+  'As you wish, {{callsign}}.',
+  'Yes, {{callsign}}?',
+  'Listening, {{callsign}}.',
+  'At your command, {{callsign}}.',
+  'Go ahead, {{callsign}}.',
+  'I am here, {{callsign}}.',
+  'Ready, {{callsign}}.',
+  'Standing by, {{callsign}}.',
 ];
 
 const ACK_HISTORY_SIZE = 5;
 const ackHistory: string[] = [];
 
 /** Pick a random ack phrase, avoiding the last few picks for variety. */
-export function pickAckPhrase(): string {
-  if (VOICE_ACK_PHRASES.length <= ACK_HISTORY_SIZE) {
+export function pickAckPhrase(callsign = 'sir'): string {
+  if (BUTLER_ACK_TEMPLATES.length <= ACK_HISTORY_SIZE) {
     // Pool too small for meaningful dedup — just pick randomly.
-    return VOICE_ACK_PHRASES[Math.floor(Math.random() * VOICE_ACK_PHRASES.length)]!;
+    const template = BUTLER_ACK_TEMPLATES[Math.floor(Math.random() * BUTLER_ACK_TEMPLATES.length)]!;
+    return template.replace(/\{\{callsign\}\}/g, callsign.replace(/[<>"]/g, ''));
   }
-  const available = VOICE_ACK_PHRASES.filter((p) => !ackHistory.includes(p));
+  const available = BUTLER_ACK_TEMPLATES.filter((p) => !ackHistory.includes(p));
   const pick = available[Math.floor(Math.random() * available.length)]!;
   ackHistory.push(pick);
   if (ackHistory.length > ACK_HISTORY_SIZE) ackHistory.shift();
-  return pick;
+  return pick.replace(/\{\{callsign\}\}/g, callsign.replace(/[<>"]/g, ''));
 }
 
 /** Reset ack history (e.g. on new session). */

@@ -2,10 +2,10 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { VoiceConfig } from '@agentx/shared';
-import { VOICE_ACK_PHRASES } from './voiceFillerPolicy.js';
+import { BUTLER_ACK_TEMPLATES } from './voiceFillerPolicy.js';
 
 export const DEFAULT_FILLER_LINES = [
-  ...VOICE_ACK_PHRASES,
+  ...BUTLER_ACK_TEMPLATES.map((t) => t.replace(/\{\{callsign\}\}/g, 'sir')),
   'One moment.',
   'Checking that now.',
   'Still working on it.',

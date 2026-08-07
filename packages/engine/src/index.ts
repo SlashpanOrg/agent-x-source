@@ -83,6 +83,14 @@ export {
 } from './markdown/MarkdownDocumentStore.js';
 // Attachments
 export { AttachmentService, getAttachmentService } from './attachments/index.js';
+export {
+  assessExtractedText,
+  isUsableExtractedText,
+  looksLikeFailedPdfExtract,
+  materializeAttachment,
+  cleanupDocumentTemps,
+} from './documents/index.js';
+export type { DocumentObject, DocumentMethod, MaterializeOptions, TextQualityAssessment } from './documents/index.js';
 
 export { ProviderFactory } from './providers/index.js';
 export type { ProviderInterface, ProviderFactoryOptions } from './providers/index.js';
