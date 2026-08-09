@@ -51,6 +51,7 @@ class KokoroTts:
         kokoro = self._load()
         voice_id = str(request.get("voiceId") or "kokoro-af")
         kokoro_voice = _resolve_voice_id(kokoro, voice_id)
+        lang = _resolve_lang(kokoro_voice)
 
         try:
             import numpy as np
@@ -59,7 +60,7 @@ class KokoroTts:
             raise RuntimeError("numpy and soundfile are required for Kokoro synthesis.") from exc
 
         samples, sample_rate = kokoro.create(
-            text, voice=kokoro_voice, speed=1.0, lang="en-us"
+            text, voice=kokoro_voice, speed=1.0, lang=lang
         )
         sf.write(output_path, samples, sample_rate)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -80,6 +81,7 @@ class KokoroTts:
         t_load = time.perf_counter()
         voice_id = str(request.get("voiceId") or "kokoro-af")
         kokoro_voice = _resolve_voice_id(kokoro, voice_id)
+        lang = _resolve_lang(kokoro_voice)
 
         first_chunk_at = None
         chunk_index = 0
@@ -88,7 +90,7 @@ class KokoroTts:
                 break
             t_synth = time.perf_counter()
             samples, sample_rate = kokoro.create(
-                sentence, voice=kokoro_voice, speed=1.0, lang="en-us"
+                sentence, voice=kokoro_voice, speed=1.0, lang=lang
             )
             pcm = _float_audio_to_pcm16(samples)
             t_emit = time.perf_counter()
@@ -136,6 +138,14 @@ _KOKORO_VOICE_ALIASES = {
 }
 
 
+def _resolve_lang(voice_id: str) -> str:
+    """American vs British pipeline — matches Kokoro voice prefix conventions."""
+    v = voice_id.strip().lower()
+    if v.startswith("bf_") or v.startswith("bm_"):
+        return "en-gb"
+    return "en-us"
+
+
 def _resolve_voice_id(kokoro: Any, voice_id: str) -> str:
     """Map aliases and ensure the requested voice exists in the loaded voices.bin.
 
@@ -174,8 +184,12 @@ def _resolve_voice_id(kokoro: Any, voice_id: str) -> str:
 
 
 def _split_sentences(text: str) -> list[str]:
-    parts = [part.strip() for part in _SENTENCE_RE.split(text) if part.strip()]
-    return parts or [text]
+    """Short utterances stay one phoneme pass — better prosody for fillers and replies."""
+    stripped = text.strip()
+    if len(stripped) <= 280:
+        return [stripped]
+    parts = [part.strip() for part in _SENTENCE_RE.split(stripped) if part.strip()]
+    return parts or [stripped]
 
 
 def _float_audio_to_pcm16(audio: Any) -> bytes:

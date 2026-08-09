@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { decideCallDivider } from '@agentx/shared/browser';
+import { decideCallDivider, isCrewVoiceSessionId, textSessionIdFromVoiceSessionId } from '@agentx/shared/browser';
 import { crewChat, sessions } from '../../api';
 import { useVoiceOptional } from '../voice/VoiceProvider';
 import { useVoiceCommsSession } from '../../hooks/useVoiceCommsSession';
@@ -22,6 +22,16 @@ import type { CrewCallPhase, CrewCallTarget, CrewCallTranscriptLine } from './ty
 
 const HISTORY_PAGE = 12;
 const CALL_EVENT_RE = /^\[call_event:(open|resume)\]$/i;
+
+/** Never POST voice:… or dashboard voice channel ids as crew text session siblings. */
+function crewCallApiTextSessionId(sessionId?: string): string | undefined {
+  const raw = sessionId?.trim();
+  if (!raw || raw === '__channel__:voice') return undefined;
+  if (isCrewVoiceSessionId(raw)) {
+    return textSessionIdFromVoiceSessionId(raw) ?? undefined;
+  }
+  return raw;
+}
 
 interface CrewCallContextValue {
   phase: CrewCallPhase;
@@ -448,10 +458,11 @@ export function CrewCallProvider({ children }: { children: ReactNode }) {
       if (!next.crewId && !next.recruit && !next.sessionId) {
         throw new Error('Call target missing crew identity');
       }
+      const apiTextSessionId = crewCallApiTextSessionId(next.sessionId);
       const body = next.recruit
         ? {
             crewId: next.crewId,
-            textSessionId: next.sessionId,
+            ...(apiTextSessionId ? { textSessionId: apiTextSessionId } : {}),
             recruit: {
               id: next.recruit.id ?? `hub-${next.recruit.callsign ?? next.callsign}`,
               name: next.recruit.name,
@@ -471,7 +482,7 @@ export function CrewCallProvider({ children }: { children: ReactNode }) {
           }
         : {
             crewId: next.crewId,
-            textSessionId: next.sessionId,
+            ...(apiTextSessionId ? { textSessionId: apiTextSessionId } : {}),
           };
       const result = await crewChat.startVoiceSession(body);
       const sid = result.sessionId;

@@ -122,16 +122,17 @@ export function redactConfigForClient(config: AgentXConfig): AgentXConfig {
       }
     : config.tools;
 
+  const xaiKeyConfigured = Boolean(
+    config.voice?.xai?.apiKey?.trim() || process.env['XAI_API_KEY']?.trim(),
+  );
   const voice = config.voice
     ? {
         ...config.voice,
-        xai: config.voice.xai
-          ? {
-              ...config.voice.xai,
-              apiKeyConfigured: Boolean(config.voice.xai.apiKey?.trim()),
-              apiKey: undefined,
-            }
-          : config.voice.xai,
+        xai: {
+          ...(config.voice.xai ?? {}),
+          apiKeyConfigured: xaiKeyConfigured,
+          apiKey: undefined,
+        },
       }
     : config.voice;
 

@@ -2,18 +2,18 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { VoiceConfig } from '@agentx/shared';
-import { BUTLER_ACK_TEMPLATES } from './voiceFillerPolicy.js';
 
 export const DEFAULT_FILLER_LINES = [
-  ...BUTLER_ACK_TEMPLATES.map((t) => t.replace(/\{\{callsign\}\}/g, 'sir')),
+  'On it.',
   'One moment.',
-  'Checking that now.',
-  'Still working on it.',
-  'Running a tool.',
-  'Almost there.',
-  'Let me look into that.',
-  'Working on your request.',
-  'Coordinating with the crew.',
+  'Right away.',
+  'Got it.',
+  'Sure.',
+  'Searching now.',
+  'Still working.',
+  'Checking memory.',
+  'Fetching data.',
+  'Crew working.',
 ];
 
 export interface FillerCacheOptions {

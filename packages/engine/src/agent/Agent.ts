@@ -17,7 +17,7 @@ import type {
   ThinkingMode,
   OutputMode,
 } from '@agentx/shared';
-import { FailoverReason, generateMessageId, getLogger, type ChannelKind, getConfigDir, formatClientSituationBlock, isMessagingChannel, formatQuestionnaireForMessagingChannel, shouldUseQuestionnaireClarification, type PermissionHandlerResult, type PermissionOutcomeRecord, parseChannelBindingFromSessionId, allowsCrewInvolvement, crewParticipationMode, deniesAutonomousCrewTools, THINKING_MODE_TOOL_BUDGET, THINKING_MODE_REASONING_EFFORT, THINKING_MODE_SKIP_RETRIEVAL, THINKING_MODE_SKIP_REFORMULATE, THINKING_MODE_SKIP_EXTRACT_MEMORIES, THINKING_MODE_ALLOW_DEEP_SEARCH, OUTPUT_MODE_MAX_TOKENS, DEFAULT_THINKING_MODE, DEFAULT_OUTPUT_MODE, isValidThinkingMode, isValidOutputMode } from '@agentx/shared';
+import { FailoverReason, generateMessageId, getLogger, type ChannelKind, getConfigDir, formatClientSituationBlock, isMessagingChannel, formatQuestionnaireForMessagingChannel, shouldUseQuestionnaireClarification, type PermissionHandlerResult, type PermissionOutcomeRecord, parseChannelBindingFromSessionId, allowsCrewInvolvement, crewParticipationMode, deniesAutonomousCrewTools, THINKING_MODE_TOOL_BUDGET, THINKING_MODE_REASONING_EFFORT, THINKING_MODE_SKIP_RETRIEVAL, THINKING_MODE_SKIP_REFORMULATE, THINKING_MODE_SKIP_EXTRACT_MEMORIES, THINKING_MODE_ALLOW_DEEP_SEARCH, DEFAULT_THINKING_MODE, DEFAULT_OUTPUT_MODE, isValidThinkingMode, isValidOutputMode } from '@agentx/shared';
 import { summarizeToolAction, type PermissionOutcomeEmit } from '../services/tool/ToolPermissionService.js';
 import { Scope } from '../concurrency/Scope.js';
 import { getAttachmentService } from '../attachments/index.js';
@@ -206,6 +206,7 @@ import {
 } from './agent-model.js';
 import {
   extractMemories as extractMemoriesHelper,
+  persistSessionToolFindings as persistSessionToolFindingsHelper,
   reformulateQuery as reformulateQueryHelper,
   buildMemoryContext as buildMemoryContextHelper,
   type MemoryExtractionContext,
@@ -316,6 +317,7 @@ export class Agent {
   }
   private userChatMemoryIngester: UserChatMemoryIngester | null = null;
   private chatTurnMemoryIngester: ChatTurnMemoryIngester | null = null;
+  private sessionFindingsIngester: import('../neural/SessionFindingsIngester.js').SessionFindingsIngester | null = null;
   private errorShield: ErrorShield;
   private toolExecutor?: EnhancedToolExecutor;
   private toolRegistry?: ToolRegistry;
@@ -2633,6 +2635,7 @@ export class Agent {
 
       // Extract and persist memories (non-blocking)
       this.extractMemories(content, assistantMessage.content);
+      this.persistSessionToolFindings(content);
 
       // Auto-generate skill if task was novel
       if (this.skillGenerator?.shouldGenerateSkill(content, this.toolCallLogForReflection)) {
@@ -2890,10 +2893,8 @@ export class Agent {
     });
     const budget = await this.ensureOutputBudget(aiMessages, tools, rebuildAiMessages);
     aiMessages = budget.messages;
-    // ─── Turn mode: output mode caps max output tokens ───
-    // brief = 300 tokens, moderate = 800, detailed = use model default (no cap).
-    const modeMaxTokens = OUTPUT_MODE_MAX_TOKENS[this.currentOutputMode];
-    const turnMaxOutputTokens = modeMaxTokens > 0 ? Math.min(budget.maxOutputTokens, modeMaxTokens) : budget.maxOutputTokens;
+    // ─── Turn mode: output length is prompt-guided; do not cap maxOutputTokens per mode ───
+    const turnMaxOutputTokens = budget.maxOutputTokens;
 
     const streamHandler = createAiSdkStreamHandler(
       emit,
@@ -2993,7 +2994,7 @@ export class Agent {
           const searchCalls = this.toolCallLogForReflection.filter(
             t => t.name === 'web_search' || t.name === 'deep_web_search'
           ).length;
-          if (searchCalls >= 8 && stepNumber > 0) {
+          if (searchCalls >= 4 && stepNumber > 0) {
             getLogger().warn('AGENT', `Search loop detected (${searchCalls} searches at step ${stepNumber}) — forcing result production`);
             extras.push({
               role: 'user',
@@ -3081,7 +3082,7 @@ export class Agent {
       // Fallback: if stream ended without finish event, emit one now to ensure message is recorded
       if (!finishEmitted) {
         const state = streamHandler.getState();
-        if (state.accumulatedContent || state.toolCallCount > 0) {
+        if (state.accumulatedContent || state.toolCallCount > 0 || (state.accumulatedReasoning || '').trim()) {
           // Do not await result.usage when the watchdog already gave up on the stream;
           // the usage promise can stay pending forever and deadlock sendMessage.
           streamHandler.handleEvent({ type: 'finish', usage: stalled ? undefined : await result.usage });
@@ -3108,26 +3109,37 @@ export class Agent {
       // Generic self-healing: if response is essentially empty (whitespace or <3 chars),
       // or the tool loop crashed (e.g. malformed tool-call arguments), retry once.
       // When tools already ran, retry WITHOUT tools to force a plain-text summary.
+      // Reasoning-only models (answer only in thinking) also force a text-only rewrite.
       // Benchmark callers can opt out to fail fast instead of retrying a stalled provider.
+      const priorReasoning = (streamHandler.getState().accumulatedReasoning || '').trim();
+      const reasoningOnlyEmpty = content.length < 3 && priorReasoning.length >= 40;
       if (!this.options.skipEmptyResponseRetry && (content.length < 3 || streamError)) {
         const toolSummary = this.toolCallLogForReflection
           .map(t => `- ${t.name}: ${t.success ? 'OK' : 'FAILED'} — ${t.output.slice(0, 300)}`)
           .join('\n');
         const worked = toolExecs > 0;
-        const textOnlyRetry = worked || !!streamError;
+        const textOnlyRetry = worked || !!streamError || reasoningOnlyEmpty;
         getLogger().warn(
           'AGENT',
-          `Response too short (${content.length} chars, ${toolExecs} tools${streamError ? ', stream error' : ''}) — retrying${textOnlyRetry ? ' text-only' : ' with tools'}`,
+          `Response too short (${content.length} chars, ${toolExecs} tools, reasoning=${priorReasoning.length}${streamError ? ', stream error' : ''}${reasoningOnlyEmpty ? ', reasoning-only' : ''}) — retrying${textOnlyRetry ? ' text-only' : ' with tools'}`,
         );
         try {
+          const reasoningHint = reasoningOnlyEmpty
+            ? `\n\nYour prior reasoning (rewrite as the user-visible reply — do not leave the answer only in thinking):\n${priorReasoning.slice(0, 8000)}`
+            : '';
           const retryMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
             ...aiMessages,
             ...(worked ? [{ role: 'assistant' as const, content: text || '(executed tools)' }] : []),
+            ...(reasoningOnlyEmpty && !worked
+              ? [{ role: 'assistant' as const, content: '(reasoning produced; no user-visible text)' }]
+              : []),
             {
               role: 'user' as const,
               content: worked || streamError
                 ? `[SYSTEM] You just ran these tools:\n${toolSummary || '(see prior tool activity)'}\n\nNow respond to the user based on these results. Do not call more tools. Be thorough and actionable.`
-                : `[SYSTEM] The user said: "${aiMessages[aiMessages.length - 1]?.content?.slice(0, 500)}"\n\nUse the appropriate tools to answer. Prefer connected MCP integration tools when the request targets an external service — do not scan the local filesystem as a substitute. Do not return empty.`,
+                : reasoningOnlyEmpty
+                  ? `[SYSTEM] You produced detailed reasoning but ZERO user-visible assistant text. The user cannot see thinking/reasoning. Write the complete answer now as normal markdown message text. Do not call tools. Do not put the answer only in thinking.${reasoningHint}`
+                  : `[SYSTEM] The user said: "${aiMessages[aiMessages.length - 1]?.content?.slice(0, 500)}"\n\nUse the appropriate tools to answer. Prefer connected MCP integration tools when the request targets an external service — do not scan the local filesystem as a substitute. Do not return empty.`,
             },
           ];
           const retryText = await withSpan('llm.retry', 'llm', async (span) => {
@@ -3173,6 +3185,16 @@ export class Agent {
             'AGENT',
             `Empty-response retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
           );
+        }
+      }
+
+      // Last resort: model answered only in reasoning — surface that as the reply
+      // rather than the generic apology (UI already showed the Thought panel).
+      if (content.length < 3) {
+        const reasoningFallback = (streamHandler.getState().accumulatedReasoning || '').trim();
+        if (reasoningFallback.length >= 40) {
+          getLogger().warn('AGENT', `Promoting ${reasoningFallback.length} chars of reasoning to user-visible reply`);
+          content = reasoningFallback;
         }
       }
 
@@ -3561,7 +3583,38 @@ export class Agent {
         }
       }
 
-      // Stream handler already emitted message_received in its finish case.
+      // Stream handler emits message_received on a normal finish. Empty / reasoning-only
+      // finishes defer that emit so empty-retry + promotion can fill `content` first.
+      if (!this._turnMessageEmitted || streamHandler.getState().deferredEmptyFinalize) {
+        if (!content.trim()) {
+          content = 'I apologize, I was unable to generate a response.';
+        }
+        const streamState = streamHandler.getState();
+        const outId = (streamState as { messageId?: string }).messageId
+          ?? this.pendingVoiceMerge?.messageId
+          ?? generateMessageId();
+        const emitTokens = usage
+          ? (usage.inputTokens || 0) + (usage.outputTokens || 0)
+          : Math.ceil(content.length / 4);
+        this.emit({ type: 'stream_chunk', content: '', fullContent: content });
+        this.emit({
+          type: 'message_received',
+          message: this.tagCrewPrivateAssistant({
+            id: outId,
+            sessionId: this.sessionId,
+            role: 'assistant',
+            content,
+            toolCalls: null,
+            createdAt: new Date().toISOString(),
+            tokenCount: emitTokens,
+          }),
+          elapsed: Date.now() - startTime,
+          // Allow replace if a premature finalize somehow landed first.
+          ...(this._turnMessageEmitted ? { isUpdate: true } : {}),
+        }, this._turnMessageEmitted);
+      }
+
+      // Stream handler already emitted message_received in its finish case (or we did above).
       // Only push assistant content — tool ledger is persisted via persistToolLedger (not in agent history).
       this.messages.push({ role: 'assistant', content });
       await this.compactContext();
@@ -3687,6 +3740,27 @@ export class Agent {
       } as MemoryExtractionContext,
       userMessage,
       assistantResponse,
+    );
+  }
+
+  /** Store web/KB tool outputs in session memory for reuse on later turns. */
+  private persistSessionToolFindings(userQueryHint: string): void {
+    if (this.toolCallLogForReflection.length === 0) return;
+    persistSessionToolFindingsHelper(
+      {
+        memoryFabric: this.memoryFabric,
+        memoryEmbedder: this.memoryEmbedder,
+        sessionFindingsIngester: this.sessionFindingsIngester,
+        setSessionFindingsIngester: (i) => { this.sessionFindingsIngester = i; },
+        sessionId: this.sessionId,
+        options: this.options,
+      },
+      this.toolCallLogForReflection.map((t) => ({
+        name: t.name,
+        success: t.success,
+        output: t.output,
+      })),
+      userQueryHint,
     );
   }
 

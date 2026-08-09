@@ -433,7 +433,6 @@ export function BentoDashboard() {
   const mounted = useRef(true);
 
   const [voiceActiveForPulses, setVoiceActiveForPulses] = useState(false);
-  const [voiceSearchWeb, setVoiceSearchWeb] = useState(false);
   const [voiceBypassChip, setVoiceBypassChip] = useState(false);
   const [voiceprintEnabled, setVoiceprintEnabled] = useState(false);
 
@@ -728,10 +727,8 @@ export function BentoDashboard() {
             icon={<MicIcon sx={{ fontSize: 15, color: colors.accent.blue }} />}
             action={
               <VoiceAgentHeaderControls
-                searchWeb={voiceSearchWeb}
                 bypassChip={voiceBypassChip}
                 voiceprintEnabled={voiceprintEnabled}
-                onSearchWebChange={setVoiceSearchWeb}
                 onBypassChipChange={setVoiceBypassChip}
                 onVoiceprintEnabledChange={setVoiceprintEnabled}
               />
@@ -747,7 +744,6 @@ export function BentoDashboard() {
           >
             <VoiceAgentCard
               onActiveChange={setVoiceActiveForPulses}
-              searchWeb={voiceSearchWeb}
               bypassChip={voiceBypassChip}
               voiceprintEnabled={voiceprintEnabled}
             />

@@ -36,6 +36,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import LinkIcon from '@mui/icons-material/Link';
 import HubIcon from '@mui/icons-material/Hub';
 import { FileViewerModal } from './FileViewerModal';
+import { ConfirmDeleteDialog } from './ConfirmDeleteDialog';
 
 const ACCEPTED_EXTS = '.pdf,.docx,.xlsx,.pptx,.txt,.md,.json,.html,.htm';
 
@@ -1274,6 +1275,22 @@ export function KnowledgeBasePanel() {
   const dragCounter = useRef(0);
   const vaultScrollRef = useRef<HTMLDivElement>(null);
   const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set());
+  const [deletePending, setDeletePending] = useState<{ id: string; name: string } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  const requestDeleteSource = (id: string, name: string) => setDeletePending({ id, name });
+
+  const confirmDeleteSource = async () => {
+    if (!deletePending) return;
+    setDeleteBusy(true);
+    try {
+      await deleteSource(deletePending.id);
+      if (selectedId === deletePending.id) setSelectedId(null);
+      setDeletePending(null);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
 
   const childrenByParent = useMemo(() => {
     const map = new Map<string, KnowledgeSource[]>();
@@ -1583,10 +1600,7 @@ export function KnowledgeBasePanel() {
                   cumulative={dossierTotals ?? undefined}
                   onClose={() => setSelectedId((prev) => (prev === dossierSource.id ? null : prev))}
                   onReprocess={() => void rescrape(dossierSource.id)}
-                  onDelete={() => {
-                    void deleteSource(dossierSource.id);
-                    if (selectedId === dossierSource.id) setSelectedId(null);
-                  }}
+                  onDelete={() => requestDeleteSource(dossierSource.id, dossierSource.name)}
                   onPause={() => void pause(dossierSource.id)}
                   onResume={() => void resume(dossierSource.id)}
                 />
@@ -1596,10 +1610,7 @@ export function KnowledgeBasePanel() {
                   statusDetail={ingestDetails[dossierSource.id]}
                   onClose={() => setSelectedId((prev) => (prev === dossierSource.id ? null : prev))}
                   onReprocess={() => void (dossierSource.sourceUrl ? rescrape(dossierSource.id) : reprocess(dossierSource.id))}
-                  onDelete={() => {
-                    void deleteSource(dossierSource.id);
-                    if (selectedId === dossierSource.id) setSelectedId(null);
-                  }}
+                  onDelete={() => requestDeleteSource(dossierSource.id, dossierSource.name)}
                 />
               ) : null}
             </Box>
@@ -1642,10 +1653,7 @@ export function KnowledgeBasePanel() {
                     mimeType: source.mimeType,
                   })}
                   onReprocess={() => void (source.sourceUrl ? rescrape(source.id) : reprocess(source.id))}
-                  onDelete={() => {
-                    void deleteSource(source.id);
-                    if (selectedId === source.id) setSelectedId(null);
-                  }}
+                  onDelete={() => requestDeleteSource(source.id, source.name)}
                   totals={totals}
                 />
               );
@@ -1661,6 +1669,16 @@ export function KnowledgeBasePanel() {
         id={viewer?.id ?? ''}
         name={viewer?.name ?? 'Document'}
         mimeType={viewer?.mimeType}
+      />
+
+      <ConfirmDeleteDialog
+        open={Boolean(deletePending)}
+        busy={deleteBusy}
+        title="DELETE KNOWLEDGE SOURCE"
+        description="Permanently delete knowledge source"
+        itemName={deletePending?.name}
+        onClose={() => setDeletePending(null)}
+        onConfirm={() => { void confirmDeleteSource(); }}
       />
 
       <style>{`

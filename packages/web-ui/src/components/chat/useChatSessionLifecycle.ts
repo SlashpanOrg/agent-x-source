@@ -53,6 +53,7 @@ export interface UseChatSessionLifecycleInputs {
   setCurrentStep: React.Dispatch<React.SetStateAction<string | null>>;
   // Refs
   currentSessionIdRef: React.MutableRefObject<string | null>;
+  sessionListRef: React.MutableRefObject<SessionInfo[]>;
   chatReturnToRef: React.MutableRefObject<string | null>;
   skipRestoreRef: React.MutableRefObject<boolean>;
   titleGeneratedRef: React.MutableRefObject<boolean>;
@@ -110,6 +111,7 @@ export function useChatSessionLifecycle({
   setTurnActivity,
   setCurrentStep,
   currentSessionIdRef,
+  sessionListRef,
   chatReturnToRef,
   skipRestoreRef,
   titleGeneratedRef,
@@ -502,6 +504,14 @@ export function useChatSessionLifecycle({
   const [clearSessionModalOpen, setClearSessionModalOpen] = useState(false);
   const [clearSessionBusy, setClearSessionBusy] = useState(false);
 
+  // ─── Delete session confirmation (session list grid) ───
+  const [deleteSessionPending, setDeleteSessionPending] = useState<{
+    id: string;
+    title: string;
+    isGroupChat: boolean;
+  } | null>(null);
+  const [deleteSessionBusy, setDeleteSessionBusy] = useState(false);
+
   // ─── resetSessionViewState ───
   const resetSessionViewState = useCallback(() => {
     setMessages([]);
@@ -576,10 +586,49 @@ export function useChatSessionLifecycle({
     void startNewSession();
   }, [startNewSession]);
 
-  // ─── handleDeleteSession ───
-  const handleDeleteSession = useCallback(async (id: string) => {
-    try { await sessions.delete(id); loadSessions(); } catch { /* ignore */ }
-  }, [loadSessions]);
+  // ─── handleDeleteSession (opens confirmation — see handleConfirmDeleteSession) ───
+  const handleDeleteSession = useCallback((id: string) => {
+    const s = sessionListRef.current.find((x) => x.id === id);
+    const kind = s?.contextKind ?? 'agent_x';
+    const isGroupChat = kind === 'agent_x';
+    const title = isGroupChat
+      ? (s?.title || 'Group chat')
+      : (s?.hostCrewTitle || s?.title || 'Private chat');
+    setDeleteSessionPending({ id, title, isGroupChat });
+  }, [sessionListRef]);
+
+  const handleConfirmDeleteSession = useCallback(async () => {
+    if (!deleteSessionPending) return;
+    const { id } = deleteSessionPending;
+    setDeleteSessionBusy(true);
+    try {
+      await sessions.delete(id);
+      if (currentSessionIdRef.current === id) {
+        resetSessionViewState();
+        setCurrentSessionId(null);
+        currentSessionIdRef.current = null;
+        setCurrentSessionTitle(null);
+        setView('sessions');
+        navigate('/console/chat');
+      }
+      setDeleteSessionPending(null);
+      loadSessions();
+    } catch (e) {
+      setWarnings([`Failed to delete session: ${e instanceof Error ? e.message : 'Unknown error'}`]);
+    } finally {
+      setDeleteSessionBusy(false);
+    }
+  }, [
+    deleteSessionPending,
+    currentSessionIdRef,
+    resetSessionViewState,
+    setCurrentSessionId,
+    setCurrentSessionTitle,
+    setView,
+    navigate,
+    loadSessions,
+    setWarnings,
+  ]);
 
   return {
     // Utilities
@@ -596,8 +645,12 @@ export function useChatSessionLifecycle({
     handleArchiveSession,
     handleDeleteSessionContent,
     handleDeleteSession,
+    handleConfirmDeleteSession,
     // Clear session modal state
     clearSessionModalOpen, setClearSessionModalOpen,
     clearSessionBusy, setClearSessionBusy,
+    // Delete session confirmation
+    deleteSessionPending, setDeleteSessionPending,
+    deleteSessionBusy,
   };
 }

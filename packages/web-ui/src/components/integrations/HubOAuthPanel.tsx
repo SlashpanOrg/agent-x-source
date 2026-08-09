@@ -6,6 +6,7 @@ import CircularProgress from '@mui/material/CircularProgress';
 import type { IntegrationConnection, IntegrationProvider } from '../../api';
 import { integrations } from '../../api';
 import { useOAuthFlowPoll } from './useOAuthFlowPoll';
+import { closeIntegrationOAuthWindow, openIntegrationOAuthUrl } from './oauth-window';
 import { settingsTheme, settingsMonoSx } from '../../styles/settings-theme';
 
 export interface HubOAuthPanelProps {
@@ -42,6 +43,7 @@ export function HubOAuthPanel({
   const finishSuccess = useCallback(() => {
     if (oauthFinishedRef.current) return;
     oauthFinishedRef.current = true;
+    closeIntegrationOAuthWindow();
     setStatus('idle');
     setMessage('');
     setOauthState(null);
@@ -69,12 +71,7 @@ export function HubOAuthPanel({
       const remoteUrl = connection?.remote?.url ?? provider.server.url;
       const { authUrl, state } = await integrations.startOAuth(provider.id, remoteUrl);
       setOauthState(state);
-      const desktop = typeof window !== 'undefined' ? window.agentx : undefined;
-      if (desktop?.openExternal) {
-        await desktop.openExternal(authUrl);
-      } else {
-        window.open(authUrl, '_blank');
-      }
+      await openIntegrationOAuthUrl(authUrl);
     } catch (e) {
       setStatus('failed');
       setMessage(e instanceof Error ? e.message : 'Sign-in failed');
@@ -87,11 +84,27 @@ export function HubOAuthPanel({
     void runOAuth();
   }, [autoStart, onAutoStartConsumed, runOAuth, status]);
 
+  const allowlistRequired = Boolean(provider.auth.oauth?.redirectAllowlistRequired);
+
   return (
     <Box>
       <Typography sx={{ fontSize: '0.68rem', color: settingsTheme.text.secondary, mb: 1.5, lineHeight: 1.5 }}>
         Authorize Agent-X with {provider.name} in your browser. Access tokens are stored encrypted on this device.
       </Typography>
+      {allowlistRequired && redirectUri && (
+        <Box sx={{ mb: 1.5, p: 1, borderRadius: 1, border: `1px solid ${settingsTheme.accent.alert}44`, bgcolor: `${settingsTheme.accent.alert}0a` }}>
+          <Typography sx={{ fontSize: '0.68rem', fontWeight: 600, color: settingsTheme.accent.alert, mb: 0.5 }}>
+            Redirect URI must be whitelisted by {provider.name}
+          </Typography>
+          <Typography sx={{ fontSize: '0.64rem', color: settingsTheme.text.secondary, lineHeight: 1.5, mb: 0.75 }}>
+            {provider.name} only accepts pre-approved OAuth callback URLs (not localhost by default).
+            Request whitelist approval via their developer form and paste this exact URL:
+          </Typography>
+          <Typography sx={{ ...settingsMonoSx, fontSize: '0.62rem', color: settingsTheme.text.primary, wordBreak: 'break-all' }}>
+            {redirectUri}
+          </Typography>
+        </Box>
+      )}
       <Button
         fullWidth
         variant="outlined"

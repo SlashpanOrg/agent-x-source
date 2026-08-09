@@ -37,6 +37,12 @@ function writeVoiceActiveToStorage(active: boolean): void {
 
 interface VoiceContextValue {
   coreSessionId: string | null;
+  /** First voice config/capabilities fetch completed (success or failure). */
+  voiceInitialized: boolean;
+  /** Voice is explicitly turned off in settings (not first-run / deploying). */
+  voiceExplicitlyDisabled: boolean;
+  /** Kit deploy or capability fetch still in progress before dashboard. */
+  voiceKitPending: boolean;
   voiceReady: boolean;
   /** Merged voice configuration (engine, mode, etc.). */
   voiceConfig: VoiceConfig | null;
@@ -109,6 +115,7 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakePhrase, setWakePhrase] = useState(() => resolveWakePhrase());
   const [canRunWeb, setCanRunWeb] = useState(false);
+  const [voiceInitialized, setVoiceInitialized] = useState(false);
   const [voiceActive, setVoiceActiveState] = useState(() => readVoiceActiveFromStorage());
   const [conversationMode, setConversationModeState] = useState<'continue' | 'new'>('continue');
   const voiceConsumersRef = useRef(0);
@@ -117,6 +124,10 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
   const warmup = useVoiceWarmup(voiceEnabled, canRunWeb);
 
   const voiceReady = voiceEnabled && canRunWeb && !voiceDisabledReason();
+  const voiceExplicitlyDisabled = Boolean(
+    voiceConfig && voiceConfig.enabled === false && !wakeWordEnabled,
+  );
+  const voiceKitPending = voiceInitialized && !voiceExplicitlyDisabled && !voiceReady;
 
   // Session is active for the dashboard (manual) or for wake-word (always when enabled).
   const commsActive = (voiceActive || wakeWordEnabled) && voiceReady;
@@ -229,6 +240,8 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
       setVoiceConfig(null);
       setVoiceEnabled(false);
       setCanRunWeb(false);
+    } finally {
+      setVoiceInitialized(true);
     }
   }, []);
 
@@ -240,14 +253,21 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
 
   useEffect(() => {
     if (!voiceSurface) return;
-    const defer = () => { void loadVoiceState(); };
-    if (typeof window.requestIdleCallback === 'function') {
-      const id = window.requestIdleCallback(defer, { timeout: 2500 });
-      return () => window.cancelIdleCallback(id);
-    }
-    const timer = window.setTimeout(defer, 1200);
-    return () => window.clearTimeout(timer);
+    void loadVoiceState();
   }, [loadVoiceState, voiceSurface]);
+
+  // While the kit is still deploying after reinstall, poll until capabilities flip ready.
+  useEffect(() => {
+    if (!voiceKitPending) return;
+    const id = window.setInterval(() => { void loadVoiceState(); }, 2500);
+    return () => window.clearInterval(id);
+  }, [voiceKitPending, loadVoiceState]);
+
+  // Warm the voice engine as soon as the kit is ready — docking waits on this before LAUNCH.
+  useEffect(() => {
+    if (!voiceReady) return;
+    warmup.ensureWarmup();
+  }, [voiceReady, warmup.ensureWarmup]);
 
   useEffect(() => {
     if (!voiceSurface) return;
@@ -272,6 +292,9 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
 
   const value = useMemo<VoiceContextValue>(() => ({
     coreSessionId,
+    voiceInitialized,
+    voiceExplicitlyDisabled,
+    voiceKitPending,
     voiceReady,
     voiceConfig,
     wakeWordEnabled,
@@ -293,6 +316,9 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
     setConversationMode,
   }), [
     coreSessionId,
+    voiceInitialized,
+    voiceExplicitlyDisabled,
+    voiceKitPending,
     voiceReady,
     voiceConfig,
     wakeWordEnabled,

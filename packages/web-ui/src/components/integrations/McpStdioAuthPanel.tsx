@@ -6,6 +6,7 @@ import CircularProgress from '@mui/material/CircularProgress';
 import type { IntegrationConnection, IntegrationProvider } from '../../api';
 import { integrations } from '../../api';
 import { useOAuthFlowPoll } from './useOAuthFlowPoll';
+import { closeIntegrationOAuthWindow, openIntegrationOAuthUrl } from './oauth-window';
 import { usesNativeMcpStdioBrowserOAuth } from './integration-ui';
 import { settingsTheme, settingsMonoSx } from '../../styles/settings-theme';
 
@@ -68,6 +69,7 @@ export function McpStdioAuthPanel({
   const finishSuccess = useCallback(() => {
     if (oauthFinishedRef.current) return;
     oauthFinishedRef.current = true;
+    closeIntegrationOAuthWindow();
     setStatus('signed_in');
     setMessage('');
     setOauthState(null);
@@ -95,12 +97,7 @@ export function McpStdioAuthPanel({
     try {
       const { authUrl, state } = await integrations.startMcpAuth(connection.id);
       setOauthState(state);
-      const desktop = typeof window !== 'undefined' ? window.agentx : undefined;
-      if (desktop?.openExternal) {
-        await desktop.openExternal(authUrl);
-      } else {
-        window.open(authUrl, '_blank');
-      }
+      await openIntegrationOAuthUrl(authUrl);
     } catch (e) {
       setStatus('failed');
       setMessage(e instanceof Error ? e.message : 'Google sign-in failed');

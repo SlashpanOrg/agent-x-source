@@ -1094,6 +1094,7 @@ Rules:
   }
 
   async maintainConnections(): Promise<void> {
+    const MAINTAIN_CONN_TIMEOUT_MS = 45_000;
     for (const connection of this.store.listConnections()) {
       if (!connection.enabled) continue;
       const provider = this.resolveProvider(connection.providerId);
@@ -1107,26 +1108,38 @@ Rules:
         continue;
       }
       try {
-        if (connection.status === 'error') {
-          await this.syncConnection(connection.id);
-          continue;
-        }
-        const active = this.sessions.get(connection.id);
-        if (!active) {
-          await this.syncConnection(connection.id);
-          continue;
-        }
-        if (active.session.isBusy()) {
-          continue;
-        }
-        await active.session.listTools();
-        this.store.updateConnection(connection.id, { lastSyncAt: new Date().toISOString(), status: 'connected', error: undefined });
+        await Promise.race([
+          (async () => {
+            if (connection.status === 'error') {
+              await this.syncConnection(connection.id);
+              return;
+            }
+            const active = this.sessions.get(connection.id);
+            if (!active) {
+              await this.syncConnection(connection.id);
+              return;
+            }
+            if (active.session.isBusy()) {
+              return;
+            }
+            await active.session.listTools();
+            this.store.updateConnection(connection.id, { lastSyncAt: new Date().toISOString(), status: 'connected', error: undefined });
+          })(),
+          new Promise<void>((_, reject) => {
+            setTimeout(() => reject(new Error(`Health check timed out after ${MAINTAIN_CONN_TIMEOUT_MS}ms`)), MAINTAIN_CONN_TIMEOUT_MS);
+          }),
+        ]);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         getLogger().warn('INTEGRATION_HEALTH_CHECK_FAILED', message);
         await this.closeSession(connection.id);
         try {
-          await this.syncConnection(connection.id);
+          await Promise.race([
+            this.syncConnection(connection.id),
+            new Promise<IntegrationConnection>((_, reject) => {
+              setTimeout(() => reject(new Error(`Reconnect timed out after ${MAINTAIN_CONN_TIMEOUT_MS}ms`)), MAINTAIN_CONN_TIMEOUT_MS);
+            }),
+          ]);
         } catch {
           this.store.updateConnection(connection.id, { status: 'error', error: message });
         }

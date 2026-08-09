@@ -286,23 +286,23 @@ export function Footer({ onToggleLogs, logsOpen }: FooterProps) {
             <span style={{ color: colors.border.default }}>/</span>
           </>
         )}
-        <Box
-          component="span"
-          title={geoLocation.fullLabel}
-          sx={{
-            display: 'inline-flex', alignItems: 'center', gap: '2px',
-            cursor: 'default', userSelect: 'none', letterSpacing: '0.5px',
-            color: geoLocation.resolved && !geoLocation.vpnSuspected
-              ? colors.text.dim
-              : colors.accent.orange,
-            transition: 'color 0.15s',
-            '&:hover': { color: colors.text.secondary },
-          }}
-        >
-          <LocationOnIcon sx={{ fontSize: 12 }} />
-          {geoLocation.cityLabel}
-        </Box>
-        <span style={{ color: colors.border.default }}>/</span>
+        {geoLocation.resolved && (
+          <>
+            <Box
+              component="span"
+              title={geoLocation.fullLabel}
+              sx={{
+                display: 'inline-flex', alignItems: 'center', gap: '2px',
+                cursor: 'default', userSelect: 'none', letterSpacing: '0.5px',
+                color: colors.text.dim,
+              }}
+            >
+              <LocationOnIcon sx={{ fontSize: 12 }} />
+              {geoLocation.cityLabel}
+            </Box>
+            <span style={{ color: colors.border.default }}>/</span>
+          </>
+        )}
         {version && (
           <>
             <span>v{version}</span>

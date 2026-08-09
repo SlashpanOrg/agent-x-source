@@ -5,6 +5,7 @@ import { getEngine } from './engine.js';
 import { validate, connectIntegrationSchema, mcpImportSchema, integrationSettingsSchema, integrationRunToolSchema } from './validation.js';
 import { importMcpConfig, parseMcpImportConfig, startAppSpan } from '@agentx/engine';
 import { metricsRegistry } from './metrics/MetricsRegistry.js';
+import { oauthResultPage } from './integrations/oauth-callback-page.js';
 
 const router: import('express').Router = Router();
 
@@ -398,41 +399,6 @@ router.get('/integrations/:connectionId/tools', (req: Request, res: Response) =>
     res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
-
-function oauthResultPage(
-  success: boolean,
-  message: string,
-  meta?: { connectionId?: string; providerId?: string },
-): string {
-  const color = success ? '#22c55e' : '#ef4444';
-  const payload = JSON.stringify({
-    type: 'agentx-integration-oauth',
-    success,
-    message,
-    ...(meta?.connectionId ? { connectionId: meta.connectionId } : {}),
-    ...(meta?.providerId ? { providerId: meta.providerId } : {}),
-  });
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Agent-X Integrations</title></head>
-<body style="font-family:system-ui;background:#0a0a0f;color:#e5e7eb;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
-<div style="max-width:420px;padding:2rem;border:1px solid ${color}44;border-radius:12px;background:#111827">
-<h1 style="color:${color};font-size:1.1rem;margin:0 0 1rem">Integration ${success ? 'Connected' : 'Failed'}</h1>
-<p style="font-size:0.9rem;line-height:1.5;margin:0 0 1.5rem">${escapeHtml(message)}</p>
-<p style="font-size:0.75rem;color:#9ca3af;margin:0">${success ? 'Returning to Agent-X — tools will sync automatically…' : 'Close this window, return to the Agent-X setup wizard, and click "Sign in again" to retry.'}</p>
-</div>
-<script>
-(function () {
-  var payload = ${payload};
-  try { window.opener && window.opener.postMessage(payload, '*'); } catch (e) { /* ignore */ }
-  try { new BroadcastChannel('agentx-integrations').postMessage(payload); } catch (e) { /* ignore */ }
-  if (${success ? 'true' : 'false'}) { setTimeout(function () { window.close(); }, 1200); }
-})();
-</script>
-</body></html>`;
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
 
 export { router as integrationsRouter };
 

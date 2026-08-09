@@ -39,6 +39,7 @@ import {
   settingsTextFieldSx,
 } from '../styles/settings-theme';
 import { SettingsSectionHeader } from './settings/SettingsSectionHeader';
+import { ConfirmDeleteDialog } from './ConfirmDeleteDialog';
 import { ModelBenchmarkRunner, ModelBenchmarkScanner, BenchmarkGradeAck, canProceedWithBenchmarkGrade } from './settings/ModelBenchmarkRunner';
 
 import { colors, alphaColor } from '../theme';
@@ -226,6 +227,8 @@ export function ProvidersPanel() {
   const [modelsTab, setModelsTab] = useState(0);
   const [manualModelId, setManualModelId] = useState('');
   const [showManualModelInput, setShowManualModelInput] = useState(false);
+  const [deleteProfilePending, setDeleteProfilePending] = useState<ProfileEntry | null>(null);
+  const [deleteProfileBusy, setDeleteProfileBusy] = useState(false);
 
   const providerName = useCallback((id: string) => {
     return availableProviders.find(p => p.id === id)?.name ?? id;
@@ -319,6 +322,17 @@ export function ProvidersPanel() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Delete failed';
       setError(msg);
+    }
+  };
+
+  const confirmDeleteProfile = async () => {
+    if (!deleteProfilePending) return;
+    setDeleteProfileBusy(true);
+    try {
+      await handleDeleteProfile(deleteProfilePending);
+      setDeleteProfilePending(null);
+    } finally {
+      setDeleteProfileBusy(false);
     }
   };
 
@@ -589,7 +603,7 @@ export function ProvidersPanel() {
                 onSaveEdit={() => saveLabelEdit(profile.id)}
                 onCancelEdit={cancelLabelEdit}
                 onEditLabelChange={setEditLabelValue}
-                onDelete={() => handleDeleteProfile(profile)}
+                onDelete={() => setDeleteProfilePending(profile)}
                 onOpenPicker={() => openModelPicker(profile)}
               />
             );
@@ -959,6 +973,16 @@ export function ProvidersPanel() {
           )}
         </DialogActions>
       </Dialog>
+
+      <ConfirmDeleteDialog
+        open={Boolean(deleteProfilePending)}
+        busy={deleteProfileBusy}
+        title="DELETE PROVIDER PROFILE"
+        description="Permanently delete provider profile"
+        itemName={deleteProfilePending?.label}
+        onClose={() => setDeleteProfilePending(null)}
+        onConfirm={() => { void confirmDeleteProfile(); }}
+      />
     </Box>
   );
 }

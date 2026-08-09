@@ -10,6 +10,7 @@ import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
 import { colors, alphaColor } from '../../theme';
 import { ActionPreviewCard } from '../integrations/ActionPreviewCard';
 import { ChatInputBar } from '../ChatInputBar';
+import { setComposerKeyboardState } from '../../voice/composer-keyboard-state';
 import { WebSearchGlobeToggle } from '../WebSearchGlobeToggle';
 import { CrewSuggestionToggle } from '../CrewSuggestionToggle';
 import { ChatToolbar } from './ChatToolbar';
@@ -140,6 +141,10 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
   const handleRemoveAttachmentById = useCallback((id: string) => {
     handleRemoveAttachment(id);
   }, [handleRemoveAttachment]);
+
+  const handleComposerStateChange = useCallback((state: { focused: boolean; empty: boolean }) => {
+    setComposerKeyboardState(state);
+  }, []);
 
   // + / drag-drop attachments only — @ mentions stay as inline text chips.
   const chipAttachments = useMemo(
@@ -305,6 +310,7 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
           onAttachWorkspaceFolder={handleAttachWorkspaceFolder}
           onRemoveAttachmentById={handleRemoveAttachmentById}
           clearSignal={inputClearSignal}
+          onComposerStateChange={handleComposerStateChange}
         />
 
         <Box sx={{

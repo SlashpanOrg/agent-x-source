@@ -3,6 +3,7 @@
  */
 import { getLogger, isMemoryFabricSuperSession, resolveMemoryFabricWriteSessionId, type SessionContextKind, type EmbeddingProvider, type CompletionRequest } from '@agentx/shared';
 import { ChatTurnMemoryIngester } from '../neural/ChatTurnMemoryIngester.js';
+import { SessionFindingsIngester, type ToolFindingRecord, SESSION_FINDINGS_TAG } from '../neural/SessionFindingsIngester.js';
 import { UserChatMemoryIngester } from '../neural/UserChatMemoryIngester.js';
 import type { MemoryFabric, MemoryNode } from '../neural/MemoryFabric.js';
 import type { ProviderInterface } from '../providers/ProviderInterface.js';
@@ -54,6 +55,34 @@ function shouldRetrieve(query: string, skipRetrievalFlag?: boolean): boolean {
   return true;
 }
 
+/** Session-scoped tool findings — always retrieved (even in light thinking mode). */
+async function prefetchSessionScopedMemory(
+  fabric: MemoryFabric,
+  embedder: EmbeddingProvider,
+  query: string,
+  sessionId: string,
+  maxChars: number,
+): Promise<{ text: string; ids: string[] }> {
+  const settings = getRetrievalSettings();
+  const embedding = await embedder.embed(query.slice(0, 800));
+  const overFetch = 10;
+  const searchOpts = {
+    limit: overFetch,
+    tag: SESSION_FINDINGS_TAG,
+    sessionId,
+    vectorLimit: overFetch,
+    lexicalLimit: overFetch,
+  };
+  const findingsRaw = settings.hybridEnabled
+    ? await fabric.hybridSearch(embedding, query, searchOpts)
+    : await fabric.vectorSearch(embedding, searchOpts);
+  const findings = applyScoreGate(findingsRaw, {
+    minScore: settings.minScoreMemory * 0.85,
+    maxPerSource: 4,
+  }).slice(0, 6);
+  return packNodes(findings, maxChars, 1);
+}
+
 function packNodes(
   nodes: MemoryNode[],
   maxChars: number,
@@ -86,22 +115,45 @@ export async function buildMemoryContext(ctx: MemoryContextContext): Promise<{ e
   try {
     const lastUser = [...ctx.messages].reverse().find((m) => m.role === 'user');
     const rawQuery = typeof lastUser?.content === 'string' ? lastUser.content : '';
-    if (!rawQuery) return { episodic: '', semantic: '', graph: '' };
+    const memorySessionId = ctx.sessionId;
+    const settings = getRetrievalSettings();
+    const MAX_CHARS = ctx.usesCompactContext()
+      ? settings.maxEvidenceCharsCompact
+      : settings.maxEvidenceCharsFull;
 
-    // Fast-path: skip retrieval entirely for non-RAG turns (small-talk, acknowledgements, etc.).
-    // This makes non-RAG turns O(1) regardless of memory fabric size.
+    let sessionScopedText = '';
+    let sessionScopedIds: string[] = [];
+    if (rawQuery && memorySessionId) {
+      const sessionPack = await prefetchSessionScopedMemory(
+        fabric,
+        embedder,
+        rawQuery,
+        memorySessionId,
+        Math.floor(MAX_CHARS * 0.4),
+      );
+      sessionScopedText = sessionPack.text;
+      sessionScopedIds = sessionPack.ids;
+    }
+
+    const sessionPrefix = sessionScopedText
+      ? `[SESSION RESEARCH — reuse before web_search / deep_web_search / knowledge_base_search]\n${sessionScopedText}\n`
+      : '';
+
+    if (!rawQuery) {
+      ctx.setMemoryContextNodeIds(sessionScopedIds);
+      return { episodic: sessionPrefix.trim(), semantic: '', graph: '' };
+    }
+
+    // Fast-path: skip broad retrieval for small-talk — but keep session research above.
     if (!shouldRetrieve(rawQuery, ctx.skipRetrieval)) {
-      ctx.setMemoryContextNodeIds([]);
-      return { episodic: '', semantic: '', graph: '' };
+      ctx.setMemoryContextNodeIds(sessionScopedIds);
+      return { episodic: sessionPrefix.trim(), semantic: '', graph: '' };
     }
 
     const t0 = performance.now();
     const query = await ctx.reformulateQuery(rawQuery);
     const tReformulate = performance.now();
-    const memorySessionId = ctx.sessionId;
     const isSuper = isMemoryFabricSuperSession(memorySessionId, ctx.options.contextKind);
-
-    const settings = getRetrievalSettings();
     const result = await vectorMemoryPrefetch(fabric, embedder, query, {
       sessionId: memorySessionId,
       isSuperSession: isSuper,
@@ -160,10 +212,6 @@ export async function buildMemoryContext(ctx: MemoryContextContext): Promise<{ e
       }
     }
 
-    const MAX_CHARS = ctx.usesCompactContext()
-      ? settings.maxEvidenceCharsCompact
-      : settings.maxEvidenceCharsFull;
-
     let evidenceIndex = 1;
     const profilePack = packNodes(result.userProfile, Math.floor(MAX_CHARS * 0.30), evidenceIndex);
     evidenceIndex = profilePack.nextIndex;
@@ -171,10 +219,10 @@ export async function buildMemoryContext(ctx: MemoryContextContext): Promise<{ e
     evidenceIndex = episodicPack.nextIndex;
     const semanticPack = packNodes(result.vector, Math.floor(MAX_CHARS * 0.45), evidenceIndex);
 
-    const evidenceIds = [...profilePack.ids, ...episodicPack.ids, ...semanticPack.ids];
+    const evidenceIds = [...sessionScopedIds, ...profilePack.ids, ...episodicPack.ids, ...semanticPack.ids];
     ctx.setMemoryContextNodeIds(evidenceIds);
 
-    const episodicCombined = [profilePack.text, episodicPack.text].filter(Boolean).join('\n');
+    const episodicCombined = [sessionPrefix.trim(), profilePack.text, episodicPack.text].filter(Boolean).join('\n');
     const semanticText = semanticPack.text;
 
     if (!episodicCombined && !semanticText) {
@@ -279,6 +327,39 @@ export function extractMemories(
     ctx.setUserChatMemoryIngester(userIngester);
   }
   void userIngester.ingestTurn(userMessage, assistantResponse, ctx.sessionId, ctx.speakerId).catch(() => {});
+}
+
+export interface SessionFindingsContext {
+  memoryFabric: MemoryFabric | null;
+  memoryEmbedder: EmbeddingProvider | null;
+  sessionFindingsIngester: SessionFindingsIngester | null;
+  setSessionFindingsIngester(i: SessionFindingsIngester): void;
+  sessionId: string;
+  options: { contextKind?: SessionContextKind };
+}
+
+/** Persist successful research tool outputs for cross-turn reuse (always, even in light mode). */
+export function persistSessionToolFindings(
+  ctx: SessionFindingsContext,
+  records: ToolFindingRecord[],
+  userQueryHint?: string,
+): void {
+  const fabric = ctx.memoryFabric;
+  const embedder = ctx.memoryEmbedder;
+  if (!fabric || !embedder || records.length === 0) return;
+
+  let ingester = ctx.sessionFindingsIngester;
+  if (!ingester) {
+    ingester = new SessionFindingsIngester(fabric, embedder);
+    ctx.setSessionFindingsIngester(ingester);
+  }
+  const storageSessionId = resolveMemoryFabricWriteSessionId(ctx.sessionId, ctx.options.contextKind);
+  void ingester.ingestToolFindings(
+    records,
+    ctx.sessionId,
+    storageSessionId,
+    userQueryHint,
+  ).catch(() => {});
 }
 
 export interface ReformulateQueryContext {

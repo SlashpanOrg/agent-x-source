@@ -12,7 +12,7 @@ import { colors, alphaColor } from '../theme';
 import { Footer } from '../components/Footer';
 import { MigrationUpgrade } from '../components/MigrationUpgrade';
 import { useVoiceOptional } from '../components/voice/VoiceProvider';
-import { useLocationPermission } from '../hooks/useLocationPermission';
+import { useClientSituationOptional } from '../context/ClientSituationProvider';
 import { useGeoLocation } from '../hooks/useGeoLocation';
 import { usePageVisible } from '../hooks/usePageVisible';
 import { webuiActive, crewCatalog, crews, clientSituation as clientSituationApi, type CatalogSeedStatusResponse, type Crew } from '../api';
@@ -80,7 +80,7 @@ function buildTerminalLines(
 export function DockingStation() {
   const { serverOnline, refreshHealth, healthData } = useApp();
   const voice = useVoiceOptional();
-  const location = useLocationPermission(true);
+  const clientSituationCtx = useClientSituationOptional();
   const geoLocation = useGeoLocation();
   const navigate = useNavigate();
   const [checking, setChecking] = useState(true);
@@ -153,27 +153,35 @@ export function DockingStation() {
     };
   }, [serverOnline, catalogSeed?.status, pageVisible]);
 
-  // Sync the app launch location/timezone to the server
-  // use the same context as the desktop/web UI instead of stale or inferred location.
+  // Sync client situation (timezone + location when known) to the server for agents.
   useEffect(() => {
-    if (!serverOnline || !location.clientSituation) return;
-    const key = `${location.clientSituation.latitude ?? 'x'},${location.clientSituation.longitude ?? 'x'},${location.clientSituation.locationLabel ?? 'x'},${location.clientSituation.timezone}`;
+    if (!serverOnline || !clientSituationCtx?.situation) return;
+    const s = clientSituationCtx.situation;
+    const key = `${s.latitude ?? 'x'},${s.longitude ?? 'x'},${s.locationLabel ?? 'x'},${s.timezone}`;
     if (lastSentClientSituationRef.current === key) return;
     lastSentClientSituationRef.current = key;
-    clientSituationApi.set(location.clientSituation).catch(() => {});
-  }, [serverOnline, location.clientSituation]);
+    clientSituationApi.set(s).catch(() => {});
+  }, [serverOnline, clientSituationCtx?.situation]);
 
   const crewCatalogCount = computeTotalCrewCatalogCount(catalogSeed, rosterCrews);
 
-  const voiceModuleEnabled = Boolean(voice?.voiceReady);
-  const engineWarmAtLaunch = Boolean(voice?.engineWarmAtLaunch);
-  const voiceNeedsReady = voiceModuleEnabled && engineWarmAtLaunch;
-  const voiceLaunchReady = !voiceNeedsReady
-    || voice?.warmupPhase === 'ready'
-    || voice?.warmupPhase === 'failed';
-  const voiceResolved = !voiceModuleEnabled || !engineWarmAtLaunch || voiceLaunchReady;
-  const voiceOk = !voiceModuleEnabled || !engineWarmAtLaunch || voiceLaunchReady;
-  const systemsResolved = !checking && location.resolved && voiceResolved;
+  const voiceKitLoading = Boolean(voice && !voice.voiceInitialized);
+  const voiceExplicitlyDisabled = Boolean(voice?.voiceExplicitlyDisabled);
+  const voiceKitPending = Boolean(voice?.voiceKitPending);
+  const voiceWarmupPending = Boolean(
+    voice?.voiceReady && voice.warmupPhase === 'booting',
+  );
+  const voiceWarmupOk = !voice?.voiceReady
+    || voice.warmupPhase === 'ready'
+    || voice.warmupPhase === 'failed';
+  const voiceLaunchBlocked = Boolean(
+    voice
+    && !voiceExplicitlyDisabled
+    && (voiceKitLoading || voiceKitPending || voiceWarmupPending),
+  );
+  const voiceResolved = !voiceLaunchBlocked;
+  const voiceOk = voiceResolved && voiceWarmupOk;
+  const systemsResolved = !checking && voiceResolved;
   const canLaunch = serverOnline && systemsResolved && voiceOk;
   const preparing = serverOnline && !canLaunch;
 
@@ -205,20 +213,28 @@ export function DockingStation() {
     return () => clearTimeout(timeout);
   }, [visibleLines, lines]);
 
-  const voiceColor = !voice || !voiceModuleEnabled
+  const voiceColor = !voice || voiceKitLoading || voiceKitPending
+    ? colors.accent.orange
+    : voiceExplicitlyDisabled
     ? colors.text.dim
     : voice.warmupPhase === 'ready' ? colors.accent.green
       : voice.warmupPhase === 'booting' ? colors.accent.orange
         : voice.warmupPhase === 'failed' ? colors.accent.red
           : colors.text.dim;
 
-  const voiceLabel = !voice || !voiceModuleEnabled
+  const voiceLabel = !voice || voiceKitLoading
+    ? 'Preparing…'
+    : voiceKitPending
+    ? 'Deploying kit…'
+    : voiceExplicitlyDisabled
     ? 'Disabled'
-    : engineWarmAtLaunch
+    : voice.warmupPhase === 'booting'
       ? voice.warmupLabel
       : voice.warmupPhase === 'ready'
-        ? 'Ready (on demand)'
-        : 'On demand';
+        ? 'Ready'
+        : voice.warmupPhase === 'failed'
+          ? voice.warmupLabel
+          : 'On demand';
 
   return (
     <MigrationUpgrade>
@@ -274,30 +290,22 @@ export function DockingStation() {
           <StatusRow label="Engine" value={serverOnline && healthData?.agentActive ? 'Active' : serverOnline ? 'Standby' : 'Down'} color={serverOnline && healthData?.agentActive ? colors.accent.green : serverOnline ? colors.accent.orange : colors.accent.red} />
           {serverOnline && (
             <>
+              {geoLocation.resolved && (
               <StatusRow
                 label="Location"
                 value={geoLocation.cityLabel}
-                color={geoLocation.resolved && !geoLocation.vpnSuspected
-                  ? colors.accent.green
-                  : geoLocation.vpnSuspected
-                    ? colors.accent.orange
-                    : colors.text.dim}
-                checking={geoLocation.loading}
-                onClick={!geoLocation.resolved || geoLocation.vpnSuspected
-                  ? () => { void geoLocation.refresh(); }
-                  : undefined}
-                title={geoLocation.resolved
-                  ? geoLocation.fullLabel
-                  : 'Click to retry location detection'}
+                color={colors.accent.green}
+                title={geoLocation.fullLabel}
               />
-              {voiceModuleEnabled && (
+              )}
+              {voice && !voiceExplicitlyDisabled && (
               <StatusRow
                 label="Voice Engine"
                 value={voiceLabel}
                 color={voiceColor}
-                checking={voiceNeedsReady && voice?.warmupPhase === 'booting'}
-                onClick={voice?.warmupPhase === 'failed' ? voice.retryVoiceWarmup : undefined}
-                title={voice?.warmupPhase === 'failed' ? (voice.warmupError ?? 'Click to retry voice setup') : undefined}
+                checking={voiceKitLoading || voiceKitPending || voiceWarmupPending}
+                onClick={voice.warmupPhase === 'failed' ? voice.retryVoiceWarmup : undefined}
+                title={voice.warmupPhase === 'failed' ? (voice.warmupError ?? 'Click to retry voice setup') : undefined}
               />
               )}
             </>

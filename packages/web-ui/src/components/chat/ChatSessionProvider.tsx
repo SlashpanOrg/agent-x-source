@@ -176,6 +176,7 @@ const MODAL_KEYS = [
   'stepCapPrompt',
   'crewDossierOpen', 'crewDossierCrew',
   'clearSessionModalOpen', 'clearSessionBusy',
+  'deleteSessionPending', 'deleteSessionBusy',
 ] as const;
 
 type ModalKey = typeof MODAL_KEYS[number];
@@ -208,6 +209,7 @@ const SETTER_KEYS = [
   'setStepCapPrompt',
   'setCrewDossierOpen', 'setCrewDossierCrew',
   'setClearSessionModalOpen', 'setClearSessionBusy',
+  'setDeleteSessionPending',
   'setWebSearchAvailable', 'setWebSearchForce', 'setCrewSuggestionRequested',
   'setTodoItems',
   'setTokenExpanded', 'setTasksExpanded', 'setMissionExpanded',
@@ -246,6 +248,7 @@ type ThreadHandlers = Pick<ChatSessionStateReturn, ThreadHandlerKey>;
 const NAVIGATION_HANDLER_KEYS = [
   'handleShowSessions', 'handleSelectSession', 'handleNewSession',
   'handleArchiveSession', 'handleDeleteSessionContent', 'handleDeleteSession',
+  'handleConfirmDeleteSession',
   'openChildSession',
 ] as const;
 

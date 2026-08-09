@@ -20,6 +20,8 @@ interface StreamState {
   stepCount: number;
   stepTextStartLength: number;
   clarificationUsed: boolean;
+  /** Finish had no user-visible text — Agent owns empty-retry / promote before message_received. */
+  deferredEmptyFinalize: boolean;
   totalInputTokens: number;
   totalOutputTokens: number;
   promptCharEstimate: number;
@@ -234,6 +236,7 @@ export function createAiSdkStreamHandler(
     stepCount: 0,
     stepTextStartLength: 0,
     clarificationUsed: false,
+    deferredEmptyFinalize: false,
     totalInputTokens: 0,
     totalOutputTokens: 0,
     promptCharEstimate,
@@ -557,7 +560,29 @@ export function createAiSdkStreamHandler(
           break;
         }
 
-        let finalContent = trimmedContent || 'I apologize, I was unable to generate a response.';
+        // Reasoning-only / empty text: do NOT publish the apology yet. Agent empty-retry
+        // (and reasoning promotion) must run first; otherwise message_received locks the
+        // UI on the fallback and _turnMessageEmitted blocks a real reply.
+        if (!trimmedContent) {
+          state.deferredEmptyFinalize = true;
+          emit({ type: 'completion_finished', message: 'Thought.' });
+          onSessionEvent?.({
+            type: 'finish',
+            sessionId,
+            sequence: ++sequence,
+            timestamp: Date.now(),
+            payload: {
+              content: '',
+              usage: usage
+                ? { inputTokens: state.totalInputTokens, outputTokens: state.totalOutputTokens }
+                : undefined,
+            },
+          });
+          break;
+        }
+
+        state.deferredEmptyFinalize = false;
+        let finalContent = trimmedContent;
         let outMessageId = messageId;
         let isUpdate = false;
         if (voiceMerge) {
@@ -665,7 +690,7 @@ export function createAiSdkStreamHandler(
 
   return {
     handleEvent,
-    getState: () => state,
+    getState: () => ({ ...state, messageId: voiceMerge?.messageId ?? messageId }),
     discardCurrentStepText: () => {
       state.clarificationUsed = true;
       state.accumulatedContent = state.accumulatedContent.slice(0, state.stepTextStartLength);
@@ -677,6 +702,7 @@ export function createAiSdkStreamHandler(
       state.stepCount = 0;
       state.stepTextStartLength = 0;
       state.clarificationUsed = false;
+      state.deferredEmptyFinalize = false;
       state.toolCallCount = 0;
     },
   };

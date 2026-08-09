@@ -393,14 +393,6 @@ function buildJourneyBlock(opts: {
     : '';
 
   if (opts.voiceTurn || opts.compact) {
-    const integLine =
-      integrations.length > 0
-        ? `MCP ready: ${integrations.join(', ')}.`
-        : 'No MCP integrations connected.';
-    const nativeLine =
-      nativeTools.examples.length > 0
-        ? `Native tools: ${nativeTools.examples.join(', ')}. Use these for WhatsApp messaging, contacts, and session management — NOT MCP Store integrations.`
-        : '';
     const kbHint = kbPinLine
       ? ` STRICT @kb: only knowledge_base_search with sourceId for: ${kbPinLine}. NEVER file_read/shell_exec/glob on the original upload.`
       : '';
@@ -410,11 +402,10 @@ function buildJourneyBlock(opts: {
     return [
       '[TURN_JOURNEY]',
       'Default silent research order (user did not need to request tools):',
-      `1. LOCAL — ${opts.localHitCount > 0 ? `${opts.localHitCount} excerpt(s) injected above` : 'none yet'}; if weak, call knowledge_base_search.${kbHint}${tplHint}`,
-      `2. NATIVE TOOLS — ${nativeLine || 'none available.'} These are builtin tools (WhatsApp via Baileys, automations, etc.) — check them BEFORE MCP integrations for services they cover.`,
-      `3. INTEGRATIONS — ${integLine} Use matching integration__* tools when the ask involves those apps.`,
-      `4. WEB — ${webTools.length > 0 ? webTools.join(', ') : 'unavailable'} only if local+native+MCP cannot answer or facts may be stale.`,
-      '5. MODEL — brief answer from trained knowledge last; say when unsure.',
+      `1. MEMORY — ${memoryTools.length > 0 ? memoryTools.join(', ') : 'memory_recall / cortex_memory_search when available'}.`,
+      `2. KNOWLEDGE — ${opts.localHitCount > 0 ? `${opts.localHitCount} excerpt(s) injected above` : 'none yet'}; if weak, call knowledge_base_search.${kbHint}${tplHint}`,
+      `3. WEB — ${webTools.length > 0 ? webTools.join(', ') : 'unavailable'} when memory+KB cannot answer or facts may be stale.`,
+      '4. MODEL — brief answer from trained knowledge last; say when unsure.',
       'Do not narrate this pipeline. Explicit user how-to overrides. Keep voice replies short.',
       '[/TURN_JOURNEY]',
     ].join('\n');

@@ -1,5 +1,8 @@
 import type { Server, IncomingMessage } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { VoiceService, WebSocketVoiceTransport, mergeVoiceConfig, getPersonaStore, startAppSpan } from '@agentx/engine';
 import type { SpeakerIdentificationResult, VoiceSessionSpeaker } from '@agentx/engine';
@@ -181,25 +184,33 @@ async function cancelActiveSynth(session: VoiceWsSession): Promise<void> {
   session.activeSynthId = undefined;
 }
 
-/** Speak a short line of text out-of-band (permission prompts, confirmations). */
-async function speakSystemLine(session: VoiceWsSession, line: string): Promise<void> {
+async function speakShortCachedLine(
+  session: VoiceWsSession,
+  line: string,
+  filler = true,
+): Promise<void> {
   if (session.textOnlyPlayback || !line.trim()) return;
   const service = getVoiceService();
   const synthId = randomUUID();
   session.activeSynthId = synthId;
+  const tmpRoot = await mkdtemp(join(tmpdir(), 'ax-voice-filler-'));
+  const wavPath = join(tmpRoot, `${synthId}.wav`);
   try {
-    const stream = await service.synthesizeStreamText(line, {
-      requestId: synthId,
-      ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
-    });
-    for await (const chunk of stream.chunks) {
-      if (session.activeSynthId !== stream.requestId) break;
-      const audio = Buffer.from(chunk.pcmBase64, 'base64');
-      await sendSessionAudio(session, audio, chunk.sampleRate, false);
-    }
+    const result = await service.synthesizeFiller(line, wavPath);
+    if (session.activeSynthId !== synthId) return;
+    const audio = await readFile(wavPath);
+    await sendSessionAudio(session, audio, result.sampleRate ?? 24_000, filler);
   } catch { /* best-effort TTS */ } finally {
     if (session.activeSynthId === synthId) session.activeSynthId = undefined;
+    try {
+      await rm(tmpRoot, { recursive: true, force: true });
+    } catch { /* ignore */ }
   }
+}
+
+/** Speak a short line of text out-of-band (permission prompts, confirmations). */
+async function speakSystemLine(session: VoiceWsSession, line: string): Promise<void> {
+  await speakShortCachedLine(session, line, false);
 }
 
 /** Speak a short ack when the user only utters the wake word. */
@@ -891,7 +902,7 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
     pttLastSttAt: 0,
     pttLastPartial: '',
     transport,
-    searchWeb: false,
+    searchWeb: true,
     bypassChip: false,
     voiceprintEnabled: false,
     ...(clientSituation ? { clientSituation } : {}),
@@ -1399,22 +1410,7 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
     ensureSubscribed();
 
     const progress = service.createProgressSession(async (line: string) => {
-      if (session.textOnlyPlayback) return;
-      const fillerId = randomUUID();
-      session.activeSynthId = fillerId;
-      const stream = await service.synthesizeStreamText(line, {
-        forFiller: true,
-        requestId: fillerId,
-        ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
-      });
-      for await (const chunk of stream.chunks) {
-        if (session.activeSynthId !== stream.requestId) break;
-        const audio = Buffer.from(chunk.pcmBase64, 'base64');
-        await sendSessionAudio(session, audio, chunk.sampleRate, true);
-      }
-      if (session.activeSynthId === stream.requestId) {
-        session.activeSynthId = undefined;
-      }
+      await speakShortCachedLine(session, line, true);
     }, { transcript: text });
     session.progress = progress;
 
@@ -1457,8 +1453,10 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
     const unsub = agent.events.on((event) => {
       const ev = event as {
         type?: string; content?: string; stage?: string; tool?: string;
+        description?: string;
         requestId?: string; riskLevel?: string; argsSummary?: string; commandPreview?: string; forAutomation?: boolean;
         questionnaire?: QuestionnairePayload;
+        elapsedMs?: number;
       };
       if (ev.type === 'stream_chunk' && typeof ev.content === 'string' && ev.content) {
         agentDisplayText = normalizeVoiceAssistantContent(agentDisplayText + ev.content);
@@ -1587,9 +1585,8 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
             }
             : {}),
           ...(session.clientSituation ? { clientSituation: session.clientSituation } : {}),
-          // Crew calls always get web search (no dashboard toggle required).
-          // Dashboard voice still respects the search-web chip.
-          ...(crewCall || session.searchWeb ? { forceWebSearch: true } : {}),
+          // Voice sessions always use web search when providers are configured.
+          forceWebSearch: true,
           ...(voiceSession?.speaker ? { speaker: voiceSession.speaker } : {}),
         },
       );

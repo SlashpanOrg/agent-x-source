@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { syncAuthTokenFromSession } from '../api';
-import { VoiceSessionClient, type VoiceClientState, type VoiceTurnTimings, type VoicePermissionPrompt, type VoicePermissionChoice } from '../voice/VoiceSessionClient';
+import { VoiceSessionClient, VOICE_CONNECT_SUPERSEDED, type VoiceClientState, type VoiceTurnTimings, type VoicePermissionPrompt, type VoicePermissionChoice } from '../voice/VoiceSessionClient';
 import { VOICE_MAX_TURN_SECONDS, VOICE_TURN_COUNTDOWN_FROM_SECONDS, VOICE_MIN_RECORDING_MS, VOICE_ACCIDENTAL_TAP_MS, VOICE_MIN_SPEECH_LEVEL } from '../voice/constants';
 import { type VoiceTurnPipeline } from '../voice/voice-turn-pipeline';
 import { markVoiceOutputUnlocked } from '../voice/support';
@@ -97,17 +97,19 @@ export function useVoiceSession(
 
   // Tear down when mode / chat session / engine / wake word changes (not on first mount).
   // Callers that keep `enabled` true will reconnect via startSession / ensurePttReady.
-  const sessionIdentityRef = useRef({ chatSessionId, mode, engine, conversationMode, wakeWord, wakePhrase });
+  // conversationMode is only sent on the first session_start (continue vs new divider).
+  // VoiceProvider resets it to 'continue' after ~3s — that must NOT tear down an
+  // in-flight xAI handshake (session_ready often takes 4–5s).
+  const sessionIdentityRef = useRef({ chatSessionId, mode, engine, wakeWord, wakePhrase });
   useEffect(() => {
     const prev = sessionIdentityRef.current;
     const changed =
       prev.chatSessionId !== chatSessionId
       || prev.mode !== mode
       || prev.engine !== engine
-      || prev.conversationMode !== conversationMode
       || prev.wakeWord !== wakeWord
       || prev.wakePhrase !== wakePhrase;
-    sessionIdentityRef.current = { chatSessionId, mode, engine, conversationMode, wakeWord, wakePhrase };
+    sessionIdentityRef.current = { chatSessionId, mode, engine, wakeWord, wakePhrase };
     if (!changed) return;
 
     clientRef.current?.disconnect();
@@ -124,7 +126,7 @@ export function useVoiceSession(
     setPartialTranscript('');
     setError(null);
     stopTimer();
-  }, [chatSessionId, mode, engine, conversationMode, wakeWord, wakePhrase, stopTimer]);
+  }, [chatSessionId, mode, engine, wakeWord, wakePhrase, stopTimer]);
 
   useEffect(() => {
     if (!enabled) {
@@ -376,6 +378,7 @@ export function useVoiceSession(
         }
       }
     } catch (err) {
+      if (err instanceof Error && err.message === VOICE_CONNECT_SUPERSEDED) return;
       setError(friendlyVoiceError(err instanceof Error ? err.message : 'Voice connection failed'));
     }
   }, [ensureClient, ensureVoiceAuthToken, mode]);
@@ -410,6 +413,7 @@ export function useVoiceSession(
       }
       syncPttReady();
     } catch (err) {
+      if (err instanceof Error && err.message === VOICE_CONNECT_SUPERSEDED) return;
       setPttReady(false);
       setError(friendlyVoiceError(err instanceof Error ? err.message : 'Voice setup failed'));
       resetPipelineIfIdle();

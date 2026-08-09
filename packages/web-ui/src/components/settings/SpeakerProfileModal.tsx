@@ -16,6 +16,7 @@ import {
   settingsHelperSx,
   settingsTheme,
 } from '../../styles/settings-theme';
+import { ConfirmDeleteDialog } from '../ConfirmDeleteDialog';
 
 interface SpeakerProfileModalProps {
   open: boolean;
@@ -36,6 +37,9 @@ export function SpeakerProfileModal({
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDeleteProfile, setConfirmDeleteProfile] = useState(false);
+  const [deleteSamplePendingId, setDeleteSamplePendingId] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   useEffect(() => {
     if (!open || !profileId) {
@@ -106,6 +110,7 @@ export function SpeakerProfileModal({
       : [];
 
   return (
+    <>
     <Modal open={open} onClose={onClose}>
       <Box sx={{
         position: 'absolute',
@@ -186,7 +191,7 @@ export function SpeakerProfileModal({
                     </Typography>
                     <IconButton
                       size="small"
-                      onClick={() => void handleDeleteSample(sample.id)}
+                      onClick={() => setDeleteSamplePendingId(sample.id)}
                       sx={{ color: settingsTheme.accent.alert, p: 0.4 }}
                     >
                       <DeleteIcon sx={{ fontSize: 14 }} />
@@ -208,7 +213,7 @@ export function SpeakerProfileModal({
             )}
 
             <Button
-              onClick={() => void handleDelete()}
+              onClick={() => setConfirmDeleteProfile(true)}
               fullWidth
               startIcon={<DeleteIcon sx={{ fontSize: 14 }} />}
               sx={{ ...settingsBtnGhostSx, fontSize: '0.6rem', py: 0.45, color: settingsTheme.accent.alert }}
@@ -219,5 +224,38 @@ export function SpeakerProfileModal({
         )}
       </Box>
     </Modal>
+
+      <ConfirmDeleteDialog
+        open={confirmDeleteProfile}
+        busy={deleteBusy}
+        title="DELETE VOICE PROFILE"
+        description="Permanently delete voice profile"
+        itemName={profile?.name}
+        onClose={() => setConfirmDeleteProfile(false)}
+        onConfirm={() => {
+          setDeleteBusy(true);
+          void handleDelete().finally(() => {
+            setDeleteBusy(false);
+            setConfirmDeleteProfile(false);
+          });
+        }}
+      />
+      <ConfirmDeleteDialog
+        open={Boolean(deleteSamplePendingId)}
+        busy={deleteBusy}
+        title="DELETE VOICE SAMPLE"
+        description="Permanently delete voice sample"
+        itemName={deleteSamplePendingId ? 'this recording' : undefined}
+        onClose={() => setDeleteSamplePendingId(null)}
+        onConfirm={() => {
+          if (!deleteSamplePendingId) return;
+          setDeleteBusy(true);
+          void handleDeleteSample(deleteSamplePendingId).finally(() => {
+            setDeleteBusy(false);
+            setDeleteSamplePendingId(null);
+          });
+        }}
+      />
+    </>
   );
 }

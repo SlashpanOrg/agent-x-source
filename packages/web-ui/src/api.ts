@@ -2663,6 +2663,7 @@ export interface IntegrationProvider {
       clientIdEnv?: string;
       scopes?: string[];
       resource?: string;
+      redirectAllowlistRequired?: boolean;
     };
     packageSignIn?: {
       loginTool: string;
@@ -2796,7 +2797,7 @@ export const integrations = {
     }>(`/integrations/catalog`),
   connections: () => request<{ connections: IntegrationConnection[] }>('/integrations/connections'),
   analytics: () => request<{ analytics: IntegrationAnalytics }>('/integrations/analytics'),
-  maintain: () => request<{ ok: boolean }>('/integrations/maintain', { method: 'POST' }),
+  maintain: () => request<{ ok: boolean }>('/integrations/maintain', { method: 'POST' }, 45_000),
   settings: () => request<{ settings: IntegrationHubSettings }>('/integrations/settings'),
   updateSettings: (body: IntegrationHubSettings) =>
     request<{ settings: IntegrationHubSettings }>('/integrations/settings', { method: 'POST', body: JSON.stringify(body) }),

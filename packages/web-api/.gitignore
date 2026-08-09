@@ -1,3 +1,4 @@
 data/
 server.js
 dist/
+.cache/

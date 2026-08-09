@@ -473,9 +473,11 @@ export function useChatSend({
 
   // ─── handleResend ───
   const handleResend = useCallback(async (text: string) => {
-    if (!text || streamingRef.current || !currentProviderRef.current || !currentModelRef.current) return;
+    if (!text || !currentProviderRef.current || !currentModelRef.current) return;
     if (!(await ensureSession())) return;
 
+    // Cancel any in-flight turn first — do not gate on streamingRef or a stuck
+    // streaming flag blocks retry entirely (no UI feedback, no new request).
     try { await chat.cancel(); } catch { /* ignore */ }
     resendInProgressRef.current = true;
     setTurnActivity(null);
@@ -483,12 +485,24 @@ export function useChatSend({
     beginTurnUi();
 
     const placeholderId = crypto.randomUUID();
-    setMessages(prev => {
+    setMessages((prev) => {
       const withoutAssistant = prev[prev.length - 1]?.role === 'assistant' ? prev.slice(0, -1) : prev;
       const tip = withoutAssistant[withoutAssistant.length - 1];
       if (tip?.role === 'user') {
-        return [...withoutAssistant, { id: placeholderId, role: 'assistant' as const, content: '', streaming: true }];
+        outgoingTurnRef.current = {
+          userId: tip.id,
+          userContent: tip.content,
+          placeholderId,
+        };
+        return [...withoutAssistant, {
+          id: placeholderId,
+          role: 'assistant' as const,
+          content: '',
+          streaming: true,
+          parts: [],
+        }];
       }
+      outgoingTurnRef.current = null;
       return withoutAssistant;
     });
     requestAnimationFrame(() => scrollMessagesToBottom('smooth'));
@@ -522,7 +536,7 @@ export function useChatSend({
       });
       endTurnUi();
     }
-  }, [ensureSession, beginTurnUi, endTurnUi, scrollMessagesToBottom, setTurnActivity, setLoadingSteps, setMessages, setWarnings, resendInProgressRef, activeTurnIdRef, streamingRef, currentProviderRef, currentModelRef]);
+  }, [ensureSession, beginTurnUi, endTurnUi, scrollMessagesToBottom, setTurnActivity, setLoadingSteps, setMessages, setWarnings, resendInProgressRef, activeTurnIdRef, outgoingTurnRef, currentProviderRef, currentModelRef]);
 
   // ─── markCrewRosterPickerResolved ───
   const markCrewRosterPickerResolved = useCallback((

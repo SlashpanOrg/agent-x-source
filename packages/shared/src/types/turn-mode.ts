@@ -81,11 +81,11 @@ export const THINKING_MODE_SKIP_EXTRACT_MEMORIES: Record<ThinkingMode, boolean> 
   high: false,
 };
 
-/** Max output token budget per output mode (0 = use model default). */
+/** Max output token budget per output mode (0 = no output-mode cap — length is prompt-guided only). */
 export const OUTPUT_MODE_MAX_TOKENS: Record<OutputMode, number> = {
-  brief: 300,
-  moderate: 800,
-  detailed: 0, // 0 = use model default
+  brief: 0,
+  moderate: 0,
+  detailed: 0,
 };
 
 /** Check if a value is a valid ThinkingMode. */

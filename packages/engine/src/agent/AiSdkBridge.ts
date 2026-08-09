@@ -350,7 +350,9 @@ export function createAiSdkTools(
 
   function toolCallKey(toolId: string, args: Record<string, unknown>): string {
     if (toolId === 'knowledge_base_search' && typeof args['query'] === 'string') return `kb:${String(args['query'])}`;
-    if (toolId === 'deep_web_search' && typeof args['query'] === 'string') return `web:${String(args['query'])}`;
+    if ((toolId === 'deep_web_search' || toolId === 'web_search') && typeof args['query'] === 'string') {
+      return `web:${String(args['query'])}`;
+    }
     if (toolId === 'web_fetch' && typeof args['url'] === 'string') return `fetch:${String(args['url'])}`;
     if (toolId === 'python_rpc' && typeof args['script'] === 'string') return `py:${String(args['script']).slice(0, 200)}`;
     if (toolId === 'shell_exec' && typeof args['command'] === 'string') return `sh:${String(args['command']).slice(0, 200)}`;
@@ -405,8 +407,8 @@ export function createAiSdkTools(
       return { error: 'REPEAT_FETCH', message: `You already fetched this URL in this turn. Re-fetching the same URL is not allowed. Use the result you have, try a different source, or ask the user.` };
     }
 
-    if ((toolId === 'knowledge_base_search' || toolId === 'deep_web_search') && previous.length > 0) {
-      return { error: 'REPEAT_SEARCH', message: `You already ran this exact ${toolId} query in this turn. Repeating the same search is not allowed. Use the results already returned or ask the user.` };
+    if ((toolId === 'knowledge_base_search' || toolId === 'deep_web_search' || toolId === 'web_search') && previous.length > 0) {
+      return { error: 'REPEAT_SEARCH', message: `You already ran this exact ${toolId} query in this turn. Repeating the same search is not allowed. Use the results already returned, [SESSION RESEARCH] from prior turns, or ask the user.` };
     }
 
     // Meta-discovery thrash: tool_search/tool_describe must not dominate the turn.

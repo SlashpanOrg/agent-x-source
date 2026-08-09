@@ -41,7 +41,7 @@ export const TURN_TIMEOUT_MS = 600_000;
 /** Idle timeout for voice — if the provider never streams, fail the turn (was 90s of stuck Thinking…). */
 export const VOICE_TURN_TIMEOUT_MS = 45_000;
 /** Hard ceiling for a single voice turn regardless of ongoing activity. */
-export const VOICE_TURN_MAX_MS = 120_000;
+export const VOICE_TURN_MAX_MS = 300_000;
 
 export function getForceWebSearchError(cfg: AgentXConfig, forceWebSearch?: boolean): string | null {
   if (!forceWebSearch) return null;

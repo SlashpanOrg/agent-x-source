@@ -24,6 +24,7 @@ import * as database from './builtin/database.js';
 import * as github from './builtin/github.js';
 import * as packages from './builtin/packages.js';
 import * as system from './builtin/system.js';
+import * as clientSituationTool from './builtin/client-situation.js';
 import * as testing from './builtin/testing.js';
 import * as web from './builtin/web.js';
 import * as deepWeb from './builtin/deep-web-search.js';
@@ -238,6 +239,7 @@ const CORE_TOOLS: ToolDefinition[] = [
   { id: 'system_monitor', name: 'System Monitor', description: 'Monitor system resources', modelDescription: 'Show real-time system resource usage: CPU, memory, disk I/O, network.', category: 'system_os', riskLevel: 'low', schema: { type: 'object', properties: {}, required: [] }, composable: true, source: 'builtin' },
   { id: 'cron_create', name: 'Create Cron Job', description: 'Schedule a cron job', modelDescription: 'Create a cron job. Adds entry to crontab for the current user.', category: 'system_os', riskLevel: 'high', schema: { type: 'object', properties: { expression: { type: 'string', description: 'Cron expression (e.g. "0 9 * * *")' }, command: { type: 'string', description: 'Command to run' }, label: { type: 'string', description: 'Label/comment for the job' } }, required: ['expression', 'command'] }, composable: true, source: 'builtin' },
   { id: 'open_app', name: 'Open Application', description: 'Open an application or file', modelDescription: 'Open a file/URL/application in the default system application.', category: 'system_os', riskLevel: 'medium', schema: { type: 'object', properties: { target: { type: 'string', description: 'File path, URL, or app name to open' } }, required: ['target'] }, composable: true, source: 'builtin' },
+  { id: 'set_user_location', name: 'Set User Location', description: 'Save the user\'s city or place', modelDescription: 'Save where the user says they are (city/place label). Use when they state their location in chat or voice and auto-detect is unavailable, or when they correct their city. Do not call unless they provided a place or the task requires location and you need to ask once. Args: location_label (e.g. "Chennai, Tamil Nadu, India").', category: 'system_os', riskLevel: 'low', schema: { type: 'object', properties: { location_label: { type: 'string', description: 'City and optional region/country' }, city: { type: 'string', description: 'Alias for location_label' }, latitude: { type: 'number', description: 'Optional latitude' }, longitude: { type: 'number', description: 'Optional longitude' } }, required: [] }, composable: true, source: 'builtin' },
 
   // ═══ TESTING ═══
   { id: 'test_run', name: 'Run Tests', description: 'Run test suite', modelDescription: 'Run tests (vitest). Optional file or pattern filter.', category: 'testing', riskLevel: 'low', schema: { type: 'object', properties: { file: { type: 'string', description: 'Test file' }, pattern: { type: 'string', description: 'Test name pattern' } }, required: [] }, composable: true, source: 'builtin' },
@@ -551,6 +553,7 @@ export function createDefaultToolkit(
   executor.registerHandler('system_monitor', system.systemMonitor);
   executor.registerHandler('cron_create', system.cronCreate);
   executor.registerHandler('open_app', system.openApp);
+  executor.registerHandler('set_user_location', clientSituationTool.setUserLocation);
 
   // ═══ Testing ═══
   executor.registerHandler('test_run', testing.testRun);

@@ -39,6 +39,8 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
   }, [setSearchParams]);
   const [view, setView] = useState<ChatView>(sessionId ? 'chat' : 'sessions');
   const [sessionList, setSessionList] = useState<SessionInfo[]>([]);
+  const sessionListRef = useRef(sessionList);
+  useEffect(() => { sessionListRef.current = sessionList; }, [sessionList]);
   const [currentSessionTitle, setCurrentSessionTitle] = useState<string | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(sessionId ?? null);
   const [isCrewPrivateSession, setIsCrewPrivateSession] = useState(false);
@@ -464,8 +466,11 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     loadSessions, loadTodos, generateTitle, openChildSession,
     handleShowSessions, handleSelectSession, handleNewSession, startNewSession, resetSessionViewState,
     handleArchiveSession, handleDeleteSessionContent, handleDeleteSession,
+    handleConfirmDeleteSession,
     clearSessionModalOpen, setClearSessionModalOpen,
     clearSessionBusy, setClearSessionBusy,
+    deleteSessionPending, setDeleteSessionPending,
+    deleteSessionBusy,
   } = useChatSessionLifecycle({
     navigate, isCrewPrivateSession, coreSession, sessionId, location, crewList,
     setView, setCurrentSessionId, setCurrentSessionTitle, setSessionList, setCrewList, setTodoItems,
@@ -476,7 +481,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     setSessionRestoring, setIsCrewPrivateSession, setCrewPrivateHost, setPrivateHostCrewId,
     setParentSessionId, setCrewWorkers, setBypassPermissionsState,
     setTurnActivity, setCurrentStep,
-    currentSessionIdRef, chatReturnToRef, skipRestoreRef, titleGeneratedRef,
+    currentSessionIdRef, sessionListRef, chatReturnToRef, skipRestoreRef, titleGeneratedRef,
     sessionRestoringRef, isInitialLoadRef, lastTurnFeedbackCandidateRef, rateLimitSeenRef,
     crewMissionSessionIdRef, tokenInputRef, tokenOutputRef, isAtBottomRef, messagesContainerRef,
     jumpSuppressScrollTopRef, turnActiveRef, activeTurnIdRef, messagesRef, resetScrollState,
@@ -961,6 +966,9 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     // Clear session
     clearSessionModalOpen, setClearSessionModalOpen, clearSessionBusy, setClearSessionBusy,
 
+    // Delete session (list grid)
+    deleteSessionPending, setDeleteSessionPending, deleteSessionBusy,
+
     // Web search
     webSearchAvailable, setWebSearchAvailable, webSearchForce, setWebSearchForce,
     handleWebSearchToggle,
@@ -984,6 +992,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     handleSend, handleResend, handleCancel, handleStopAndSend, handleAddToQueue, handleSteer,
     handleFileSelect, handleRemoveAttachment, handleShowSessions, handleSelectSession,
     handleNewSession, handleArchiveSession, handleDeleteSessionContent, handleDeleteSession,
+    handleConfirmDeleteSession,
     handleQuestionnaireRespond, handleQuestionnaireCancel,
     handleCrewRosterPickerSubmit, handleCrewRosterPickerSkip,
     handleTurnFeedback, handleSaveMarkdown, handleViewCrewDossier, handleViewCrewByCallsign,

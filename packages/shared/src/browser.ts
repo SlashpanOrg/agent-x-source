@@ -274,6 +274,27 @@ export {
 } from './utils/call-transcript-divider.js';
 export type { CallDividerVariant, CallDividerMeta } from './utils/call-transcript-divider.js';
 
+export {
+  CREW_VOICE_SESSION_PREFIX,
+  crewVoiceSessionId,
+  isCrewVoiceSessionId,
+  textSessionIdFromVoiceSessionId,
+} from './utils/crew-voice-session.js';
+
+// Client situation — web-ui location context and docking display
+export type {
+  ClientSituation,
+  ClientSituationSource,
+  ClientLocationMethod,
+  ClientLocationConfidence,
+} from './types/client-situation.js';
+export {
+  normalizeClientSituation,
+  isClientLocationKnown,
+  clientLocationCityLabel,
+  formatClientSituationBlock,
+} from './utils/client-situation.js';
+
 export type {
   DeepSearchContentType,
   DeepSearchDepth,

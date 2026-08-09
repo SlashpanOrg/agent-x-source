@@ -180,6 +180,7 @@
     "pg": "^8.21.0"
   },
   "devDependencies": {
+    "@electron/asar": "^3.4.1",
     "@electron/rebuild": "^4.0.4",
     "@types/pg": "^8.20.0",
     "electron": "^42.0.0",

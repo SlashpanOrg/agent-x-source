@@ -661,7 +661,7 @@ export function CrewsPanel() {
             crews={crews}
             importLoading={importLoading}
             onImport={handleImportCrew}
-            onRemove={(id) => handleDelete(id)}
+            onRemove={setDeleteConfirmId}
             onPrivateChat={(crew, rosterCrewId) => {
               startPrivateChat({ crewId: rosterCrewId, recruit: crew });
             }}

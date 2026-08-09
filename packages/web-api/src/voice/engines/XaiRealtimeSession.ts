@@ -100,7 +100,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   private speakingStartedAt = 0;
   private assistantText = '';
   private userTranscript = '';
-  private searchWeb = false;
+  private searchWeb = true;
   private bypassChip = false;
   /** Connected MCP / integration provider names last synced into this voice toolkit. */
   private connectedIntegrationNames: string[] = [];
@@ -122,6 +122,16 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   private resumeIdOmitRetryUsed = false;
   /** Ignore teardown events from a socket we intentionally replaced. */
   private suppressXaiSocketTeardown = false;
+  /** Monotonic connect id — stale sockets from retries must not flip ready/error. */
+  private connectGeneration = 0;
+  private sessionUpdateSent = false;
+  private forceReadyTimer: ReturnType<typeof setTimeout> | undefined;
+  private responseDoneFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  private playbackContinueTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly READY_FALLBACK_MS = 5_000;
+  private readonly START_TIMEOUT_MS = 60_000;
+  /** Match client playback grace — ignore server VAD barge-in during initial TTS. */
+  private readonly BARGE_IN_GRACE_MS = 1_000;
   private apiKey: string;
   private model: string;
   private voice: string;
@@ -167,6 +177,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     this.xaiUrl = baseWithQuery;
     const scopePath = getAgentFilesDir();
     this.toolService = ToolService.createDefault(scopePath);
+    this.toolService.getToolExecutor().setVoiceTurnActive(true);
     const callsign = this.config.user?.callsign?.trim() || 'Root';
     this.defaultRootSpeaker = {
       id: null,
@@ -209,10 +220,19 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     this.connect();
     // Wait until the xAI session is configured before returning.
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('xAI realtime session timed out')), 30_000);
+      const timeout = setTimeout(() => {
+        const wsState = this.xaiWs?.readyState;
+        reject(
+          new Error(
+            `xAI realtime session timed out after ${this.START_TIMEOUT_MS / 1000}s`
+              + ` (wsState=${wsState ?? 'none'}, updateSent=${this.sessionUpdateSent})`,
+          ),
+        );
+      }, this.START_TIMEOUT_MS);
       const check = () => {
         if (this.ready) {
           clearTimeout(timeout);
+          if (this.forceReadyTimer) clearTimeout(this.forceReadyTimer);
           resolve();
         } else if (this.state === 'error') {
           clearTimeout(timeout);
@@ -269,10 +289,17 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     );
   }
 
+  /** xAI may reject ?conversation_id= with HTTP 400 — retry once without the query param. */
+  private isConversationIdHandshakeError(message: string): boolean {
+    if (!this.persistedConversationId) return false;
+    return /unexpected server response:\s*400/i.test(message)
+      || this.isConversationResumeError(message);
+  }
+
   /** Keep durable id; retry once without ?conversation_id= if xAI rejects the resume param. */
   private maybeRetryConnectWithoutConversationId(reason: string): boolean {
     if (this.resumeIdOmitRetryUsed || !this.persistedConversationId || this.closed) return false;
-    if (!this.isConversationResumeError(reason)) return false;
+    if (!this.isConversationIdHandshakeError(reason)) return false;
     this.resumeIdOmitRetryUsed = true;
     this.suppressXaiSocketTeardown = true;
     getLogger().warn(
@@ -332,6 +359,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   onDisconnect(): void {
     if (this.closed) return;
     this.closed = true;
+    this.toolService.getToolExecutor().setVoiceTurnActive(false);
     this.setState('idle');
     for (const { resolve } of this.pendingPermissions.values()) {
       resolve('deny');
@@ -346,6 +374,12 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   }
 
   private connect(options?: { omitConversationId?: boolean }): void {
+    const generation = ++this.connectGeneration;
+    this.sessionUpdateSent = false;
+    if (this.forceReadyTimer) {
+      clearTimeout(this.forceReadyTimer);
+      this.forceReadyTimer = undefined;
+    }
     try {
       let url = this.xaiUrl;
       if (this.persistedConversationId && !options?.omitConversationId) {
@@ -362,6 +396,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       this.xaiWs = ws;
 
       ws.on('open', () => {
+        if (generation !== this.connectGeneration) return;
         this.suppressXaiSocketTeardown = false;
         getLogger().info('XAI_VOICE', 'xAI realtime WebSocket open');
         // Keepalive: ping xAI every 20s to prevent idle-timeout disconnects
@@ -381,6 +416,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       });
 
       ws.on('message', (data: WebSocket.RawData, isBinary: boolean) => {
+        if (generation !== this.connectGeneration) return;
         if (!isBinary) {
           const text = Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data as ArrayBuffer).toString('utf8');
           try {
@@ -400,6 +436,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       });
 
       ws.on('error', (err: Error) => {
+        if (generation !== this.connectGeneration) return;
         if (this.suppressXaiSocketTeardown || this.xaiWs !== ws) return;
         if (this.maybeRetryConnectWithoutConversationId(err.message)) return;
         getLogger().error('XAI_VOICE', `xAI connection error: ${err.message}`);
@@ -409,6 +446,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       });
 
       ws.on('close', () => {
+        if (generation !== this.connectGeneration) return;
         if (this.suppressXaiSocketTeardown || this.xaiWs !== ws) return;
         if (!this.closed && !this.ready) {
           getLogger().warn('XAI_VOICE', 'xAI realtime WebSocket closed during handshake');
@@ -430,6 +468,15 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   }
 
   private disconnectXai(): void {
+    if (this.forceReadyTimer) {
+      clearTimeout(this.forceReadyTimer);
+      this.forceReadyTimer = undefined;
+    }
+    if (this.responseDoneFallbackTimer) {
+      clearTimeout(this.responseDoneFallbackTimer);
+      this.responseDoneFallbackTimer = undefined;
+    }
+    this.clearPlaybackContinueTimer();
     if (this.xaiPingTimer) {
       clearInterval(this.xaiPingTimer);
       this.xaiPingTimer = undefined;
@@ -446,10 +493,8 @@ export class XaiRealtimeSession implements VoiceEngineSession {
    * gate the voice uplink — that left the UI stuck on "Connecting…".
    */
   private async refreshToolsAndSessionUpdate(): Promise<void> {
-    // 1) Minimal update first — get the realtime session live.
-    // Omit resumption on the first update: unknown/rejected session.update fields
-    // can fail silently (no session.updated → UI stuck on Connecting…).
-    this.sendSessionUpdate({ includeResumption: false });
+    // 1) Base toolkit tools immediately — MCP sync follows on a second update.
+    this.sendSessionUpdate({ includeResumption: false, includeTools: true });
 
     // 2) Best-effort tool sync with a hard timeout, then refresh tools + resumption.
     try {
@@ -496,11 +541,23 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     }
   }
 
-  private sendSessionUpdate(options?: { includeResumption?: boolean }): void {
+  private sendSessionUpdate(options?: { includeResumption?: boolean; includeTools?: boolean }): void {
     const registry = this.toolService.getRegistry();
-    // Include native + MCP (integrations). Only strip meta tools unused on voice.
-    const toolList = registry.list().filter((t) => t.category !== 'ai_meta' && t.category !== 'agent_meta');
-    const tools = registry.toSchemas(toolList);
+    // Strip UI-only meta tools; keep memory/KB/search helpers voice turns need.
+    const VOICE_AI_META_ALLOW = new Set([
+      'knowledge_base_search',
+      'cortex_memory_search',
+      'memory_recall',
+      'memory_read',
+      'memory_store',
+      'codebase_search',
+    ]);
+    const toolList = registry.list().filter((t) => {
+      if (t.category === 'agent_meta') return false;
+      if (t.category === 'ai_meta') return VOICE_AI_META_ALLOW.has(t.id);
+      return true;
+    });
+    const tools = options?.includeTools === false ? undefined : registry.toSchemas(toolList);
     // VAD threshold is 0–1 where *higher* = louder audio required (fewer false
     // positives from speaker echo / ambient noise). 0.72 was far too high.
     // 0.2 catches natural conversational interruptions quickly, while the client
@@ -508,21 +565,15 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     // local barge-in above XAI_BARGE_IN_TRIGGER_LEVEL (0.08). The short prefix /
     // silence values keep the server turn boundary tight so playback stops and
     // the reply starts with minimal latency.
-    // interrupt_response: true cancels the in-progress response on barge-in.
-    // create_response: true auto-starts a reply after the user finishes speaking.
-    // Wake-word mode manages response creation manually so non-wake turns are ignored.
+    // interrupt_response / create_response are OpenAI-only — xAI rejects unknown
+    // turn_detection fields and may never emit session.updated.
     const turnDetection = this.mode === 'duplex'
       ? {
           type: 'server_vad',
-          // In wake mode the mic is always on; raise the threshold and wait for
-          // longer silence so speaker echo/ambient noise doesn't fragment the user
-          // command or cut the assistant response mid-stream. In normal manual
-          // duplex mode keep the tighter defaults for fast turn-taking.
-          threshold: this.wakeWordEnabled ? 0.30 : 0.2,
-          prefix_padding_ms: 50,
-          silence_duration_ms: this.wakeWordEnabled ? 500 : 100,
-          interrupt_response: true,
-          create_response: !this.wakeWordEnabled,
+          // Higher threshold + longer silence tolerate cafe/ambient noise (xAI default 0.85).
+          threshold: this.wakeWordEnabled ? 0.35 : 0.45,
+          prefix_padding_ms: this.wakeWordEnabled ? 100 : 200,
+          silence_duration_ms: this.wakeWordEnabled ? 500 : 500,
         }
       : { type: null };
 
@@ -545,8 +596,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
           transport: 'binary',
         },
       },
-      tools,
     };
+    if (tools) {
+      sessionBody.tools = tools;
+    }
     // Opt into conversation resumption so the durable conversation_id keeps history.
     if (options?.includeResumption !== false) {
       sessionBody.resumption = { enabled: true };
@@ -557,7 +610,22 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       session: sessionBody,
     };
     getLogger().info('XAI_VOICE', `session.update sending turn_detection: ${JSON.stringify(turnDetection)}`);
+    this.sessionUpdateSent = true;
     this.sendXai(payload);
+    this.scheduleReadyFallback();
+  }
+
+  private scheduleReadyFallback(): void {
+    if (this.forceReadyTimer) clearTimeout(this.forceReadyTimer);
+    this.forceReadyTimer = setTimeout(() => {
+      if (this.closed || this.ready) return;
+      if (this.xaiWs?.readyState !== WebSocket.OPEN) return;
+      getLogger().warn(
+        'XAI_VOICE',
+        'session.updated not received after session.update — marking ready (degraded handshake)',
+      );
+      void this.handleSessionUpdated();
+    }, this.READY_FALLBACK_MS);
   }
 
   private buildInstructions(): string {
@@ -609,7 +677,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
         'before asking the next question. Never present multiple questions at once. ' +
         'Never use forms, questionnaires, or structured input — this is a voice conversation.',
       );
-      if (this.searchWeb) parts.push('Use web search when the answer may benefit from current information.');
+      parts.push(
+        'TURN JOURNEY (silent): memory → knowledge base → web search → model knowledge. ' +
+        'Use web_search when memory and KB are insufficient or facts may be stale.',
+      );
       if (this.connectedIntegrationNames.length > 0) {
         parts.push(
           `CONNECTED INTEGRATIONS (MCP): ${this.connectedIntegrationNames.join(', ')}. ` +
@@ -815,7 +886,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
         // Handled above (shared with untyped payload).
         break;
       case 'session.created':
-        // No-op — wait for session.updated before considering the session ready.
+        // xAI confirms the socket; session.updated should follow session.update.
+        if (!this.ready) {
+          void this.handleSessionUpdated();
+        }
         break;
       case 'session.updated':
         await this.handleSessionUpdated();
@@ -850,11 +924,19 @@ export class XaiRealtimeSession implements VoiceEngineSession {
         break;
       case 'response.output_audio.done':
         this.responseAudioDone = true;
-        // xAI may not send a separate `response.done`; treat audio completion as
-        // the end of the response and continue/finish the turn.
-        if (!this.responseDoneReceived) {
-          this.responseDoneReceived = true;
-          this.maybeContinueAfterToolCalls();
+        // Do not mark responseDoneReceived here — xAI often sends function_call
+        // events after the acknowledgment audio segment. Finishing the turn here
+        // dropped tool runs and left the agent silent after "Sure, I'll…".
+        this.maybeContinueAfterToolCalls();
+        if (!this.responseDoneReceived && !this.responseDoneFallbackTimer) {
+          this.responseDoneFallbackTimer = setTimeout(() => {
+            this.responseDoneFallbackTimer = undefined;
+            if (!this.responseDoneReceived && !this.closed) {
+              getLogger().warn('XAI_VOICE', 'response.done not received — using output_audio.done fallback');
+              this.responseDoneReceived = true;
+              this.maybeContinueAfterToolCalls();
+            }
+          }, 2_000);
         }
         break;
       case 'response.output_audio_transcript.delta':
@@ -927,6 +1009,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
 
   private async handleSessionUpdated(): Promise<void> {
     if (this.ready) return;
+    if (this.forceReadyTimer) {
+      clearTimeout(this.forceReadyTimer);
+      this.forceReadyTimer = undefined;
+    }
     this.ready = true;
     // Tell the browser the uplink is live immediately — do not await context
     // injection (summary LLM) before session_ready.
@@ -1273,6 +1359,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   }
 
   private async handleResponseDone(event: Record<string, unknown>): Promise<void> {
+    if (this.responseDoneFallbackTimer) {
+      clearTimeout(this.responseDoneFallbackTimer);
+      this.responseDoneFallbackTimer = undefined;
+    }
     this.responseDoneReceived = true;
     // A cancelled response should not be persisted or continued.
     const responseObj = event.response as { status?: string } | undefined;
@@ -1302,12 +1392,30 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     }
   }
 
+  private clearPlaybackContinueTimer(): void {
+    if (this.playbackContinueTimer) {
+      clearTimeout(this.playbackContinueTimer);
+      this.playbackContinueTimer = undefined;
+    }
+  }
+
   private async sendFunctionOutputsAndContinue(): Promise<void> {
     if (!this.responseDoneReceived) return;
-    // Wait for playback to finish in duplex mode to avoid overlapping assistant audio.
+    // Wait for client playback drain when acknowledgment audio is still playing.
     if (this.mode === 'duplex' && !this.playbackFinished && this.responseAudioDone) {
+      if (!this.playbackContinueTimer) {
+        this.playbackContinueTimer = setTimeout(() => {
+          this.playbackContinueTimer = undefined;
+          if (!this.playbackFinished && !this.closed) {
+            getLogger().warn('XAI_VOICE', 'playback_finished not received — continuing after tool ack audio');
+            this.playbackFinished = true;
+            void this.sendFunctionOutputsAndContinue();
+          }
+        }, 2_500);
+      }
       return;
     }
+    this.clearPlaybackContinueTimer();
     const outputs = this.toolCalls.filter((c) => c.result);
     for (const call of outputs) {
       const result = call.result!;
@@ -1385,16 +1493,15 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   }
 
   private handleSpeechStarted(): void {
-    // Barge-in: act when the assistant is already generating or speaking.
-    // Ignoring speech_started outside an in-flight response prevents false
-    // VAD/noise from starting an orphan turn, while allowing aborts during the
-    // thinking/processing window before audio begins.
-    if (this.state !== 'speaking' && this.state !== 'processing') return;
+    // Barge-in only while assistant audio is actively playing — not during the
+    // processing/tool window after acknowledgment TTS (cafe noise was cancelling
+    // tool runs via spurious speech_started during processing).
+    if (this.state !== 'speaking') return;
     if (!this.currentResponseId) return;
-    // Ignore the first ~1200ms of TTS — speaker bleed / AEC settle often fires a
+    // Ignore the first ~1s of TTS — speaker bleed / AEC settle often fires a
     // spurious speech_started right when playback begins. This window matches the
     // client-side playback grace so echo can't trip xAI's server-side barge-in.
-    if (this.speakingStartedAt > 0 && Date.now() - this.speakingStartedAt < 1200) {
+    if (this.speakingStartedAt > 0 && Date.now() - this.speakingStartedAt < this.BARGE_IN_GRACE_MS) {
       getLogger().info('XAI_VOICE', 'Ignoring early speech_started during barge-in grace window');
       return;
     }
@@ -1503,6 +1610,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
 
   private async handlePlaybackFinished(): Promise<void> {
     this.playbackFinished = true;
+    this.clearPlaybackContinueTimer();
     this.maybeContinueAfterToolCalls();
   }
 
@@ -1598,7 +1706,13 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   }
 
   private sendXai(payload: Record<string, unknown>): void {
-    if (!this.xaiWs || this.xaiWs.readyState !== WebSocket.OPEN) return;
+    if (!this.xaiWs || this.xaiWs.readyState !== WebSocket.OPEN) {
+      getLogger().warn(
+        'XAI_VOICE',
+        `Dropping xAI event ${String(payload.type ?? 'unknown')} — WebSocket not open (state=${this.xaiWs?.readyState ?? 'none'})`,
+      );
+      return;
+    }
     this.xaiWs.send(JSON.stringify(payload));
   }
 

@@ -601,6 +601,12 @@ const handleStreamChunk = (ev: TelemetryEvent, ctx: EventHandlerContext): void =
         // Re-open tip immediately so the next chunks coalesce into the same bubble.
         return updateLastMessage(base, { streaming: true });
       }
+      // Tip is a completed prior-turn assistant (turn not active for reopen) — do not
+      // append a twin mid-stream; ensureOutgoing should have placed a fresh placeholder.
+      if (tip?.role === 'assistant') {
+        const resolvedFull = rawFull || (rawDelta ? appendStreamText(tip.content || '', rawDelta) : '');
+        if (resolvedFull && assistantTextsOverlap(tip.content, resolvedFull)) return base;
+      }
       const textPart: PartEntry = { type: 'text', id: crypto.randomUUID(), content: rawFull || rawDelta };
       return [...base, {
         id: ctx.outgoingTurnRef.current?.placeholderId || crypto.randomUUID(),
@@ -770,6 +776,7 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
     if (msgId && working.some((m) => m.id === msgId)) {
       const idx = working.findIndex((m) => m.id === msgId);
       if (idx >= 0 && msg) {
+        ctx.outgoingTurnRef.current = null;
         const stillStreaming = isUpdate && !interactionPending;
         if (stillStreaming) {
           ctx.setStreaming(true);
@@ -1587,16 +1594,25 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
     }
     const hasPlaceholder = next.some((m) => m.id === pending.placeholderId);
     const last = next[next.length - 1];
-    if (!hasPlaceholder && !(last?.role === 'assistant' && last.streaming)) {
-      next = [...next, {
-        id: pending.placeholderId,
-        role: 'assistant' as const,
-        content: '',
-        streaming: true,
-      }];
+    // Never spawn a second assistant bubble mid-turn. After the first finish the tip is
+    // streaming:false with a real message id — the old check treated that as "need a new
+    // placeholder" and duplicated the reply (clears only on hard refresh).
+    if (hasPlaceholder) return next;
+    if (last?.role === 'assistant' && (
+      last.streaming
+      || last.id === pending.placeholderId
+      || turnActiveRef.current
+    )) {
+      return next;
     }
+    next = [...next, {
+      id: pending.placeholderId,
+      role: 'assistant' as const,
+      content: '',
+      streaming: true,
+    }];
     return next;
-  }, [outgoingTurnRef]);
+  }, [outgoingTurnRef, turnActiveRef]);
 
   // Connect SSE for streaming events
   useEffect(() => {

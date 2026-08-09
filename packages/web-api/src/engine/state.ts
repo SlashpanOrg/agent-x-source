@@ -42,6 +42,8 @@ import {
   getPersonaStore,
   GeoLocationService,
   setGeoLocationServiceInstance,
+  registerClientSituationSetter,
+  registerClientSituationGetter,
   startAppSpan,
   channelMetricSource,
   setDbMetricsSink,
@@ -380,16 +382,15 @@ export function getEngine(): EngineState {
     integrationHub,
   };
 
-  // Start the server-side geolocation service — resolves location from IP
-  // address and refreshes every 15 minutes. Syncs to all agents on update.
+  // Legacy server IP geolocation — no longer drives client situation (client UI is authoritative).
   const geoService = new GeoLocationService({
-    onUpdate: (situation) => {
-      setCurrentClientSituation(situation);
-    },
+    onUpdate: () => { /* client pushes location via POST /api/client-situation */ },
   });
   state.geoLocationService = geoService;
   setGeoLocationServiceInstance(geoService);
-  geoService.start();
+
+  registerClientSituationSetter((situation) => setCurrentClientSituation(situation));
+  registerClientSituationGetter(() => getCurrentClientSituation());
 
   // Wire the channel service agent resolver to the engine's channel agent factory.
   if (serviceContext.channelService instanceof ChannelService) {
@@ -526,6 +527,11 @@ export function setCurrentClientSituation(situation: ClientSituation | null): vo
   for (const agent of eng.channelAgents?.values() ?? []) {
     agent.setClientSituation(situation);
   }
+  eng.telemetry.emit({
+    type: 'agent_action',
+    timestamp: new Date().toISOString(),
+    metadata: { action: 'client_situation_updated' },
+  });
 }
 
 /** Retrieve the latest client situation recorded from the app UI. */

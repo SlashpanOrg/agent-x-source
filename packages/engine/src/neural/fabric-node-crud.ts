@@ -205,13 +205,23 @@ export async function hasChatMemoryTurn(
   sourceSessionId: string,
   label: string,
 ): Promise<boolean> {
+  return hasTaggedMemory(ctx, sourceSessionId, 'chat_memory', label);
+}
+
+/** Skip duplicate tagged memory nodes (same session + tag + label). */
+export async function hasTaggedMemory(
+  ctx: NodeCrudContext,
+  sourceSessionId: string,
+  tag: string,
+  label: string,
+): Promise<boolean> {
   const { rows } = await ctx.pool.query<{ id: string }>(
     `SELECT id FROM memory_nodes
-     WHERE tag = 'chat_memory'
-       AND provenance->>'sourceSessionId' = $1
-       AND label = $2
+     WHERE tag = $1
+       AND provenance->>'sourceSessionId' = $2
+       AND label = $3
      LIMIT 1`,
-    [sourceSessionId, label],
+    [tag, sourceSessionId, label],
   );
   return rows.length > 0;
 }

@@ -8,6 +8,7 @@ import { CrewProfileDialog } from '../crew/CrewProfileDialog';
 import {
   ClearSessionDialog,
 } from './ChatDialogs';
+import { ConfirmDeleteDialog } from '../ConfirmDeleteDialog';
 import { chat, agent } from '../../api';
 import { getCrewAccent } from '../../styles/crew-theme';
 import {
@@ -23,6 +24,7 @@ export const ChatModals = React.memo(function ChatModals() {
     searchOpen, checkpointsOpen,
     crewDossierOpen, crewDossierCrew, stepCapPrompt,
     clearSessionModalOpen, clearSessionBusy,
+    deleteSessionPending, deleteSessionBusy,
   } = useChatModalContext();
   const {
     navigate, setSearchOpen, setCheckpointsOpen,
@@ -30,8 +32,9 @@ export const ChatModals = React.memo(function ChatModals() {
     setStreaming, setCrewDossierOpen, setCrewDossierCrew,
     setStepCapPrompt,
     setClearSessionModalOpen,
+    setDeleteSessionPending,
   } = useChatSessionSettersContext();
-  const { handleArchiveSession, handleDeleteSessionContent } = useChatNavigationHandlersContext();
+  const { handleArchiveSession, handleDeleteSessionContent, handleConfirmDeleteSession } = useChatNavigationHandlersContext();
 
   return (
     <>
@@ -87,6 +90,15 @@ export const ChatModals = React.memo(function ChatModals() {
         onClose={() => setClearSessionModalOpen(false)}
         onArchive={() => { void handleArchiveSession(); }}
         onDelete={() => { void handleDeleteSessionContent(); }}
+      />
+      <ConfirmDeleteDialog
+        open={Boolean(deleteSessionPending)}
+        busy={deleteSessionBusy}
+        title={deleteSessionPending?.isGroupChat ? 'DELETE GROUP CHAT' : 'DELETE PRIVATE CHAT'}
+        description="Permanently delete"
+        itemName={deleteSessionPending?.title}
+        onClose={() => setDeleteSessionPending(null)}
+        onConfirm={() => { void handleConfirmDeleteSession(); }}
       />
     </>
   );

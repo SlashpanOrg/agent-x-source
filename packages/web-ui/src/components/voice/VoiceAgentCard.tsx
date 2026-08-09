@@ -8,7 +8,6 @@ import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import MicIcon from '@mui/icons-material/Mic';
 import MicOffIcon from '@mui/icons-material/MicOff';
-import PublicIcon from '@mui/icons-material/Public';
 import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
 import ShieldIcon from '@mui/icons-material/Shield';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
@@ -47,13 +46,11 @@ type ButtonPhase = 'disabled' | 'connecting' | 'idle' | 'recording' | 'thinking'
 export function VoiceAgentCard({
   onActiveChange,
   onPhaseChange,
-  searchWeb,
   bypassChip,
   voiceprintEnabled,
 }: {
   onActiveChange?: (active: boolean) => void;
   onPhaseChange?: (phase: ParticlePhase) => void;
-  searchWeb: boolean;
   bypassChip: boolean;
   voiceprintEnabled?: boolean;
 }) {
@@ -96,9 +93,9 @@ export function VoiceAgentCard({
   // Push toggle state to backend whenever wake or manual voice is active.
   useEffect(() => {
     if (sessionActive && sessionReady && comms) {
-      comms.session.setToggles({ searchWeb, bypassChip, voiceprintEnabled });
+      comms.session.setToggles({ bypassChip, voiceprintEnabled });
     }
-  }, [sessionActive, sessionReady, searchWeb, bypassChip, voiceprintEnabled, comms]);
+  }, [sessionActive, sessionReady, bypassChip, voiceprintEnabled, comms]);
 
   // Derive button phase — connecting stays blue; thinking is orange only after a turn.
   const phase: ButtonPhase = useMemo(() => {
@@ -495,29 +492,18 @@ export function VoiceToggleChip({
 
 /** Exported so BentoDashboard can render toggles in the card header (right-aligned). */
 export function VoiceAgentHeaderToggles({
-  searchWeb,
   bypassChip,
   voiceprintEnabled,
-  onSearchWebChange,
   onBypassChipChange,
   onVoiceprintEnabledChange,
 }: {
-  searchWeb: boolean;
   bypassChip: boolean;
   voiceprintEnabled: boolean;
-  onSearchWebChange: (v: boolean) => void;
   onBypassChipChange: (v: boolean) => void;
   onVoiceprintEnabledChange: (v: boolean) => void;
 }) {
   return (
     <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-      <VoiceToggleChip
-        icon={<PublicIcon sx={{ fontSize: 13 }} />}
-        active={searchWeb}
-        activeColor={colors.accent.blue}
-        onClick={() => onSearchWebChange(!searchWeb)}
-        title={searchWeb ? 'Web search enabled' : 'Enable web search'}
-      />
       <VoiceToggleChip
         icon={<RecordVoiceOverIcon sx={{ fontSize: 13 }} />}
         active={voiceprintEnabled}
@@ -544,17 +530,13 @@ export function VoiceAgentHeaderToggles({
  * provider/model selectors are also shown.
  */
 export function VoiceAgentHeaderControls({
-  searchWeb,
   bypassChip,
   voiceprintEnabled,
-  onSearchWebChange,
   onBypassChipChange,
   onVoiceprintEnabledChange,
 }: {
-  searchWeb: boolean;
   bypassChip: boolean;
   voiceprintEnabled: boolean;
-  onSearchWebChange: (v: boolean) => void;
   onBypassChipChange: (v: boolean) => void;
   onVoiceprintEnabledChange: (v: boolean) => void;
 }) {
@@ -728,13 +710,6 @@ export function VoiceAgentHeaderControls({
 
   return (
     <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-      <VoiceToggleChip
-        icon={<PublicIcon sx={{ fontSize: 13 }} />}
-        active={searchWeb}
-        activeColor={colors.accent.blue}
-        onClick={() => onSearchWebChange(!searchWeb)}
-        title={searchWeb ? 'Web search enabled' : 'Enable web search'}
-      />
       <VoiceToggleChip
         icon={<RecordVoiceOverIcon sx={{ fontSize: 13 }} />}
         active={voiceprintEnabled}

@@ -20,17 +20,16 @@ export const XAI_BARGE_IN_MIC_LEVEL = 0.05;
  * Set above the forward gate so only clear, deliberate user speech triggers it,
  * not residual echo, ambient noise, coughs, claps, notification sounds, or pen drops.
  */
-export const XAI_BARGE_IN_TRIGGER_LEVEL = 0.18;
+export const XAI_BARGE_IN_TRIGGER_LEVEL = 0.22;
 /**
  * Number of consecutive mic frames that must exceed XAI_BARGE_IN_TRIGGER_LEVEL
  * before a client-side barge-in is declared. At ~5ms per AudioWorklet frame,
- * 8 frames ≈ 40ms of sustained speech — long enough to filter out claps, coughs,
- * notification sounds, and dropped objects, but short enough to feel instant for real words.
+ * 12 frames ≈ 60ms of sustained speech — filters cafe clatter while staying responsive.
  */
-export const XAI_BARGE_IN_TRIGGER_FRAMES = 8;
+export const XAI_BARGE_IN_TRIGGER_FRAMES = 12;
 /**
  * After the assistant starts speaking, ignore the mic for this long before
- * allowing barge-in. This suppresses the first ~1.2s of speaker echo/AEC settle
- * that was cutting xAI responses within the first few words.
+ * allowing barge-in. Suppresses speaker echo/AEC settle and cafe bleed on the
+ * first words of each assistant turn.
  */
-export const XAI_BARGE_IN_PLAYBACK_GRACE_MS = 1200;
+export const XAI_BARGE_IN_PLAYBACK_GRACE_MS = 1_000;

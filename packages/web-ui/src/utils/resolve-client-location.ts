@@ -83,9 +83,7 @@ export function formatResolvedLocationLabel(resolved: ResolvedClientLocation): s
   }
 }
 
-let cachedSituation: ClientSituation | null = null;
-
-/** Tiered location: GPS → client IP (with VPN guard) → timezone only. Never uses server host IP. */
+/** Tiered location resolution — superseded by resolve-client-city.ts + ClientSituationProvider. */
 export async function resolveClientLocation(): Promise<ResolvedClientLocation> {
   const timezone = readClientTimezone();
 
@@ -177,19 +175,3 @@ export async function resolveClientLocation(): Promise<ResolvedClientLocation> {
   };
 }
 
-/** Collect full client situation for agent turns; caches last good GPS/IP result. */
-export async function collectClientSituation(): Promise<ClientSituation> {
-  const resolved = await resolveClientLocation();
-  const situation = resolvedLocationToSituation(resolved);
-  if (resolved.locationMethod === 'gps' || resolved.locationMethod === 'ip') {
-    cachedSituation = situation;
-  }
-  if (resolved.locationMethod === 'timezone_only' && cachedSituation?.latitude !== undefined) {
-    return {
-      ...cachedSituation,
-      clientNow: situation.clientNow,
-      timezone: situation.timezone,
-    };
-  }
-  return situation;
-}

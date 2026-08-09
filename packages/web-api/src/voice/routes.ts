@@ -23,6 +23,7 @@ import {
   runVoiceSetup,
   ensureVoiceRuntimeReady,
   formatEnsureError,
+  reconcileVoiceKitState,
 } from './setup.js';
 
 const PASSAGE_FALLBACK = 'The quick brown fox jumps over the lazy dog.';
@@ -77,6 +78,7 @@ function createVoiceRoutesRouter(): Router {
 
   router.get('/voice/capabilities', async (_req, res) => {
     try {
+      await reconcileVoiceKitState();
       const cfg = getVoiceConfig();
       res.json({ capabilities: await buildVoiceCapabilities(cfg) });
     } catch (error) {

@@ -4,6 +4,7 @@ import Box from '@mui/material/Box';
 import CircularProgress from '@mui/material/CircularProgress';
 import { useApp } from './store/AppContext';
 import { ErrorBandProvider } from './components/ErrorBand';
+import { ClientSituationProvider } from './context/ClientSituationProvider';
 import { VoiceProvider } from './components/voice/VoiceProvider';
 import { CrewCallProvider } from './components/crew-call';
 import { DockingStation } from './pages/DockingStation';
@@ -90,6 +91,7 @@ export function App() {
 
   return (
     <ErrorBandProvider>
+      <ClientSituationProvider>
       <VoiceProvider>
         <CrewCallProvider>
         <DesktopStartupPermissions />
@@ -121,6 +123,7 @@ export function App() {
         </Routes>
         </CrewCallProvider>
       </VoiceProvider>
+      </ClientSituationProvider>
     </ErrorBandProvider>
   );
 }

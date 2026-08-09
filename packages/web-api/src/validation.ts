@@ -64,7 +64,7 @@ export const clientSituationSchema = z.object({
   longitude: z.number().min(-180).max(180).optional(),
   accuracyMeters: z.number().min(0).max(1_000_000).optional(),
   source: z.enum(['browser', 'desktop', 'server']),
-  locationMethod: z.enum(['gps', 'ip', 'timezone_only']).optional(),
+  locationMethod: z.enum(['gps', 'ip', 'timezone_only', 'user_set']).optional(),
   locationConfidence: z.enum(['high', 'low', 'unknown']).optional(),
   vpnSuspected: z.boolean().optional(),
 }).optional();

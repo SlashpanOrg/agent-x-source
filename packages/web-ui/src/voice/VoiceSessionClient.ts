@@ -12,6 +12,7 @@ import { VOICE_CAPTURE_PROCESSOR_NAME, VOICE_CAPTURE_PROCESSOR_URL } from './aud
 import { isVoiceOutputUnlocked, markVoiceOutputUnlocked } from './support.js';
 
 export const VOICE_WS_PATH = '/ws/voice';
+export const VOICE_CONNECT_SUPERSEDED = 'Voice connect superseded';
 export { VOICE_SAMPLE_RATE };
 
 const VOICE_CONNECT_TIMEOUT_MS = 120_000;
@@ -114,6 +115,10 @@ export class VoiceSessionClient {
   /** Duplex: true after `audio_end` until playback drains — signals server to resume mic. */
   private duplexAwaitingPlaybackEnd = false;
   private connectPromise: Promise<void> | null = null;
+  /** Reject fn for the in-flight connect — disconnect() rejects so callers don't await a dead handshake. */
+  private connectReject: ((err: Error) => void) | null = null;
+  /** Bumped on disconnect() so stale ws handlers ignore teardown after a superseding connect. */
+  private connectGeneration = 0;
   private listenStartedAt = 0;
   /** PTT: timestamp when the user released the button (for preSttMs timing). */
   private pttReleaseAt = 0;
@@ -202,19 +207,33 @@ export class VoiceSessionClient {
 
     this.setState('connecting');
     const token = await syncAuthTokenFromSession();
+    const generation = this.connectGeneration;
     this.connectPromise = new Promise<void>((resolve, reject) => {
       let settled = false;
       const finish = (fn: () => void) => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timeoutId);
+        this.connectReject = null;
         fn();
+      };
+      const superseded = () => generation !== this.connectGeneration;
+
+      this.connectReject = (err: Error) => {
+        if (superseded()) return;
+        finish(() => {
+          this.setState('error');
+          this.events.onError?.(err.message);
+          this.connectPromise = null;
+          reject(err);
+        });
       };
 
       const ws = new WebSocket(wsUrl(token));
       ws.binaryType = 'arraybuffer';
 
       const fail = (message: string) => {
+        if (superseded()) return;
         finish(() => {
           this.setState('error');
           this.events.onError?.(message);
@@ -284,9 +303,12 @@ export class VoiceSessionClient {
 
       ws.onclose = (event) => {
         if (!settled) {
+          if (superseded()) return;
           fail(event.code === 1006 || event.code === 1008 || event.code === 401
             ? 'Voice WebSocket connection failed — your session may have expired'
-            : `Voice connection closed (${event.code})`);
+            : event.code === 1005
+              ? 'Voice connection closed before the session was ready — try again'
+              : `Voice connection closed (${event.code})`);
           return;
         }
         this.ws = null;
@@ -335,6 +357,9 @@ export class VoiceSessionClient {
     }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     if (this.mode === 'duplex') {
+      // While the agent is thinking or running tools, do not uplink mic audio —
+      // cafe ambient noise was tripping server VAD and cancelling tool runs.
+      if (this.state === 'processing') return;
       // Duplex (both local stt_llm_tts and xAI): keep the mic open during agent
       // playback so client-side VAD can detect user barge-in. Drop soft frames
       // so speaker bleed and ambient noise don't trigger a false interrupt.
@@ -535,6 +560,15 @@ export class VoiceSessionClient {
   }
 
   disconnect(): void {
+    this.connectGeneration += 1;
+    if (this.connectReject) {
+      const reject = this.connectReject;
+      this.connectReject = null;
+      this.connectPromise = null;
+      reject(new Error(VOICE_CONNECT_SUPERSEDED));
+    } else {
+      this.connectPromise = null;
+    }
     this.stopPlayback();
     void this.playback.close();
     this.micPrepared = false;
@@ -545,7 +579,6 @@ export class VoiceSessionClient {
       this.ws.close();
     }
     this.ws = null;
-    this.connectPromise = null;
     this.setState('idle');
   }
 
@@ -667,7 +700,9 @@ export class VoiceSessionClient {
           // resumes the mic. Transitioning to 'listening' here would cause the
           // client to stream mic audio while TTS is still playing.
           if (this.mode === 'duplex') {
-            if (!this.playback.playing && !this.duplexAwaitingPlaybackEnd) {
+            if (this.playback.playing) {
+              this.duplexAwaitingPlaybackEnd = true;
+            } else if (!this.duplexAwaitingPlaybackEnd) {
               this.setState('listening');
             }
             // else: state transitions when onPlaybackIdle fires

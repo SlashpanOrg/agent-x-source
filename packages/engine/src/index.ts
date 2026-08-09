@@ -516,6 +516,12 @@ export type { WhatsAppEvent, WhatsAppEventMap } from './whatsapp/WhatsAppEventBu
 // GeoLocation service (server-side IP geolocation with periodic refresh)
 export { GeoLocationService, setGeoLocationServiceInstance, getGeoLocationService } from './services/GeoLocationService.js';
 export type { GeoLocationResult, GeoLocationUpdateCallback } from './services/GeoLocationService.js';
+export {
+  registerClientSituationSetter,
+  registerClientSituationGetter,
+  pushClientSituation,
+  getRegisteredClientSituation,
+} from './services/ClientSituationRegistry.js';
 
 // WhatsApp ack tracking + media handling (Phase 4.4, 4.5)
 export { AckTracker } from './whatsapp/AckTracker.js';
