@@ -76,8 +76,9 @@ describe('seedPgCatalog', () => {
       .split(',')
       .map((c) => c.trim())
       .filter(Boolean);
-    expect(columns).toHaveLength(15);
-    expect(insert!.params).toHaveLength(15);
-    expect(insert!.sql).not.toMatch(/hub_revision,\s*active,\s*updated_at/i);
+    expect(columns).toHaveLength(16);
+    expect(insert!.params).toHaveLength(16);
+    expect(columns).toContain('certifications');
+    expect(insert!.sql).not.toMatch(/active,\s*updated_at/i);
   });
 });

@@ -152,22 +152,7 @@ export class ToolPermissionService {
     scopePath?: string,
     tool?: ToolDefinition,
   ): Promise<PermissionResult> {
-    if (this.flowBusy) {
-      return {
-        decision: 'deny',
-        error: 'PERMISSION_INSTRUCTED',
-        instruction:
-          'Another permission request is already waiting for the user. '
-          + 'Only one permission may be asked at a time. Wait for their answer, then retry a single tool.',
-      };
-    }
-
-    this.flowBusy = true;
-    try {
-      return await this.requestPermissionInner(host, toolId, args, sessionId, scopePath, tool);
-    } finally {
-      this.flowBusy = false;
-    }
+    return await this.requestPermissionInner(host, toolId, args, sessionId, scopePath, tool);
   }
 
   private async requestPermissionInner(
@@ -226,6 +211,42 @@ export class ToolPermissionService {
       return { decision: 'allow' };
     }
 
+    if (this.flowBusy) {
+      return {
+        decision: 'deny',
+        error: 'PERMISSION_INSTRUCTED',
+        instruction:
+          'Another permission request is already waiting for the user. '
+          + 'Only one permission may be asked at a time. Wait for their answer, then retry a single tool.',
+      };
+    }
+
+    this.flowBusy = true;
+    try {
+      return await this.requestPermissionInteractive(
+        host,
+        toolId,
+        args,
+        sessionId,
+        scopePath,
+        definition,
+        permissionManager,
+      );
+    } finally {
+      this.flowBusy = false;
+    }
+  }
+
+  private async requestPermissionInteractive(
+    host: ToolPermissionHost,
+    toolId: string,
+    args: Record<string, unknown>,
+    sessionId: string,
+    scopePath: string | undefined,
+    definition: ToolDefinition,
+    permissionManager: PermissionManager,
+  ): Promise<PermissionResult> {
+    const path = scopePath ?? '*';
     const bypassOn = permissionManager.getBypassPermissions();
     const isChannelSession = isChannelSessionId(sessionId) || host.getMessagingPermissionMode();
     const actionSummary = summarizeToolAction(toolId, args, definition);

@@ -24,6 +24,17 @@ const COMMON_WORDS = new Set([
   'government', 'department', 'online', 'portal', 'document', 'please', 'submit',
 ]);
 
+function hasBinaryControlPrefix(text: string): boolean {
+  const sample = text.slice(0, 400);
+  for (const ch of sample) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code <= 0x08 || code === 0x0b || code === 0x0c || (code >= 0x0e && code <= 0x1f)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function printableAsciiRatio(text: string): number {
   const trimmed = text.trim();
   if (!trimmed) return 0;
@@ -162,7 +173,7 @@ export function isUsableExtractedText(text: string, opts?: { pageCount?: number 
 export function looksLikeFailedPdfExtract(output: string): boolean {
   const o = (output ?? '').trim();
   if (!o) return true;
-  if (o.includes('ÿÿÿ') || /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(o.slice(0, 400))) {
+  if (o.includes('ÿÿÿ') || hasBinaryControlPrefix(o)) {
     return true;
   }
   if (/OCR pipeline did not produce|no extractable text|scanned\/image-based/i.test(o)

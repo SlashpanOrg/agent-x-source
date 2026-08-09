@@ -3217,7 +3217,7 @@ export class Agent {
         const hasTextChoiceDump = (
           /question\s+\d+\s+of\s+\d+/i.test(content)
           || (/\b(yes|no)\b/i.test(content) && /^\s*[-*•]\s+/m.test(content) && /\?/.test(content))
-          || (/^\s*([A-D][\).]|[-*•])\s+\S+/m.test(content) && /\b(which|choose|prefer|option|select)\b/i.test(content))
+          || (/^\s*([A-D][).]|[-*•])\s+\S+/m.test(content) && /\b(which|choose|prefer|option|select)\b/i.test(content))
         );
         const calledClarify = this.toolCallLogForReflection.some(t => t.name === 'ask_clarification');
         const calledAnyTool = this.toolCallLogForReflection.length > 0;

@@ -127,6 +127,7 @@ export function decodeLiteralUnicodeEscapes(text: string): string {
 }
 
 /** Zero-width / format chars that often leak from PDF/OCR or model escapes. */
+// eslint-disable-next-line no-misleading-character-class -- intentional Unicode invisible/format range list
 const INVISIBLE_FORMAT_CHARS = /[\u00AD\u034F\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF\uFFF9-\uFFFB]/g;
 
 export function stripInvisibleFormatChars(text: string): string {
