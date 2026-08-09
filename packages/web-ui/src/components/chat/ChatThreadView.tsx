@@ -118,7 +118,9 @@ function ChatThreadViewComponent(props: ChatThreadViewProps) {
   const visibleMessagesWithFlags = useMemo(() => {
     const visible = messages.filter((m) => {
       if (m.role === 'system') return false;
-      if (m.role === 'assistant' && !m.content && !m.thinking && (!m.toolCalls || m.toolCalls.length === 0) && (!m.subAgents || m.subAgents.length === 0) && (!m.parts || m.parts.length === 0)) return false;
+      // Keep live streaming placeholders visible (resend / send) so loaders and
+      // stream handlers target the same bubble the user sees.
+      if (m.role === 'assistant' && !m.streaming && !m.content && !m.thinking && (!m.toolCalls || m.toolCalls.length === 0) && (!m.subAgents || m.subAgents.length === 0) && (!m.parts || m.parts.length === 0)) return false;
       return true;
     });
     let lastUserIdx = -1;
@@ -131,7 +133,7 @@ function ChatThreadViewComponent(props: ChatThreadViewProps) {
   const deferredVisibleMessagesWithFlags = useDeferredValue(visibleMessagesWithFlags);
   const threadMessagesWithFlags = streaming ? visibleMessagesWithFlags : deferredVisibleMessagesWithFlags;
   const visibleMessages = useMemo(() => threadMessagesWithFlags.map(item => item.msg), [threadMessagesWithFlags]);
-  const turnStreaming = streaming && visibleMessages.length > 0 && visibleMessages[visibleMessages.length - 1]?.role === 'assistant';
+  const turnStreaming = streaming;
 
   const { visibleItems, topSpacerPx, bottomSpacerPx } = useVirtualMessageWindow(
     threadMessagesWithFlags,

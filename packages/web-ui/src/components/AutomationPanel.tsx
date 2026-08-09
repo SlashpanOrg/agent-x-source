@@ -11,6 +11,7 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ScheduleIcon from '@mui/icons-material/Schedule';
 import { PanelHeader } from './PanelHeader';
+import { ConfirmDeleteDialog } from './ConfirmDeleteDialog';
 import { automation, type AutomationTaskRecord, type TelemetryEvent } from '../api';
 import { usePageVisible } from '../hooks/usePageVisible';
 import { automationRunSessionId } from '@agentx/shared/browser';
@@ -292,6 +293,8 @@ export function AutomationPanel() {
   const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
   const [opsLog, setOpsLog] = useState<OpsLogEntry[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [deletePendingId, setDeletePendingId] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const logRef = useRef<HTMLDivElement>(null);
   const seenEventKeys = useRef<Set<string>>(new Set());
@@ -316,6 +319,11 @@ export function AutomationPanel() {
   const selectedTask = useMemo(
     () => tasks.find((t) => t.id === selectedId) ?? null,
     [tasks, selectedId],
+  );
+
+  const pendingDeleteTask = useMemo(
+    () => (deletePendingId ? tasks.find((t) => t.id === deletePendingId) : null),
+    [deletePendingId, tasks],
   );
 
   const selectedRunning = selectedId ? runningIds.has(selectedId) : false;
@@ -429,6 +437,17 @@ export function AutomationPanel() {
     finally { setBusyId(null); }
   };
 
+  const confirmDeleteTask = async () => {
+    if (!deletePendingId) return;
+    setDeleteBusy(true);
+    try {
+      await handleAction(deletePendingId, 'delete');
+      setDeletePendingId(null);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
   const activeCount = tasks.filter((t) => t.status === 'active').length;
 
   return (
@@ -500,7 +519,7 @@ export function AutomationPanel() {
               onResume={() => { void handleAction(task.id, 'resume'); }}
               onRun={() => { void handleAction(task.id, 'run'); }}
               onCancel={() => { void handleAction(task.id, 'cancel'); }}
-              onDelete={() => { void handleAction(task.id, 'delete'); }}
+              onDelete={() => setDeletePendingId(task.id)}
               busy={busyId === task.id}
             />
           ))}
@@ -577,6 +596,16 @@ export function AutomationPanel() {
           )}
         </Box>
       </Box>
+
+      <ConfirmDeleteDialog
+        open={Boolean(deletePendingId)}
+        busy={deleteBusy}
+        title="DELETE AUTOMATION"
+        description="Permanently delete automation"
+        itemName={pendingDeleteTask?.title ?? pendingDeleteTask?.displayId ?? 'this task'}
+        onClose={() => setDeletePendingId(null)}
+        onConfirm={() => { void confirmDeleteTask(); }}
+      />
     </Box>
   );
 }

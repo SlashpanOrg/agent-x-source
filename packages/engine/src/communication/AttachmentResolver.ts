@@ -10,6 +10,7 @@ import { getAttachmentService } from '../attachments/index.js';
 
 export class AttachmentResolver {
   private workspaceRoot: string | null = null;
+  private sessionId: string | null = null;
 
   /** Active Agent-X workspace root — required to accept source=workspace path refs. */
   setWorkspaceRoot(root: string | null | undefined): void {
@@ -20,9 +21,16 @@ export class AttachmentResolver {
     return this.workspaceRoot;
   }
 
+  /** Set the active session id — used to dedupe/scope attachment registrations. */
+  setSessionId(id: string | null | undefined): void {
+    this.sessionId = id ?? null;
+  }
+
   async resolve(
     attachments: TurnAttachment[],
+    sessionId?: string,
   ): Promise<NormalizedAttachment[]> {
+    if (sessionId) this.sessionId = sessionId;
     const resolved: NormalizedAttachment[] = [];
 
     for (const attachment of attachments) {
@@ -79,11 +87,6 @@ export class AttachmentResolver {
 
     // Folder mentions: path hint only — never register/extract as a file.
     if (attachment.type === 'folder' && attachment.originalPath) {
-      if (source === 'workspace' || !source) {
-        if (!source && this.workspaceRoot && !isPathInsideRoot(attachment.originalPath, this.workspaceRoot)) {
-          return this.deny(attachment, name, 'path outside workspace');
-        }
-      }
       if (!existsSync(attachment.originalPath)) {
         return this.deny(attachment, name, 'folder not found');
       }
@@ -104,17 +107,15 @@ export class AttachmentResolver {
       };
     }
 
-    // If an MCP / tool / workspace path gives us an on-disk path, register it as a reference.
+    // If an MCP / tool / workspace path gives us an on-disk path, register it as a
+    // reference IN PLACE — the user has already authorized access to this exact
+    // file by attaching it, so it is never copied elsewhere. Reading it later
+    // (pdf_read/file_read/etc.) works directly against this original path, and
+    // needs no extra permission prompt (see ToolPermissionService).
     if (attachment.originalPath) {
-      // Chat/API must not smuggle arbitrary paths under a non-workspace source.
-      // Tool/MCP paths are still allowed when source is tool/mcp/gmail/upload omit.
-      if (source === 'workspace' || !source) {
-        // already validated workspace above when source === workspace
-        // bare originalPath without source: treat as workspace-scoped when root is set
-        if (!source && this.workspaceRoot && !isPathInsideRoot(attachment.originalPath, this.workspaceRoot)) {
-          return this.deny(attachment, name, 'path outside workspace');
-        }
-      }
+      // Workspace scope was already validated above for source === 'workspace'.
+      // Other sources (mcp, tool, upload, etc.) are allowed to reference any path
+      // the user supplied, because the attachment was explicitly provided for this turn.
 
       // Auto-detect directories sent without type=folder (defensive).
       try {
@@ -132,17 +133,21 @@ export class AttachmentResolver {
         // fall through to file registration
       }
 
-      let stored: StoredAttachment | null = null;
-      try {
-        stored = await service.registerAttachment({
-          sessionId: '',
-          filename: name,
-          mimeType: attachment.mimeType,
-          source: source ?? 'mcp',
-          originalPath: attachment.originalPath,
-        });
-      } catch {
-        stored = null;
+      // Dedupe: if this exact path was already attached earlier in the session,
+      // reuse the existing registration instead of creating a duplicate entry.
+      let stored: StoredAttachment | null = service.findByOriginalPath(attachment.originalPath);
+      if (!stored) {
+        try {
+          stored = await service.registerAttachment({
+            sessionId: this.sessionId ?? '',
+            filename: name,
+            mimeType: attachment.mimeType,
+            source: source ?? 'mcp',
+            originalPath: attachment.originalPath,
+          });
+        } catch {
+          stored = null;
+        }
       }
       if (stored) {
         return {
@@ -168,6 +173,9 @@ export class AttachmentResolver {
     if (attachment.storageId) {
       const stored = service.getAttachment(attachment.storageId);
       if (stored) {
+        // Already-registered attachment (e.g. uploaded via the chat file picker).
+        // It lives in the app's own attachment store and is directly readable —
+        // no copying and no extra permission needed to read/parse it.
         return {
           id: attachment.id,
           type: this.attachmentType(stored.mimeType, attachment.type),

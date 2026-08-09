@@ -372,14 +372,14 @@ export function ProviderSetupWizard({ provider, onConnect, onOAuthStart, onOAuth
                 </Box>
               ))}
               {oauthRedirectUri && (
-                <Box sx={{ mb: 1.5, p: 1, borderRadius: 1, border: `1px solid ${alphaColor(settingsTheme.accent.hud, '33')}`, bgcolor: `${alphaColor(settingsTheme.accent.hud, '0a')}` }}>
-                  <Typography sx={{ fontSize: '0.68rem', fontWeight: 600, color: settingsTheme.text.primary, mb: 0.5 }}>
-                    Authorized redirect URI
+                <Box sx={{ mb: 1.5, p: 1, borderRadius: 1, border: `1px solid ${alphaColor(provider.auth.oauth?.redirectAllowlistRequired ? settingsTheme.accent.alert : settingsTheme.accent.hud, '33')}`, bgcolor: `${alphaColor(provider.auth.oauth?.redirectAllowlistRequired ? settingsTheme.accent.alert : settingsTheme.accent.hud, '0a')}` }}>
+                  <Typography sx={{ fontSize: '0.68rem', fontWeight: 600, color: provider.auth.oauth?.redirectAllowlistRequired ? settingsTheme.accent.alert : settingsTheme.text.primary, mb: 0.5 }}>
+                    {provider.auth.oauth?.redirectAllowlistRequired ? 'Request this redirect URI from Zomato' : 'Authorized redirect URI'}
                   </Typography>
                   <Typography sx={{ fontSize: '0.64rem', color: settingsTheme.text.secondary, lineHeight: 1.5, mb: 0.75 }}>
-                    Register this exact URL in your OAuth provider (e.g. Google Cloud Console →
-                    Credentials → your OAuth client → Authorized redirect URIs). A mismatch causes
-                    “Error 400: redirect_uri_mismatch”.
+                    {provider.auth.oauth?.redirectAllowlistRequired
+                      ? 'Zomato uses a shared OAuth app and rejects unknown callback URLs. Submit their developer form with this exact URL before signing in — otherwise you will see invalid_redirect_uri.'
+                      : 'Register this exact URL in your OAuth provider (e.g. Google Cloud Console → Credentials → your OAuth client → Authorized redirect URIs). A mismatch causes “Error 400: redirect_uri_mismatch”.'}
                   </Typography>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                     <Typography sx={{ ...settingsMonoSx, fontSize: '0.62rem', color: settingsTheme.accent.hud, wordBreak: 'break-all', flex: 1 }}>

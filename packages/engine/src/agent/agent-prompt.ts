@@ -40,6 +40,7 @@ import {
   createInstructionsSection,
   createMemoryContextSection,
   createSystemOverrideSection,
+  createTurnModeSection,
   type SectionContext,
 } from '../prompt/assembly/index.js';
 import { createDocumentStudioSection } from './document-studio-prompts.js';
@@ -65,7 +66,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
     ctx.promptAssembly
       .register(createProviderPromptSection(secCtx))
       .register(createIdentitySection(secCtx))
-      .register(createCompactRulesSection())
+      .register(createCompactRulesSection({ bypassPermissions: secCtx.bypassPermissions }))
       .register(createCurrentTimeSection(secCtx))
       .register(createUserSection(secCtx))
       .register(createMemoryContextSection(secCtx));
@@ -78,7 +79,8 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
   if (ctx.options.promptProfile === 'crew_worker') {
     const secCtx = ctx.createSectionContext();
     ctx.promptAssembly
-      .register(createRulesSection({ technicalExecutor: true }))
+      .register(createRulesSection({ technicalExecutor: true, bypassPermissions: secCtx.bypassPermissions }))
+      .register(createTurnModeSection(secCtx))
       .register(createMissionPlanSection(secCtx.scopePath))
       .register(createQuestionnaireGuideSection())
       .register(createChatMarkdownSection())
@@ -104,6 +106,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
     } else {
       ctx.promptAssembly
         .register(createCrewPrivateConductSection())
+        .register(createTurnModeSection(secCtx))
         .register(createQuestionnaireGuideSection())
         .register(createChatMarkdownSection())
         .register(createMarkdownSection())
@@ -131,7 +134,8 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createIdentitySection(secCtx))
       .register(createPersonaToneSection(secCtx))
       .register(createWorkingDirectorySection(secCtx))
-      .register(createCompactRulesSection())
+      .register(createCompactRulesSection({ bypassPermissions: secCtx.bypassPermissions }))
+      .register(createTurnModeSection(secCtx))
       .register(createMissionPlanSection(secCtx.scopePath))
       .register(createChannelSuperSessionSection(ctx.personaName))
       .register(createChannelLinkedContextSection(secCtx))
@@ -165,7 +169,8 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createPersonaToneSection(secCtx))
       .register(createLocalPersonaGuardSection(ctx.personaName))
       .register(createWorkingDirectorySection(secCtx))
-      .register(createCompactRulesSection())
+      .register(createCompactRulesSection({ bypassPermissions: secCtx.bypassPermissions }))
+      .register(createTurnModeSection(secCtx))
       .register(createMissionPlanSection(secCtx.scopePath))
       .register(createUserSection(secCtx))
       .register(createSessionNarrativeSection(secCtx))
@@ -179,7 +184,8 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createIdentitySection(secCtx))
       .register(createPersonaToneSection(secCtx))
       .register(createWorkingDirectorySection(secCtx))
-      .register(createRulesSection())
+      .register(createRulesSection({ bypassPermissions: secCtx.bypassPermissions }))
+      .register(createTurnModeSection(secCtx))
       .register(createOutputFormatSection())
       .register(createCodingRulesSection())
       .register(createCodebaseContextSection(secCtx))

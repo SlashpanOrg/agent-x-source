@@ -20,6 +20,8 @@ interface StreamState {
   stepCount: number;
   stepTextStartLength: number;
   clarificationUsed: boolean;
+  /** Finish had no user-visible text — Agent owns empty-retry / promote before message_received. */
+  deferredEmptyFinalize: boolean;
   totalInputTokens: number;
   totalOutputTokens: number;
   promptCharEstimate: number;
@@ -234,6 +236,7 @@ export function createAiSdkStreamHandler(
     stepCount: 0,
     stepTextStartLength: 0,
     clarificationUsed: false,
+    deferredEmptyFinalize: false,
     totalInputTokens: 0,
     totalOutputTokens: 0,
     promptCharEstimate,
@@ -435,6 +438,17 @@ export function createAiSdkStreamHandler(
               timestamp: Date.now(),
             });
 
+            // Emit tool_executing so the UI shows the tool running during live stream.
+            // Without this, tool activity only appears after a hard-refresh (from DB parts).
+            emit({
+              type: 'tool_executing',
+              tool: toolName,
+              description: `Executing ${toolName}`,
+              startTime: Date.now(),
+              args,
+              callId: toolCallId,
+            });
+
             onSessionEvent?.({ type: 'tool_called', sessionId, sequence: ++sequence, timestamp: Date.now(), payload: { tool: toolName, callId: toolCallId, args } });
           } catch (e) {
             console.error('[AI_SDK_HANDLER] Error processing tool-call event:', e, 'event:', event);
@@ -448,7 +462,7 @@ export function createAiSdkStreamHandler(
             const toolName = event.toolName || 'unknown-tool';
             const toolCallId = event.toolCallId || 'unknown-id';
             let output = '';
-            
+
             if (event.result === null || event.result === undefined) {
               output = '(no output)';
             } else if (typeof event.result === 'string') {
@@ -456,7 +470,7 @@ export function createAiSdkStreamHandler(
             } else {
               output = JSON.stringify(event.result);
             }
-            
+
             persist({
               type: 'tool-result',
               toolName,
@@ -466,11 +480,22 @@ export function createAiSdkStreamHandler(
               timestamp: Date.now(),
             });
 
+            // Emit tool_complete so the UI shows the tool result during live stream.
+            // Without this, tool results only appear after a hard-refresh (from DB parts).
+            emit({
+              type: 'tool_complete',
+              tool: toolName,
+              result: { success: true, output },
+              elapsed: 0,
+              args: {},
+              callId: toolCallId,
+            });
+
             onSessionEvent?.({ type: 'tool_result', sessionId, sequence: ++sequence, timestamp: Date.now(), payload: { tool: toolName, callId: toolCallId, success: true, output, elapsed: 0 } });
-            
+
             // ─── Enhanced: Emit detailed operation events for specific tools ───
             emitDetailedOperationEvent(emit, toolName, output);
-            
+
             const total = state.totalInputTokens + state.totalOutputTokens;
             checkContextWarning(total);
           } catch (e) {
@@ -535,7 +560,29 @@ export function createAiSdkStreamHandler(
           break;
         }
 
-        let finalContent = trimmedContent || 'I apologize, I was unable to generate a response.';
+        // Reasoning-only / empty text: do NOT publish the apology yet. Agent empty-retry
+        // (and reasoning promotion) must run first; otherwise message_received locks the
+        // UI on the fallback and _turnMessageEmitted blocks a real reply.
+        if (!trimmedContent) {
+          state.deferredEmptyFinalize = true;
+          emit({ type: 'completion_finished', message: 'Thought.' });
+          onSessionEvent?.({
+            type: 'finish',
+            sessionId,
+            sequence: ++sequence,
+            timestamp: Date.now(),
+            payload: {
+              content: '',
+              usage: usage
+                ? { inputTokens: state.totalInputTokens, outputTokens: state.totalOutputTokens }
+                : undefined,
+            },
+          });
+          break;
+        }
+
+        state.deferredEmptyFinalize = false;
+        let finalContent = trimmedContent;
         let outMessageId = messageId;
         let isUpdate = false;
         if (voiceMerge) {
@@ -555,6 +602,10 @@ export function createAiSdkStreamHandler(
           createdAt: new Date().toISOString(),
           tokenCount: totalTokens,
         };
+
+        // Emit a terminal stream_chunk so the UI can flush coalesced text before
+        // message_received freezes parts[]. Empty delta — fullContent is authoritative.
+        emit({ type: 'stream_chunk', content: '', fullContent: finalContent });
 
         // Emit completion signal before message_received
         emit({ type: 'completion_finished', message: 'Thought.' });
@@ -581,6 +632,15 @@ export function createAiSdkStreamHandler(
 
        case 'tool_executing': {
          persist({ type: 'tool_executing', content: event.tool, timestamp: Date.now() });
+         // Also emit to SSE so the UI shows the tool running during live stream.
+         emit({
+           type: 'tool_executing',
+           tool: event.tool || 'unknown',
+           description: `Executing ${event.tool || 'tool'}`,
+           startTime: Date.now(),
+           args: (event.args as Record<string, unknown>) ?? {},
+           callId: (event.callId as string) ?? undefined,
+         });
          break;
        }
 
@@ -588,7 +648,7 @@ export function createAiSdkStreamHandler(
          const tool = event.tool || 'unknown';
          const result = event.result as { success: boolean; output: string } | undefined;
          const elapsed = event.elapsed || 0;
-         
+
          if (result) {
            state.toolExecutions.push({ tool, success: result.success, output: result.output, elapsed });
            persist({
@@ -597,6 +657,15 @@ export function createAiSdkStreamHandler(
              toolResult: result.output,
              toolSuccess: result.success,
              timestamp: Date.now(),
+           });
+           // Also emit to SSE so the UI shows the tool result during live stream.
+           emit({
+             type: 'tool_complete',
+             tool,
+             result: { success: result.success, output: result.output },
+             elapsed,
+             args: (event.args as Record<string, unknown>) ?? {},
+             callId: (event.callId as string) ?? undefined,
            });
          }
          break;
@@ -621,7 +690,7 @@ export function createAiSdkStreamHandler(
 
   return {
     handleEvent,
-    getState: () => state,
+    getState: () => ({ ...state, messageId: voiceMerge?.messageId ?? messageId }),
     discardCurrentStepText: () => {
       state.clarificationUsed = true;
       state.accumulatedContent = state.accumulatedContent.slice(0, state.stepTextStartLength);
@@ -633,6 +702,7 @@ export function createAiSdkStreamHandler(
       state.stepCount = 0;
       state.stepTextStartLength = 0;
       state.clarificationUsed = false;
+      state.deferredEmptyFinalize = false;
       state.toolCallCount = 0;
     },
   };

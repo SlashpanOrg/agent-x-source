@@ -692,6 +692,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
       hostCrewTitle: 'host_crew_title', hostCrewColor: 'host_crew_color',
       hostCrewCatalogId: 'host_crew_catalog_id', hostCrewCategoryId: 'host_crew_category_id',
       listDayKey: 'list_day_key', listDayLabel: 'list_day_label',
+      thinkingMode: 'thinking_mode', outputMode: 'output_mode',
     };
     for (const [key, col] of Object.entries(map)) {
       if (key in normalized) {
@@ -1149,7 +1150,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
 
   async getMessagesPage(
     sessionId: string,
-    opts: { limit?: number; before?: string },
+    opts: { limit?: number; before?: string; includeSystem?: boolean },
   ): Promise<{ messages: Array<Record<string, unknown>>; total: number; hasMore: boolean }> {
     return getMessagesPageImpl(this.messageCtx(), sessionId, opts);
   }

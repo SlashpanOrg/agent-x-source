@@ -62,7 +62,7 @@ import {
 import { buildLocalBaseUrl, parseLocalEndpoint, defaultLocalPort } from '../utils/local-provider-endpoint';
 import type { AgentPersonaConfig, CommunicationStyle, DecisionMakingStyle } from '../api';
 
-const ALL_STEPS = ['Storage', 'Provider', 'Profile', 'Local Model', 'Model', 'Benchmark', 'Neural Core', 'Callsign', 'Agent Persona', 'Voice Comms', 'Channel Connect', 'Complete'];
+const ALL_STEPS = ['Storage', 'Provider', 'Profile', 'Local AI', 'Model', 'Benchmark', 'Neural Core', 'Callsign', 'Personality', 'Voice', 'Channels', 'Complete'];
 
 /** Preset personas the user can quickly pick in the wizard. */
 const PERSONA_PRESETS: Array<{
@@ -134,7 +134,7 @@ export function SetupWizard() {
   const localModelSupported = useLocalModelSupported();
   const systemCaps = useSystemCapabilities();
   const steps = useMemo(() => ALL_STEPS.filter((s) => {
-    if (s === 'Local Model' && !localModelSupported) return false;
+    if (s === 'Local AI' && !localModelSupported) return false;
     return true;
   }), [localModelSupported]);
   const [step, setStep] = useState(0);
@@ -143,7 +143,7 @@ export function SetupWizard() {
 
   const isStepSupported = useCallback((stepIndex: number) => {
     const label = ALL_STEPS[stepIndex];
-    if (label === 'Local Model' && !localModelSupported) return false;
+    if (label === 'Local AI' && !localModelSupported) return false;
     return stepIndex >= 0 && stepIndex < ALL_STEPS.length;
   }, [localModelSupported]);
 
@@ -492,9 +492,9 @@ export function SetupWizard() {
           appendLog('Cancelled — you can change settings and try again.');
           return false;
         }
-        appendLog(`[ERROR] ${r.error || 'Storage provisioning failed'}`);
+        appendLog(`[ERROR] ${r.error || 'Storage setup failed'}`);
         setProvisionFailed(true);
-        showError(r.error || 'Storage provisioning failed');
+        showError(r.error || 'Storage setup failed');
         return false;
       }
       setStorageProvisioned(true);
@@ -507,7 +507,7 @@ export function SetupWizard() {
         appendLog('Cancelled — you can change settings and try again.');
         return false;
       }
-      const msg = e instanceof Error ? e.message : 'Storage provisioning failed';
+      const msg = e instanceof Error ? e.message : 'Storage setup failed';
       appendLog(`[ERROR] ${msg}`);
       setProvisionFailed(true);
       showError(msg);
@@ -545,7 +545,7 @@ export function SetupWizard() {
 
   const handleRelayTest = async () => {
     const connStr = buildPgConnStr();
-    if (!connStr) { showError('Enter connection details'); return; }
+    if (!connStr) { showError('Enter the database details'); return; }
     setPgTesting(true);
     resetPgTest();
     clearError();
@@ -553,9 +553,9 @@ export function SetupWizard() {
       const r = await settings.db.testAdvanced(connStr, buildSshConfig());
       setPgTestResult(r);
       setPgTestDetailsOpen(false);
-      if (!r.ok) showError(r.error || 'Connection test failed');
+      if (!r.ok) showError(r.error || 'Could not connect to the database');
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Connection test failed';
+      const msg = e instanceof Error ? e.message : 'Could not connect to the database';
       setPgTestResult({ ok: false, error: msg });
       setPgTestDetailsOpen(false);
       showError(msg);
@@ -566,7 +566,7 @@ export function SetupWizard() {
 
   const handleRelaySave = async () => {
     const connStr = buildPgConnStr();
-    if (!connStr) { showError('Enter connection details'); return; }
+    if (!connStr) { showError('Enter the database details'); return; }
     if (!pgTestResult?.ok) {
       showError('Test the connection before continuing');
       return;
@@ -660,8 +660,8 @@ export function SetupWizard() {
   const handleProfileNext = async () => {
     if (!profileName.trim()) { showError('Enter a profile name'); return; }
     if (!isLocal && !apiKey.trim() && !apiKeyConfigured) { showError('Enter your API key'); return; }
-    if (isAzure && !baseUrl.trim()) { showError('Azure requires a resource endpoint URL'); return; }
-    if (isCustom && !baseUrl.trim()) { showError('Custom provider requires a base URL'); return; }
+    if (isAzure && !baseUrl.trim()) { showError('Azure needs your resource web address'); return; }
+    if (isCustom && !baseUrl.trim()) { showError('Custom provider needs a web address'); return; }
     if (isLocal && !localPort.trim()) { showError('Enter the local server port'); return; }
     setLoading(true);
     try {
@@ -674,7 +674,7 @@ export function SetupWizard() {
       // so we never wipe the server-side key with an empty body.
       if (!isLocal && !isCustom && apiKeyConfigured && !apiKey.trim()) {
         const r = await provApi.validate(selectedProvider, undefined, resolvedBaseUrl);
-        if (!r.valid) { showError(r.error ?? 'Invalid credentials'); setLoading(false); return; }
+        if (!r.valid) { showError(r.error ?? 'API key or details are not valid'); setLoading(false); return; }
         if (availableModels.length === 0) {
           const ml = await provApi.models(selectedProvider);
           setAvailableModels(ml);
@@ -691,7 +691,7 @@ export function SetupWizard() {
         isCustom ? customApiType : undefined,
         isCustom ? profileName.trim() : undefined,
       );
-      if (!r.valid) { showError(r.error ?? 'Invalid credentials'); setLoading(false); return; }
+      if (!r.valid) { showError(r.error ?? 'API key or details are not valid'); setLoading(false); return; }
       await provApi.configure(
         selectedProvider,
         keyForRequest,
@@ -740,7 +740,7 @@ export function SetupWizard() {
         setAvailableModels(ml);
       }
       next();
-    } catch (err) { showError(err instanceof Error ? err.message : 'Validation failed'); }
+    } catch (err) { showError(err instanceof Error ? err.message : 'Could not verify the connection'); }
     finally { setLoading(false); }
   };
   const handleModelNext = async () => {
@@ -859,7 +859,7 @@ export function SetupWizard() {
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', bgcolor: wizardTheme.bg }}>
       <Box sx={{ flexShrink: 0, textAlign: 'center', pt: 4, px: 2, pb: 2 }}>
         <Typography variant="h2" sx={{ mb: 0.5, fontFamily: WIZARD_MONO, letterSpacing: '0.12em', fontSize: '1.1rem' }}>SETUP WIZARD</Typography>
-        <Typography variant="body2" sx={{ color: wizardTheme.textDim, mb: 3, fontFamily: WIZARD_MONO, fontSize: '0.62rem' }}>Configure your Agent-X instance</Typography>
+        <Typography variant="body2" sx={{ color: wizardTheme.textDim, mb: 3, fontFamily: WIZARD_MONO, fontSize: '0.62rem' }}>Set up your Agent-X</Typography>
         <Stepper
           nonLinear
           activeStep={steps.indexOf(ALL_STEPS[step] ?? '')}
@@ -874,10 +874,10 @@ export function SetupWizard() {
             // Optional steps left unfinished (Skip) — distinct from completed (green tick).
             const isSkipped = Boolean(
               reached && !isCurrent && (
-                (label === 'Local Model' && skipLocalModel)
+                (label === 'Local AI' && skipLocalModel)
                 || (label === 'Neural Core' && !neuralReady)
-                || (label === 'Voice Comms' && !voiceCalibrated)
-                || (label === 'Channel Connect' && !telegramLinked && !whatsappLinked)
+                || (label === 'Voice' && !voiceCalibrated)
+                || (label === 'Channels' && !telegramLinked && !whatsappLinked)
               ),
             );
             const isCompleted = reached && !isCurrent && !isSkipped;
@@ -1009,9 +1009,9 @@ export function SetupWizard() {
           {step === 0 && showRelayConfig && (
             <Box sx={{ maxWidth: 600, mx: 'auto' }}>
               <WizardStepHeader
-                codename="MODULE · RELAY CONFIG"
+                codename="MODULE · CLOUD DATABASE"
                 title="Configure Your Relay"
-                subtitle="Connect your PostgreSQL instance. Agent-X auto-provisions the schema on first contact."
+                subtitle="Connect your database. Agent-X will set up the tables it needs on first connect."
               />
 
               <Box sx={{ ...wizardPanelSx, p: 3 }}>
@@ -1102,12 +1102,12 @@ export function SetupWizard() {
                           label: 'pgvector',
                           status: (pgTestResult.vectorAvailable ? 'ok' : 'fail') as DbExtensionCheck['status'],
                           message: pgTestResult.vectorAvailable
-                            ? 'pgvector extension is installed.'
-                            : (pgTestResult.vectorError ?? 'pgvector is required for neural memory.'),
+                            ? 'Vector search is ready.'
+                            : (pgTestResult.vectorError ?? 'A database feature is needed for smart memory.'),
                         }]
                       : [];
                   const neuralCoreCheck = pgTestResult.ok && systemCaps?.cortexDegraded
-                    ? { status: 'ok' as const, label: 'Neural Core', message: 'Online and ready. A more capable host will unlock the agent\'s full potential.' }
+                    ? { status: 'ok' as const, label: 'Neural Core', message: 'Ready. A faster device will unlock more features.' }
                     : null;
                   const detailRows = [
                     ...extensionChecks.map((check) => ({
@@ -1258,7 +1258,7 @@ export function SetupWizard() {
                       }}
                     >
                       <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8rem', color: wizardTheme.text }}>Custom Provider</Typography>
-                      <Typography variant="caption" sx={{ display: 'block', fontSize: '0.55rem', fontFamily: WIZARD_MONO, color: wizardTheme.accentSignal, letterSpacing: '0.5px' }}>BRING YOUR OWN · OPENAI-COMPATIBLE / ANTHROPIC / GEMINI</Typography>
+                      <Typography variant="caption" sx={{ display: 'block', fontSize: '0.55rem', fontFamily: WIZARD_MONO, color: wizardTheme.accentSignal, letterSpacing: '0.5px' }}>BRING YOUR OWN AI · OPENAI / CLAUDE / GEMINI</Typography>
                     </Box>
                   )}
                   <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', color: wizardTheme.textDim, mb: 1.5, fontFamily: WIZARD_MONO, letterSpacing: '1px' }}>LOCAL</Typography>
@@ -1278,7 +1278,7 @@ export function SetupWizard() {
                   <WizardStepHeader
                     codename="MODULE · PROFILE"
                     title={isLocal ? 'Name Your Local Profile' : isAzure ? 'Azure Profile' : isCustom ? 'Custom Provider' : 'Configure Profile'}
-                    subtitle={isLocal ? `Connecting to ${selectedProviderInfo?.name ?? 'local provider'}. No API key needed.` : isAzure ? 'Enter your Azure endpoint and API key' : isCustom ? 'Bring your own OpenAI-compatible, Anthropic, or Gemini endpoint' : `Set up your ${selectedProviderInfo?.name ?? ''} connection`}
+                    subtitle={isLocal ? `Connecting to ${selectedProviderInfo?.name ?? 'local provider'}. No API key needed.` : isAzure ? 'Enter your Azure endpoint and API key' : isCustom ? 'Use your own AI service (OpenAI, Claude, or Gemini)' : `Set up your ${selectedProviderInfo?.name ?? ''} connection`}
                   />
 
                   <TextField label="Profile Name" value={profileName} onChange={e => setProfileName(e.target.value)} fullWidth
@@ -1321,7 +1321,7 @@ export function SetupWizard() {
                       onChange={(e) => setCustomModelId(e.target.value)}
                       fullWidth
                       placeholder="e.g. gpt-4o, claude-sonnet-4, gemini-2.5-pro"
-                      helperText="Leave blank if your endpoint lists models via /models. Enter a model ID only if the endpoint doesn't support model listing."
+                      helperText="Leave blank if your service lists models automatically. Otherwise, enter a model name."
                       sx={{ mb: 2 }}
                       slotProps={wizardTextFieldSlotProps}
                     />
@@ -1473,8 +1473,8 @@ export function SetupWizard() {
               {step === 5 && (
                 <Box>
                   <WizardStepHeader
-                    codename="MODULE · CLEARANCE"
-                    title="Agentic Clearance Scan"
+                    codename="MODULE · MODEL CHECK"
+                    title="Model Check"
                     subtitle={`Mandatory clearance scan for ${selectedModelInfo?.name || selectedModel} — verifies this model can handle Agent-X workloads.`}
                   />
                   <ModelBenchmarkRunner
@@ -1839,7 +1839,7 @@ export function SetupWizard() {
             <Button variant="contained" onClick={handleStorageNext} disabled={loading || provisioning} sx={{ ...wizardPrimaryBtnSx, px: 4 }}>
               {loading || provisioning
                 ? 'Starting...'
-                : selectedBackend === 'embedded-postgres' ? 'Start Embedded PostgreSQL →' : 'Configure Relay →'}
+                : selectedBackend === 'embedded-postgres' ? 'Start' : 'Continue'}
             </Button>
           )}
           {step === 0 && showRelayConfig && (
@@ -1960,7 +1960,7 @@ export function SetupWizard() {
         <DialogContent>
           <Typography variant="body2" sx={{ color: wizardTheme.textSecondary, fontSize: '0.8rem', lineHeight: 1.6 }}>
             Storage is already configured
-            {provisionedBackend === 'embedded-postgres' ? ' (embedded PostgreSQL)' : provisionedBackend === 'postgres' ? ' (cloud relay)' : ''}.
+            {provisionedBackend === 'embedded-postgres' ? ' (local)' : provisionedBackend === 'postgres' ? ' (cloud)' : ''}.
             You can review or change your choice on the storage step.
           </Typography>
           {provisionedBackend === 'embedded-postgres' && (
@@ -1987,17 +1987,17 @@ export function SetupWizard() {
         <DialogTitle sx={{ fontFamily: WIZARD_MONO, fontSize: '0.85rem', fontWeight: 700, pb: 1, display: 'flex', alignItems: 'center', gap: 1.5 }}>
           {provisioning && <CircularProgress size={14} sx={{ color: wizardTheme.textDim }} />}
           {provisionModalMode === 'embedded-postgres'
-            ? 'STARTING EMBEDDED POSTGRESQL'
-            : 'CONNECTING CLOUD RELAY'}
+            ? 'Starting local database…'
+            : 'Connecting to cloud database…'}
         </DialogTitle>
         <DialogContent sx={{ pt: 0, px: 2.5 }}>
           <Typography variant="body2" sx={{ color: wizardTheme.textDim, fontSize: '0.72rem', mb: 1.5, lineHeight: 1.5 }}>
             {provisioning
               ? (provisionModalMode === 'embedded-postgres'
                 ? 'Initializing the local database. First run can take up to a minute.'
-                : 'Saving configuration and applying schema migrations to your PostgreSQL instance. Crew Hub seeding can take several minutes over cloud networks.')
+                : 'Saving settings and setting up your cloud database. This may take a few minutes.')
               : provisionFailed
-                ? 'Setup did not complete. Review the logs below, then discard to try a different configuration.'
+                ? 'Setup did not finish. Check the details below, then discard to try again.'
                 : 'Setup complete.'}
           </Typography>
           <Box

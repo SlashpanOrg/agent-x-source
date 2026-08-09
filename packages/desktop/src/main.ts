@@ -285,12 +285,6 @@ async function stopServer(): Promise<void> {
   }
 }
 
-async function stopEmbeddedPostgres(): Promise<void> {
-  if (agentRuntime) {
-    await agentRuntime.stopEmbeddedPostgres();
-  }
-}
-
 // ==================== External links ====================
 
 function isExternalHttpUrl(url: string): boolean {
@@ -741,22 +735,26 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('will-quit', async () => {
+app.on('before-quit', async (event) => {
+  if (isQuitting) return;
+  isQuitting = true;
+  event.preventDefault();
   globalShortcut.unregisterAll();
-  await stopServer();
+  try {
+    await stopServer();
+  } catch (err) {
+    console.error('Error stopping server during shutdown:', err);
+  }
+  app.exit(0);
 });
 
-app.on('before-quit', async () => {
-  await stopEmbeddedPostgres();
-});
-
-process.on('SIGTERM', async () => {
-  await stopEmbeddedPostgres();
+process.on('SIGTERM', () => {
+  isQuitting = true;
   app.quit();
 });
 
-process.on('SIGINT', async () => {
-  await stopEmbeddedPostgres();
+process.on('SIGINT', () => {
+  isQuitting = true;
   app.quit();
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
@@ -764,4 +762,3 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
   else mainWindow?.show();
 });
-app.on('before-quit', () => { isQuitting = true; });

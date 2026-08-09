@@ -52,6 +52,7 @@ export function crewFromRow(row: Record<string, unknown>): Crew {
     toolPreferences: metadata.toolPreferences,
     tools: metadata.tools,
     tags: metadata.tags,
+    certifications: Array.isArray(row['certifications']) ? row['certifications'] as string[] : metadata.certifications,
     permissions: metadata.permissions,
     model: metadata.model,
     protocol: metadata.protocol,

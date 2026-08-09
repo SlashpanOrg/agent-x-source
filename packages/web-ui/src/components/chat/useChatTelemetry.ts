@@ -7,7 +7,7 @@ import { subscribeOptimizedTelemetry } from '../../perf/optimized-telemetry';
 import { ensureRenderInstrumentation } from '../../perf/render-instrumentation';
 import { eventBelongsToViewSession, filterEventsForViewSession } from '../../chat/session-stream-filter';
 import { applyOperationEventToAssistant } from '../../chat/operation-tool-patch';
-import { stripToolNoise, repairStreamTextGlitches, stripTrailingStreamPreamble, lastMessageIsQuestionnaireCard, mergeIncomingMessageParts, applyToolCompleteMetadata, reconcileStreamingMessageParts, coerceDisplayLabel } from '../../chat/utils';
+import { stripToolNoise, repairStreamTextGlitches, stripTrailingStreamPreamble, lastMessageIsQuestionnaireCard, mergeIncomingMessageParts, applyToolCompleteMetadata, reconcileStreamingMessageParts, coerceDisplayLabel, assistantTextsOverlap } from '../../chat/utils';
 import {
   parseDeepSearchProgressLine,
   parseDeepSearchProgressFromStream,
@@ -16,6 +16,7 @@ import {
   appendThinkingDeltaToParts,
   sealTrailingThinkingPart,
   appendStreamText,
+  syncTextPartsWithCanonicalContent,
   type MessagePart,
 } from '@agentx/shared/browser';
 import { chat, todos, type TelemetryEvent, type Crew, type ConnectionState, type CrewSuggestionEvaluation, type IntegrationActionPreview, type TodoItem } from '../../api';
@@ -137,6 +138,8 @@ interface EventHandlerContext {
   providerErrorTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
   toolBatchRef: React.MutableRefObject<TelemetryEvent[]>;
   toolFlushRef: React.MutableRefObject<number | null>;
+  /** Tracks whether toolFlushRef holds a setTimeout handle (true) or rAF handle (false). */
+  toolFlushIsTimeoutRef: React.MutableRefObject<boolean>;
   /** Session id that owned the current coalesced stream/thinking buffers. */
   pendingUiSessionIdRef: React.MutableRefObject<string | null>;
 
@@ -300,8 +303,12 @@ const handleToolBatchEvent = (ev: TelemetryEvent, ctx: EventHandlerContext): voi
   if (ctx.isInitialLoadRef.current) return;
   ctx.toolBatchRef.current.push(ev);
   if (ctx.toolFlushRef.current === null) {
-    ctx.toolFlushRef.current = requestAnimationFrame(() => {
+    // When the window is hidden, requestAnimationFrame is paused by the browser.
+    // Use setTimeout(0) instead so tool events still flush while backgrounded.
+    const isHidden = typeof document !== 'undefined' && document.hidden;
+    const flushFn = () => {
       ctx.toolFlushRef.current = null;
+      ctx.toolFlushIsTimeoutRef.current = false;
       const rawBatch = ctx.toolBatchRef.current;
       ctx.toolBatchRef.current = [];
       // Re-filter at flush time — session may have changed since enqueue (cross-session bleed).
@@ -343,7 +350,14 @@ const handleToolBatchEvent = (ev: TelemetryEvent, ctx: EventHandlerContext): voi
         }
         return current;
       });
-    });
+    };
+    if (isHidden) {
+      ctx.toolFlushIsTimeoutRef.current = true;
+      ctx.toolFlushRef.current = window.setTimeout(flushFn, 0) as unknown as number;
+    } else {
+      ctx.toolFlushIsTimeoutRef.current = false;
+      ctx.toolFlushRef.current = requestAnimationFrame(flushFn);
+    }
   }
 };
 
@@ -533,12 +547,16 @@ const handleStreamChunk = (ev: TelemetryEvent, ctx: EventHandlerContext): void =
       }];
     }
     // Never stream into a completed prior reply (race: chunks arrive before optimistic user bubble commits).
+    // Exception: during an active turn, the engine may continue after the first finish
+    // (transition / completion-gate). Re-open the tip bubble instead of spawning a duplicate —
+    // the second message_received is dropped server-side, so a new bubble would vanish only on refresh.
     if (last?.role === 'assistant' && !last.streaming) {
       const base = ctx.ensureOutgoingTurnMessages(prev);
       const tip = base[base.length - 1];
       if (tip?.role === 'assistant' && tip.streaming) {
         ctx.pendingUiSessionIdRef.current = ctx.viewSessionIdRef.current;
-        ctx.streamChunkPendingRef.current = rawFull || null;
+        const resolvedFull = rawFull || (rawDelta ? appendStreamText(tip.content || '', rawDelta) : '');
+        ctx.streamChunkPendingRef.current = resolvedFull || null;
         if (ctx.streamChunkRAFRef.current === null) {
           ctx.streamChunkRAFRef.current = window.setTimeout(() => {
             ctx.streamChunkRAFRef.current = null;
@@ -550,19 +568,44 @@ const handleStreamChunk = (ev: TelemetryEvent, ctx: EventHandlerContext): void =
               const ensured = ctx.ensureOutgoingTurnMessages(p);
               const l = ensured[ensured.length - 1];
               if (l?.role !== 'assistant' || !l.streaming) return ensured;
-              const parts = l.parts || [];
-              const lastPart = parts[parts.length - 1];
-              const textPart: PartEntry = lastPart?.type === 'text'
-                ? { ...lastPart, content: fullContent }
-                : { type: 'text', id: crypto.randomUUID(), content: fullContent };
-              const updatedParts = lastPart?.type === 'text'
-                ? [...parts.slice(0, -1), textPart]
-                : [...parts, textPart];
-              return updateLastMessage(ensured, { content: fullContent, parts: updatedParts, streaming: true });
+              return updateLastMessage(ensured, applyFullContentToAssistant(l, fullContent));
             });
           }, STREAM_COALESCE_MS);
         }
         return base;
+      }
+      if (tip?.role === 'assistant' && ctx.turnActiveRef.current) {
+        const resolvedFull = rawFull || (rawDelta ? appendStreamText(tip.content || '', rawDelta) : '');
+        if (!resolvedFull) return base;
+        // Late duplicate of an already-finalized reply — ignore.
+        if (assistantTextsOverlap(tip.content, resolvedFull) && resolvedFull.length <= (tip.content?.length ?? 0) + 8) {
+          return base;
+        }
+        ctx.pendingUiSessionIdRef.current = ctx.viewSessionIdRef.current;
+        ctx.streamChunkPendingRef.current = resolvedFull;
+        if (ctx.streamChunkRAFRef.current === null) {
+          ctx.streamChunkRAFRef.current = window.setTimeout(() => {
+            ctx.streamChunkRAFRef.current = null;
+            const fullContent = ctx.streamChunkPendingRef.current ?? '';
+            ctx.streamChunkPendingRef.current = null;
+            if (!fullContent) return;
+            if (ctx.pendingUiSessionIdRef.current !== ctx.viewSessionIdRef.current) return;
+            ctx.setMessages(p => {
+              const ensured = ctx.ensureOutgoingTurnMessages(p);
+              const l = ensured[ensured.length - 1];
+              if (l?.role !== 'assistant') return ensured;
+              return updateLastMessage(ensured, applyFullContentToAssistant({ ...l, streaming: true }, fullContent));
+            });
+          }, STREAM_COALESCE_MS);
+        }
+        // Re-open tip immediately so the next chunks coalesce into the same bubble.
+        return updateLastMessage(base, { streaming: true });
+      }
+      // Tip is a completed prior-turn assistant (turn not active for reopen) — do not
+      // append a twin mid-stream; ensureOutgoing should have placed a fresh placeholder.
+      if (tip?.role === 'assistant') {
+        const resolvedFull = rawFull || (rawDelta ? appendStreamText(tip.content || '', rawDelta) : '');
+        if (resolvedFull && assistantTextsOverlap(tip.content, resolvedFull)) return base;
       }
       const textPart: PartEntry = { type: 'text', id: crypto.randomUUID(), content: rawFull || rawDelta };
       return [...base, {
@@ -575,7 +618,8 @@ const handleStreamChunk = (ev: TelemetryEvent, ctx: EventHandlerContext): void =
     }
     if (last?.role === 'assistant') {
       ctx.pendingUiSessionIdRef.current = ctx.viewSessionIdRef.current;
-      ctx.streamChunkPendingRef.current = rawFull || null;
+      const resolvedFull = rawFull || (rawDelta ? appendStreamText(last.content || '', rawDelta) : '');
+      ctx.streamChunkPendingRef.current = resolvedFull || null;
       if (ctx.streamChunkRAFRef.current === null) {
         // Coalesced flush: markdown re-parses the active bubble on every
         // commit, so a lower rate cuts CPU while streaming still feels live.
@@ -606,20 +650,7 @@ const handleStreamChunk = (ev: TelemetryEvent, ctx: EventHandlerContext): void =
               }
               parts = sealTrailingThinkingPart(parts);
             }
-            const lastPart = parts[parts.length - 1];
-            const prefixEnd = lastPart?.type === 'text' ? parts.length - 1 : parts.length;
-            let prefixLen = 0;
-            for (let i = 0; i < prefixEnd; i++) {
-              const part = parts[i];
-              if (part?.type === 'text' && part.content) prefixLen += part.content.length;
-            }
-            const segmentText = fullContent.slice(prefixLen);
-            if (lastPart?.type === 'text') {
-              const updatedParts = [...parts.slice(0, -1), { ...lastPart, content: segmentText }] as PartEntry[];
-              return updateLastMessage(p, { content: fullContent, parts: updatedParts, streaming: true });
-            }
-            const textPart: PartEntry = { type: 'text', id: crypto.randomUUID(), content: segmentText };
-            return updateLastMessage(p, { content: fullContent, parts: [...parts, textPart] as PartEntry[], streaming: true });
+            return updateLastMessage(p, applyFullContentToAssistant({ ...l, parts: parts as PartEntry[] }, fullContent));
           });
           const streamingEst = Math.ceil(fullContent.length / 4);
           ctx.setTokenStreaming(streamingEst);
@@ -651,11 +682,53 @@ const handleLoadingEnd = (_ev: TelemetryEvent, ctx: EventHandlerContext): void =
 
 // ─── Message handlers ───
 
+/** Flush coalesced stream text immediately (before message_received finalize). */
+function takePendingStreamFullContent(ctx: EventHandlerContext): string | null {
+  if (ctx.streamChunkRAFRef.current !== null) {
+    clearTimeout(ctx.streamChunkRAFRef.current);
+    ctx.streamChunkRAFRef.current = null;
+  }
+  const pending = ctx.streamChunkPendingRef.current;
+  ctx.streamChunkPendingRef.current = null;
+  return pending && pending.length > 0 ? pending : null;
+}
+
+function applyFullContentToAssistant(message: UIMessage, fullContent: string): UIMessage {
+  const parts = (message.parts || []) as MessagePart[];
+  const lastPart = parts[parts.length - 1];
+  const prefixEnd = lastPart?.type === 'text' ? parts.length - 1 : parts.length;
+  let prefixLen = 0;
+  for (let i = 0; i < prefixEnd; i++) {
+    const part = parts[i];
+    if (part?.type === 'text' && part.content) prefixLen += part.content.length;
+  }
+  const segmentText = fullContent.length >= prefixLen ? fullContent.slice(prefixLen) : fullContent;
+  if (lastPart?.type === 'text') {
+    const updatedParts = [...parts.slice(0, -1), { ...lastPart, content: segmentText }] as PartEntry[];
+    return { ...message, content: fullContent, parts: updatedParts, streaming: true };
+  }
+  const textPart: PartEntry = { type: 'text', id: crypto.randomUUID(), content: segmentText };
+  return { ...message, content: fullContent, parts: [...parts, textPart] as PartEntry[], streaming: true };
+}
+
 /** Finalize or merge the completed assistant message into the chat. */
 const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): void => {
+  // Apply any coalesced stream text that has not been committed yet — otherwise
+  // message_received freezes a truncated parts[] while content is complete.
+  const pendingFull = takePendingStreamFullContent(ctx);
+
   ctx.setMessages((prev) => {
     // Ignore stale message_received events replayed from telemetry buffer on page load
     if (ctx.isInitialLoadRef.current) return prev;
+
+    let working = prev;
+    if (pendingFull) {
+      const tip = working[working.length - 1];
+      if (tip?.role === 'assistant' && tip.streaming) {
+        working = updateLastMessage(working, applyFullContentToAssistant(tip, pendingFull));
+      }
+    }
+
     const isUpdate = (ev as { isUpdate?: boolean }).isUpdate === true;
     const msg = ev.message as {
       id?: string;
@@ -671,6 +744,7 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
     const msgId = msg?.id || crypto.randomUUID();
     const hasQuestionnaire = msg?.parts?.some((p) => p.type === 'questionnaire');
     const hasCrewPicker = msg?.parts?.some((p) => p.type === 'crew_roster_picker');
+    const hasPermissionPart = msg?.parts?.some((p) => p.type === 'permission');
     const questionnairePending = hasQuestionnaire
       && msg?.parts?.some((p) => p.type === 'questionnaire' && p.questionnaire?.status === 'pending');
     const crewPickerPending = hasCrewPicker
@@ -679,7 +753,13 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
     const turnContinues = isUpdate || interactionPending;
 
     if (!turnContinues) {
-      ctx.stopTurnIndicator();
+      // Do NOT stop the turn indicator or set streaming=false here.
+      // message_received fires when the LLM response is complete, but the
+      // turn may still be doing post-processing (memory extraction, skill
+      // generation, reflection, persistence). The turn-level streaming state
+      // is stopped by turn_state:done/idle, which fires AFTER all post-
+      // processing is complete. Setting streaming=false here would hide the
+      // stop button, execution chip, and progress loader prematurely.
       if (msg?.role === 'assistant') {
         ctx.lastTurnFeedbackCandidateRef.current = {
           messageId: msgId,
@@ -693,45 +773,52 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
       ctx.setTurnActivity(null);
     }
 
-    if (msgId && prev.some((m) => m.id === msgId)) {
-      const idx = prev.findIndex((m) => m.id === msgId);
+    if (msgId && working.some((m) => m.id === msgId)) {
+      const idx = working.findIndex((m) => m.id === msgId);
       if (idx >= 0 && msg) {
-        if (isUpdate && !interactionPending) {
+        ctx.outgoingTurnRef.current = null;
+        const stillStreaming = isUpdate && !interactionPending;
+        if (stillStreaming) {
           ctx.setStreaming(true);
         } else if (interactionPending) {
           ctx.setStreaming(false);
-        } else {
-          ctx.setStreaming(false);
         }
         const text = repairStreamTextGlitches(stripToolNoise(msg.content ?? ''));
+        const liveParts = mergeIncomingMessageParts(working[idx]!.parts, msg.parts) ?? working[idx]!.parts;
+        const synced = syncTextPartsWithCanonicalContent(
+          (liveParts as MessagePart[] | undefined) ?? (msg.parts as MessagePart[] | undefined),
+          text || working[idx]!.content || '',
+        );
         const mergedParts = reconcileStreamingMessageParts(
-          mergeIncomingMessageParts(prev[idx]!.parts, msg.parts) ?? prev[idx]!.parts,
-          prev[idx]!.toolCalls ?? msg.toolCalls,
+          synced as PartEntry[],
+          working[idx]!.toolCalls ?? msg.toolCalls,
           msg.parts,
         );
         const updated: UIMessage = {
-          ...prev[idx]!,
-          content: text || prev[idx]!.content,
+          ...working[idx]!,
+          content: text || working[idx]!.content,
           parts: mergedParts,
-          streaming: false,
+          streaming: stillStreaming,
           ...(msg?.attachments ? { attachments: msg.attachments } : {}),
           ...(crew ? { crew } : {}),
         };
-        return [...prev.slice(0, idx), updated, ...prev.slice(idx + 1)];
+        return [...working.slice(0, idx), updated, ...working.slice(idx + 1)];
       }
     }
 
     if (msg?.role === 'user' && msg.content?.trim()) {
       // User turns are added locally on send; engine emits message_sent, not message_received.
       ctx.setStreaming(false);
-      return prev;
+      return working;
     }
 
-    if (!msg || msg.role === 'system') return prev;
+    if (!msg || msg.role === 'system') return working;
     const text = repairStreamTextGlitches(stripToolNoise(msg.content ?? ''));
-    if (msg.role === 'assistant' && (hasQuestionnaire || hasCrewPicker)) {
-      ctx.setStreaming(interactionPending ? false : true);
-      const base = stripTrailingStreamPreamble(prev);
+    if (msg.role === 'assistant' && (hasQuestionnaire || hasCrewPicker || hasPermissionPart)) {
+      ctx.setStreaming(interactionPending ? false : ctx.turnActiveRef.current);
+      const base = hasPermissionPart && !hasQuestionnaire && !hasCrewPicker
+        ? working
+        : stripTrailingStreamPreamble(working);
       return [...base, {
         id: msgId,
         role: 'assistant' as const,
@@ -743,8 +830,7 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
       } as UIMessage];
     }
 
-    ctx.setStreaming(false);
-    const withOutgoing = ctx.ensureOutgoingTurnMessages(prev);
+    const withOutgoing = ctx.ensureOutgoingTurnMessages(working);
     const tip = withOutgoing[withOutgoing.length - 1];
     if (tip?.role === 'assistant') {
       const incomingCrewId = crew?.crewId;
@@ -754,17 +840,28 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
         || (incomingCrewId
           ? incomingCrewId === lastCrewId
           : !lastCrewId);
-      const shouldMerge = sameSpeaker && tip.streaming;
+      // Merge when still streaming OR when the tip already holds this reply
+      // (first finish set streaming:false; a second finalize / overlap must not append).
+      const shouldMerge = sameSpeaker && (
+        tip.streaming
+        || !tip.content?.trim()
+        || assistantTextsOverlap(tip.content, text)
+      );
       if (shouldMerge) {
         ctx.outgoingTurnRef.current = null;
+        const finalText = text || stripToolNoise(tip.content || '');
+        const synced = syncTextPartsWithCanonicalContent(
+          ((tip.parts && tip.parts.length > 0) ? tip.parts : msg.parts) as MessagePart[] | undefined,
+          finalText,
+        );
         const mergedParts = reconcileStreamingMessageParts(
-          (tip.parts && tip.parts.length > 0) ? tip.parts : msg.parts,
+          synced as PartEntry[],
           tip.toolCalls?.length ? tip.toolCalls : msg.toolCalls,
           msg.parts,
         );
         return updateLastMessage(withOutgoing, {
           id: msg.id || tip.id,
-          content: text || stripToolNoise(tip.content || ''),
+          content: finalText,
           parts: mergedParts,
           toolCalls: tip.toolCalls?.length ? tip.toolCalls : msg.toolCalls,
           streaming: false,
@@ -774,10 +871,29 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
     }
     if (msg.role === 'assistant' && (text || msg.parts?.length)) {
       ctx.outgoingTurnRef.current = null;
-      const msgId = msg.id || crypto.randomUUID();
-      if (withOutgoing.some((m) => m.id === msgId)) return withOutgoing;
-      const parts = msg.parts || [{ type: 'text' as const, id: crypto.randomUUID(), content: text }];
-      return [...withOutgoing, { id: msgId, role: 'assistant' as const, content: text, streaming: false, parts, ...(msg?.attachments ? { attachments: msg.attachments } : {}), ...(crew ? { crew } : {}) } as UIMessage];
+      const newId = msg.id || crypto.randomUUID();
+      if (withOutgoing.some((m) => m.id === newId)) return withOutgoing;
+      // Safety: never append a second bubble that duplicates the trailing assistant.
+      const trailing = withOutgoing[withOutgoing.length - 1];
+      if (trailing?.role === 'assistant' && assistantTextsOverlap(trailing.content, text)) {
+        const finalText = text || stripToolNoise(trailing.content || '');
+        const synced = syncTextPartsWithCanonicalContent(
+          ((trailing.parts && trailing.parts.length > 0) ? trailing.parts : msg.parts) as MessagePart[] | undefined,
+          finalText,
+        );
+        return updateLastMessage(withOutgoing, {
+          id: msg.id || trailing.id,
+          content: finalText,
+          parts: reconcileStreamingMessageParts(synced as PartEntry[], trailing.toolCalls ?? msg.toolCalls, msg.parts),
+          toolCalls: trailing.toolCalls?.length ? trailing.toolCalls : msg.toolCalls,
+          streaming: false,
+          ...(crew ? { crew } : {}),
+        });
+      }
+      const parts = (msg.parts?.length
+        ? syncTextPartsWithCanonicalContent(msg.parts as MessagePart[], text)
+        : [{ type: 'text' as const, id: crypto.randomUUID(), content: text }]) as PartEntry[];
+      return [...withOutgoing, { id: newId, role: 'assistant' as const, content: text, streaming: false, parts, ...(msg?.attachments ? { attachments: msg.attachments } : {}), ...(crew ? { crew } : {}) } as UIMessage];
     }
     return withOutgoing;
   });
@@ -809,6 +925,14 @@ const handlePermissionRequired = (ev: TelemetryEvent, ctx: EventHandlerContext):
     ctx.setTurnActivity(null);
     return prev;
   });
+};
+
+/** Clear the live modal when a permission decision is finalized (chip arrives via message_received). */
+const handlePermissionResolved = (ev: TelemetryEvent, ctx: EventHandlerContext): void => {
+  ctx.setPermissionPrompt(null);
+  ctx.setPendingPermissionCount((count) => Math.max(0, count - 1));
+  ctx.isPausedRef.current = false;
+  void ev;
 };
 
 /** Update the bypass permissions toggle state when the engine broadcasts a change. */
@@ -1322,6 +1446,7 @@ const telemetryDispatch: Record<string, (ev: TelemetryEvent, ctx: EventHandlerCo
 
   // Permission & mode
   permission_required: handlePermissionRequired,
+  permission_resolved: handlePermissionResolved,
   bypass_permissions_changed: handleBypassPermissionsChanged,
   crew_suggestion: handleCrewSuggestion,
   crew_suggestion_required: handleCrewSuggestion,
@@ -1402,9 +1527,14 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
   const lastActivityRef = useRef<number>(Date.now());
   const lastEventAtWrittenRef = useRef(0);
   const providerErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // SSE connection state ref — mirrors setConnState so the streaming timeout
+  // can check whether the connection is actually down (not just silent due to
+  // the window being hidden and rAF being throttled).
+  const connStateRef = useRef<ConnectionState>('closed');
   // RAF-batched tool event accumulator (prevents render storm on long-running tasks)
   const toolBatchRef = useRef<TelemetryEvent[]>([]);
   const toolFlushRef = useRef<number | null>(null);
+  const toolFlushIsTimeoutRef = useRef(false);
   const pendingUiSessionIdRef = useRef<string | null>(null);
   const lastViewSessionForPendingRef = useRef<string | null>(viewSessionKey);
   // ─── Prompt-pause queue: while a permission/questionnaire prompt is active, all
@@ -1418,8 +1548,10 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
     eventQueueRef.current = [];
     toolBatchRef.current = [];
     if (toolFlushRef.current != null) {
-      cancelAnimationFrame(toolFlushRef.current);
+      if (toolFlushIsTimeoutRef.current) clearTimeout(toolFlushRef.current);
+      else cancelAnimationFrame(toolFlushRef.current);
       toolFlushRef.current = null;
+      toolFlushIsTimeoutRef.current = false;
     }
     streamChunkPendingRef.current = null;
     if (streamChunkRAFRef.current != null) {
@@ -1462,16 +1594,25 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
     }
     const hasPlaceholder = next.some((m) => m.id === pending.placeholderId);
     const last = next[next.length - 1];
-    if (!hasPlaceholder && !(last?.role === 'assistant' && last.streaming)) {
-      next = [...next, {
-        id: pending.placeholderId,
-        role: 'assistant' as const,
-        content: '',
-        streaming: true,
-      }];
+    // Never spawn a second assistant bubble mid-turn. After the first finish the tip is
+    // streaming:false with a real message id — the old check treated that as "need a new
+    // placeholder" and duplicated the reply (clears only on hard refresh).
+    if (hasPlaceholder) return next;
+    if (last?.role === 'assistant' && (
+      last.streaming
+      || last.id === pending.placeholderId
+      || turnActiveRef.current
+    )) {
+      return next;
     }
+    next = [...next, {
+      id: pending.placeholderId,
+      role: 'assistant' as const,
+      content: '',
+      streaming: true,
+    }];
     return next;
-  }, [outgoingTurnRef]);
+  }, [outgoingTurnRef, turnActiveRef]);
 
   // Connect SSE for streaming events
   useEffect(() => {
@@ -1745,7 +1886,7 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
       tokenInputRef, tokenOutputRef, tokenReservedRef,
       isPausedRef, eventQueueRef,
       streamChunkRAFRef, streamChunkPendingRef, thinkingPendingRef, thinkingFlushRef,
-      providerErrorTimerRef, toolBatchRef, toolFlushRef, pendingUiSessionIdRef,
+      providerErrorTimerRef, toolBatchRef, toolFlushRef, toolFlushIsTimeoutRef, pendingUiSessionIdRef,
       setMessages, setStreaming, setTurnActivity, setCurrentStep, setTokenStreaming,
       setTokenUsed, setLoadingSteps, setWarnings, setStepCapPrompt, setPermissionPrompt,
       setPendingPermissionCount, setCrewWorkers, setCrewMissionActive,
@@ -1796,6 +1937,7 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
     disconnectRef.current = subscribeOptimizedTelemetry(
       handleEvent,
       (state) => {
+        connStateRef.current = state;
         setConnState(state);
         if (state === 'open') {
           setLastEventAt(Date.now());
@@ -1847,16 +1989,24 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
 
   // Streaming timeout — tracks activity via SSE events.
   // - All SSE events (tool, chunk, status) reset the activity timer.
-  // - After 2 minutes of inactivity, tries to recover the response from the API.
+  // - After 3 minutes of inactivity WITH a disconnected SSE connection, tries to
+  //   recover the response from the API. If the SSE connection is still open,
+  //   the agent is likely processing tools (which can take minutes) — don't
+  //   force-close the turn.
   // - Retries recovery every tick until streaming ends or a complete response is found.
-  // - Never force-closes streaming — the agent may be processing tools for minutes.
+  // - Never force-closes streaming on its own — only updates content from history
+  //   if a complete response is found that is longer than the local partial.
   useEffect(() => {
     if (!streaming) return;
     lastActivityRef.current = Date.now();
     const timer = setInterval(() => {
       const elapsed = Date.now() - lastActivityRef.current;
-      if (elapsed > 120000) {
-        // 2 min inactivity — SSE may be disconnected. Try to recover by fetching
+      // Only trigger recovery if BOTH (a) 3 min have passed AND (b) the SSE
+      // connection is not open. If the connection is open, events may simply be
+      // throttled (window hidden) — the RenderScheduler will flush them when
+      // the window regains focus or via setTimeout while hidden.
+      if (elapsed > 180000 && connStateRef.current !== 'open') {
+        // 3 min inactivity + SSE disconnected — try to recover by fetching
         // /api/chat/history. If the agent already produced a response, display it.
         // Keep retrying on every tick until streaming ends.
         fetch(`/api/chat/history`, { credentials: 'include' })
@@ -1914,6 +2064,41 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
       }).catch(() => {});
     }, 10000);
     return () => clearInterval(poll);
+  }, [streaming, endTurnUi]);
+
+  // Safety net: periodically check agent state to recover from stuck streaming states.
+  // If the last assistant message has streaming: true but no SSE events have arrived
+  // in 30s, fetch agent state and reconcile.
+  useEffect(() => {
+    const watchdog = setInterval(() => {
+      if (!streaming) return;
+      const lastActivity = lastActivityRef.current;
+      if (lastActivity && Date.now() - lastActivity > 30000) {
+        // No events for 30s while streaming — check if the agent is actually still processing
+        fetch('/api/agent/state', { credentials: 'include' })
+          .then(r => r.json())
+          .then(data => {
+            const viewSessionId = viewSessionIdRef.current;
+            if (!viewSessionId || data.session?.id !== viewSessionId) {
+              endTurnUi();
+              return;
+            }
+            if (!data.processing) {
+              // Agent is not processing but UI thinks it is — end the turn
+              setMessages(prev => {
+                const last = prev[prev.length - 1];
+                if (last?.role === 'assistant' && last.streaming) {
+                  return updateLastMessage(prev, { streaming: false });
+                }
+                return prev;
+              });
+              endTurnUi();
+            }
+          })
+          .catch(() => {});
+      }
+    }, 15000);
+    return () => clearInterval(watchdog);
   }, [streaming, endTurnUi]);
 
 }

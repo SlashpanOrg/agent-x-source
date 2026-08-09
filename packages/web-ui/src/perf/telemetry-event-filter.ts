@@ -57,6 +57,8 @@ const CHAT_HOT_EVENT_TYPES = new Set([
   'agent_spawned',
   'decision_made',
   'provider_error',
+  'permission_required',
+  'permission_resolved',
   'step_cap_reached',
   'task_aborted',
   'command_action',

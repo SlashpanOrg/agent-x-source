@@ -1,12 +1,18 @@
 import { syncAuthTokenFromSession } from '../api';
 import { collectClientSituation } from '../client-situation.js';
-import { XAI_BARGE_IN_MIC_LEVEL, XAI_BARGE_IN_TRIGGER_FRAMES, XAI_BARGE_IN_TRIGGER_LEVEL } from './constants.js';
+import {
+  XAI_BARGE_IN_MIC_LEVEL,
+  XAI_BARGE_IN_PLAYBACK_GRACE_MS,
+  XAI_BARGE_IN_TRIGGER_FRAMES,
+  XAI_BARGE_IN_TRIGGER_LEVEL,
+} from './constants.js';
 import { VOICE_SAMPLE_RATE, mergeInt16Chunks } from './pcm.js';
 import { StreamingPlayback } from './playback.js';
 import { VOICE_CAPTURE_PROCESSOR_NAME, VOICE_CAPTURE_PROCESSOR_URL } from './audioWorkletProcessor.js';
 import { isVoiceOutputUnlocked, markVoiceOutputUnlocked } from './support.js';
 
 export const VOICE_WS_PATH = '/ws/voice';
+export const VOICE_CONNECT_SUPERSEDED = 'Voice connect superseded';
 export { VOICE_SAMPLE_RATE };
 
 const VOICE_CONNECT_TIMEOUT_MS = 120_000;
@@ -37,6 +43,7 @@ export interface VoiceSessionClientEvents {
   onTranscriptPartial?: (text: string) => void;
   onTranscriptFinal?: (text: string, empty?: boolean, speakerName?: string | null) => void;
   onTranscriptPending?: () => void;
+  onWakeIdle?: (active: boolean, until: number) => void;
   onAgentText?: (text: string) => void;
   onError?: (message: string) => void;
   onWarning?: (message: string) => void;
@@ -74,6 +81,10 @@ export interface VoiceSessionClientOptions extends VoiceSessionClientEvents {
    *   Only meaningful for voice-only sessions.
    */
   conversationMode?: 'continue' | 'new';
+  /** When true, the server will require the wake phrase at the start of the first turn. */
+  wakeWord?: boolean;
+  /** Wake phrase for server-side transcript gating. */
+  wakePhrase?: string;
 }
 
 function wsUrl(authToken?: string | null): string {
@@ -90,6 +101,8 @@ export class VoiceSessionClient {
   private readonly chatSessionId?: string;
   private readonly voiceOnly: boolean;
   private readonly conversationMode: 'continue' | 'new';
+  private readonly wakeWord: boolean;
+  private readonly wakePhrase: string;
   private mediaStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
   private workletNode: AudioWorkletNode | null = null;
@@ -102,6 +115,10 @@ export class VoiceSessionClient {
   /** Duplex: true after `audio_end` until playback drains — signals server to resume mic. */
   private duplexAwaitingPlaybackEnd = false;
   private connectPromise: Promise<void> | null = null;
+  /** Reject fn for the in-flight connect — disconnect() rejects so callers don't await a dead handshake. */
+  private connectReject: ((err: Error) => void) | null = null;
+  /** Bumped on disconnect() so stale ws handlers ignore teardown after a superseding connect. */
+  private connectGeneration = 0;
   private listenStartedAt = 0;
   /** PTT: timestamp when the user released the button (for preSttMs timing). */
   private pttReleaseAt = 0;
@@ -112,6 +129,8 @@ export class VoiceSessionClient {
   private duplexBargeInTriggered = false;
   /** Duplex: consecutive mic frames above the barge-in trigger level. */
   private duplexSpeechFramesAboveTrigger = 0;
+  /** Timestamp when the assistant started speaking; used to ignore echo at the start. */
+  private playbackStartAt = 0;
 
   constructor(options: VoiceSessionClientOptions = {}) {
     this.events = options;
@@ -119,6 +138,8 @@ export class VoiceSessionClient {
     this.chatSessionId = options.chatSessionId;
     this.voiceOnly = Boolean(options.voiceOnly);
     this.conversationMode = options.conversationMode ?? 'continue';
+    this.wakeWord = Boolean(options.wakeWord);
+    this.wakePhrase = options.wakePhrase ?? '';
     this.playback.setOnIdle(() => {
       this.events.onPlaybackLevel?.(0);
       this.events.onPlaybackIdle?.();
@@ -165,6 +186,9 @@ export class VoiceSessionClient {
     if (state === 'speaking') {
       this.duplexBargeInTriggered = false;
       this.duplexSpeechFramesAboveTrigger = 0;
+      this.playbackStartAt = Date.now();
+    } else {
+      this.playbackStartAt = 0;
     }
     this.events.onStateChange?.(state);
   }
@@ -183,19 +207,33 @@ export class VoiceSessionClient {
 
     this.setState('connecting');
     const token = await syncAuthTokenFromSession();
+    const generation = this.connectGeneration;
     this.connectPromise = new Promise<void>((resolve, reject) => {
       let settled = false;
       const finish = (fn: () => void) => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timeoutId);
+        this.connectReject = null;
         fn();
+      };
+      const superseded = () => generation !== this.connectGeneration;
+
+      this.connectReject = (err: Error) => {
+        if (superseded()) return;
+        finish(() => {
+          this.setState('error');
+          this.events.onError?.(err.message);
+          this.connectPromise = null;
+          reject(err);
+        });
       };
 
       const ws = new WebSocket(wsUrl(token));
       ws.binaryType = 'arraybuffer';
 
       const fail = (message: string) => {
+        if (superseded()) return;
         finish(() => {
           this.setState('error');
           this.events.onError?.(message);
@@ -219,6 +257,8 @@ export class VoiceSessionClient {
             ...(this.voiceOnly ? { voiceOnly: true } : {}),
             ...(!this.voiceOnly && this.chatSessionId ? { chatSessionId: this.chatSessionId } : {}),
             ...(this.voiceOnly && this.conversationMode !== 'continue' ? { conversationMode: this.conversationMode } : {}),
+            ...(this.wakeWord ? { wakeWord: true } : {}),
+            ...(this.wakeWord && this.wakePhrase ? { wakePhrase: this.wakePhrase } : {}),
             clientSituation,
           }));
         });
@@ -263,9 +303,12 @@ export class VoiceSessionClient {
 
       ws.onclose = (event) => {
         if (!settled) {
+          if (superseded()) return;
           fail(event.code === 1006 || event.code === 1008 || event.code === 401
             ? 'Voice WebSocket connection failed — your session may have expired'
-            : `Voice connection closed (${event.code})`);
+            : event.code === 1005
+              ? 'Voice connection closed before the session was ready — try again'
+              : `Voice connection closed (${event.code})`);
           return;
         }
         this.ws = null;
@@ -314,19 +357,33 @@ export class VoiceSessionClient {
     }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     if (this.mode === 'duplex') {
+      // While the agent is thinking or running tools, do not uplink mic audio —
+      // cafe ambient noise was tripping server VAD and cancelling tool runs.
+      if (this.state === 'processing') return;
       // Duplex (both local stt_llm_tts and xAI): keep the mic open during agent
       // playback so client-side VAD can detect user barge-in. Drop soft frames
       // so speaker bleed and ambient noise don't trigger a false interrupt.
       if (this.state === 'speaking') {
+        // Ignore the mic for a short grace after the assistant begins speaking.
+        // This blocks the initial speaker echo / AEC settle that was causing xAI
+        // to barge-in and cut responses within the first few words.
+        if (Date.now() - this.playbackStartAt < XAI_BARGE_IN_PLAYBACK_GRACE_MS) {
+          return;
+        }
         let sum = 0;
         for (let i = 0; i < pcm.length; i += 1) sum += Math.abs(pcm[i]!);
         const level = Math.min(1, sum / Math.max(1, pcm.length) / 8000);
-        if (level >= XAI_BARGE_IN_TRIGGER_LEVEL) {
+        // Wake mode keeps the mic open continuously; require higher energy for longer
+        // before declaring a barge-in, so speaker echo and brief ambient sounds don’t
+        // cut off the assistant mid-sentence. Manual duplex keeps the fast defaults.
+        const bargeInTriggerLevel = this.wakeWord ? 0.28 : XAI_BARGE_IN_TRIGGER_LEVEL;
+        const bargeInTriggerFrames = this.wakeWord ? 16 : XAI_BARGE_IN_TRIGGER_FRAMES;
+        if (level >= bargeInTriggerLevel) {
           this.duplexSpeechFramesAboveTrigger += 1;
         } else {
           this.duplexSpeechFramesAboveTrigger = 0;
         }
-        if (!this.duplexBargeInTriggered && this.duplexSpeechFramesAboveTrigger >= XAI_BARGE_IN_TRIGGER_FRAMES) {
+        if (!this.duplexBargeInTriggered && this.duplexSpeechFramesAboveTrigger >= bargeInTriggerFrames) {
           this.duplexBargeInTriggered = true;
           this.interruptPlayback();
         }
@@ -382,6 +439,9 @@ export class VoiceSessionClient {
     source.connect(this.workletNode);
     this.workletNode.connect(this.audioContext.destination);
     this.micPrepared = true;
+    // Pre-warm the playback AudioContext so the first assistant chunk doesn't
+    // have to wait for a resume(); this removes the startup jitter on xAI voice.
+    await this.playback.ensureContext();
     if (this.state !== 'processing' && this.state !== 'speaking' && this.state !== 'connecting') {
       this.setState('ready');
     }
@@ -427,6 +487,9 @@ export class VoiceSessionClient {
     this.duplexActive = true;
     this.micPrepared = true;
     this.captureArmed = true;
+    // Pre-warm the playback AudioContext so the first xAI chunk starts cleanly
+    // without the browser's resume-and-play race that was causing startup jitter.
+    await this.playback.ensureContext();
     this.setState('listening');
   }
 
@@ -497,6 +560,15 @@ export class VoiceSessionClient {
   }
 
   disconnect(): void {
+    this.connectGeneration += 1;
+    if (this.connectReject) {
+      const reject = this.connectReject;
+      this.connectReject = null;
+      this.connectPromise = null;
+      reject(new Error(VOICE_CONNECT_SUPERSEDED));
+    } else {
+      this.connectPromise = null;
+    }
     this.stopPlayback();
     void this.playback.close();
     this.micPrepared = false;
@@ -507,7 +579,6 @@ export class VoiceSessionClient {
       this.ws.close();
     }
     this.ws = null;
-    this.connectPromise = null;
     this.setState('idle');
   }
 
@@ -629,7 +700,9 @@ export class VoiceSessionClient {
           // resumes the mic. Transitioning to 'listening' here would cause the
           // client to stream mic audio while TTS is still playing.
           if (this.mode === 'duplex') {
-            if (!this.playback.playing && !this.duplexAwaitingPlaybackEnd) {
+            if (this.playback.playing) {
+              this.duplexAwaitingPlaybackEnd = true;
+            } else if (!this.duplexAwaitingPlaybackEnd) {
               this.setState('listening');
             }
             // else: state transitions when onPlaybackIdle fires
@@ -722,6 +795,12 @@ export class VoiceSessionClient {
         this.events.onError?.(errMsg);
         break;
       }
+      case 'wake_idle':
+        this.events.onWakeIdle?.(
+          Boolean(msg.active),
+          Number(msg.until ?? 0),
+        );
+        break;
       default:
         break;
     }

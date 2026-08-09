@@ -2,7 +2,11 @@
 export const WAKE_WORD_FALLBACK = 'agent x';
 
 export function normalizeWakePhrase(raw: string): string {
-  return raw.trim().toLowerCase().replace(/\s+/g, ' ');
+  return raw
+    .replace(/[^\p{L}\p{N}\s]/gu, '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
 }
 
 /** Wake phrase follows the agent persona name (e.g. "JARVIS" → "jarvis"). */

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { connectionStatusRank } from './integration-ui';
+import { closeIntegrationOAuthWindow, openIntegrationOAuthUrl } from './oauth-window';
 import { isChannelCoveredMcpIntegration } from '@agentx/shared/browser';
 import { integrations, type ConnectIntegrationRequest, type IntegrationAnalytics, type IntegrationConnection, type IntegrationProvider } from '../../api';
 
@@ -40,10 +41,9 @@ export function useIntegrationsHub() {
     setAnalytics(stats?.analytics ?? null);
   }, []);
 
-  const refresh = useCallback(async (opts?: { silent?: boolean }) => {
+  const fetchHubData = useCallback(async (opts?: { silent?: boolean; skipMaintain?: boolean }) => {
     if (!opts?.silent) setLoading(true);
     try {
-      await integrations.maintain().catch(() => { /* best effort — stale status is still usable */ });
       const [catalog, list, stats] = await Promise.all([
         integrations.catalog(),
         integrations.connections(),
@@ -56,6 +56,16 @@ export function useIntegrationsHub() {
       if (!opts?.silent) setLoading(false);
     }
   }, [applyCatalog]);
+
+  const refresh = useCallback(async (opts?: { silent?: boolean; skipMaintain?: boolean }) => {
+    await fetchHubData(opts);
+    // Do not block the store UI on MCP health checks — a stuck remote server can hang maintain for minutes.
+    if (!opts?.silent && !opts?.skipMaintain) {
+      void integrations.maintain()
+        .catch(() => { /* stale status is still usable */ })
+        .then(() => fetchHubData({ silent: true, skipMaintain: true }));
+    }
+  }, [fetchHubData]);
 
   const handleSync = useCallback(async (connection: IntegrationConnection) => {
     setBusyId(connection.id);
@@ -156,6 +166,7 @@ export function useIntegrationsHub() {
     const onOAuthResult = (data: OAuthBroadcast) => {
       if (data?.type !== 'agentx-integration-oauth') return;
       if (data.success) {
+        closeIntegrationOAuthWindow();
         void handleAuthSuccess({
           connectionId: data.connectionId,
           providerId: data.providerId,
@@ -230,13 +241,8 @@ export function useIntegrationsHub() {
   const handleOAuthStart = async (remoteUrl?: string): Promise<{ state: string }> => {
     if (!connectingProvider) throw new Error('No provider selected');
     const { authUrl, state } = await integrations.startOAuth(connectingProvider.id, remoteUrl);
-    const desktop = typeof window !== 'undefined' ? window.agentx : undefined;
-    if (desktop?.openExternal) {
-      await desktop.openExternal(authUrl);
-    } else {
-      window.open(authUrl, '_blank');
-    }
-    setMessage('Complete sign-in in the browser — tools will sync automatically when done.');
+    await openIntegrationOAuthUrl(authUrl);
+    setMessage('Complete sign-in in the browser — return to Agent-X when done.');
     return { state };
   };
 

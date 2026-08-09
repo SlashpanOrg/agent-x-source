@@ -1,6 +1,6 @@
 import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
-import { join, dirname, basename } from 'node:path';
+import { join, dirname, basename, resolve, normalize } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { StoredAttachment, AttachmentPreview } from '@agentx/shared';
 import { getLogger } from '@agentx/shared';
@@ -25,7 +25,7 @@ const CODE_EXTENSIONS = new Set([
   '.conf', '.json', '.md', '.txt',
 ]);
 
-const MAX_SIZE_MB = 25;
+const MAX_SIZE_MB = 10 * 1024;
 const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
 
 interface AttachmentRegistry {
@@ -179,6 +179,39 @@ export class AttachmentService {
     return null;
   }
 
+  /**
+   * True when `targetPath` is the backing file (original or temp-stored) of an
+   * attachment the user explicitly attached to this session. Used to exempt
+   * read-only document/image tools from permission prompts — attaching a file
+   * is itself the user's authorization to read it, no separate prompt needed.
+   */
+  isSessionAttachmentPath(sessionId: string, targetPath: string): boolean {
+    if (!sessionId || !targetPath) return false;
+    const normalizedTarget = normalize(resolve(targetPath));
+    for (const a of Object.values(this.registry)) {
+      if (a.sessionId !== sessionId) continue;
+      if (a.originalPath && normalize(resolve(a.originalPath)) === normalizedTarget) return true;
+      if (normalize(resolve(this.baseDir, a.storagePath)) === normalizedTarget) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Returns ALL absolute file paths for attachments registered in this session.
+   * Includes both originalPath (in-place references) and internal storage paths.
+   * Used by ScopeGuard to authorize user-attached files for reading.
+   */
+  getSessionAttachmentPaths(sessionId: string): string[] {
+    if (!sessionId) return [];
+    const paths: string[] = [];
+    for (const a of Object.values(this.registry)) {
+      if (a.sessionId !== sessionId) continue;
+      if (a.originalPath) paths.push(a.originalPath);
+      paths.push(join(this.baseDir, a.storagePath));
+    }
+    return paths;
+  }
+
   /** Resolves the best available absolute path for reading. */
   async resolveAttachmentPath(id: string): Promise<string | null> {
     const a = this.registry[id];
@@ -302,6 +335,8 @@ export class AttachmentService {
     }
 
     // Last resort for PDFs: zero-dep stream extractor used by pdf_read.
+    // Only promote to 'text' when quality heuristics say the extract is usable —
+    // scanned/CID-mapped PDFs often yield long garbage that must NOT short-circuit OCR.
     if (
       preview.kind === 'error'
       && (a.mimeType === 'application/pdf' || /\.pdf$/i.test(a.filename))
@@ -309,8 +344,9 @@ export class AttachmentService {
       try {
         const buffer = await readFile(path);
         const { extractPdfTextFromBuffer } = await import('../tools/builtin/documents.js');
+        const { isUsableExtractedText } = await import('../documents/text-quality.js');
         const text = extractPdfTextFromBuffer(buffer);
-        if (text.trim()) {
+        if (text.trim().length >= 200 && isUsableExtractedText(text)) {
           preview = { kind: 'text', content: text };
         }
       } catch (e) {

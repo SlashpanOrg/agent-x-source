@@ -10,6 +10,7 @@ import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
 import { colors, alphaColor } from '../../theme';
 import { ActionPreviewCard } from '../integrations/ActionPreviewCard';
 import { ChatInputBar } from '../ChatInputBar';
+import { setComposerKeyboardState } from '../../voice/composer-keyboard-state';
 import { WebSearchGlobeToggle } from '../WebSearchGlobeToggle';
 import { CrewSuggestionToggle } from '../CrewSuggestionToggle';
 import { ChatToolbar } from './ChatToolbar';
@@ -28,6 +29,7 @@ import {
   useChatInputGateContext,
   useChatComposerContext,
   useChatBypassPermissionsContext,
+  useChatTurnModesContext,
   useChatSessionSettersContext,
   useChatInputHandlersContext,
 } from './ChatSessionProvider';
@@ -40,6 +42,7 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
   const { isCrewPrivateSession, crewPrivateHost } = useChatSessionPrivacyContext();
   const { crewList } = useChatCrewListContext();
   const { bypassPermissions } = useChatBypassPermissionsContext();
+  const { thinkingMode, setThinkingMode, outputMode, setOutputMode } = useChatTurnModesContext();
   const {
     currentModel, currentProvider, currentProviderId, providerList, modelList,
     loadingModels, providerSwitchPending, initiateProviderSwitch, confirmProviderSwitch, cancelProviderSwitch,
@@ -138,6 +141,10 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
   const handleRemoveAttachmentById = useCallback((id: string) => {
     handleRemoveAttachment(id);
   }, [handleRemoveAttachment]);
+
+  const handleComposerStateChange = useCallback((state: { focused: boolean; empty: boolean }) => {
+    setComposerKeyboardState(state);
+  }, []);
 
   // + / drag-drop attachments only — @ mentions stay as inline text chips.
   const chipAttachments = useMemo(
@@ -303,6 +310,7 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
           onAttachWorkspaceFolder={handleAttachWorkspaceFolder}
           onRemoveAttachmentById={handleRemoveAttachmentById}
           clearSignal={inputClearSignal}
+          onComposerStateChange={handleComposerStateChange}
         />
 
         <Box sx={{
@@ -365,6 +373,10 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
             currentProviderId={currentProviderId}
             setTokenTotal={setTokenTotal}
             setTokenReserved={(n: number) => { tokenReservedRef.current = n; setTokenReserved(n); }}
+            thinkingMode={thinkingMode}
+            setThinkingMode={setThinkingMode}
+            outputMode={outputMode}
+            setOutputMode={setOutputMode}
           />
         </Box>
       </Box>

@@ -415,6 +415,8 @@ export const chat = {
     clientSituation?: ClientSituation,
     crewSuggestionRequested?: boolean,
     todoDisposition?: 'continue' | 'skip' | 'defer',
+    thinkingMode?: 'light' | 'medium' | 'high',
+    outputMode?: 'brief' | 'moderate' | 'detailed',
   ) =>
     postChatAsync('/chat/message', {
       text,
@@ -430,6 +432,8 @@ export const chat = {
       clientSituation,
       crewSuggestionRequested,
       ...(todoDisposition ? { todoDisposition } : {}),
+      ...(thinkingMode ? { thinkingMode } : {}),
+      ...(outputMode ? { outputMode } : {}),
     }),
 
   getTurn: (turnId: string) => request<{ turnId: string; status: string; message?: ChatMessage; error?: string; partialContent?: string }>(`/chat/turn/${turnId}`),
@@ -531,10 +535,10 @@ export const chat = {
   queue: (text: string, attachments?: TurnAttachment[]) => request<{ ok: boolean; queueLength: number }>('/chat/queue', { method: 'POST', body: JSON.stringify({ text, attachments }) }),
   getQueue: () => request<{ queue: Array<{ text: string }>; length: number }>('/chat/queue'),
   clearQueue: () => request<{ ok: boolean }>('/chat/queue', { method: 'DELETE' }),
-  steer: (text: string, attachments?: TurnAttachment[]) =>
-    postChatAsync('/chat/steer', { text, attachments }),
-  stopAndSend: (text: string, attachments?: TurnAttachment[]) =>
-    postChatAsync('/chat/stop-and-send', { text, attachments }),
+  steer: (text: string, attachments?: TurnAttachment[], thinkingMode?: 'light' | 'medium' | 'high', outputMode?: 'brief' | 'moderate' | 'detailed') =>
+    postChatAsync('/chat/steer', { text, attachments, ...(thinkingMode ? { thinkingMode } : {}), ...(outputMode ? { outputMode } : {}) }),
+  stopAndSend: (text: string, attachments?: TurnAttachment[], thinkingMode?: 'light' | 'medium' | 'high', outputMode?: 'brief' | 'moderate' | 'detailed') =>
+    postChatAsync('/chat/stop-and-send', { text, attachments, ...(thinkingMode ? { thinkingMode } : {}), ...(outputMode ? { outputMode } : {}) }),
 };
 
 // ─── Attachments ───
@@ -625,10 +629,11 @@ export const sessions = {
   submitTurnFeedback: (id: string, body: { messageId: string; rating: 'positive' | 'negative' | 'skipped'; turnSummary?: string; metadata?: Record<string, unknown> }) =>
     request<{ ok: boolean; messageId: string; rating: string }>(`/sessions/${id}/feedback`, { method: 'POST', body: JSON.stringify(body) }),
   listTurnFeedback: (id: string) => request<{ feedback: Array<Record<string, unknown>> }>(`/sessions/${id}/feedback`),
-  getMessagesPage: (id: string, opts?: { limit?: number; before?: string }) => {
+  getMessagesPage: (id: string, opts?: { limit?: number; before?: string; includeSystem?: boolean }) => {
     const params = new URLSearchParams();
     if (opts?.limit != null) params.set('limit', String(opts.limit));
     if (opts?.before) params.set('before', opts.before);
+    if (opts?.includeSystem) params.set('includeSystem', 'true');
     const qs = params.toString();
     return request<{ messages: ChatMessage[]; total: number; hasMore: boolean }>(
       `/sessions/${id}/messages${qs ? `?${qs}` : ''}`,
@@ -714,6 +719,17 @@ export const sessionPermissions = {
     request<{ bypassPermissions: boolean; ok: boolean }>(`/sessions/${sessionId}/permissions/revoke`, { method: 'POST' }),
   setTool: (sessionId: string, toolName: string, decision: 'allow_always' | 'deny' | 'revoke') =>
     request<{ ok: boolean }>(`/sessions/${sessionId}/permissions/tool`, { method: 'POST', body: JSON.stringify({ toolName, decision }) }),
+};
+
+export interface SessionTurnModes {
+  thinkingMode: 'light' | 'medium' | 'high';
+  outputMode: 'brief' | 'moderate' | 'detailed';
+}
+
+export const sessionTurnModes = {
+  get: (sessionId: string) => request<SessionTurnModes>(`/sessions/${sessionId}/turn-modes`),
+  set: (sessionId: string, updates: Partial<SessionTurnModes>) =>
+    request<SessionTurnModes & { ok: boolean }>(`/sessions/${sessionId}/turn-modes`, { method: 'POST', body: JSON.stringify(updates) }),
 };
 
 export const settingsPermissions = {
@@ -2647,6 +2663,7 @@ export interface IntegrationProvider {
       clientIdEnv?: string;
       scopes?: string[];
       resource?: string;
+      redirectAllowlistRequired?: boolean;
     };
     packageSignIn?: {
       loginTool: string;
@@ -2780,7 +2797,7 @@ export const integrations = {
     }>(`/integrations/catalog`),
   connections: () => request<{ connections: IntegrationConnection[] }>('/integrations/connections'),
   analytics: () => request<{ analytics: IntegrationAnalytics }>('/integrations/analytics'),
-  maintain: () => request<{ ok: boolean }>('/integrations/maintain', { method: 'POST' }),
+  maintain: () => request<{ ok: boolean }>('/integrations/maintain', { method: 'POST' }, 45_000),
   settings: () => request<{ settings: IntegrationHubSettings }>('/integrations/settings'),
   updateSettings: (body: IntegrationHubSettings) =>
     request<{ settings: IntegrationHubSettings }>('/integrations/settings', { method: 'POST', body: JSON.stringify(body) }),

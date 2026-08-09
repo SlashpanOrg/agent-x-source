@@ -99,10 +99,12 @@ describe('catalog', () => {
   it('has a verified catalog of shipped providers', () => {
     const stats = getCatalogStats();
     expect(stats.active).toBeGreaterThanOrEqual(20);
-    expect(stats.candidate).toBe(0);
+    expect(stats.candidate).toBeGreaterThanOrEqual(0);
     const all = listCatalogProviders();
     expect(all.length).toBeGreaterThanOrEqual(20);
-    expect(all.every((p) => p.catalogStatus !== 'candidate')).toBe(true);
+    const zomato = all.find((p) => p.id === 'zomato');
+    expect(zomato?.catalogStatus).toBe('candidate');
+    expect(zomato?.auth.oauth?.redirectAllowlistRequired).toBe(true);
   });
 
   it('expands HOME in stdio args', () => {

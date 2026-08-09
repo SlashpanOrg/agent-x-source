@@ -11,20 +11,20 @@ import TextFieldsIcon from '@mui/icons-material/TextFields';
 import { colors, alphaColor } from '../theme';
 import { AttachmentModal } from './AttachmentModal';
 import { normalizeMessageForUi, orderPartsForChatRender } from '@agentx/shared/browser';
-import type { UIMessage, PartEntry } from './types';
-import { displayContent } from './utils';
+import type { UIMessage, PartEntry, ToolCall } from './types';
+import { displayContent, stripToolNoise, stripVoiceChannelBlock, extractVoiceChannelBlock } from './utils';
 import { CrewAwareMarkdown, getWebCrewColor, StreamingMarkdown } from './ChatMarkdown';
 import { collectWebSourceUrls } from './web-source-urls';
 import { ChildSessionInlineCard, type ChildSessionCardProps } from './ChildSessionInlineCard';
 import { ThoughtCollapse } from './ThoughtCollapse';
 import { QuestionnaireMessage } from '../components/questionnaire/QuestionnaireMessage';
+import { PermissionOutcomeChip } from '../components/chat/PermissionOutcomeChip';
 import { CrewRosterPickerMessage } from '../components/crew/CrewRosterPickerMessage';
 import type { CrewMatchCandidate } from '@agentx/shared/browser';
 import { TurnFeedbackBar } from './TurnFeedbackBar';
 import type { TurnFeedbackRating } from '@agentx/shared/browser';
 import { DeepSearchMessageBlock } from './DeepSearchMessageBlock';
 import { formatVoiceTimingMs } from '../voice/timing';
-import { extractVoiceChannelBlock, stripVoiceChannelBlock } from './utils';
 import { ChartBlock } from './ChartBlock';
 import { WorkflowEntryCard } from './WorkflowEntryCard';
 import { usePersonaName } from '../hooks/usePersonaName';
@@ -43,6 +43,13 @@ import { TodoChecklistCard } from '../components/chat/TodoChecklistCard';
 // chat path and the modal DOM is destroyed on close.
 const WorkflowModal = lazy(() => import('./WorkflowModal').then((m) => ({ default: m.WorkflowModal })));
 
+/** True when the tool result is empty or meaningless — these cards are hidden to reduce clutter. */
+function isEmptyToolResult(tool: ToolCall): boolean {
+  if (tool.status === 'running') return false; // always show running tools
+  const result = (tool.result ?? '').trim();
+  return !result || result === '(no output)' || result === '""' || result === '{}';
+}
+
 /**
  * Collapsed tools summary — shows a single line "N tools used" that expands
  * to reveal all completed tool calls. Uses the same visual theme as
@@ -50,11 +57,14 @@ const WorkflowModal = lazy(() => import('./WorkflowModal').then((m) => ({ defaul
  */
 function CollapsedToolsSummaryImpl({ tools }: { tools: InlineToolData[] }) {
   const [open, setOpen] = useState(false);
-  const errorCount = tools.filter((t) => t.status === 'error').length;
-  const label = `${tools.length} tool${tools.length === 1 ? '' : 's'} used${errorCount > 0 ? ` (${errorCount} error${errorCount === 1 ? '' : 's'})` : ''}`;
+  // Filter out tools with empty results — they add clutter without value.
+  const visibleTools = tools.filter((t) => t.status === 'running' || (t.result && t.result.trim() && t.result.trim() !== '(no output)'));
+  if (visibleTools.length === 0) return null;
+  const errorCount = visibleTools.filter((t) => t.status === 'error').length;
+  const label = `${visibleTools.length} tool${visibleTools.length === 1 ? '' : 's'} used${errorCount > 0 ? ` (${errorCount} error${errorCount === 1 ? '' : 's'})` : ''}`;
 
   return (
-    <Box sx={{ mb: 0.5 }}>
+    <Box sx={{ mb: 0.25 }}>
       <Box
         onClick={() => setOpen((v) => !v)}
         sx={{
@@ -63,27 +73,28 @@ function CollapsedToolsSummaryImpl({ tools }: { tools: InlineToolData[] }) {
           gap: 0.5,
           cursor: 'pointer',
           userSelect: 'none',
-          py: 0.15,
+          py: 0.1,
           '&:hover .tools-label': { color: colors.text.secondary },
         }}
       >
         <Typography
           className="tools-label"
           sx={{
-            fontSize: '0.68rem',
+            fontSize: '0.6rem',
             fontFamily: "'JetBrains Mono', monospace",
             color: colors.text.dim,
             letterSpacing: '0.02em',
             fontWeight: 400,
+            opacity: 0.8,
           }}
         >
           {label}
         </Typography>
         <Typography
           sx={{
-            fontSize: '0.62rem',
+            fontSize: '0.55rem',
             color: colors.text.dim,
-            opacity: 0.7,
+            opacity: 0.6,
             transform: open ? 'rotate(90deg)' : 'none',
             transition: 'transform 0.28s ease',
             lineHeight: 1,
@@ -93,8 +104,8 @@ function CollapsedToolsSummaryImpl({ tools }: { tools: InlineToolData[] }) {
         </Typography>
       </Box>
       <Collapse in={open} unmountOnExit>
-        <Box sx={{ mt: 0.5 }}>
-          {tools.map((tool) => (
+        <Box sx={{ mt: 0.25 }}>
+          {visibleTools.map((tool) => (
             <InlineToolCall key={tool.id} tool={tool} compactTop />
           ))}
         </Box>
@@ -241,6 +252,7 @@ function renderParts(
     if (p.type === 'chart') return !!p.chartJson;
     if (p.type === 'subagent') return !!p.agent;
     if (p.type === 'questionnaire') return !!p.questionnaire;
+    if (p.type === 'permission') return !!p.permission;
     if (p.type === 'crew_roster_picker') return !!p.crewRosterPicker;
     return false;
   });
@@ -263,7 +275,8 @@ function renderParts(
   // Collect tool parts for collapsed display. Tools are hidden from the inline
   // message flow and shown as a single collapsible "Tools" summary, similar to
   // the thinking collapse theme. Running tools are always visible.
-  const toolParts = ordered.filter((p) => p.type === 'tool' && p.tool);
+  // Hide tools with "(no output)" or empty results to reduce clutter.
+  const toolParts = ordered.filter((p) => p.type === 'tool' && p.tool && !isEmptyToolResult(p.tool));
   const runningTools = toolParts.filter((p) => p.tool!.status === 'running');
   // Show tools inline only when streaming and there are running tools; otherwise collapse all.
   const showToolsInline = streaming && runningTools.length > 0;
@@ -278,13 +291,13 @@ function renderParts(
         return (
           <ThoughtCollapse
             key={part.id}
-            text={part.content}
+            text={stripToolNoise(part.content, { trim: false })}
             live={streaming && isLastPart}
           />
         );
       case 'text':
         if (!part.content) return null;
-        const textContent = stripVoiceChannelBlock(part.content);
+        const textContent = stripVoiceChannelBlock(stripToolNoise(part.content, { trim: false }));
         if (!textContent) return null;
         return streaming
           ? (
@@ -324,6 +337,9 @@ function renderParts(
             }
           />
         );
+      case 'permission':
+        if (!part.permission) return null;
+        return <PermissionOutcomeChip key={part.id} record={part.permission} />;
       case 'crew_roster_picker':
         if (!part.crewRosterPicker) return null;
         return (
@@ -378,6 +394,8 @@ function renderParts(
         // Dedicated tool cards get their own rich UI — shown for both running
         // and done states. These are NOT collapsed into CollapsedToolsSummary.
         if (!part.tool) return null;
+        // Hide tools with empty/"(no output)" results to reduce clutter and improve performance.
+        if (isEmptyToolResult(part.tool)) return null;
         if (isFileEditTool(part.tool.name)) {
           return <FileEditCard key={part.id} tool={part.tool} defaultExpanded={defaultExpanded} />;
         }
@@ -418,22 +436,6 @@ function renderParts(
     const nodes: React.ReactNode[] = [];
     let doneToolBuffer: PartEntry[] = [];
 
-    // Pre-scan: find the id of the last dedicated tool card so only that one
-    // auto-expands. Older cards render collapsed; the user can expand manually.
-    // Running tools always expand regardless (they show live progress).
-    let lastDedicatedToolId: string | null = null;
-    for (let i = ordered.length - 1; i >= 0; i--) {
-      const p = ordered[i]!;
-      if (p.type !== 'tool' || !p.tool) continue;
-      if (isFileEditTool(p.tool.name) || isShellTool(p.tool.name)
-        || isCodeSearchTool(p.tool.name) || isWebSearchTool(p.tool.name)
-        || isGitTool(p.tool.name) || isFileReadTool(p.tool.name)
-        || isDirectoryListTool(p.tool.name)) {
-        lastDedicatedToolId = p.id;
-        break;
-      }
-    }
-
     const flushDoneTools = () => {
       if (doneToolBuffer.length === 0) return;
       const tools = doneToolBuffer.map((p) => p.tool!);
@@ -444,7 +446,7 @@ function renderParts(
     };
 
     for (const part of ordered) {
-      if (part.type === 'tool' && part.tool && part.tool.status !== 'running') {
+      if (part.type === 'tool' && part.tool && part.tool.status !== 'running' && !isEmptyToolResult(part.tool)) {
         // Dedicated tool cards get their own card — don't collapse them.
         if (part.tool && (
           isFileEditTool(part.tool.name)
@@ -456,9 +458,8 @@ function renderParts(
           || isDirectoryListTool(part.tool.name)
         )) {
           flushDoneTools();
-          // Only the latest dedicated tool card auto-expands.
-          const isLatest = part.id === lastDedicatedToolId;
-          const node = renderMainPart(part, isLatest);
+          // All tool cards start collapsed — user expands on click.
+          const node = renderMainPart(part, false);
           if (node) nodes.push(<React.Fragment key={part.id}>{node}</React.Fragment>);
           continue;
         }
@@ -672,7 +673,7 @@ function ChatMessageTurnComponent({ message, loadingSteps, onOpenChildSession, o
       {hasParts || cleanContent || hasQuestionnaire ? contentBlock : null}
       {/* Legacy fallback: thinking blob with no chronological thinking parts. */}
       {!hasParts && thinkingText ? (
-        <ThoughtCollapse text={thinkingText} live={!!message.streaming} />
+        <ThoughtCollapse text={stripToolNoise(thinkingText, { trim: false })} live={!!message.streaming} />
       ) : null}
 
       {orphanSubAgentCards.length > 0 && onOpenChildSession && (
@@ -830,7 +831,7 @@ function propsEqual(prev: { message: UIMessage; loadingSteps?: Array<{ id: strin
   if (pm.voiceTimings?.totalMs !== nm.voiceTimings?.totalMs) return false;
   const isRenderedPart = (p: NonNullable<UIMessage['parts']>[number]) =>
     p.type === 'text' || p.type === 'thinking' || p.type === 'chart' || p.type === 'questionnaire'
-    || p.type === 'crew_roster_picker' || p.type === 'subagent' || p.type === 'tool';
+    || p.type === 'crew_roster_picker' || p.type === 'subagent' || p.type === 'tool' || p.type === 'permission';
   const prevParts = (pm.parts ?? []).filter(isRenderedPart);
   const nextParts = (nm.parts ?? []).filter(isRenderedPart);
   if (pm.parts !== nm.parts) {
@@ -843,6 +844,7 @@ function propsEqual(prev: { message: UIMessage; loadingSteps?: Array<{ id: strin
       if (pp.type === 'thinking' && pp.content !== np.content) return false;
       if (pp.type === 'chart' && pp.chartJson !== np.chartJson) return false;
       if (pp.type === 'questionnaire' && pp.questionnaire?.status !== np.questionnaire?.status) return false;
+      if (pp.type === 'permission' && pp.permission?.decision !== np.permission?.decision) return false;
       if (pp.type === 'subagent' && (pp.agent?.status !== np.agent?.status || pp.agent?.result !== np.agent?.result)) return false;
       if (pp.type === 'tool' && (pp.tool?.status !== np.tool?.status || pp.tool?.result !== np.tool?.result)) return false;
       if (pp.type === 'crew_roster_picker') {

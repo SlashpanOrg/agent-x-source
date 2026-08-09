@@ -21,6 +21,7 @@ import {
   settingsStatusBadgeSx,
 } from '../../styles/settings-theme';
 import { SettingsCard } from './SettingsCard';
+import { ConfirmDeleteDialog } from '../ConfirmDeleteDialog';
 import { DownloadIndicator, type ActiveDownload } from '../DownloadIndicator';
 
 import { colors, alphaColor } from '../../theme';
@@ -100,6 +101,7 @@ export function LocalModelTab() {
   const [activeDownloads, setActiveDownloads] = useState<ActiveDownload[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [deletePendingId, setDeletePendingId] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localModelSupported, setLocalModelSupported] = useState(true);
@@ -395,7 +397,7 @@ export function LocalModelTab() {
                       ) : isInstalled ? (
                         <>
                           <Button variant="outlined" size="small" startIcon={<DeleteIcon />}
-                            onClick={() => handleDelete(model.id)} disabled={deleting === model.id}
+                            onClick={() => setDeletePendingId(model.id)} disabled={deleting === model.id}
                             sx={settingsBtnDangerSx}>
                             {deleting === model.id ? 'Purging…' : 'Purge'}
                           </Button>
@@ -428,6 +430,19 @@ export function LocalModelTab() {
           </Box>
         )}
       </SettingsCard>
+
+      <ConfirmDeleteDialog
+        open={Boolean(deletePendingId)}
+        busy={Boolean(deletePendingId && deleting === deletePendingId)}
+        title="DELETE LOCAL MODEL"
+        description="Permanently remove local model"
+        itemName={catalog?.catalog.find((m) => m.id === deletePendingId)?.displayName ?? deletePendingId ?? 'this model'}
+        onClose={() => setDeletePendingId(null)}
+        onConfirm={() => {
+          if (!deletePendingId) return;
+          void handleDelete(deletePendingId).finally(() => setDeletePendingId(null));
+        }}
+      />
     </Box>
   );
 }

@@ -30,6 +30,8 @@ export class XaiRealtimeEngine implements VoiceEngine {
       config,
       voiceConfig,
       apiKey,
+      wakeWord: options.wakeWord,
+      wakePhrase: options.wakePhrase,
     });
     await session.start();
     return session;

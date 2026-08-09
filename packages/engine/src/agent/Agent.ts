@@ -14,10 +14,14 @@ import type {
   QuestionnaireRecord,
   ClientSituation,
   StorageAdapter,
+  ThinkingMode,
+  OutputMode,
 } from '@agentx/shared';
-import { FailoverReason, generateMessageId, getLogger, type ChannelKind, getConfigDir, formatClientSituationBlock, isMessagingChannel, formatQuestionnaireForMessagingChannel, shouldUseQuestionnaireClarification, type PermissionHandlerResult, parseChannelBindingFromSessionId, allowsCrewInvolvement, crewParticipationMode, deniesAutonomousCrewTools } from '@agentx/shared';
+import { FailoverReason, generateMessageId, getLogger, type ChannelKind, getConfigDir, formatClientSituationBlock, isMessagingChannel, formatQuestionnaireForMessagingChannel, shouldUseQuestionnaireClarification, type PermissionHandlerResult, type PermissionOutcomeRecord, parseChannelBindingFromSessionId, allowsCrewInvolvement, crewParticipationMode, deniesAutonomousCrewTools, THINKING_MODE_TOOL_BUDGET, THINKING_MODE_REASONING_EFFORT, THINKING_MODE_SKIP_RETRIEVAL, THINKING_MODE_SKIP_REFORMULATE, THINKING_MODE_SKIP_EXTRACT_MEMORIES, THINKING_MODE_ALLOW_DEEP_SEARCH, DEFAULT_THINKING_MODE, DEFAULT_OUTPUT_MODE, isValidThinkingMode, isValidOutputMode } from '@agentx/shared';
+import { summarizeToolAction, type PermissionOutcomeEmit } from '../services/tool/ToolPermissionService.js';
 import { Scope } from '../concurrency/Scope.js';
 import { getAttachmentService } from '../attachments/index.js';
+import { materializeAttachment, cleanupDocumentTemps } from '../documents/DocumentPipeline.js';
 import { join, resolve, normalize } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 
@@ -202,6 +206,7 @@ import {
 } from './agent-model.js';
 import {
   extractMemories as extractMemoriesHelper,
+  persistSessionToolFindings as persistSessionToolFindingsHelper,
   reformulateQuery as reformulateQueryHelper,
   buildMemoryContext as buildMemoryContextHelper,
   type MemoryExtractionContext,
@@ -252,6 +257,20 @@ export interface AgentOptions {
   >;
   /** Skip the empty-response self-healing retry for benchmark/headless callers. */
   skipEmptyResponseRetry?: boolean;
+  /** Thinking mode for this turn — controls tool budget, reasoning depth, retrieval. */
+  thinkingMode?: import('@agentx/shared').ThinkingMode;
+  /** Output mode for this turn — controls response verbosity and format. */
+  outputMode?: import('@agentx/shared').OutputMode;
+}
+
+/** Parse Yes/No from clarify-first questionnaire answers (`Shall I …?: Yes`). */
+function isAffirmativeConsentAnswer(answer: string): boolean {
+  const raw = (answer ?? '').trim();
+  if (!raw || raw === '(skipped)') return false;
+  const afterColon = raw.includes(':') ? raw.slice(raw.lastIndexOf(':') + 1).trim() : raw;
+  const v = afterColon.toLowerCase();
+  if (/^(no|nope|nah|cancel|deny|decline)\b/.test(v)) return false;
+  return /^(yes|yeah|yep|y|sure|ok|okay|go ahead|proceed|do it|allow|approve)\b/.test(v);
 }
 
 export class Agent {
@@ -298,6 +317,7 @@ export class Agent {
   }
   private userChatMemoryIngester: UserChatMemoryIngester | null = null;
   private chatTurnMemoryIngester: ChatTurnMemoryIngester | null = null;
+  private sessionFindingsIngester: import('../neural/SessionFindingsIngester.js').SessionFindingsIngester | null = null;
   private errorShield: ErrorShield;
   private toolExecutor?: EnhancedToolExecutor;
   private toolRegistry?: ToolRegistry;
@@ -335,6 +355,8 @@ export class Agent {
   private currentCategory: CategoryResult | null = null;
   private currentUserMessage = '';
   private currentSpeaker: VoiceSessionSpeaker | null = null;
+  private currentThinkingMode: ThinkingMode = 'medium';
+  private currentOutputMode: OutputMode = 'moderate';
 
   private logTurnOutcome(startTime: number, success: boolean, _userMessage: string): void {
     const taskState = this.taskStateManager.getCurrent();
@@ -391,7 +413,19 @@ export class Agent {
     // stepCap is a safety net against infinite loops, not a task limiter.
     // 40 steps is enough for complex multi-tool tasks (search → read → write → verify)
     // while preventing the 52-96 iteration search loops seen in failing sessions.
-    const stepCap = 40;
+    // ─── Turn mode: thinking mode enforces a tool call budget ───
+    // light = 3 tool calls, medium = ~50% of available tools, high = unlimited (40 safety net).
+    const modeToolBudget = THINKING_MODE_TOOL_BUDGET[this.currentThinkingMode];
+    let stepCap: number;
+    if (modeToolBudget === -1) {
+      // 50% of available tools (computed at runtime, minimum 5)
+      const toolCount = this.toolExecutor?.getRegistry()?.list().length ?? 20;
+      stepCap = Math.max(5, Math.floor(toolCount / 2));
+    } else if (modeToolBudget > 0) {
+      stepCap = modeToolBudget;
+    } else {
+      stepCap = 40; // unlimited safety net
+    }
 
     // If the user explicitly asks to open/browse a URL in a browser, force the
     // model to call a tool (browser_open/web_browse) instead of replying with
@@ -527,6 +561,16 @@ export class Agent {
     this.emit({ type: 'bypass_permissions_changed', enabled, sessionId: this.sessionId });
   }
 
+  /** Update the thinking mode for subsequent turns (and current turn if in progress). */
+  setCurrentThinkingMode(mode: ThinkingMode): void {
+    this.currentThinkingMode = mode;
+  }
+
+  /** Update the output mode for subsequent turns (and current turn if in progress). */
+  setCurrentOutputMode(mode: OutputMode): void {
+    this.currentOutputMode = mode;
+  }
+
   toggleBypassPermissions(): boolean {
     const enabled = !this.bypassPermissions;
     this.setBypassPermissions(enabled);
@@ -550,6 +594,7 @@ export class Agent {
     if (!this._inputNormalizer) {
       this._inputNormalizer = new InputNormalizer();
       this._inputNormalizer.setWorkspaceRoot(this.scopePath);
+      this._inputNormalizer.setSessionId(this.sessionId);
     }
     return this._inputNormalizer;
   }
@@ -692,6 +737,8 @@ export class Agent {
       options: this.options,
       sessionPermissionStore: this.sessionPermissionStore,
       getPersistStore: () => this.getPersistStore(),
+      thinkingMode: this.currentThinkingMode,
+      outputMode: this.currentOutputMode,
     };
   }
 
@@ -1443,6 +1490,9 @@ export class Agent {
         usesCompactContext: () => this.usesCompactContext(),
         setMemoryContextNodeIds: (ids) => { this._memoryContextNodeIds = ids; },
         speakerId: this.currentSpeaker?.id,
+        // Skip retrieval for voice merges/continuations — the prior turn already loaded context.
+        // Also skip when thinking mode is 'light' — no RAG retrieval for quick turns.
+        skipRetrieval: !!this.pendingVoiceMerge || THINKING_MODE_SKIP_RETRIEVAL[this.currentThinkingMode],
       } as MemoryContextContext,
     );
   }
@@ -1454,6 +1504,8 @@ export class Agent {
    * Falls back to the raw message if reformulation fails.
    */
   private async reformulateQuery(rawQuery: string): Promise<string> {
+    // Skip reformulation in light thinking mode — saves a model call for quick turns.
+    if (THINKING_MODE_SKIP_REFORMULATE[this.currentThinkingMode]) return rawQuery;
     return reformulateQueryHelper(
       {
         usesCompactContext: () => this.usesCompactContext(),
@@ -1506,6 +1558,7 @@ export class Agent {
     this.scopePath = normalize(resolve(path));
     this.toolExecutor?.setScopePath(this.scopePath);
     this._inputNormalizer?.setWorkspaceRoot(this.scopePath);
+    this._inputNormalizer?.setSessionId(this.sessionId);
   }
 
   /**
@@ -1833,7 +1886,7 @@ export class Agent {
     return r;
   }
 
-  async sendMessage(content: string, options?: { instruction?: string; userId?: string; channelId?: string; sourceChannel?: string; sourceMessageId?: string; retry?: boolean; delegateCrewIds?: string[]; crewSuggestionResolved?: boolean; crewIntakeFromPicker?: boolean; primaryCrewId?: string; forceWebSearch?: boolean; voiceTurn?: boolean; userMessagePersisted?: boolean; voiceContinuation?: boolean; voiceMergeIntoMessage?: { messageId: string; prefixContent: string }; resumeCrewIntake?: { originalUserText: string; intakeAnswer: string; delegateCrewIds: string[]; primaryCrewId?: string }; clientSituation?: ClientSituation | null; attachments?: import('@agentx/shared').TurnAttachment[]; /** How to treat leftover incomplete TASKS at turn start. */ todoDisposition?: 'continue' | 'skip' | 'defer'; speaker?: VoiceSessionSpeaker | null }): Promise<Message> {
+  async sendMessage(content: string, options?: { instruction?: string; userId?: string; channelId?: string; sourceChannel?: string; sourceMessageId?: string; retry?: boolean; delegateCrewIds?: string[]; crewSuggestionResolved?: boolean; crewIntakeFromPicker?: boolean; primaryCrewId?: string; forceWebSearch?: boolean; voiceTurn?: boolean; userMessagePersisted?: boolean; voiceContinuation?: boolean; voiceMergeIntoMessage?: { messageId: string; prefixContent: string }; resumeCrewIntake?: { originalUserText: string; intakeAnswer: string; delegateCrewIds: string[]; primaryCrewId?: string }; clientSituation?: ClientSituation | null; attachments?: import('@agentx/shared').TurnAttachment[]; /** How to treat leftover incomplete TASKS at turn start. */ todoDisposition?: 'continue' | 'skip' | 'defer'; speaker?: VoiceSessionSpeaker | null; /** Thinking mode — controls tool budget, reasoning depth, retrieval. */ thinkingMode?: ThinkingMode; /** Output mode — controls response verbosity and format. */ outputMode?: OutputMode }): Promise<Message> {
     const startTime = Date.now();
     const turnId = `turn-${startTime}`;
     this.currentTurnId = turnId;
@@ -1940,6 +1993,23 @@ export class Agent {
 
     // Leftover TASKS from a prior turn — honor the user's pre-send disposition.
     this.todoDispositionThisTurn = options?.todoDisposition ?? null;
+
+    // ─── Turn modes: thinking effort + output verbosity ───
+    // If the caller explicitly provides a mode, use it. Otherwise preserve the
+    // currently-set mode (set via setCurrentThinkingMode/setCurrentOutputMode or
+    // a prior sendMessage call). This prevents steer/stop-and-send/voice/automation
+    // paths from silently resetting to defaults.
+    if (isValidThinkingMode(options?.thinkingMode)) {
+      this.currentThinkingMode = options!.thinkingMode!;
+    } else if (!this.currentThinkingMode) {
+      this.currentThinkingMode = DEFAULT_THINKING_MODE;
+    }
+    if (isValidOutputMode(options?.outputMode)) {
+      this.currentOutputMode = options!.outputMode!;
+    } else if (!this.currentOutputMode) {
+      this.currentOutputMode = DEFAULT_OUTPUT_MODE;
+    }
+    getLogger().info('AGENT', `Turn modes: thinking=${this.currentThinkingMode}, output=${this.currentOutputMode}`);
     if (this.todoDispositionThisTurn === 'skip') {
       this.todoManager.clear();
     } else if (this.todoDispositionThisTurn === 'defer' && this.todoManager.hasIncomplete()) {
@@ -2147,6 +2217,43 @@ export class Agent {
     // Reset turn-level permission auto-approve from any prior batch approval
     this.turnApprovedAll = false;
     this.toolExecutor?.getPermissionManager().revokeOneTimePermissions();
+    // Clear per-turn inline tool consent (bypass-mode enforcement).
+    this.toolExecutor?.clearToolConsent();
+
+    // ─── Bypass-mode consent detection ───
+    // When bypass is OFF and the user sends a short affirmative ("yes", "go ahead",
+    // "proceed", "do it", "sure", "ok"), check if the last assistant message asked
+    // for permission. If so, grant consent for the tools mentioned so the agent can
+    // proceed without triggering a permission modal.
+    if (!this.bypassPermissions && this.toolExecutor) {
+      const affirmativePattern = /^(yes|yeah|yep|sure|ok|okay|go ahead|proceed|do it|go for it|please do|that's fine|looks good|approve|approved|confirm|confirmed)\b[!.?]*\s*$/i;
+      if (affirmativePattern.test(cleanContent.trim())) {
+        const lastAssistant = [...this.messages].reverse().find((m) => m.role === 'assistant' && typeof m.content === 'string');
+        if (lastAssistant && typeof lastAssistant.content === 'string') {
+          // Check if the assistant asked for permission (mentions a tool or asks "should I")
+          const askedForPermission = /should i (go ahead|proceed|use|run|call|create|write|execute)|may i (proceed|use|run|call|create|write)|can i (proceed|use|run|call|create|write|go ahead)|want me to (proceed|use|run|call|create|write|go ahead)|i need to (use|run|call|create|write|execute|proceed)/i.test(lastAssistant.content);
+          if (askedForPermission) {
+            // Grant consent for all registered tools that were mentioned in the assistant message.
+            // This is intentionally broad — the user said "yes" to the agent's request.
+            const registry = this.toolExecutor.getRegistry();
+            for (const tool of registry.list()) {
+              const toolName = tool.id ?? tool.name ?? '';
+              if (toolName && lastAssistant.content.toLowerCase().includes(toolName.toLowerCase())) {
+                this.toolExecutor.grantToolConsent(toolName);
+              }
+            }
+            // Also grant consent for the most commonly permission-gated tools if the
+            // assistant asked generically (e.g. "Should I go ahead?").
+            const commonGatedTools = ['file_write', 'file_edit', 'shell_exec', 'web_fetch', 'web_scrape'];
+            for (const t of commonGatedTools) {
+              if (lastAssistant.content.toLowerCase().includes(t.replace(/_/g, ' ')) || lastAssistant.content.toLowerCase().includes(t)) {
+                this.toolExecutor.grantToolConsent(t);
+              }
+            }
+          }
+        }
+      }
+    }
 
     const isCrewPrivate = this.options.promptProfile === 'crew_private';
 
@@ -2528,6 +2635,7 @@ export class Agent {
 
       // Extract and persist memories (non-blocking)
       this.extractMemories(content, assistantMessage.content);
+      this.persistSessionToolFindings(content);
 
       // Auto-generate skill if task was novel
       if (this.skillGenerator?.shouldGenerateSkill(content, this.toolCallLogForReflection)) {
@@ -2753,6 +2861,11 @@ export class Agent {
       }
     }
 
+    // ─── Turn mode: remove deep_web_search when not allowed by thinking mode ───
+    if (!THINKING_MODE_ALLOW_DEEP_SEARCH[this.currentThinkingMode]) {
+      delete tools['deep_web_search'];
+    }
+
     if (integrationHint !== undefined || integrationAccessPolicy !== undefined) {
       const reconciled = reconcileIntegrationHintWithActiveTools(
         integrationHint,
@@ -2780,6 +2893,7 @@ export class Agent {
     });
     const budget = await this.ensureOutputBudget(aiMessages, tools, rebuildAiMessages);
     aiMessages = budget.messages;
+    // ─── Turn mode: output length is prompt-guided; do not cap maxOutputTokens per mode ───
     const turnMaxOutputTokens = budget.maxOutputTokens;
 
     const streamHandler = createAiSdkStreamHandler(
@@ -2805,8 +2919,12 @@ export class Agent {
       this.turnState.setStage('thinking');
       this.emit({ type: 'loading_start', stage: 'thinking' });
 
+      // ─── Turn mode: override reasoning effort from thinking mode ───
+      const modeReasoningEffort = THINKING_MODE_REASONING_EFFORT[this.currentThinkingMode];
+      const effectiveReasoningEffort = modeReasoningEffort ?? this.config.provider.activeReasoningEffort;
+
       // Log tool setup for debugging
-      getLogger().info('AGENT', `Starting streamText with ${toolCount} tools, model: ${this.config.provider.activeModel}, maxOutputTokens: ${turnMaxOutputTokens}`);
+      getLogger().info('AGENT', `Starting streamText with ${toolCount} tools, provider: ${this.config.provider.activeProvider}, model: ${this.config.provider.activeModel}, reasoningEffort: ${effectiveReasoningEffort ?? '(default)'} (mode: ${this.currentThinkingMode}), maxOutputTokens: ${turnMaxOutputTokens}`);
 
       let stepCapContinuations = 0;
       const stepBudget = this.completionStepBudget();
@@ -2814,7 +2932,7 @@ export class Agent {
       const googleProviderOptions = this.config.provider.activeProvider === 'google'
         ? buildGoogleAiSdkProviderOptions(
           this.config.provider.activeModel,
-          this.config.provider.activeReasoningEffort,
+          effectiveReasoningEffort,
         )
         : undefined;
       const sdkMessages = await this.buildSdkMessages(aiMessages);
@@ -2876,7 +2994,7 @@ export class Agent {
           const searchCalls = this.toolCallLogForReflection.filter(
             t => t.name === 'web_search' || t.name === 'deep_web_search'
           ).length;
-          if (searchCalls >= 8 && stepNumber > 0) {
+          if (searchCalls >= 4 && stepNumber > 0) {
             getLogger().warn('AGENT', `Search loop detected (${searchCalls} searches at step ${stepNumber}) — forcing result production`);
             extras.push({
               role: 'user',
@@ -2945,16 +3063,16 @@ export class Agent {
       } catch (err) {
         streamError = err instanceof Error ? err : new Error(String(err));
         getLogger().warn('AGENT', `streamText failed: ${streamError.message}`);
-        // Surface stream errors (including rate limits) so callers can detect them
+        // Surface stream errors (including rate limits and transient server errors) so callers can detect them
         const errStr = streamError.message || '';
-        const isRateLimit = /429|rate.?limit|too many requests|quota|overloaded/i.test(errStr);
+        const isTransient = /429|rate.?limit|too many requests|quota|overloaded|503|queue is full|service unavailable|bad gateway|502|500|internal server error|timeout|timed out|econnreset|enetunreach|fetch failed/i.test(errStr);
         this.emit({
           type: 'provider_error',
           provider: this.config.provider.activeProvider,
           model: this.config.provider.activeModel,
           message: streamError.message,
-          recoverable: isRateLimit,
-          actions: isRateLimit ? [{ type: 'retry', label: 'Retry' }] : undefined,
+          recoverable: isTransient,
+          actions: isTransient ? [{ type: 'retry', label: 'Retry' }] : undefined,
         });
         if (streamError.name === 'AbortError') {
           throw streamError;
@@ -2964,7 +3082,7 @@ export class Agent {
       // Fallback: if stream ended without finish event, emit one now to ensure message is recorded
       if (!finishEmitted) {
         const state = streamHandler.getState();
-        if (state.accumulatedContent || state.toolCallCount > 0) {
+        if (state.accumulatedContent || state.toolCallCount > 0 || (state.accumulatedReasoning || '').trim()) {
           // Do not await result.usage when the watchdog already gave up on the stream;
           // the usage promise can stay pending forever and deadlock sendMessage.
           streamHandler.handleEvent({ type: 'finish', usage: stalled ? undefined : await result.usage });
@@ -2991,26 +3109,37 @@ export class Agent {
       // Generic self-healing: if response is essentially empty (whitespace or <3 chars),
       // or the tool loop crashed (e.g. malformed tool-call arguments), retry once.
       // When tools already ran, retry WITHOUT tools to force a plain-text summary.
+      // Reasoning-only models (answer only in thinking) also force a text-only rewrite.
       // Benchmark callers can opt out to fail fast instead of retrying a stalled provider.
+      const priorReasoning = (streamHandler.getState().accumulatedReasoning || '').trim();
+      const reasoningOnlyEmpty = content.length < 3 && priorReasoning.length >= 40;
       if (!this.options.skipEmptyResponseRetry && (content.length < 3 || streamError)) {
         const toolSummary = this.toolCallLogForReflection
           .map(t => `- ${t.name}: ${t.success ? 'OK' : 'FAILED'} — ${t.output.slice(0, 300)}`)
           .join('\n');
         const worked = toolExecs > 0;
-        const textOnlyRetry = worked || !!streamError;
+        const textOnlyRetry = worked || !!streamError || reasoningOnlyEmpty;
         getLogger().warn(
           'AGENT',
-          `Response too short (${content.length} chars, ${toolExecs} tools${streamError ? ', stream error' : ''}) — retrying${textOnlyRetry ? ' text-only' : ' with tools'}`,
+          `Response too short (${content.length} chars, ${toolExecs} tools, reasoning=${priorReasoning.length}${streamError ? ', stream error' : ''}${reasoningOnlyEmpty ? ', reasoning-only' : ''}) — retrying${textOnlyRetry ? ' text-only' : ' with tools'}`,
         );
         try {
+          const reasoningHint = reasoningOnlyEmpty
+            ? `\n\nYour prior reasoning (rewrite as the user-visible reply — do not leave the answer only in thinking):\n${priorReasoning.slice(0, 8000)}`
+            : '';
           const retryMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
             ...aiMessages,
             ...(worked ? [{ role: 'assistant' as const, content: text || '(executed tools)' }] : []),
+            ...(reasoningOnlyEmpty && !worked
+              ? [{ role: 'assistant' as const, content: '(reasoning produced; no user-visible text)' }]
+              : []),
             {
               role: 'user' as const,
               content: worked || streamError
                 ? `[SYSTEM] You just ran these tools:\n${toolSummary || '(see prior tool activity)'}\n\nNow respond to the user based on these results. Do not call more tools. Be thorough and actionable.`
-                : `[SYSTEM] The user said: "${aiMessages[aiMessages.length - 1]?.content?.slice(0, 500)}"\n\nUse the appropriate tools to answer. Prefer connected MCP integration tools when the request targets an external service — do not scan the local filesystem as a substitute. Do not return empty.`,
+                : reasoningOnlyEmpty
+                  ? `[SYSTEM] You produced detailed reasoning but ZERO user-visible assistant text. The user cannot see thinking/reasoning. Write the complete answer now as normal markdown message text. Do not call tools. Do not put the answer only in thinking.${reasoningHint}`
+                  : `[SYSTEM] The user said: "${aiMessages[aiMessages.length - 1]?.content?.slice(0, 500)}"\n\nUse the appropriate tools to answer. Prefer connected MCP integration tools when the request targets an external service — do not scan the local filesystem as a substitute. Do not return empty.`,
             },
           ];
           const retryText = await withSpan('llm.retry', 'llm', async (span) => {
@@ -3059,6 +3188,16 @@ export class Agent {
         }
       }
 
+      // Last resort: model answered only in reasoning — surface that as the reply
+      // rather than the generic apology (UI already showed the Thought panel).
+      if (content.length < 3) {
+        const reasoningFallback = (streamHandler.getState().accumulatedReasoning || '').trim();
+        if (reasoningFallback.length >= 40) {
+          getLogger().warn('AGENT', `Promoting ${reasoningFallback.length} chars of reasoning to user-visible reply`);
+          content = reasoningFallback;
+        }
+      }
+
       // ─── Transition-phrase continuation ───
       // If the model stopped with text that promises a question/choice but never
       // actually called ask_clarification, force a continuation so the model
@@ -3069,16 +3208,24 @@ export class Agent {
           'before i', 'so i can build', 'so i can prepare', 'so i can create',
           'let me know', 'which would you prefer', 'would you prefer',
           'i\'ll ask', 'i will ask', 'need to know', 'a few questions',
+          'question 1 of', 'question 2 of', 'question 3 of', 'question 4 of',
+          'please choose', 'pick one', 'select one', 'reply with',
         ];
         const lowerContent = content.toLowerCase();
         const hasTransition = transitionPhrases.some(p => lowerContent.includes(p));
+        // Free-text choice dumps: "Question N of M" / bullet Yes-No / A) B) lists without ask_clarification
+        const hasTextChoiceDump = (
+          /question\s+\d+\s+of\s+\d+/i.test(content)
+          || (/\b(yes|no)\b/i.test(content) && /^\s*[-*•]\s+/m.test(content) && /\?/.test(content))
+          || (/^\s*([A-D][).]|[-*•])\s+\S+/m.test(content) && /\b(which|choose|prefer|option|select)\b/i.test(content))
+        );
         const calledClarify = this.toolCallLogForReflection.some(t => t.name === 'ask_clarification');
         const calledAnyTool = this.toolCallLogForReflection.length > 0;
 
-        if (hasTransition && !calledClarify && !this.options.skipEmptyResponseRetry) {
+        if ((hasTransition || hasTextChoiceDump) && !calledClarify && !this.options.skipEmptyResponseRetry) {
           getLogger().warn(
             'AGENT',
-            `Transition-phrase detected (${content.length} chars, ${toolExecs} tools, no ask_clarification) — forcing continuation to call ask_clarification`,
+            `Choice-without-questionnaire detected (${content.length} chars, ${toolExecs} tools, no ask_clarification) — forcing continuation to call ask_clarification`,
           );
           try {
             const contMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
@@ -3086,7 +3233,7 @@ export class Agent {
               { role: 'assistant', content: content || '(prior work)' },
               {
                 role: 'user',
-                content: `[SYSTEM] You just said you would ask the user a question or present choices, but you did NOT call the ask_clarification tool. You MUST call ask_clarification NOW with a single_choice or multi_choice question. Do not output any text — just call the tool. The user is waiting for your structured questionnaire.`,
+                content: `[SYSTEM] You presented a choice question as plain text (or said you would ask), but you did NOT call ask_clarification. You MUST call ask_clarification NOW with a single_choice or multi_choice question (one question only). Do not output any assistant text — just call the tool. Never list Yes/No or A/B options as markdown bullets.`,
               },
             ];
             const contText = await withSpan('llm.transition_retry', 'llm', async (span) => {
@@ -3436,7 +3583,38 @@ export class Agent {
         }
       }
 
-      // Stream handler already emitted message_received in its finish case.
+      // Stream handler emits message_received on a normal finish. Empty / reasoning-only
+      // finishes defer that emit so empty-retry + promotion can fill `content` first.
+      if (!this._turnMessageEmitted || streamHandler.getState().deferredEmptyFinalize) {
+        if (!content.trim()) {
+          content = 'I apologize, I was unable to generate a response.';
+        }
+        const streamState = streamHandler.getState();
+        const outId = (streamState as { messageId?: string }).messageId
+          ?? this.pendingVoiceMerge?.messageId
+          ?? generateMessageId();
+        const emitTokens = usage
+          ? (usage.inputTokens || 0) + (usage.outputTokens || 0)
+          : Math.ceil(content.length / 4);
+        this.emit({ type: 'stream_chunk', content: '', fullContent: content });
+        this.emit({
+          type: 'message_received',
+          message: this.tagCrewPrivateAssistant({
+            id: outId,
+            sessionId: this.sessionId,
+            role: 'assistant',
+            content,
+            toolCalls: null,
+            createdAt: new Date().toISOString(),
+            tokenCount: emitTokens,
+          }),
+          elapsed: Date.now() - startTime,
+          // Allow replace if a premature finalize somehow landed first.
+          ...(this._turnMessageEmitted ? { isUpdate: true } : {}),
+        }, this._turnMessageEmitted);
+      }
+
+      // Stream handler already emitted message_received in its finish case (or we did above).
       // Only push assistant content — tool ledger is persisted via persistToolLedger (not in agent history).
       this.messages.push({ role: 'assistant', content });
       await this.compactContext();
@@ -3544,6 +3722,8 @@ export class Agent {
    * Runs asynchronously and silently — never blocks the main flow.
    */
   private extractMemories(userMessage: string, assistantResponse: string): void {
+    // Skip memory extraction in light thinking mode — saves a model call for quick turns.
+    if (THINKING_MODE_SKIP_EXTRACT_MEMORIES[this.currentThinkingMode]) return;
     extractMemoriesHelper(
       {
         config: this.config,
@@ -3560,6 +3740,27 @@ export class Agent {
       } as MemoryExtractionContext,
       userMessage,
       assistantResponse,
+    );
+  }
+
+  /** Store web/KB tool outputs in session memory for reuse on later turns. */
+  private persistSessionToolFindings(userQueryHint: string): void {
+    if (this.toolCallLogForReflection.length === 0) return;
+    persistSessionToolFindingsHelper(
+      {
+        memoryFabric: this.memoryFabric,
+        memoryEmbedder: this.memoryEmbedder,
+        sessionFindingsIngester: this.sessionFindingsIngester,
+        setSessionFindingsIngester: (i) => { this.sessionFindingsIngester = i; },
+        sessionId: this.sessionId,
+        options: this.options,
+      },
+      this.toolCallLogForReflection.map((t) => ({
+        name: t.name,
+        success: t.success,
+        output: t.output,
+      })),
+      userQueryHint,
     );
   }
 
@@ -3649,6 +3850,9 @@ export class Agent {
       sessionId: this.sessionId,
       getTodos: () => this.todoManager.getItems(),
       areTodosDeferredThisTurn: () => this.todoDispositionThisTurn === 'defer',
+      bypassPermissions: this.bypassPermissions,
+      thinkingMode: this.currentThinkingMode,
+      outputMode: this.currentOutputMode,
     };
   }
 
@@ -3797,6 +4001,89 @@ export class Agent {
     // Capture values the helper set on the ctx so they persist across _permissionCtx() calls.
     this.permissionQueue = ctx.permissionQueue;
     this.processPermissionQueueFn = ctx.processPermissionQueue;
+    this.bindActionConsentHandlers();
+  }
+
+  /**
+   * Clarify-first + inline outcome chips: before any permission modal, ask
+   * "Shall I …?" via questionnaire; persist each decision as a chat part.
+   */
+  private bindActionConsentHandlers(): void {
+    if (!this.toolExecutor) return;
+
+    this.toolExecutor.setActionConsentHandler(async (toolId, args, definition) => {
+      const summary = summarizeToolAction(toolId, args, definition);
+      const questionnaire: QuestionnairePayload = {
+        id: generateMessageId(),
+        title: 'Confirm action',
+        questions: [{
+          id: 'consent',
+          prompt: `Shall I ${summary}?`,
+          type: 'single_choice',
+          required: true,
+          allowCustom: false,
+          options: [
+            { value: 'Yes', label: 'Yes' },
+            { value: 'No', label: 'No' },
+          ],
+        }],
+        source: this.clarificationSource(),
+      };
+      try {
+        const answer = await this.waitForQuestionnaireResponse(questionnaire);
+        const proceed = isAffirmativeConsentAnswer(answer);
+        return { proceed, answer };
+      } catch {
+        return { proceed: false, answer: '' };
+      }
+    });
+
+    this.toolExecutor.setPermissionOutcomeHandler((outcome) => {
+      this.persistAndEmitPermissionOutcome(outcome);
+    });
+  }
+
+  private persistAndEmitPermissionOutcome(outcome: PermissionOutcomeEmit): void {
+    const decidedAt = new Date().toISOString();
+    const record: PermissionOutcomeRecord = {
+      toolId: outcome.toolId,
+      toolName: outcome.toolName,
+      path: outcome.path,
+      riskLevel: outcome.riskLevel,
+      decision: outcome.decision,
+      label: outcome.label,
+      instruction: outcome.instruction,
+      actionSummary: outcome.actionSummary,
+      decidedAt,
+    };
+    const messageId = generateMessageId();
+    const msg: Message = {
+      id: messageId,
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: '',
+      toolCalls: null,
+      createdAt: decidedAt,
+      tokenCount: 0,
+      parts: [{ type: 'permission', id: messageId, permission: record }],
+    };
+    persistAssistantMessageHelper(this.persistenceCtx(), msg);
+    this.emit({
+      type: 'message_received',
+      message: msg,
+      elapsed: 0,
+    });
+    this.emit({
+      type: 'permission_resolved',
+      tool: outcome.toolId,
+      path: outcome.path,
+      riskLevel: outcome.riskLevel,
+      decision: outcome.decision,
+      label: outcome.label,
+      instruction: outcome.instruction,
+      actionSummary: outcome.actionSummary,
+      decidedAt,
+    });
   }
 
   /**
@@ -3893,6 +4180,7 @@ export class Agent {
     this.messages.push({ role: 'user', content: `/research ${question}` });
     this.turnApprovedAll = false;
     this.toolExecutor?.getPermissionManager().revokeOneTimePermissions();
+    this.toolExecutor?.clearToolConsent();
     const result = await researchHelper(
       {
         sessionId: this.sessionId,
@@ -3997,6 +4285,11 @@ export class Agent {
     );
   }
 
+  /**
+   * Pre-turn document materialization lives in DocumentPipeline —
+   * attachments are OCR'd / quality-gated before the LLM loop starts.
+   */
+
   private async buildAiMessagesForTurn(opts: {
     lastUserText: string;
     compact: boolean;
@@ -4010,10 +4303,14 @@ export class Agent {
         break;
       }
     }
+    const visionOk = this.modelSupportsVision();
+    const pendingCleanups: string[] = [];
     const messagesWithDocs = await Promise.all(this.messages.map(async (m, idx) => {
       if (m.role !== 'user' || idx !== lastUserIdx) return m;
       const docParts: string[] = [];
-      for (const a of (m as { attachments?: import('@agentx/shared').NormalizedAttachment[] }).attachments ?? []) {
+      const existingAttachments = (m as { attachments?: import('@agentx/shared').NormalizedAttachment[] }).attachments ?? [];
+      const extraAttachments: import('@agentx/shared').NormalizedAttachment[] = [];
+      for (const a of existingAttachments) {
         if (a.type === 'folder') {
           if (a.content && a.content.length > 0) {
             docParts.push(a.content);
@@ -4025,33 +4322,55 @@ export class Agent {
           continue;
         }
         if (a.type !== 'file') continue;
-        let text: string | null = null;
+
+        let absAttachmentPath: string | null = null;
+        if (a.storageId) {
+          absAttachmentPath = await service.resolveAttachmentPath(a.storageId);
+        }
+        let candidateText: string | null = null;
         if (a.content && a.content.length > 0) {
-          text = a.content;
+          candidateText = a.content;
         } else if (a.storageId) {
-          text = await service.extractTextForAgent(a.storageId);
+          candidateText = await service.extractTextForAgent(a.storageId);
         }
-        if (text && text.length > 0) {
-          docParts.push(`[Attachment: ${a.name}]\n${text}`);
-          continue;
-        }
-        const isPdf = (a.mimeType === 'application/pdf') || /\.pdf$/i.test(a.name);
-        if (isPdf) {
-          let pathHint = a.name;
-          if (a.storageId) {
-            const abs = await service.resolveAttachmentPath(a.storageId);
-            if (abs) pathHint = abs;
-          }
-          docParts.push(
-            `[Attachment: ${a.name}]\n`
-            + `[Could not extract PDF text into the prompt. Use the pdf_read tool with path "${pathHint}". `
-            + `Do NOT use file_read on PDF files — it returns binary garbage.]`,
-          );
-        }
+
+        const doc = await materializeAttachment({
+          name: a.name,
+          mimeType: a.mimeType,
+          absPath: absAttachmentPath,
+          candidateText,
+          storageId: a.storageId,
+          attachmentId: a.id,
+          visionOk,
+          getBuffer: a.storageId
+            ? async () => service.getBuffer(a.storageId!)
+            : undefined,
+        });
+        pendingCleanups.push(...doc.cleanupDirs);
+        docParts.push(doc.promptBlock);
+        extraAttachments.push(...doc.visionAttachments);
       }
-      if (docParts.length === 0) return m;
-      return { ...m, content: `${m.content}\n\n${docParts.join('\n\n')}` };
+      if (docParts.length === 0 && extraAttachments.length === 0) return m;
+      return {
+        ...m,
+        content: `${m.content}\n\n${docParts.join('\n\n')}`,
+        attachments: [...existingAttachments, ...extraAttachments],
+      };
     }));
+    if (pendingCleanups.length > 0) {
+      cleanupDocumentTemps([{
+        name: '',
+        path: null,
+        mimeType: '',
+        text: null,
+        method: 'none',
+        confidence: 'none',
+        warnings: [],
+        promptBlock: '',
+        visionAttachments: [],
+        cleanupDirs: pendingCleanups,
+      }]);
+    }
     const aiMessages = buildCompletionMessages(
       messagesWithDocs.map((m) => ({
         role: m.role,
@@ -4466,33 +4785,39 @@ export class Agent {
 
     const service = getAttachmentService();
     const parts: string[] = [];
+    const cleanups: string[] = [];
     for (const a of attachments) {
       if (a.type === 'folder') {
         if (a.content) parts.push(a.content);
         continue;
       }
       if (a.type !== 'file') continue;
-      let text: string | null = a.content && a.content.length > 0 ? a.content : null;
-      if (!text && a.storageId) {
-        text = await service.extractTextForAgent(a.storageId);
+      let candidateText: string | null = a.content && a.content.length > 0 ? a.content : null;
+      if (!candidateText && a.storageId) {
+        candidateText = await service.extractTextForAgent(a.storageId);
       }
-      if (text && text.length > 0) {
-        parts.push(`[Attachment: ${a.name}]\n${text}`);
-        continue;
+      let absPath: string | null = null;
+      if (a.storageId) {
+        absPath = await service.resolveAttachmentPath(a.storageId);
       }
-      const isPdf = (a.mimeType === 'application/pdf') || /\.pdf$/i.test(a.name);
-      if (isPdf) {
-        let pathHint = a.name;
-        if (a.storageId) {
-          const abs = await service.resolveAttachmentPath(a.storageId);
-          if (abs) pathHint = abs;
-        }
-        parts.push(
-          `[Attachment: ${a.name}]\n`
-          + `[Text was not pre-extracted. Use the pdf_read tool with path "${pathHint}". `
-          + `Do NOT use file_read on PDF files.]`,
-        );
-      }
+      const doc = await materializeAttachment({
+        name: a.name,
+        mimeType: a.mimeType,
+        absPath,
+        candidateText,
+        storageId: a.storageId,
+        attachmentId: a.id,
+        visionOk: false,
+        getBuffer: a.storageId ? async () => service.getBuffer(a.storageId!) : undefined,
+      });
+      cleanups.push(...doc.cleanupDirs);
+      parts.push(doc.promptBlock);
+    }
+    if (cleanups.length > 0) {
+      cleanupDocumentTemps([{
+        name: '', path: null, mimeType: '', text: null, method: 'none',
+        confidence: 'none', warnings: [], promptBlock: '', visionAttachments: [], cleanupDirs: cleanups,
+      }]);
     }
     return parts.length > 0 ? `[ATTACHED DOCUMENTS]\n${parts.join('\n\n')}\n[/ATTACHED DOCUMENTS]` : '';
   }

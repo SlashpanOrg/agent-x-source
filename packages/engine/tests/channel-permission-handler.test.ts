@@ -33,6 +33,9 @@ describe('channel permission handler routing', () => {
 
     uiHandler.mockClear();
     channelHandler.mockClear();
+    // Grant inline consent for the non-channel session so the consent check passes
+    // and the UI handler is reached (this test verifies handler routing, not consent).
+    executor.grantToolConsent('shell_exec');
     const uiResult = await executor.execute('shell_exec', {}, 'normal-session');
     expect(uiResult.success).toBe(false);
     expect(uiHandler).toHaveBeenCalledTimes(1);

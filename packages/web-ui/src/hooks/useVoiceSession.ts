@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { syncAuthTokenFromSession } from '../api';
-import { VoiceSessionClient, type VoiceClientState, type VoiceTurnTimings, type VoicePermissionPrompt, type VoicePermissionChoice } from '../voice/VoiceSessionClient';
+import { VoiceSessionClient, VOICE_CONNECT_SUPERSEDED, type VoiceClientState, type VoiceTurnTimings, type VoicePermissionPrompt, type VoicePermissionChoice } from '../voice/VoiceSessionClient';
 import { VOICE_MAX_TURN_SECONDS, VOICE_TURN_COUNTDOWN_FROM_SECONDS, VOICE_MIN_RECORDING_MS, VOICE_ACCIDENTAL_TAP_MS, VOICE_MIN_SPEECH_LEVEL } from '../voice/constants';
 import { type VoiceTurnPipeline } from '../voice/voice-turn-pipeline';
 import { markVoiceOutputUnlocked } from '../voice/support';
@@ -29,6 +29,10 @@ export function useVoiceSession(
   engine: VoiceEngineKind = 'stt_llm_tts',
   /** Dashboard voice activation mode: 'continue' (hydrate history) or 'new' (fresh start). */
   conversationMode: 'continue' | 'new' = 'continue',
+  /** Wake-word mode enables server-side transcript gating. */
+  wakeWord = false,
+  /** Wake phrase for server-side gating. */
+  wakePhrase = '',
 ) {
   const chatSessionId = typeof chatSessionIdOrCallbacks === 'string'
     ? chatSessionIdOrCallbacks
@@ -63,6 +67,13 @@ export function useVoiceSession(
   const [playbackActive, setPlaybackActive] = useState(false);
   const [turnPipeline, setTurnPipeline] = useState<VoiceTurnPipeline>('idle');
   const [pttReady, setPttReady] = useState(false);
+  const [wakeIdleUntil, setWakeIdleUntil] = useState(0);
+  const [wakeIdleTick, setWakeIdleTick] = useState(Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setWakeIdleTick(Date.now()), 500);
+    return () => window.clearInterval(id);
+  }, []);
+  const wakeIdleActive = wakeIdleUntil > 0 && wakeIdleTick < wakeIdleUntil;
   const pttTurnLockedRef = useRef(false);
   const agentTurnCompleteRef = useRef(false);
   const timerRef = useRef<number | null>(null);
@@ -84,17 +95,21 @@ export function useVoiceSession(
     if (warningTimerRef.current) window.clearTimeout(warningTimerRef.current);
   }, []);
 
-  // Tear down when mode / chat session / engine changes (not on first mount).
+  // Tear down when mode / chat session / engine / wake word changes (not on first mount).
   // Callers that keep `enabled` true will reconnect via startSession / ensurePttReady.
-  const sessionIdentityRef = useRef({ chatSessionId, mode, engine, conversationMode });
+  // conversationMode is only sent on the first session_start (continue vs new divider).
+  // VoiceProvider resets it to 'continue' after ~3s — that must NOT tear down an
+  // in-flight xAI handshake (session_ready often takes 4–5s).
+  const sessionIdentityRef = useRef({ chatSessionId, mode, engine, wakeWord, wakePhrase });
   useEffect(() => {
     const prev = sessionIdentityRef.current;
     const changed =
       prev.chatSessionId !== chatSessionId
       || prev.mode !== mode
       || prev.engine !== engine
-      || prev.conversationMode !== conversationMode;
-    sessionIdentityRef.current = { chatSessionId, mode, engine, conversationMode };
+      || prev.wakeWord !== wakeWord
+      || prev.wakePhrase !== wakePhrase;
+    sessionIdentityRef.current = { chatSessionId, mode, engine, wakeWord, wakePhrase };
     if (!changed) return;
 
     clientRef.current?.disconnect();
@@ -111,7 +126,7 @@ export function useVoiceSession(
     setPartialTranscript('');
     setError(null);
     stopTimer();
-  }, [chatSessionId, mode, engine, stopTimer]);
+  }, [chatSessionId, mode, engine, wakeWord, wakePhrase, stopTimer]);
 
   useEffect(() => {
     if (!enabled) {
@@ -154,6 +169,8 @@ export function useVoiceSession(
         chatSessionId,
         voiceOnly,
         conversationMode,
+        wakeWord,
+        wakePhrase,
         onStateChange: (nextState) => {
           setState(nextState);
           if (nextState === 'listening' || nextState === 'ready') {
@@ -329,6 +346,9 @@ export function useVoiceSession(
         },
         onPermissionPrompt: (prompt) => setPermissionPrompt(prompt),
         onPermissionResolved: () => setPermissionPrompt(null),
+        onWakeIdle: (_active, until) => {
+          setWakeIdleUntil(until);
+        },
       });
     }
     return clientRef.current;
@@ -358,6 +378,7 @@ export function useVoiceSession(
         }
       }
     } catch (err) {
+      if (err instanceof Error && err.message === VOICE_CONNECT_SUPERSEDED) return;
       setError(friendlyVoiceError(err instanceof Error ? err.message : 'Voice connection failed'));
     }
   }, [ensureClient, ensureVoiceAuthToken, mode]);
@@ -392,6 +413,7 @@ export function useVoiceSession(
       }
       syncPttReady();
     } catch (err) {
+      if (err instanceof Error && err.message === VOICE_CONNECT_SUPERSEDED) return;
       setPttReady(false);
       setError(friendlyVoiceError(err instanceof Error ? err.message : 'Voice setup failed'));
       resetPipelineIfIdle();
@@ -641,6 +663,8 @@ export function useVoiceSession(
     mode,
     textOnlyPlayback,
     voiceTimings,
+    wakeIdleActive,
+    wakeIdleUntil,
     permissionPrompt,
     respondToPermission,
     startSession,

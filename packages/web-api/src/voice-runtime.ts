@@ -17,15 +17,17 @@ function voiceServiceDataDir(): string {
 }
 
 export function getVoiceService(): VoiceService {
+  const loaded = getEngine().configManager.load();
+  const callsign = loaded.user?.callsign?.trim();
+  const cfg = mergeVoiceConfig({ ...loaded.voice, callsign });
   if (!voiceService) {
-    const cfg = mergeVoiceConfig(getEngine().configManager.load().voice);
     voiceService = new VoiceService({
       dataDir: voiceServiceDataDir(),
       config: cfg,
       sidecar: getVoiceSidecarManager(),
     });
   } else {
-    voiceService.updateConfig(getEngine().configManager.load().voice);
+    voiceService.updateConfig(cfg);
   }
   return voiceService;
 }

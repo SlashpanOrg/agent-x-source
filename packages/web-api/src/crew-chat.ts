@@ -228,6 +228,9 @@ export async function postCrewChatVoiceSession(req: Request, res: Response): Pro
 
     const scopePath = resolveScopePath(body.scopePath);
     let textSessionId = body.textSessionId?.trim() || '';
+    if (textSessionId === '__channel__:voice') {
+      textSessionId = '';
+    }
     if (textSessionId && isCrewVoiceSessionId(textSessionId)) {
       textSessionId = textSessionIdFromVoiceSessionId(textSessionId) ?? '';
     }
@@ -236,8 +239,19 @@ export async function postCrewChatVoiceSession(req: Request, res: Response): Pro
     if (textSessionId) {
       textSession = eng.sessionManager.getSessionById(textSessionId);
       if (!textSession || textSession.contextKind !== 'crew_private' || isCrewVoiceSessionId(textSession.id)) {
-        res.status(400).json({ error: 'invalid-text-session' });
-        return;
+        // Stale voice:… ids, dashboard __channel__:voice, or deleted text rows — do not
+        // fail the call when we can resolve the crew from roster/recruit.
+        if (body.crewId || body.recruit) {
+          getLogger().warn(
+            'POST_CREW_CHAT_VOICE_SESSION',
+            `Ignoring invalid or stale textSessionId ${textSessionId}`,
+          );
+          textSessionId = '';
+          textSession = null;
+        } else {
+          res.status(400).json({ error: 'invalid-text-session' });
+          return;
+        }
       }
     }
 

@@ -12,6 +12,7 @@ import type { ParallelClassification } from '../../tools/ParallelClassifier.js';
 import type { ToolExecutor } from '../../tools/ToolExecutor.js';
 import { ToolRegistry } from '../../tools/ToolRegistry.js';
 import { createDefaultToolkit } from '../../tools/toolkit.js';
+import { getAttachmentService } from '../../attachments/index.js';
 import {
   shouldDisclose,
   getCoreTools,
@@ -144,6 +145,10 @@ export class ToolService implements IToolService {
     if (!tool) {
       return { decision: 'deny', error: 'MODE_RESTRICTED' };
     }
+
+    // Sync user-attached file paths into the ScopeGuard so scope validation
+    // passes for files the user explicitly attached to the chat.
+    this.syncAttachmentAuthorizations(sessionId);
 
     if (scopePath !== undefined) {
       return this.permissionService.requestPermission(
@@ -285,6 +290,22 @@ export class ToolService implements IToolService {
     }
 
     return { scopePath, invalid: false };
+  }
+
+  /**
+   * Sync all user-attached file paths for the current session into the ScopeGuard
+   * so that scope validation passes for files the user explicitly attached.
+   */
+  private syncAttachmentAuthorizations(sessionId: string): void {
+    try {
+      const guard = this.executor.getScopeGuard();
+      guard.clearAuthorizedAttachmentPaths();
+      const service = getAttachmentService();
+      const paths = service.getSessionAttachmentPaths(sessionId);
+      if (paths.length > 0) {
+        guard.authorizeAttachmentPaths(paths);
+      }
+    } catch { /* best-effort */ }
   }
 
   private fallbackTool(toolId: string): ToolDefinition {

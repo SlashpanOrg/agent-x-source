@@ -9,7 +9,9 @@ import { colors, alphaColor } from '../../theme';
 import { models, providers, type ModelInfo } from '../../api';
 import { ExecutionStatusChip } from '../../chat/ExecutionStatusChip';
 import { BypassPermissionsToggle } from './BypassPermissionsToggle';
+import { TurnModeChip } from './TurnModeChip';
 import { useChatMessagesContext, useChatTurnControlContext } from './ChatSessionProvider';
+import type { ThinkingMode, OutputMode } from '@agentx/shared';
 
 export interface ProviderProfile {
   id: string;
@@ -40,6 +42,12 @@ export interface ChatToolbarProps {
   currentProviderId: string;
   setTokenTotal: (n: number) => void;
   setTokenReserved: (n: number) => void;
+  /** Thinking mode — controls tool budget, reasoning depth, retrieval. */
+  thinkingMode: ThinkingMode;
+  setThinkingMode: (mode: ThinkingMode) => void;
+  /** Output mode — controls response verbosity and format. */
+  outputMode: OutputMode;
+  setOutputMode: (mode: OutputMode) => void;
 }
 
 export function ChatToolbar(props: ChatToolbarProps) {
@@ -51,6 +59,7 @@ export function ChatToolbar(props: ChatToolbarProps) {
     modelMenuAnchor, setModelMenuAnchor,
     currentModel, modelList, loadingModels, currentProviderId,
     setTokenTotal, setTokenReserved,
+    thinkingMode, setThinkingMode, outputMode, setOutputMode,
   } = props;
   // Subscribe here (not in ChatInputArea) so stream chunks don't re-render the composer.
   const { streaming } = useChatTurnControlContext();
@@ -202,6 +211,10 @@ export function ChatToolbar(props: ChatToolbarProps) {
             );
           })}
       </Menu>
+
+      {/* Turn mode chips — thinking effort + output verbosity */}
+      <TurnModeChip kind="thinking" value={thinkingMode} onChange={(v) => setThinkingMode(v as ThinkingMode)} />
+      <TurnModeChip kind="output" value={outputMode} onChange={(v) => setOutputMode(v as OutputMode)} />
 
       {/* Spacer */}
       <Box sx={{ flex: 1 }} />

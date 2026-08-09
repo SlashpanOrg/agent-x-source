@@ -29,7 +29,12 @@ export function normalizeClientSituation(input: unknown): ClientSituation | null
   if (isFiniteNumber(raw.accuracyMeters) && raw.accuracyMeters >= 0) {
     situation.accuracyMeters = raw.accuracyMeters;
   }
-  if (raw.locationMethod === 'gps' || raw.locationMethod === 'ip' || raw.locationMethod === 'timezone_only') {
+  if (
+    raw.locationMethod === 'gps'
+    || raw.locationMethod === 'ip'
+    || raw.locationMethod === 'timezone_only'
+    || raw.locationMethod === 'user_set'
+  ) {
     situation.locationMethod = raw.locationMethod;
   }
   if (raw.locationConfidence === 'high' || raw.locationConfidence === 'low' || raw.locationConfidence === 'unknown') {
@@ -88,6 +93,21 @@ function formatUtcOffset(now: Date, timezone: string): string {
   return '+00:00';
 }
 
+/** True when a city/place label is known (auto-detect or user/agent set). */
+export function isClientLocationKnown(situation: ClientSituation | null | undefined): boolean {
+  if (!situation?.locationLabel?.trim()) return false;
+  const method = situation.locationMethod;
+  return method === 'gps' || method === 'ip' || method === 'user_set';
+}
+
+/** Extract a short city label from a location string for UI display. */
+export function clientLocationCityLabel(situation: ClientSituation | null | undefined): string | null {
+  if (!isClientLocationKnown(situation)) return null;
+  const label = situation!.locationLabel!.trim();
+  const first = label.split(',')[0]?.trim();
+  return first || label;
+}
+
 /** Per-turn block injected into the user message so every LLM call sees fresh context. */
 export function formatClientSituationBlock(situation: ClientSituation): string {
   const now = resolveClientNow(situation);
@@ -102,27 +122,23 @@ export function formatClientSituationBlock(situation: ClientSituation): string {
     `UTC offset: ${offset}`,
   ];
 
-  if (situation.vpnSuspected) {
-    lines.push(`Only the user's timezone (${situation.timezone}) is reliable — their city is unknown (VPN/proxy may be active). Ask where they are before local recommendations.`);
-  } else if (situation.locationMethod === 'gps'
-    && situation.latitude !== undefined
-    && situation.longitude !== undefined) {
-    const acc = situation.accuracyMeters !== undefined
-      ? ` (±${Math.round(situation.accuracyMeters)}m)`
-      : '';
-    const place = situation.locationLabel ? ` near ${situation.locationLabel}` : '';
-    lines.push(`User is here (device GPS)${place}: ${situation.latitude.toFixed(5)}, ${situation.longitude.toFixed(5)}${acc}.`);
-    lines.push('Use for weather, maps, and nearby suggestions unless they name another place.');
-  } else if (situation.locationMethod === 'ip'
-    && situation.latitude !== undefined
-    && situation.longitude !== undefined) {
-    const place = situation.locationLabel ?? `${situation.latitude.toFixed(2)}, ${situation.longitude.toFixed(2)}`;
-    lines.push(`User is roughly in the ${place} area (city-level estimate, not precise GPS).`);
-    lines.push('Fine for broad local context; confirm with the user if exact location matters.');
-  } else if (situation.locationLabel) {
-    lines.push(`User is roughly in the ${situation.locationLabel} area.`);
+  if (isClientLocationKnown(situation)) {
+    const place = situation.locationLabel!.trim();
+    if (situation.locationMethod === 'user_set') {
+      lines.push(`User location (confirmed by user): ${place}.`);
+    } else if (situation.locationMethod === 'gps') {
+      lines.push(`User location (device GPS): ${place}.`);
+    } else {
+      lines.push(`User location (IP estimate): ${place}.`);
+    }
+    if (situation.latitude !== undefined && situation.longitude !== undefined) {
+      lines.push(`Coordinates: ${situation.latitude.toFixed(5)}, ${situation.longitude.toFixed(5)}.`);
+    }
+    lines.push('Use this for local context only when the task needs it; do not re-ask unless they contradict it.');
   } else {
-    lines.push('User\'s place is unknown — ask or search; do not assume a city.');
+    lines.push('User location: NOT AVAILABLE.');
+    lines.push('Do not assume a city, region, or country. Only ask where they are when the current task genuinely requires location (weather, directions, local venues, travel in a place). Otherwise proceed without location.');
+    lines.push('If they state their location in chat or voice, call set_user_location to save it.');
   }
 
   lines.push('[/CLIENT_SITUATION]');

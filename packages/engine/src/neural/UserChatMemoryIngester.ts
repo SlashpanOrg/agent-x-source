@@ -156,6 +156,8 @@ export class UserChatMemoryIngester {
         messages,
         maxTokens: 300,
         temperature: 0,
+        reasoningEffort: 'none',
+        signal: AbortSignal.timeout(5_000),
       })) {
         if (chunk.content) result += chunk.content;
       }

@@ -7,6 +7,7 @@ import {
   estimatePromptTokens,
   ContextBudgetExceededError,
   deniesAutonomousCrewTools,
+  THINKING_MODE_REASONING_EFFORT,
 } from '@agentx/shared';
 import { streamText, stepCountIs } from 'ai';
 import { ConcurrencyLimiter } from '../../concurrency/ConcurrencyLimiter.js';
@@ -210,8 +211,13 @@ export class TurnOrchestrator implements ITurnOrchestrator {
         abortSignal,
       );
 
+      // ─── Turn mode: reasoning effort from thinking mode; output length is prompt-guided ───
+      const modeReasoningEffort = THINKING_MODE_REASONING_EFFORT[this.host.currentThinkingMode];
+      const effectiveReasoningEffort = modeReasoningEffort ?? this.host.config.provider.activeReasoningEffort;
+      const effectiveMaxOutputTokens = turnMaxOutputTokens;
+
       // Log tool setup for debugging
-      getLogger().info('AGENT', `Starting streamText with ${toolCount} tools, model: ${this.host.config.provider.activeModel}, maxOutputTokens: ${turnMaxOutputTokens}`);
+      getLogger().info('AGENT', `Starting streamText with ${toolCount} tools, provider: ${this.host.config.provider.activeProvider}, model: ${this.host.config.provider.activeModel}, reasoningEffort: ${effectiveReasoningEffort ?? '(default)'} (mode: ${this.host.currentThinkingMode}), maxOutputTokens: ${effectiveMaxOutputTokens}`);
 
       let stepCapContinuations = 0;
       const stepBudget = this.host.completionStepBudget();
@@ -219,7 +225,7 @@ export class TurnOrchestrator implements ITurnOrchestrator {
       const googleProviderOptions = this.host.config.provider.activeProvider === 'google'
         ? buildGoogleAiSdkProviderOptions(
           this.host.config.provider.activeModel,
-          this.host.config.provider.activeReasoningEffort,
+          effectiveReasoningEffort,
         )
         : undefined;
       const result = streamText({
@@ -228,8 +234,8 @@ export class TurnOrchestrator implements ITurnOrchestrator {
         tools,
         abortSignal,
         maxRetries: 2,
-        maxOutputTokens: turnMaxOutputTokens,
-        stopWhen: ({ steps }) => steps.length >= stepLimit(),
+        maxOutputTokens: effectiveMaxOutputTokens,
+        stopWhen: ({ steps }) => steps.length >= Math.min(stepLimit(), this.host.modeStepCap),
         toolChoice: 'auto',
         ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
         prepareStep: async ({ stepNumber, messages }) => {
@@ -300,7 +306,7 @@ export class TurnOrchestrator implements ITurnOrchestrator {
       // Fallback: if stream ended without finish event, emit one now to ensure message is recorded
       if (!finishEmitted) {
         const state = streamHandler.getState();
-        if (state.accumulatedContent || state.toolCallCount > 0) {
+        if (state.accumulatedContent || state.toolCallCount > 0 || (state.accumulatedReasoning || '').trim()) {
           streamHandler.handleEvent({ type: 'finish', usage: await result.usage });
         }
       }
@@ -327,25 +333,36 @@ export class TurnOrchestrator implements ITurnOrchestrator {
       // Also retry after web-research tools when the response looks like a short preamble
       // instead of a natural-language summary.
       // When tools already ran, retry WITHOUT tools to force a plain-text summary.
+      // Reasoning-only empty replies force a text-only rewrite.
+      const priorReasoning = (streamHandler.getState().accumulatedReasoning || '').trim();
+      const reasoningOnlyEmpty = content.length < 3 && priorReasoning.length >= 40;
       if (content.length < 3 || streamError || this.isIncompleteResearchSummary(content)) {
         const toolSummary = this.host.toolCallLogForReflection
           .map(t => `- ${t.name}: ${t.success ? 'OK' : 'FAILED'} — ${t.output.slice(0, 300)}`)
           .join('\n');
         const worked = toolExecs > 0;
-        const textOnlyRetry = worked || !!streamError;
+        const textOnlyRetry = worked || !!streamError || reasoningOnlyEmpty;
         getLogger().warn(
           'AGENT',
-          `Response too short or incomplete research summary (${content.length} chars, ${toolExecs} tools${streamError ? ', stream error' : ''}) — retrying${textOnlyRetry ? ' text-only' : ' with tools'}`,
+          `Response too short or incomplete research summary (${content.length} chars, ${toolExecs} tools, reasoning=${priorReasoning.length}${streamError ? ', stream error' : ''}${reasoningOnlyEmpty ? ', reasoning-only' : ''}) — retrying${textOnlyRetry ? ' text-only' : ' with tools'}`,
         );
         try {
+          const reasoningHint = reasoningOnlyEmpty
+            ? `\n\nYour prior reasoning (rewrite as the user-visible reply — do not leave the answer only in thinking):\n${priorReasoning.slice(0, 8000)}`
+            : '';
           const retryMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
             ...aiMessages,
             ...(worked ? [{ role: 'assistant' as const, content: text || '(executed tools)' }] : []),
+            ...(reasoningOnlyEmpty && !worked
+              ? [{ role: 'assistant' as const, content: '(reasoning produced; no user-visible text)' }]
+              : []),
             {
               role: 'user' as const,
               content: worked || streamError
                 ? `[SYSTEM] You just ran these tools:\n${toolSummary || '(see prior tool activity)'}\n\nNow respond to the user based on these results. Do not call more tools. Be thorough and actionable.`
-                : `[SYSTEM] The user said: "${aiMessages[aiMessages.length - 1]?.content?.slice(0, 500)}"\n\nUse the appropriate tools to answer. Prefer connected MCP integration tools when the request targets an external service — do not scan the local filesystem as a substitute. Do not return empty.`,
+                : reasoningOnlyEmpty
+                  ? `[SYSTEM] You produced detailed reasoning but ZERO user-visible assistant text. The user cannot see thinking/reasoning. Write the complete answer now as normal markdown message text. Do not call tools. Do not put the answer only in thinking.${reasoningHint}`
+                  : `[SYSTEM] The user said: "${aiMessages[aiMessages.length - 1]?.content?.slice(0, 500)}"\n\nUse the appropriate tools to answer. Prefer connected MCP integration tools when the request targets an external service — do not scan the local filesystem as a substitute. Do not return empty.`,
             },
           ];
           const retryText = await withSpan('llm.retry', 'llm', async (retrySpan) => {
@@ -392,6 +409,14 @@ export class TurnOrchestrator implements ITurnOrchestrator {
         }
       }
 
+      if (content.length < 3) {
+        const reasoningFallback = (streamHandler.getState().accumulatedReasoning || '').trim();
+        if (reasoningFallback.length >= 40) {
+          getLogger().warn('AGENT', `Promoting ${reasoningFallback.length} chars of reasoning to user-visible reply`);
+          content = reasoningFallback;
+        }
+      }
+
       if (!content) {
         content = 'I was unable to generate a response. This model may not support function calling — switch to a tool-capable model and try again.';
       }
@@ -410,7 +435,30 @@ export class TurnOrchestrator implements ITurnOrchestrator {
         },
       });
 
-      // Stream handler already emitted message_received in its finish case.
+      // Stream handler emits message_received on a normal finish. Empty / reasoning-only
+      // finishes defer that emit — publish the healed content here when needed.
+      if (streamHandler.getState().deferredEmptyFinalize) {
+        const streamState = streamHandler.getState() as { messageId?: string; deferredEmptyFinalize?: boolean };
+        const outId = streamState.messageId
+          ?? this.host.pendingVoiceMerge?.messageId
+          ?? generateMessageId();
+        this.host.emit({ type: 'stream_chunk', content: '', fullContent: content });
+        this.host.emit({
+          type: 'message_received',
+          message: this.host.tagCrewPrivateAssistant({
+            id: outId,
+            sessionId,
+            role: 'assistant',
+            content,
+            toolCalls: null,
+            createdAt: new Date().toISOString(),
+            tokenCount,
+          }),
+          elapsed: Date.now() - startTime,
+        });
+      }
+
+      // Stream handler already emitted message_received in its finish case (or we did above).
       // Only push assistant content — tool ledger is persisted via persistToolLedger (not in agent history).
       this.host.messages.push({ role: 'assistant', content });
       await this.host.compactContext();

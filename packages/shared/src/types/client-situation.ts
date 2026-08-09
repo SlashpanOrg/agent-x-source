@@ -1,7 +1,7 @@
 /** Where datetime/location context was collected. */
 export type ClientSituationSource = 'browser' | 'desktop' | 'server';
 
-export type ClientLocationMethod = 'gps' | 'ip' | 'timezone_only';
+export type ClientLocationMethod = 'gps' | 'ip' | 'timezone_only' | 'user_set';
 
 export type ClientLocationConfidence = 'high' | 'low' | 'unknown';
 

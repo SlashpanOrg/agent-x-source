@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatClientSituationBlock,
+  isClientLocationKnown,
   normalizeClientSituation,
   resolveClientTimezone,
+  clientLocationCityLabel,
 } from '@agentx/shared';
 
 describe('normalizeClientSituation', () => {
@@ -14,13 +16,28 @@ describe('normalizeClientSituation', () => {
       latitude: 12.97,
       longitude: 77.59,
       accuracyMeters: 120,
+      locationLabel: 'Chennai, Tamil Nadu, India',
+      locationMethod: 'gps',
     });
     expect(situation).toMatchObject({
       timezone: 'Asia/Kolkata',
       source: 'browser',
       latitude: 12.97,
       longitude: 77.59,
+      locationLabel: 'Chennai, Tamil Nadu, India',
     });
+  });
+
+  it('accepts user_set location', () => {
+    const situation = normalizeClientSituation({
+      clientNow: '2026-07-06T14:00:00.000Z',
+      timezone: 'Asia/Kolkata',
+      source: 'desktop',
+      locationLabel: 'Chennai, India',
+      locationMethod: 'user_set',
+    });
+    expect(situation?.locationMethod).toBe('user_set');
+    expect(isClientLocationKnown(situation)).toBe(true);
   });
 
   it('rejects invalid payloads', () => {
@@ -29,37 +46,54 @@ describe('normalizeClientSituation', () => {
   });
 });
 
+describe('isClientLocationKnown', () => {
+  it('is false without a label', () => {
+    expect(isClientLocationKnown({
+      clientNow: '2026-07-06T14:00:00.000Z',
+      timezone: 'Asia/Kolkata',
+      source: 'browser',
+    })).toBe(false);
+  });
+
+  it('extracts city label', () => {
+    const situation = normalizeClientSituation({
+      clientNow: '2026-07-06T14:00:00.000Z',
+      timezone: 'Asia/Kolkata',
+      source: 'browser',
+      locationLabel: 'Chennai, Tamil Nadu, India',
+      locationMethod: 'user_set',
+    });
+    expect(clientLocationCityLabel(situation)).toBe('Chennai');
+  });
+});
+
 describe('formatClientSituationBlock', () => {
-  it('includes timezone and GPS coordinates', () => {
+  it('includes timezone and GPS city', () => {
     const block = formatClientSituationBlock({
       clientNow: '2026-07-06T14:00:00.000Z',
       timezone: 'Asia/Kolkata',
       source: 'desktop',
       latitude: 12.97,
       longitude: 77.59,
+      locationLabel: 'Chennai, Tamil Nadu, India',
       locationMethod: 'gps',
       locationConfidence: 'high',
     });
     expect(block).toContain('[CLIENT_SITUATION]');
     expect(block).toContain('Asia/Kolkata');
-    expect(block).toContain('12.97000, 77.59000');
+    expect(block).toContain('Chennai');
     expect(block).toContain('device GPS');
-    expect(block).not.toContain('locationMethod');
-    expect(block).not.toContain('locationConfidence');
   });
 
-  it('uses plain language when VPN suspected', () => {
+  it('marks location not available without a place', () => {
     const block = formatClientSituationBlock({
       clientNow: '2026-07-06T14:00:00.000Z',
       timezone: 'Asia/Kolkata',
       source: 'browser',
-      locationMethod: 'timezone_only',
-      locationConfidence: 'unknown',
-      vpnSuspected: true,
     });
-    expect(block).toContain('city is unknown');
+    expect(block).toContain('NOT AVAILABLE');
+    expect(block).toContain('set_user_location');
     expect(block).not.toContain('Coordinates:');
-    expect(block).not.toContain('vpnSuspected');
   });
 });
 

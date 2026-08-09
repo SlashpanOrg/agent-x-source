@@ -1,5 +1,8 @@
 import type { Server, IncomingMessage } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { VoiceService, WebSocketVoiceTransport, mergeVoiceConfig, getPersonaStore, startAppSpan } from '@agentx/engine';
 import type { SpeakerIdentificationResult, VoiceSessionSpeaker } from '@agentx/engine';
@@ -50,6 +53,13 @@ import { updateDuplexEndpointing } from './voice/duplex-endpointing.js';
 import { resolveCrewPrivateHostForAgent } from './host-crew-session.js';
 import { seedCallDividerClockFromStore } from './voice/seed-call-divider-clock.js';
 import { getCrewVoiceProfile } from './crew-voice-profiles.js';
+import {
+  normalizeWakePhrase,
+  tryStripWakePhrase,
+  isInWakeIdle,
+  WAKE_WORD_IDLE_MS,
+  pickWakeAck,
+} from './voice/wake-phrase.js';
 
 const SAMPLE_RATE = 16_000;
 /** Minimum interval between streaming STT preview passes (PTT + duplex). */
@@ -137,6 +147,12 @@ interface VoiceWsSession {
    * global config. Set from the crew-voice-profiles.json store at session start.
    */
   crewVoiceId?: string;
+  /** Wake-word mode: force duplex and require the wake phrase for the first turn. */
+  wakeWordEnabled: boolean;
+  /** Normalized wake phrase used for transcript gating. */
+  wakePhrase: string;
+  /** Timestamp until which subsequent turns are accepted without re-saying the wake phrase. */
+  wakeIdleUntil: number;
 }
 
 const activeSessions = new Map<WebSocket, VoiceWsSession>();
@@ -168,14 +184,46 @@ async function cancelActiveSynth(session: VoiceWsSession): Promise<void> {
   session.activeSynthId = undefined;
 }
 
-/** Speak a short line of text out-of-band (permission prompts, confirmations). */
-async function speakSystemLine(session: VoiceWsSession, line: string): Promise<void> {
+async function speakShortCachedLine(
+  session: VoiceWsSession,
+  line: string,
+  filler = true,
+): Promise<void> {
   if (session.textOnlyPlayback || !line.trim()) return;
   const service = getVoiceService();
   const synthId = randomUUID();
   session.activeSynthId = synthId;
+  const tmpRoot = await mkdtemp(join(tmpdir(), 'ax-voice-filler-'));
+  const wavPath = join(tmpRoot, `${synthId}.wav`);
   try {
-    const stream = await service.synthesizeStreamText(line, {
+    const result = await service.synthesizeFiller(line, wavPath);
+    if (session.activeSynthId !== synthId) return;
+    const audio = await readFile(wavPath);
+    await sendSessionAudio(session, audio, result.sampleRate ?? 24_000, filler);
+  } catch { /* best-effort TTS */ } finally {
+    if (session.activeSynthId === synthId) session.activeSynthId = undefined;
+    try {
+      await rm(tmpRoot, { recursive: true, force: true });
+    } catch { /* ignore */ }
+  }
+}
+
+/** Speak a short line of text out-of-band (permission prompts, confirmations). */
+async function speakSystemLine(session: VoiceWsSession, line: string): Promise<void> {
+  await speakShortCachedLine(session, line, false);
+}
+
+/** Speak a short ack when the user only utters the wake word. */
+async function speakWakeAck(session: VoiceWsSession, callsign?: string): Promise<void> {
+  if (session.textOnlyPlayback) return;
+  const voiceSession = getVoiceService().getSession(session.sessionId);
+  const service = getVoiceService();
+  const synthId = randomUUID();
+  session.activeSynthId = synthId;
+  session.speaking = true;
+  voiceSession?.setState('speaking');
+  try {
+    const stream = await service.synthesizeStreamText(pickWakeAck(callsign), {
       requestId: synthId,
       ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
     });
@@ -186,6 +234,8 @@ async function speakSystemLine(session: VoiceWsSession, line: string): Promise<v
     }
   } catch { /* best-effort TTS */ } finally {
     if (session.activeSynthId === synthId) session.activeSynthId = undefined;
+    session.speaking = false;
+    voiceSession?.setState('listening');
   }
 }
 
@@ -741,14 +791,16 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
   // xAI is always duplex (server-side VAD). Local supports both PTT and duplex
   // (local VAD via Silero). The mode is driven by VoiceConfig.mode.web.
   const configWebMode = voiceConfig.mode?.web ?? 'push-to-talk';
+  const wakeWordEnabled = Boolean(msg.wakeWord);
   const mode = voiceConfig.engine === 'realtime_xai'
     ? 'duplex'
-    : (configWebMode === 'duplex' ? 'duplex' : 'push-to-talk');
+    : (wakeWordEnabled || configWebMode === 'duplex' ? 'duplex' : 'push-to-talk');
   const voiceOnly = Boolean(msg.voiceOnly);
   const chatSessionId = voiceOnly
     ? '__channel__:voice'
     : (typeof msg.chatSessionId === 'string' ? msg.chatSessionId : undefined);
   const voiceWsSessionId = String(msg.sessionId ?? randomUUID());
+  const wakePhrase = normalizeWakePhrase(typeof msg.wakePhrase === 'string' ? msg.wakePhrase : '');
   const clientSituation = normalizeClientSituation(msg.clientSituation);
   const conversationMode = (msg.conversationMode === 'new' || msg.conversationMode === 'continue')
     ? (msg.conversationMode as 'continue' | 'new')
@@ -798,6 +850,8 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
         chatSessionId,
         clientSituation,
         voiceConfig: xaiVoiceConfig,
+        wakeWord: wakeWordEnabled,
+        wakePhrase,
       });
       activeEngineSessions.set(ws, session);
     } catch (err) {
@@ -848,12 +902,15 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
     pttLastSttAt: 0,
     pttLastPartial: '',
     transport,
-    searchWeb: false,
+    searchWeb: true,
     bypassChip: false,
     voiceprintEnabled: false,
     ...(clientSituation ? { clientSituation } : {}),
     conversationMode,
     ...(crewVoiceId ? { crewVoiceId } : {}),
+    wakeWordEnabled,
+    wakePhrase,
+    wakeIdleUntil: 0,
   });
   voiceSession.setState(mode === 'duplex' ? 'listening' : 'idle');
   ws.send(JSON.stringify({ type: 'session_ready', sessionId: voiceSession.sessionId, mode }));
@@ -950,6 +1007,10 @@ async function handleDuplexChunk(ws: WebSocket, session: VoiceWsSession, chunk: 
   const preview = await requestTranscriptPreview(ws, session, { throttleKey: 'duplex' });
   const wordsNow = preview?.wordsNow ?? '';
   const partial = preview?.partial ?? '';
+
+  // The wake-word idle window is reset only when a turn begins with the wake
+  // phrase. Do not extend it here on partial words, or non-wake speech keeps
+  // the wake gate open indefinitely.
 
   const { state, shouldFinish, emitPartial } = updateDuplexEndpointing(
     {
@@ -1103,9 +1164,6 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
 
   const pcm = Buffer.concat(session.audioChunks);
   session.audioChunks = [];
-  const previewFallback = (
-    session.mode === 'push-to-talk' ? session.pttLastPartial : session.duplexLastPartial
-  )?.trim() ?? '';
 
   if (pcm.length === 0) {
     session.turnFinishing = false;
@@ -1156,6 +1214,13 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
       sttResponse = fallback;
       speakerResult = identify;
     }
+    // Streaming finalize sometimes returns empty text even though the preview had words.
+    // Try the one-shot PCM endpoint before giving up on the turn.
+    if (!transcriptText) {
+      const fallback = await service.transcribePcmBuffer(pcm, SAMPLE_RATE);
+      transcriptText = fallback.text?.trim() ?? '';
+      sttResponse = fallback;
+    }
     timings.markSttDone();
 
     const callsign = getEngine().configManager.load().user?.callsign?.trim() || 'Root';
@@ -1189,7 +1254,34 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
     }
 
     // Prefer finalize text; if empty, keep the live partial the operator already saw.
-    const text = transcriptText || previewFallback;
+    let text = transcriptText;
+    let isWakeOnly = false;
+
+    // Wake-word gating: in duplex mode the first turn after idle must begin with
+    // the wake phrase. Subsequent turns within the idle window are accepted as-is.
+    if (session.wakeWordEnabled && session.mode === 'duplex' && text) {
+      const inIdle = isInWakeIdle(session.wakeIdleUntil);
+      const { startsWith, stripped } = tryStripWakePhrase(text, session.wakePhrase);
+      if (!inIdle && !startsWith) {
+        session.turnFinishing = false;
+        ws.send(JSON.stringify({ type: 'transcript_final', text: '', empty: true }));
+        voiceSession?.setState('listening');
+        await resetDuplexListening(session);
+        return;
+      }
+      if (startsWith) {
+        isWakeOnly = !stripped.trim();
+        text = stripped;
+        session.wakeIdleUntil = Date.now() + WAKE_WORD_IDLE_MS;
+        ws.send(JSON.stringify({
+          type: 'wake_idle',
+          sessionId: session.sessionId,
+          until: session.wakeIdleUntil,
+          active: isInWakeIdle(session.wakeIdleUntil),
+        }));
+      }
+    }
+
     if (!text) {
       session.turnFinishing = false;
       if (isAccidentalPttRecording(session)) {
@@ -1197,6 +1289,9 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
         return;
       }
       ws.send(JSON.stringify({ type: 'transcript_final', text: '', empty: true }));
+      if (session.wakeWordEnabled && isWakeOnly && session.mode === 'duplex') {
+        await speakWakeAck(session, callsign);
+      }
       voiceSession?.setState(session.mode === 'duplex' ? 'listening' : 'idle');
       if (session.mode === 'duplex') {
         await resetDuplexListening(session);
@@ -1315,22 +1410,7 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
     ensureSubscribed();
 
     const progress = service.createProgressSession(async (line: string) => {
-      if (session.textOnlyPlayback) return;
-      const fillerId = randomUUID();
-      session.activeSynthId = fillerId;
-      const stream = await service.synthesizeStreamText(line, {
-        forFiller: true,
-        requestId: fillerId,
-        ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
-      });
-      for await (const chunk of stream.chunks) {
-        if (session.activeSynthId !== stream.requestId) break;
-        const audio = Buffer.from(chunk.pcmBase64, 'base64');
-        await sendSessionAudio(session, audio, chunk.sampleRate, true);
-      }
-      if (session.activeSynthId === stream.requestId) {
-        session.activeSynthId = undefined;
-      }
+      await speakShortCachedLine(session, line, true);
     }, { transcript: text });
     session.progress = progress;
 
@@ -1373,8 +1453,10 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
     const unsub = agent.events.on((event) => {
       const ev = event as {
         type?: string; content?: string; stage?: string; tool?: string;
+        description?: string;
         requestId?: string; riskLevel?: string; argsSummary?: string; commandPreview?: string; forAutomation?: boolean;
         questionnaire?: QuestionnairePayload;
+        elapsedMs?: number;
       };
       if (ev.type === 'stream_chunk' && typeof ev.content === 'string' && ev.content) {
         agentDisplayText = normalizeVoiceAssistantContent(agentDisplayText + ev.content);
@@ -1503,9 +1585,8 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
             }
             : {}),
           ...(session.clientSituation ? { clientSituation: session.clientSituation } : {}),
-          // Crew calls always get web search (no dashboard toggle required).
-          // Dashboard voice still respects the search-web chip.
-          ...(crewCall || session.searchWeb ? { forceWebSearch: true } : {}),
+          // Voice sessions always use web search when providers are configured.
+          forceWebSearch: true,
           ...(voiceSession?.speaker ? { speaker: voiceSession.speaker } : {}),
         },
       );

@@ -8,7 +8,7 @@ import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/pris
 import { useColorScheme } from '@mui/material/styles';
 import { colors, alphaColor } from '../theme';
 import { StyledUl, StyledOl, StyledLi, StyledTableWrapper } from '../components/StructuredViews';
-import { splitMarkdownSections, isPlainTextMarkdown, isLikelyPlainProse, PLAIN_TEXT_BUBBLE_MAX_WIDTH } from './markdown-normalize';
+import { splitMarkdownSections, isPlainTextMarkdown, isLikelyPlainProse, normalizeAssistantMarkdown, PLAIN_TEXT_BUBBLE_MAX_WIDTH } from './markdown-normalize';
 import { expandCollapsedTreeLine, isTreeDiagramContent } from './tree-diagram';
 import { isHorizontalPipelineContent, isPipelineDiagramContent } from './pipeline-diagram';
 import { FlowDiagramBlock } from './FlowDiagramBlock';
@@ -723,9 +723,14 @@ export const StreamingMarkdown = memo(function StreamingMarkdown({
   if (!content) return null;
   // Hot path: avoid full markdown normalize on every stream flush.
   const compact = isLikelyPlainProse(content);
+  // Normalize table content so GFM tables render correctly even during streaming.
+  // Without this, tables missing separator rows show raw pipe characters.
+  // Detect tables both with and without separator rows.
+  const hasTable = /\|.+\|/.test(content) && (/\n\|?\s*:?-{2,}/.test(content) || /\n\|.+\|\s*\n/.test(content));
+  const normalized = hasTable ? normalizeAssistantMarkdown(content) : content;
   return (
     <MarkdownSection
-      content={content}
+      content={normalized}
       index={0}
       compact={compact}
       live={live && compact}

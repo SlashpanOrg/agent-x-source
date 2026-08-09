@@ -57,6 +57,9 @@ describe('TurnJourney', () => {
     });
     expect(result.journeyBlock).toContain('[TURN_JOURNEY]');
     expect(result.journeyBlock).toContain('Default silent research order');
+    expect(result.journeyBlock).toContain('1. MEMORY');
+    expect(result.journeyBlock).toContain('2. KNOWLEDGE');
+    expect(result.journeyBlock).toContain('3. WEB');
     expect(result.journeyBlock).not.toContain('STAGE 1');
   });
 });

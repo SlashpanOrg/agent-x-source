@@ -601,4 +601,51 @@ export const SHIPPED_PROVIDERS: IntegrationProvider[] = [
     capabilities: { search: true, read: true, write: true, transact: true },
     tools: { alwaysConfirm: ['book', 'reserve', 'cancel'] },
   },
+  // ─── Zomato MCP ───────────────────────────────────────────────────────────
+  // Remote HTTP MCP. Zomato uses ONE shared OAuth client for all DCR registrations —
+  // redirect URIs are enforced against a fixed allowlist (Claude, ChatGPT, VS Code, etc.).
+  // http://localhost is NOT on that list; OAuth returns invalid_redirect_uri until Zomato
+  // whitelists Agent-X's callback URL (request via their developer form).
+  {
+    id: 'zomato',
+    name: 'Zomato',
+    category: 'shopping',
+    catalogStatus: 'candidate',
+    description: 'Restaurant discovery, menus, cart, food ordering, and QR payment via Zomato MCP.',
+    icon: 'restaurant',
+    website: 'https://github.com/Zomato/mcp-server-manifest',
+    trust: 'verified',
+    server: {
+      type: 'remote',
+      url: 'https://mcp-server.zomato.com/mcp',
+      package: 'https://mcp-server.zomato.com/mcp',
+    },
+    auth: {
+      primary: 'oauth',
+      developer: ['remote_url', 'oauth'],
+      oauth: {
+        discoveryUrl: 'https://mcp-server.zomato.com/.well-known/oauth-authorization-server',
+        scopes: ['mcp:tools'],
+        resource: 'https://mcp-server.zomato.com/mcp',
+        redirectAllowlistRequired: true,
+      },
+      connectGuide: [
+        {
+          title: 'Request MCP + redirect URI access',
+          body: 'Zomato must approve your account and whitelist Agent-X\'s OAuth callback URL. Submit their developer form and include the exact redirect URI shown in the setup wizard (http://localhost:3333/api/integrations/oauth/callback by default). Without whitelist approval, sign-in fails with invalid_redirect_uri.',
+          link: 'https://forms.eternal.com/form/ja8hap2tpm',
+        },
+        {
+          title: 'After Zomato approves',
+          body: 'Return here and click Sign in with Zomato. Agent-X registers OAuth automatically and opens your browser for authorization.',
+        },
+        {
+          title: 'Start ordering',
+          body: 'Once connected, your agent can search restaurants, browse menus, build carts, place orders, and complete QR payments.',
+        },
+      ],
+    },
+    capabilities: { search: true, read: true, write: true, transact: true },
+    tools: { alwaysConfirm: ['place_order', 'checkout', 'pay', 'order', 'cart', 'payment'] },
+  },
 ];

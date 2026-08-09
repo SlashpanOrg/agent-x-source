@@ -83,6 +83,14 @@ export {
 } from './markdown/MarkdownDocumentStore.js';
 // Attachments
 export { AttachmentService, getAttachmentService } from './attachments/index.js';
+export {
+  assessExtractedText,
+  isUsableExtractedText,
+  looksLikeFailedPdfExtract,
+  materializeAttachment,
+  cleanupDocumentTemps,
+} from './documents/index.js';
+export type { DocumentObject, DocumentMethod, MaterializeOptions, TextQualityAssessment } from './documents/index.js';
 
 export { ProviderFactory } from './providers/index.js';
 export type { ProviderInterface, ProviderFactoryOptions } from './providers/index.js';
@@ -508,6 +516,12 @@ export type { WhatsAppEvent, WhatsAppEventMap } from './whatsapp/WhatsAppEventBu
 // GeoLocation service (server-side IP geolocation with periodic refresh)
 export { GeoLocationService, setGeoLocationServiceInstance, getGeoLocationService } from './services/GeoLocationService.js';
 export type { GeoLocationResult, GeoLocationUpdateCallback } from './services/GeoLocationService.js';
+export {
+  registerClientSituationSetter,
+  registerClientSituationGetter,
+  pushClientSituation,
+  getRegisteredClientSituation,
+} from './services/ClientSituationRegistry.js';
 
 // WhatsApp ack tracking + media handling (Phase 4.4, 4.5)
 export { AckTracker } from './whatsapp/AckTracker.js';

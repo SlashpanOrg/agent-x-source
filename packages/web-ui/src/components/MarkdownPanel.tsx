@@ -8,6 +8,7 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
 import { PanelHeader } from './PanelHeader';
+import { ConfirmDeleteDialog } from './ConfirmDeleteDialog';
 import { MarkdownViewer } from './MarkdownViewer';
 import { markdownDocuments, type MarkdownDocumentRecord } from '../api';
 import { groupMarkdownDocumentsByDay } from '../markdown/markdown-list-groups';
@@ -126,6 +127,8 @@ export function MarkdownPanel() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<{ contentMarkdown?: string } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [deletePendingId, setDeletePendingId] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -188,6 +191,19 @@ export function MarkdownPanel() {
     } catch { /* ignore */ }
   };
 
+  const confirmDelete = async () => {
+    if (!deletePendingId) return;
+    setDeleteBusy(true);
+    try {
+      await handleDelete(deletePendingId);
+      setDeletePendingId(null);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const deletePendingItem = deletePendingId ? items.find((c) => c.id === deletePendingId) : null;
+
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', bgcolor: colors.bg.primary }}>
       <PanelHeader
@@ -234,7 +250,7 @@ export function MarkdownPanel() {
                     item={item}
                     selected={item.id === selectedId}
                     onSelect={() => setSelectedId(item.id)}
-                    onDelete={() => void handleDelete(item.id)}
+                    onDelete={() => setDeletePendingId(item.id)}
                   />
                 ))}
               </Box>
@@ -267,6 +283,16 @@ export function MarkdownPanel() {
           )}
         </Box>
       </Box>
+
+      <ConfirmDeleteDialog
+        open={Boolean(deletePendingId)}
+        busy={deleteBusy}
+        title="DELETE DOCUMENT"
+        description="Permanently delete"
+        itemName={deletePendingItem?.title ?? deletePendingItem?.id ?? 'this document'}
+        onClose={() => setDeletePendingId(null)}
+        onConfirm={() => { void confirmDelete(); }}
+      />
     </Box>
   );
 }

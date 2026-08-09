@@ -11,20 +11,23 @@
 import type { MigrationFile } from './MigrationRunner.js';
 
 export const MIGRATION_FILES: MigrationFile[] = [
-  { version: 1, name: 'baseline_core_schema', sql: `-- Baseline core schema: sessions, messages, crews, permissions, etc.
--- This is the initial schema that was previously created by SCHEMA_SQL in PostgresStorageAdapter.
+  { version: 1, name: 'core', sql: `-- Core schema: sessions, messages, crews, tokens, tasks, events, persona,
+-- emotions, memories, skills, credentials, background tasks.
+--
+-- This is the squashed baseline representing the final state of all core
+-- tables. No ALTER TABLE migrations needed — all columns are in their final
+-- form from creation.
 
--- Ensure pgcrypto is available for gen_random_uuid() (built-in on PG 13+, requires extension on PG 12).
--- Wrapped in DO block so cloud PG users without CREATE EXTENSION privileges don't fail the migration.
--- gen_random_uuid() is only used as a column DEFAULT for agent_persona and task_snapshots;
--- the app always provides explicit IDs when inserting, so missing pgcrypto is non-fatal.
+-- Ensure pgcrypto is available for gen_random_uuid() (built-in on PG 13+).
 DO $$ BEGIN
   CREATE EXTENSION IF NOT EXISTS pgcrypto;
 EXCEPTION WHEN OTHERS THEN
   RAISE NOTICE 'pgcrypto extension not available: %', SQLERRM;
 END $$;
 
-CREATE TABLE IF NOT EXISTS sessions (
+-- ─── Sessions ───────────────────────────────────────────────────────────────
+
+CREATE TABLE sessions (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT 'New Session',
   provider_id TEXT NOT NULL,
@@ -34,11 +37,26 @@ CREATE TABLE IF NOT EXISTS sessions (
   token_used INTEGER DEFAULT 0,
   token_available INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'active',
+  compaction_count INTEGER NOT NULL DEFAULT 0,
+  context_kind TEXT NOT NULL DEFAULT 'agent_x',
+  host_crew_id TEXT,
+  host_crew_name TEXT,
+  host_crew_callsign TEXT,
+  host_crew_title TEXT,
+  host_crew_color TEXT,
+  host_crew_catalog_id TEXT,
+  host_crew_category_id TEXT,
+  list_day_key TEXT,
+  list_day_label TEXT,
+  thinking_mode TEXT,
+  output_mode TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS child_sessions (
+CREATE INDEX idx_sessions_crew_private ON sessions(host_crew_id, context_kind);
+
+CREATE TABLE child_sessions (
   id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
   parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   kind TEXT NOT NULL DEFAULT 'sub_agent',
@@ -48,9 +66,11 @@ CREATE TABLE IF NOT EXISTS child_sessions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_child_sessions_parent ON child_sessions(parent_session_id);
+CREATE INDEX idx_child_sessions_parent ON child_sessions(parent_session_id);
 
-CREATE TABLE IF NOT EXISTS messages (
+-- ─── Messages ───────────────────────────────────────────────────────────────
+
+CREATE TABLE messages (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   role TEXT NOT NULL,
@@ -60,10 +80,20 @@ CREATE TABLE IF NOT EXISTS messages (
   parts TEXT,
   metadata TEXT,
   token_count INTEGER DEFAULT 0,
+  attachments TEXT,
+  archived_at TIMESTAMPTZ,
+  platform_message_id BIGINT,
+  platform_message_ids TEXT,
+  platform_chat_id BIGINT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS message_parts (
+CREATE INDEX idx_messages_session ON messages(session_id);
+CREATE INDEX idx_messages_session_created ON messages(session_id, created_at);
+CREATE INDEX idx_messages_session_active ON messages(session_id, created_at) WHERE archived_at IS NULL;
+CREATE INDEX idx_messages_platform_chat_id ON messages(platform_chat_id) WHERE platform_chat_id IS NOT NULL;
+
+CREATE TABLE message_parts (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   message_id TEXT,
@@ -79,7 +109,13 @@ CREATE TABLE IF NOT EXISTS message_parts (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS token_logs (
+CREATE INDEX idx_parts_session ON message_parts(session_id);
+CREATE INDEX idx_message_parts_message_id ON message_parts(message_id);
+CREATE INDEX idx_message_parts_session_created ON message_parts(session_id, created_at);
+
+-- ─── Token logs ─────────────────────────────────────────────────────────────
+
+CREATE TABLE token_logs (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   message_id TEXT,
@@ -93,16 +129,11 @@ CREATE TABLE IF NOT EXISTS token_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS permissions (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  tool_name TEXT NOT NULL,
-  target_path TEXT,
-  decision TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+CREATE INDEX idx_token_logs_session ON token_logs(session_id);
 
-CREATE TABLE IF NOT EXISTS checkpoints (
+-- ─── Checkpoints ────────────────────────────────────────────────────────────
+
+CREATE TABLE checkpoints (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   label TEXT NOT NULL,
@@ -110,7 +141,11 @@ CREATE TABLE IF NOT EXISTS checkpoints (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS session_crew_states (
+CREATE INDEX idx_checkpoints_session ON checkpoints(session_id);
+
+-- ─── Session crew states ────────────────────────────────────────────────────
+
+CREATE TABLE session_crew_states (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   crew_id TEXT NOT NULL,
@@ -122,7 +157,11 @@ CREATE TABLE IF NOT EXISTS session_crew_states (
   UNIQUE(session_id, crew_id)
 );
 
-CREATE TABLE IF NOT EXISTS tool_executions (
+CREATE INDEX idx_session_crew_states_session ON session_crew_states(session_id);
+
+-- ─── Tool executions ────────────────────────────────────────────────────────
+
+CREATE TABLE tool_executions (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   agent_task_id TEXT,
@@ -134,7 +173,11 @@ CREATE TABLE IF NOT EXISTS tool_executions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS session_events (
+CREATE INDEX idx_tool_executions_session ON tool_executions(session_id);
+
+-- ─── Session events ─────────────────────────────────────────────────────────
+
+CREATE TABLE session_events (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   sequence INTEGER NOT NULL,
@@ -143,7 +186,11 @@ CREATE TABLE IF NOT EXISTS session_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS permission_rules (
+CREATE INDEX idx_session_events_session ON session_events(session_id, sequence);
+
+-- ─── Permission rules ───────────────────────────────────────────────────────
+
+CREATE TABLE permission_rules (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   action TEXT NOT NULL,
@@ -153,7 +200,9 @@ CREATE TABLE IF NOT EXISTS permission_rules (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS agent_tasks (
+-- ─── Agent tasks ────────────────────────────────────────────────────────────
+
+CREATE TABLE agent_tasks (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   parent_id TEXT,
@@ -167,7 +216,11 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS crews (
+CREATE INDEX idx_agent_tasks_session ON agent_tasks(session_id);
+
+-- ─── Crews ──────────────────────────────────────────────────────────────────
+
+CREATE TABLE crews (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL DEFAULT '',
   title TEXT,
@@ -180,11 +233,24 @@ CREATE TABLE IF NOT EXISTS crews (
   disabled_tools TEXT,
   is_default INTEGER DEFAULT 0,
   metadata TEXT,
+  source TEXT NOT NULL DEFAULT 'custom',
+  catalog_id TEXT,
+  search_text TEXT NOT NULL DEFAULT '',
+  suggestable BOOLEAN NOT NULL DEFAULT TRUE,
+  certifications TEXT[] NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS crew_feedback (
+-- FTS column on crews (generated tsvector)
+ALTER TABLE crews ADD COLUMN search_tsv tsvector
+  GENERATED ALWAYS AS (to_tsvector('english', coalesce(search_text, ''))) STORED;
+
+CREATE INDEX idx_crews_tsv ON crews USING GIN (search_tsv);
+CREATE INDEX idx_crews_source ON crews(source);
+CREATE UNIQUE INDEX idx_crews_catalog_id ON crews(catalog_id) WHERE catalog_id IS NOT NULL;
+
+CREATE TABLE crew_feedback (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   crew_id TEXT NOT NULL,
@@ -193,7 +259,11 @@ CREATE TABLE IF NOT EXISTS crew_feedback (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS turn_feedback (
+CREATE INDEX idx_crew_feedback_crew ON crew_feedback(crew_id);
+
+-- ─── Turn feedback ──────────────────────────────────────────────────────────
+
+CREATE TABLE turn_feedback (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   message_id TEXT NOT NULL,
@@ -206,7 +276,12 @@ CREATE TABLE IF NOT EXISTS turn_feedback (
   UNIQUE(session_id, message_id)
 );
 
-CREATE TABLE IF NOT EXISTS session_resume_state (
+CREATE INDEX idx_turn_feedback_session ON turn_feedback(session_id);
+CREATE INDEX idx_turn_feedback_crew ON turn_feedback(crew_id);
+
+-- ─── Session resume state ───────────────────────────────────────────────────
+
+CREATE TABLE session_resume_state (
   session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
   kind TEXT NOT NULL,
   message_id TEXT NOT NULL,
@@ -214,20 +289,9 @@ CREATE TABLE IF NOT EXISTS session_resume_state (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-CREATE INDEX IF NOT EXISTS idx_parts_session ON message_parts(session_id);
-CREATE INDEX IF NOT EXISTS idx_token_logs_session ON token_logs(session_id);
-CREATE INDEX IF NOT EXISTS idx_permissions_session ON permissions(session_id);
-CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id);
-CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id, sequence);
-CREATE INDEX IF NOT EXISTS idx_tool_executions_session ON tool_executions(session_id);
-CREATE INDEX IF NOT EXISTS idx_agent_tasks_session ON agent_tasks(session_id);
-CREATE INDEX IF NOT EXISTS idx_crew_feedback_crew ON crew_feedback(crew_id);
-CREATE INDEX IF NOT EXISTS idx_turn_feedback_session ON turn_feedback(session_id);
-CREATE INDEX IF NOT EXISTS idx_turn_feedback_crew ON turn_feedback(crew_id);
-CREATE INDEX IF NOT EXISTS idx_session_crew_states_session ON session_crew_states(session_id);
+-- ─── Bot credentials ────────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS bot_credentials (
+CREATE TABLE bot_credentials (
   platform TEXT PRIMARY KEY,
   config_enc TEXT NOT NULL,
   iv TEXT NOT NULL,
@@ -236,7 +300,9 @@ CREATE TABLE IF NOT EXISTS bot_credentials (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS skills (
+-- ─── Skills ─────────────────────────────────────────────────────────────────
+
+CREATE TABLE skills (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
@@ -249,7 +315,9 @@ CREATE TABLE IF NOT EXISTS skills (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS agent_persona (
+-- ─── Agent persona ──────────────────────────────────────────────────────────
+
+CREATE TABLE agent_persona (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
   name TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
@@ -260,7 +328,9 @@ CREATE TABLE IF NOT EXISTS agent_persona (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS task_snapshots (
+-- ─── Task snapshots ─────────────────────────────────────────────────────────
+
+CREATE TABLE task_snapshots (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
   session_id TEXT NOT NULL,
   task_id TEXT NOT NULL,
@@ -271,7 +341,9 @@ CREATE TABLE IF NOT EXISTS task_snapshots (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS agent_experiences (
+-- ─── Agent growth / emotions / memories ─────────────────────────────────────
+
+CREATE TABLE agent_experiences (
   id TEXT PRIMARY KEY,
   session_id TEXT,
   category TEXT,
@@ -286,7 +358,7 @@ CREATE TABLE IF NOT EXISTS agent_experiences (
   created_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS agent_growth_state (
+CREATE TABLE agent_growth_state (
   id INTEGER PRIMARY KEY DEFAULT 1,
   level TEXT DEFAULT 'Fresh',
   wisdom_score REAL DEFAULT 0,
@@ -300,15 +372,35 @@ CREATE TABLE IF NOT EXISTS agent_growth_state (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS agent_emotions (
+CREATE TABLE agent_emotions (
   id TEXT PRIMARY KEY,
   mood TEXT,
   intensity REAL,
   context TEXT,
+  session_id TEXT,
+  source TEXT,
+  trigger TEXT,
+  valence REAL,
   created_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS agent_memories (
+CREATE INDEX idx_agent_emotions_source ON agent_emotions(source);
+CREATE INDEX idx_agent_emotions_session ON agent_emotions(session_id);
+
+CREATE TABLE agent_emotional_state (
+  id INTEGER PRIMARY KEY DEFAULT 1,
+  current_mood TEXT NOT NULL DEFAULT 'neutral',
+  mood_intensity REAL NOT NULL DEFAULT 0.3,
+  mood_since TEXT,
+  baseline_mood TEXT NOT NULL DEFAULT 'neutral',
+  emotional_range TEXT NOT NULL DEFAULT '[]',
+  mood_decay_rate REAL NOT NULL DEFAULT 0.05,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO agent_emotional_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE agent_memories (
   id TEXT PRIMARY KEY,
   content TEXT,
   category TEXT,
@@ -316,7 +408,7 @@ CREATE TABLE IF NOT EXISTS agent_memories (
   created_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS agent_diary (
+CREATE TABLE agent_diary (
   id TEXT PRIMARY KEY,
   entry TEXT,
   importance INTEGER,
@@ -325,57 +417,41 @@ CREATE TABLE IF NOT EXISTS agent_diary (
   created_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS agent_identity (
+CREATE TABLE agent_identity (
   id INTEGER PRIMARY KEY DEFAULT 1,
   interaction_count INTEGER DEFAULT 0
 );
+
+-- ─── Background tasks ───────────────────────────────────────────────────────
+
+CREATE TABLE background_tasks (
+  id TEXT PRIMARY KEY,
+  parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  child_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  instruction TEXT NOT NULL,
+  tools TEXT NOT NULL DEFAULT '[]',
+  timeout INTEGER NOT NULL DEFAULT 60000,
+  status TEXT NOT NULL DEFAULT 'queued',
+  result TEXT,
+  error TEXT,
+  resource_usage TEXT,
+  channel_context TEXT,
+  background BOOLEAN NOT NULL DEFAULT true,
+  consumed BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_background_tasks_parent_session ON background_tasks(parent_session_id);
+CREATE INDEX idx_background_tasks_status ON background_tasks(status);
+CREATE INDEX idx_background_tasks_created_at ON background_tasks(created_at DESC);
 ` },
-  { version: 2, name: 'incremental_column_additions', sql: `-- Incremental column additions and index changes added after the initial schema.
--- Previously applied via ALTER TABLE ... ADD COLUMN IF NOT EXISTS in migrate().
+  { version: 2, name: 'crew_catalog', sql: `-- Crew Hub catalog tables, full-text search, and session preferences.
+-- Crew catalog data is seeded at application level from crew-catalog.manifest.json
+-- (see catalog-seed-runner.ts) — no seed data in SQL.
 
--- messages: parts column (for structured message parts)
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS parts TEXT;
-
--- messages: soft-archive support
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
-CREATE INDEX IF NOT EXISTS idx_messages_session_active ON messages(session_id, created_at) WHERE archived_at IS NULL;
-
--- message_parts: link to messages table
-ALTER TABLE message_parts ADD COLUMN IF NOT EXISTS message_id TEXT;
-CREATE INDEX IF NOT EXISTS idx_message_parts_message_id ON message_parts(message_id);
-CREATE INDEX IF NOT EXISTS idx_message_parts_session_created ON message_parts(session_id, created_at);
-
--- messages: session+created index for ordered reads
-CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(session_id, created_at);
-
--- crews: additional metadata columns
-ALTER TABLE crews ADD COLUMN IF NOT EXISTS title TEXT;
-ALTER TABLE crews ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
-
--- sessions: compaction tracking
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS compaction_count INTEGER NOT NULL DEFAULT 0;
-
--- sessions: crew private session support
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_kind TEXT NOT NULL DEFAULT 'agent_x';
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host_crew_id TEXT;
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host_crew_name TEXT;
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host_crew_callsign TEXT;
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host_crew_title TEXT;
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host_crew_color TEXT;
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host_crew_catalog_id TEXT;
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host_crew_category_id TEXT;
-CREATE INDEX IF NOT EXISTS idx_sessions_crew_private ON sessions(host_crew_id, context_kind);
-
--- Backfill child_sessions from sessions for existing sub-agent sessions
-INSERT INTO child_sessions (id, parent_session_id, kind, label, status, created_at, updated_at)
-SELECT id, parent_id, 'sub_agent', title, status, created_at, updated_at
-FROM sessions WHERE parent_id IS NOT NULL
-ON CONFLICT (id) DO NOTHING;
-` },
-  { version: 3, name: 'crew_catalog_and_fts', sql: `-- Crew Hub catalog tables, full-text search, and crew metadata columns.
--- Previously created by runPgCrewCatalogMigration() in postgres-crew-catalog.ts.
-
-CREATE TABLE IF NOT EXISTS crew_catalog (
+CREATE TABLE crew_catalog (
   id              TEXT PRIMARY KEY,
   callsign        TEXT NOT NULL UNIQUE,
   name            TEXT NOT NULL,
@@ -390,18 +466,33 @@ CREATE TABLE IF NOT EXISTS crew_catalog (
   tools           TEXT,
   tags            TEXT,
   search_text     TEXT NOT NULL DEFAULT '',
+  certifications  TEXT[] NOT NULL DEFAULT '{}',
   hub_revision    INTEGER NOT NULL DEFAULT 1,
   active          BOOLEAN NOT NULL DEFAULT TRUE,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS app_metadata (
+CREATE INDEX idx_crew_catalog_category ON crew_catalog(category_id);
+CREATE INDEX idx_crew_catalog_callsign ON crew_catalog(callsign);
+CREATE INDEX idx_crew_catalog_active ON crew_catalog(active);
+
+-- FTS column on crew_catalog (generated tsvector)
+ALTER TABLE crew_catalog ADD COLUMN search_tsv tsvector
+  GENERATED ALWAYS AS (to_tsvector('english', coalesce(search_text, ''))) STORED;
+
+CREATE INDEX idx_crew_catalog_tsv ON crew_catalog USING GIN (search_tsv);
+
+-- ─── App metadata (key-value store for catalog revision, etc.) ──────────────
+
+CREATE TABLE app_metadata (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS session_crew_preferences (
+-- ─── Session crew preferences (suggestion dismissal tracking) ───────────────
+
+CREATE TABLE session_crew_preferences (
   session_id              TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
   suggestions_dismissed   BOOLEAN NOT NULL DEFAULT FALSE,
   dismissed_at            TIMESTAMPTZ,
@@ -409,48 +500,16 @@ CREATE TABLE IF NOT EXISTS session_crew_preferences (
   last_suggestion_turn_id TEXT,
   updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-
-CREATE INDEX IF NOT EXISTS idx_crew_catalog_category ON crew_catalog(category_id);
-CREATE INDEX IF NOT EXISTS idx_crew_catalog_callsign ON crew_catalog(callsign);
-CREATE INDEX IF NOT EXISTS idx_crew_catalog_active ON crew_catalog(active);
-
--- Crew metadata columns
-ALTER TABLE crews ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'custom';
-ALTER TABLE crews ADD COLUMN IF NOT EXISTS catalog_id TEXT;
-ALTER TABLE crews ADD COLUMN IF NOT EXISTS search_text TEXT NOT NULL DEFAULT '';
-ALTER TABLE crews ADD COLUMN IF NOT EXISTS suggestable BOOLEAN NOT NULL DEFAULT TRUE;
-
--- Full-text search columns (generated tsvector)
-DO $$ BEGIN
-  ALTER TABLE crew_catalog ADD COLUMN search_tsv tsvector
-    GENERATED ALWAYS AS (to_tsvector('english', coalesce(search_text, ''))) STORED;
-EXCEPTION WHEN duplicate_column THEN NULL;
-END $$;
-
-DO $$ BEGIN
-  ALTER TABLE crews ADD COLUMN search_tsv tsvector
-    GENERATED ALWAYS AS (to_tsvector('english', coalesce(search_text, ''))) STORED;
-EXCEPTION WHEN duplicate_column THEN NULL;
-END $$;
-
-CREATE INDEX IF NOT EXISTS idx_crew_catalog_tsv ON crew_catalog USING GIN (search_tsv);
-CREATE INDEX IF NOT EXISTS idx_crews_tsv ON crews USING GIN (search_tsv);
-CREATE INDEX IF NOT EXISTS idx_crews_source ON crews(source);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_crews_catalog_id ON crews(catalog_id) WHERE catalog_id IS NOT NULL;
-
--- Legacy _schema table for backward compatibility (records v20 marker)
-CREATE TABLE IF NOT EXISTS _schema (
-  version     INTEGER PRIMARY KEY,
-  applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-INSERT INTO _schema (version) VALUES (20) ON CONFLICT (version) DO NOTHING;
 ` },
-  { version: 4, name: 'automation_and_notifications', sql: `-- Automation tasks, run logs, notifications, and session confirmations.
--- Previously created inline in PostgresStorageAdapter.migrate().
+  { version: 3, name: 'automation_markdown_kb', sql: `-- Automation, notifications, markdown documents, knowledge base, pgvector,
+-- voice realtime state, document templates, and document studio.
 
-CREATE TABLE IF NOT EXISTS automation_tasks (
+-- ─── Automation tasks ───────────────────────────────────────────────────────
+
+CREATE TABLE automation_tasks (
   id TEXT PRIMARY KEY,
   task_key TEXT,
+  display_id TEXT,
   title TEXT NOT NULL,
   instruction TEXT NOT NULL,
   schedule_type TEXT NOT NULL CHECK (schedule_type IN ('once', 'recurring')),
@@ -472,13 +531,12 @@ CREATE TABLE IF NOT EXISTS automation_tasks (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_automation_tasks_status ON automation_tasks(status);
-CREATE INDEX IF NOT EXISTS idx_automation_tasks_session ON automation_tasks(source_session_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_tasks_active_key ON automation_tasks(task_key) WHERE task_key IS NOT NULL AND status = 'active';
-ALTER TABLE automation_tasks ADD COLUMN IF NOT EXISTS display_id TEXT;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_tasks_display_id ON automation_tasks(display_id) WHERE display_id IS NOT NULL;
+CREATE INDEX idx_automation_tasks_status ON automation_tasks(status);
+CREATE INDEX idx_automation_tasks_session ON automation_tasks(source_session_id);
+CREATE UNIQUE INDEX idx_automation_tasks_active_key ON automation_tasks(task_key) WHERE task_key IS NOT NULL AND status = 'active';
+CREATE UNIQUE INDEX idx_automation_tasks_display_id ON automation_tasks(display_id) WHERE display_id IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS automation_run_logs (
+CREATE TABLE automation_run_logs (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL REFERENCES automation_tasks(id) ON DELETE CASCADE,
   run_id TEXT NOT NULL,
@@ -489,10 +547,18 @@ CREATE TABLE IF NOT EXISTS automation_run_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_automation_run_logs_task_created ON automation_run_logs(task_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_automation_run_logs_run ON automation_run_logs(run_id, created_at);
+CREATE INDEX idx_automation_run_logs_task_created ON automation_run_logs(task_id, created_at);
+CREATE INDEX idx_automation_run_logs_run ON automation_run_logs(run_id, created_at);
 
-CREATE TABLE IF NOT EXISTS notifications (
+CREATE TABLE automation_session_confirmations (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  confirmed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  confirmation_note TEXT
+);
+
+-- ─── Notifications ──────────────────────────────────────────────────────────
+
+CREATE TABLE notifications (
   id TEXT PRIMARY KEY,
   task_id TEXT REFERENCES automation_tasks(id) ON DELETE SET NULL,
   kind TEXT NOT NULL,
@@ -502,24 +568,17 @@ CREATE TABLE IF NOT EXISTS notifications (
   channels JSONB NOT NULL DEFAULT '["in_app"]'::jsonb,
   delivery_status JSONB NOT NULL DEFAULT '{}'::jsonb,
   read_at TIMESTAMPTZ,
+  dismissed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at DESC);
-ALTER TABLE notifications ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMPTZ;
-CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(read_at) WHERE read_at IS NULL AND dismissed_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_notifications_active ON notifications(created_at DESC) WHERE dismissed_at IS NULL;
+CREATE INDEX idx_notifications_created ON notifications(created_at DESC);
+CREATE INDEX idx_notifications_unread ON notifications(read_at) WHERE read_at IS NULL AND dismissed_at IS NULL;
+CREATE INDEX idx_notifications_active ON notifications(created_at DESC) WHERE dismissed_at IS NULL;
 
-CREATE TABLE IF NOT EXISTS automation_session_confirmations (
-  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-  confirmed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  confirmation_note TEXT
-);
-` },
-  { version: 5, name: 'markdown_canvases', sql: `-- Markdown documents table (historically named "canvases"; renamed to "markdowns" in V015).
--- Previously created by MarkdownDocumentStore.ensureSchema().
+-- ─── Markdown documents ─────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS canvases (
+CREATE TABLE markdowns (
   id TEXT PRIMARY KEY,
   session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
   message_id TEXT,
@@ -529,131 +588,18 @@ CREATE TABLE IF NOT EXISTS canvases (
   content_format TEXT NOT NULL DEFAULT 'markdown',
   source_role TEXT,
   compile_error TEXT,
+  list_day_key TEXT,
+  list_day_label TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_canvases_created ON canvases(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_canvases_session ON canvases(session_id, created_at DESC);
+CREATE INDEX idx_markdowns_created ON markdowns(created_at DESC);
+CREATE INDEX idx_markdowns_session ON markdowns(session_id, created_at DESC);
 
--- Ensure session_id is nullable (older versions may have created it NOT NULL)
-ALTER TABLE canvases ALTER COLUMN session_id DROP NOT NULL;
+-- ─── Knowledge base ─────────────────────────────────────────────────────────
 
--- Ensure the FK uses ON DELETE SET NULL (older versions may have used CASCADE)
-DO $$
-DECLARE
-  conname TEXT;
-  has_set_null BOOLEAN;
-BEGIN
-  SELECT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conrelid = 'canvases'::regclass
-      AND contype = 'f'
-      AND pg_get_constraintdef(oid) LIKE 'FOREIGN KEY (session_id)%'
-      AND pg_get_constraintdef(oid) LIKE '%ON DELETE SET NULL%'
-  ) INTO has_set_null;
-
-  IF NOT has_set_null THEN
-    SELECT c.conname INTO conname
-    FROM pg_constraint c
-    WHERE c.conrelid = 'canvases'::regclass
-      AND c.contype = 'f'
-      AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (session_id)%';
-
-    IF conname IS NOT NULL THEN
-      EXECUTE format('ALTER TABLE canvases DROP CONSTRAINT %I', conname);
-    END IF;
-
-    EXECUTE 'ALTER TABLE canvases ADD CONSTRAINT canvases_session_id_fkey FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL';
-  END IF;
-END $$;
-` },
-  { version: 6, name: 'fix_emotion_engine_tables', sql: `-- Fix EmotionEngine tables: add missing columns to agent_emotions and create agent_emotional_state.
---
--- The EmotionEngine inserts into agent_emotions with columns (session_id, source, trigger, valence)
--- that were not in the original V001 schema. It also queries agent_emotional_state which was never
--- created. Both gaps caused silent failures (wrapped in try/catch) where emotional state tracking
--- was non-functional.
-
--- Add missing columns to agent_emotions
-ALTER TABLE agent_emotions ADD COLUMN IF NOT EXISTS session_id TEXT;
-ALTER TABLE agent_emotions ADD COLUMN IF NOT EXISTS source TEXT;
-ALTER TABLE agent_emotions ADD COLUMN IF NOT EXISTS trigger TEXT;
-ALTER TABLE agent_emotions ADD COLUMN IF NOT EXISTS valence REAL;
-CREATE INDEX IF NOT EXISTS idx_agent_emotions_source ON agent_emotions(source);
-CREATE INDEX IF NOT EXISTS idx_agent_emotions_session ON agent_emotions(session_id);
-
--- Create agent_emotional_state (singleton row, id=1)
-CREATE TABLE IF NOT EXISTS agent_emotional_state (
-  id INTEGER PRIMARY KEY DEFAULT 1,
-  current_mood TEXT NOT NULL DEFAULT 'neutral',
-  mood_intensity REAL NOT NULL DEFAULT 0.3,
-  mood_since TEXT,
-  baseline_mood TEXT NOT NULL DEFAULT 'neutral',
-  emotional_range TEXT NOT NULL DEFAULT '[]',
-  mood_decay_rate REAL NOT NULL DEFAULT 0.05,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-INSERT INTO agent_emotional_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
-` },
-  { version: 7, name: 'platform_message_ids', sql: `-- Add columns to track external platform message IDs (Telegram, Slack, Discord)
--- so that channel clear can delete messages from the external platform API.
--- These are nullable — existing messages and non-channel sessions have NULL.
-
--- platform_message_id: single message_id for inbound user messages from a channel
--- platform_message_ids: JSON array of message_ids for outbound assistant replies (multi-chunk)
--- platform_chat_id: the chat/channel ID on the external platform (e.g. Telegram chat_id)
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS platform_message_id BIGINT;
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS platform_message_ids TEXT;
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS platform_chat_id BIGINT;
-
--- Index for efficient lookup when clearing a channel conversation.
-CREATE INDEX IF NOT EXISTS idx_messages_platform_chat_id ON messages(platform_chat_id) WHERE platform_chat_id IS NOT NULL;
-` },
-  { version: 8, name: 'background_tasks', sql: `-- Durable background task records.
--- Tracks every delegated / background sub-agent task so the UI can restore
--- active/completed work across reconnects and the dashboard can surface
--- cross-session background work.
-CREATE TABLE IF NOT EXISTS background_tasks (
-  id TEXT PRIMARY KEY,
-  parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  child_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
-  instruction TEXT NOT NULL,
-  tools TEXT NOT NULL DEFAULT '[]',
-  timeout INTEGER NOT NULL DEFAULT 60000,
-  status TEXT NOT NULL DEFAULT 'queued',
-  result TEXT,
-  error TEXT,
-  resource_usage TEXT,
-  channel_context TEXT,
-  background BOOLEAN NOT NULL DEFAULT true,
-  consumed BOOLEAN NOT NULL DEFAULT false,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  completed_at TIMESTAMPTZ
-);
-
-CREATE INDEX IF NOT EXISTS idx_background_tasks_parent_session ON background_tasks(parent_session_id);
-CREATE INDEX IF NOT EXISTS idx_background_tasks_status ON background_tasks(status);
-CREATE INDEX IF NOT EXISTS idx_background_tasks_created_at ON background_tasks(created_at DESC);
-` },
-  { version: 9, name: 'drop_permissions_table', sql: `-- Drop the legacy per-session permissions table.
--- Permission decisions are now stored in the file-backed SessionPermissionStore
--- at {dataDir}/sessions/{sessionId}/permissions.json, and the bypass flag is
--- managed by the unified permission system. The old DB table is no longer
--- read or written by any code path.
-DROP TABLE IF EXISTS permissions;
-DROP INDEX IF EXISTS idx_permissions_session;
-` },
-  { version: 10, name: 'message_attachments', sql: `-- Adds persisted attachments to the messages table for chat file previews.
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments TEXT;
-` },
-  { version: 11, name: 'knowledge_base', sql: `-- Knowledge Base: persistent source registry, chunks, pages and lifecycle events.
--- Designed to work with or without pgvector (vector ops live in the application
--- or in an optional pgvector table created in V012).
-
-CREATE TABLE IF NOT EXISTS knowledge_sources (
+CREATE TABLE knowledge_sources (
   id TEXT PRIMARY KEY,
   session_id TEXT,
   name TEXT NOT NULL,
@@ -670,28 +616,25 @@ CREATE TABLE IF NOT EXISTS knowledge_sources (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_knowledge_sources_session ON knowledge_sources(session_id);
-CREATE INDEX IF NOT EXISTS idx_knowledge_sources_status ON knowledge_sources(status);
-CREATE INDEX IF NOT EXISTS idx_knowledge_sources_created_at ON knowledge_sources(created_at DESC);
+CREATE INDEX idx_knowledge_sources_session ON knowledge_sources(session_id);
+CREATE INDEX idx_knowledge_sources_status ON knowledge_sources(status);
+CREATE INDEX idx_knowledge_sources_created_at ON knowledge_sources(created_at DESC);
 
-CREATE TABLE IF NOT EXISTS knowledge_chunks (
+CREATE TABLE knowledge_chunks (
   id TEXT PRIMARY KEY,
   source_id TEXT NOT NULL REFERENCES knowledge_sources(id) ON DELETE CASCADE,
   index INTEGER NOT NULL,
   content TEXT NOT NULL,
-  -- Stored as JSONB so the system can run without pgvector.
-  -- When pgvector is available an optional knowledge_chunk_vectors table
-  -- mirrors these rows for vector-indexed search.
   embedding JSONB,
   metadata JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(source_id, index)
 );
 
-CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_source ON knowledge_chunks(source_id);
-CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_source_index ON knowledge_chunks(source_id, index);
+CREATE INDEX idx_knowledge_chunks_source ON knowledge_chunks(source_id);
+CREATE INDEX idx_knowledge_chunks_source_index ON knowledge_chunks(source_id, index);
 
-CREATE TABLE IF NOT EXISTS knowledge_pages (
+CREATE TABLE knowledge_pages (
   id TEXT PRIMARY KEY,
   source_id TEXT NOT NULL REFERENCES knowledge_sources(id) ON DELETE CASCADE,
   page_number INTEGER NOT NULL,
@@ -702,9 +645,9 @@ CREATE TABLE IF NOT EXISTS knowledge_pages (
   UNIQUE(source_id, page_number)
 );
 
-CREATE INDEX IF NOT EXISTS idx_knowledge_pages_source ON knowledge_pages(source_id);
+CREATE INDEX idx_knowledge_pages_source ON knowledge_pages(source_id);
 
-CREATE TABLE IF NOT EXISTS knowledge_source_status_events (
+CREATE TABLE knowledge_source_status_events (
   id TEXT PRIMARY KEY,
   source_id TEXT NOT NULL REFERENCES knowledge_sources(id) ON DELETE CASCADE,
   status TEXT NOT NULL,
@@ -714,38 +657,33 @@ CREATE TABLE IF NOT EXISTS knowledge_source_status_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_knowledge_status_events_source ON knowledge_source_status_events(source_id);
-` },
-  { version: 12, name: 'pgvector_extension', sql: `-- Optional pgvector support. The application degrades gracefully to an
--- in-memory vector store if the extension is not available.
+CREATE INDEX idx_knowledge_status_events_source ON knowledge_source_status_events(source_id);
+
+-- ─── pgvector (optional — app degrades to in-memory store if unavailable) ──
+
 DO $$
 BEGIN
   CREATE EXTENSION IF NOT EXISTS vector;
   IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
-    CREATE TABLE IF NOT EXISTS knowledge_chunk_vectors (
+    CREATE TABLE knowledge_chunk_vectors (
       id TEXT PRIMARY KEY,
       source_id TEXT NOT NULL,
       chunk_id TEXT NOT NULL,
       content TEXT NOT NULL,
       metadata JSONB,
-      -- 1536 is the default OpenAI/Ada-2 dimension; the application enforces the
-      -- configured dimension at insert time.
       embedding vector(1536)
     );
-    CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_vectors_source ON knowledge_chunk_vectors(source_id);
-    CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_vectors_embedding ON knowledge_chunk_vectors USING ivfflat (embedding vector_cosine_ops);
+    CREATE INDEX idx_knowledge_chunk_vectors_source ON knowledge_chunk_vectors(source_id);
+    CREATE INDEX idx_knowledge_chunk_vectors_embedding ON knowledge_chunk_vectors USING ivfflat (embedding vector_cosine_ops);
   END IF;
 EXCEPTION
   WHEN OTHERS THEN
-    -- pgvector is not installed; the application will fall back to MemoryVectorStore.
     NULL;
 END $$;
-` },
-  { version: 13, name: 'voice_realtime_state', sql: `-- Durable xAI realtime conversation identity + rolling voice session summary.
--- One row per Agent-X voice session (__channel__:voice or voice:<crewTextId>).
--- conversation_id is assigned once by xAI and never rotated by the app.
 
-CREATE TABLE IF NOT EXISTS voice_realtime_state (
+-- ─── Voice realtime state ───────────────────────────────────────────────────
+
+CREATE TABLE voice_realtime_state (
   session_id TEXT PRIMARY KEY,
   xai_conversation_id TEXT,
   xai_conversation_updated_at TIMESTAMPTZ,
@@ -757,94 +695,11 @@ CREATE TABLE IF NOT EXISTS voice_realtime_state (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_voice_realtime_last_active
-  ON voice_realtime_state (last_voice_active_at DESC NULLS LAST);
-` },
-  { version: 14, name: 'list_day_dividers', sql: `-- Persisted list day dividers for markdown docs (table still named canvases until V015) and sessions (call history).
--- Written once at create time; list UIs read list_day_key / list_day_label as-is.
+CREATE INDEX idx_voice_realtime_last_active ON voice_realtime_state (last_voice_active_at DESC NULLS LAST);
 
-ALTER TABLE canvases ADD COLUMN IF NOT EXISTS list_day_key TEXT;
-ALTER TABLE canvases ADD COLUMN IF NOT EXISTS list_day_label TEXT;
+-- ─── Document templates ─────────────────────────────────────────────────────
 
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS list_day_key TEXT;
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS list_day_label TEXT;
-
--- Best-effort backfill of day keys only (absolute labels set for new rows at write time).
-UPDATE canvases
-SET list_day_key = to_char(timezone('UTC', created_at)::date, 'YYYY-MM-DD')
-WHERE list_day_key IS NULL AND created_at IS NOT NULL;
-
-UPDATE sessions
-SET list_day_key = to_char(timezone('UTC', created_at)::date, 'YYYY-MM-DD')
-WHERE list_day_key IS NULL AND created_at IS NOT NULL;
-
-UPDATE canvases
-SET list_day_label = list_day_key
-WHERE list_day_label IS NULL AND list_day_key IS NOT NULL;
-
-UPDATE sessions
-SET list_day_label = list_day_key
-WHERE list_day_label IS NULL AND list_day_key IS NOT NULL;
-` },
-  { version: 15, name: 'rename_canvases_to_markdowns', sql: `-- Rename markdown documents table: canvases → markdowns.
--- Idempotent: safe if already renamed or if a fresh DB somehow has markdowns.
-
-DO $$
-BEGIN
-  IF to_regclass('public.canvases') IS NOT NULL
-     AND to_regclass('public.markdowns') IS NULL THEN
-    ALTER TABLE canvases RENAME TO markdowns;
-  END IF;
-END $$;
-
--- Indexes (old names → new names)
-DO $$
-BEGIN
-  IF to_regclass('public.idx_canvases_created') IS NOT NULL THEN
-    ALTER INDEX idx_canvases_created RENAME TO idx_markdowns_created;
-  END IF;
-  IF to_regclass('public.idx_canvases_session') IS NOT NULL THEN
-    ALTER INDEX idx_canvases_session RENAME TO idx_markdowns_session;
-  END IF;
-END $$;
-
--- Ensure indexes exist under the new names (fresh or partial upgrades).
-CREATE INDEX IF NOT EXISTS idx_markdowns_created ON markdowns(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_markdowns_session ON markdowns(session_id, created_at DESC);
-
--- Rename session FK constraint if the old name is still present.
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'canvases_session_id_fkey'
-      AND conrelid = 'public.markdowns'::regclass
-  ) THEN
-    ALTER TABLE markdowns RENAME CONSTRAINT canvases_session_id_fkey TO markdowns_session_id_fkey;
-  END IF;
-
-  -- If somehow the table was renamed earlier but FK is missing, recreate it.
-  IF to_regclass('public.markdowns') IS NOT NULL
-     AND NOT EXISTS (
-       SELECT 1 FROM pg_constraint
-       WHERE conrelid = 'public.markdowns'::regclass
-         AND conname = 'markdowns_session_id_fkey'
-     )
-     AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'sessions') THEN
-    BEGIN
-      ALTER TABLE markdowns
-        ADD CONSTRAINT markdowns_session_id_fkey
-        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL;
-    EXCEPTION WHEN duplicate_object THEN
-      NULL;
-    END;
-  END IF;
-END $$;
-` },
-  { version: 16, name: 'document_templates', sql: `-- Document Templates library: layout masters kept as original binaries.
--- Placeholders use {{field_key}} syntax. Chunking/RAG is intentionally not used.
-
-CREATE TABLE IF NOT EXISTS document_templates (
+CREATE TABLE document_templates (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   description TEXT,
@@ -855,29 +710,19 @@ CREATE TABLE IF NOT EXISTS document_templates (
   fillable BOOLEAN NOT NULL DEFAULT FALSE,
   fields JSONB NOT NULL DEFAULT '[]'::jsonb,
   tags TEXT[] NOT NULL DEFAULT '{}',
+  analysis_status TEXT NOT NULL DEFAULT 'ready',
+  analysis_error TEXT,
+  design_summary TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_document_templates_name ON document_templates (name);
-CREATE INDEX IF NOT EXISTS idx_document_templates_updated ON document_templates (updated_at DESC);
-` },
-  { version: 17, name: 'template_analysis', sql: `-- Track LLM field-discovery status for raw uploaded templates.
+CREATE INDEX idx_document_templates_name ON document_templates (name);
+CREATE INDEX idx_document_templates_updated ON document_templates (updated_at DESC);
 
-ALTER TABLE document_templates
-  ADD COLUMN IF NOT EXISTS analysis_status TEXT NOT NULL DEFAULT 'ready';
+-- ─── Document Studio ────────────────────────────────────────────────────────
 
-ALTER TABLE document_templates
-  ADD COLUMN IF NOT EXISTS analysis_error TEXT;
-` },
-  { version: 18, name: 'template_design_summary', sql: `-- Design brief for templates: how the master looks / is structured (not just blank fields).
-
-ALTER TABLE document_templates
-  ADD COLUMN IF NOT EXISTS design_summary TEXT;
-` },
-  { version: 19, name: 'doc_studio_masters', sql: `-- Document Studio masters: immutable input objects + honest analysis (spec §5.1).
-
-CREATE TABLE IF NOT EXISTS doc_masters (
+CREATE TABLE doc_masters (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   kind TEXT NOT NULL DEFAULT 'layout',
@@ -894,12 +739,10 @@ CREATE TABLE IF NOT EXISTS doc_masters (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_doc_masters_kind ON doc_masters (kind);
-CREATE INDEX IF NOT EXISTS idx_doc_masters_updated ON doc_masters (updated_at DESC);
-` },
-  { version: 20, name: 'doc_studio_binders_answers_mappings', sql: `-- Document Studio binders, answer sets, and mappings (spec §5.4, §5.9).
+CREATE INDEX idx_doc_masters_kind ON doc_masters (kind);
+CREATE INDEX idx_doc_masters_updated ON doc_masters (updated_at DESC);
 
-CREATE TABLE IF NOT EXISTS doc_binders (
+CREATE TABLE doc_binders (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   description TEXT,
@@ -908,9 +751,9 @@ CREATE TABLE IF NOT EXISTS doc_binders (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_doc_binders_name ON doc_binders (name);
+CREATE INDEX idx_doc_binders_name ON doc_binders (name);
 
-CREATE TABLE IF NOT EXISTS doc_answer_sets (
+CREATE TABLE doc_answer_sets (
   id TEXT PRIMARY KEY,
   values JSONB NOT NULL DEFAULT '{}'::jsonb,
   provenance JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -918,7 +761,7 @@ CREATE TABLE IF NOT EXISTS doc_answer_sets (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS doc_mappings (
+CREATE TABLE doc_mappings (
   id TEXT PRIMARY KEY,
   data_master_id TEXT NOT NULL,
   schema_ref TEXT NOT NULL,
@@ -928,10 +771,8 @@ CREATE TABLE IF NOT EXISTS doc_mappings (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-` },
-  { version: 21, name: 'doc_studio_jobs', sql: `-- Document Studio jobs, instance plans, artifacts, and manifests (spec §14).
 
-CREATE TABLE IF NOT EXISTS doc_jobs (
+CREATE TABLE doc_jobs (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft',
@@ -943,14 +784,18 @@ CREATE TABLE IF NOT EXISTS doc_jobs (
   progress_detail TEXT,
   artifacts JSONB NOT NULL DEFAULT '[]'::jsonb,
   manifest_id TEXT,
+  step_results JSONB NOT NULL DEFAULT '{}'::jsonb,
+  error TEXT,
+  cancelled BOOLEAN NOT NULL DEFAULT false,
+  cancelled_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_doc_jobs_status ON doc_jobs (status);
-CREATE INDEX IF NOT EXISTS idx_doc_jobs_updated ON doc_jobs (updated_at DESC);
+CREATE INDEX idx_doc_jobs_status ON doc_jobs (status);
+CREATE INDEX idx_doc_jobs_updated ON doc_jobs (updated_at DESC);
 
-CREATE TABLE IF NOT EXISTS doc_instances (
+CREATE TABLE doc_instances (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL,
   index INTEGER NOT NULL,
@@ -961,9 +806,9 @@ CREATE TABLE IF NOT EXISTS doc_instances (
   error TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_doc_instances_job ON doc_instances (job_id);
+CREATE INDEX idx_doc_instances_job ON doc_instances (job_id);
 
-CREATE TABLE IF NOT EXISTS doc_artifacts (
+CREATE TABLE doc_artifacts (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL,
   instance_index INTEGER,
@@ -976,9 +821,9 @@ CREATE TABLE IF NOT EXISTS doc_artifacts (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_doc_artifacts_job ON doc_artifacts (job_id);
+CREATE INDEX idx_doc_artifacts_job ON doc_artifacts (job_id);
 
-CREATE TABLE IF NOT EXISTS doc_manifests (
+CREATE TABLE doc_manifests (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL,
   rows JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -987,24 +832,13 @@ CREATE TABLE IF NOT EXISTS doc_manifests (
   summary_skipped INTEGER NOT NULL DEFAULT 0
 );
 ` },
-  { version: 22, name: 'doc_studio_job_checkpoint', sql: `-- Document Studio job checkpoint / cancel columns.
-ALTER TABLE doc_jobs ADD COLUMN IF NOT EXISTS step_results JSONB NOT NULL DEFAULT '{}'::jsonb;
-ALTER TABLE doc_jobs ADD COLUMN IF NOT EXISTS error TEXT;
-ALTER TABLE doc_jobs ADD COLUMN IF NOT EXISTS cancelled BOOLEAN NOT NULL DEFAULT false;
-ALTER TABLE doc_jobs ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
-` },
-  { version: 23, name: 'whatsapp_core_schema', sql: `-- WhatsApp channel: single-session lifecycle, Baileys credential storage, message log,
+  { version: 4, name: 'whatsapp', sql: `-- WhatsApp channel: session lifecycle, Baileys credential storage, message log,
 -- LID<->phone identity mapping, and external webhook subsystem.
 --
--- Scope note: exactly one WhatsApp session is supported per Agent-X install (see
--- WHATSAPP_INTEGRATION_PLAN.md Ground Rule 7). whatsapp_session is single-row by
--- application convention, not a hard schema constraint, so this isn't artificially
--- welded shut if that changes later.
+-- Exactly one WhatsApp session is supported per Agent-X install (by application
+-- convention, not a hard schema constraint).
 
--- ---------------------------------------------------------------------------
--- 1.1 Session lifecycle record (single row)
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS whatsapp_session (
+CREATE TABLE whatsapp_session (
   id TEXT PRIMARY KEY,
   status TEXT NOT NULL DEFAULT 'disconnected',
   engine TEXT NOT NULL DEFAULT 'baileys',
@@ -1017,21 +851,8 @@ CREATE TABLE IF NOT EXISTS whatsapp_session (
   last_active_at TIMESTAMPTZ
 );
 
--- ---------------------------------------------------------------------------
--- 1.2 Baileys credential storage.
---
--- Baileys' AuthenticationState splits into two independently-shaped parts:
---   - \`creds\`: a single AuthenticationCreds object (noise/identity/signed-prekey
---     material, registration id, account info) that changes occasionally.
---   - \`keys\`: a signal protocol key store accessed via get(category, ids) /
---     set({ [category]: { [id]: value | null } }), mutated frequently (one row
---     read/write per key, not a full-blob rewrite) as messages are sent/received.
---
--- Modeling \`keys\` as individual rows (rather than one growing JSON blob) avoids
--- read-modify-write races and avoids re-encrypting/re-writing an ever-growing
--- blob on every single message.
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS whatsapp_creds (
+-- Baileys credential storage: creds (single blob) + signal keys (per-row)
+CREATE TABLE whatsapp_creds (
   id TEXT PRIMARY KEY DEFAULT 'default',
   creds_enc TEXT NOT NULL,
   iv TEXT NOT NULL,
@@ -1039,7 +860,7 @@ CREATE TABLE IF NOT EXISTS whatsapp_creds (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS whatsapp_signal_keys (
+CREATE TABLE whatsapp_signal_keys (
   category TEXT NOT NULL,
   key_id TEXT NOT NULL,
   value_enc TEXT NOT NULL,
@@ -1049,43 +870,35 @@ CREATE TABLE IF NOT EXISTS whatsapp_signal_keys (
   PRIMARY KEY (category, key_id)
 );
 
--- ---------------------------------------------------------------------------
--- 1.3 LID <-> phone number mapping (WhatsApp multi-device identity quirk;
--- global/last-write-wins, independent of session count).
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS whatsapp_lid_mapping (
+-- LID <-> phone number mapping (WhatsApp multi-device identity quirk)
+CREATE TABLE whatsapp_lid_mapping (
   lid TEXT PRIMARY KEY,
   phone TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ---------------------------------------------------------------------------
--- 1.4 Message log.
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS whatsapp_messages (
+-- Message log
+CREATE TABLE whatsapp_messages (
   id TEXT PRIMARY KEY,
   wa_message_id TEXT NOT NULL,
   chat_id TEXT NOT NULL,
-  direction TEXT NOT NULL, -- 'incoming' | 'outgoing'
+  direction TEXT NOT NULL,
   "from" TEXT NOT NULL,
   "to" TEXT NOT NULL,
   body TEXT,
   type TEXT NOT NULL DEFAULT 'text',
-  status TEXT NOT NULL DEFAULT 'pending', -- pending|sent|delivered|read|failed
+  status TEXT NOT NULL DEFAULT 'pending',
   timestamp BIGINT NOT NULL,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_messages_wa_id ON whatsapp_messages(wa_message_id);
-CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_timestamp ON whatsapp_messages(timestamp);
-CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_chat ON whatsapp_messages(chat_id, timestamp);
+CREATE UNIQUE INDEX idx_whatsapp_messages_wa_id ON whatsapp_messages(wa_message_id);
+CREATE INDEX idx_whatsapp_messages_timestamp ON whatsapp_messages(timestamp);
+CREATE INDEX idx_whatsapp_messages_chat ON whatsapp_messages(chat_id, timestamp);
 
--- ---------------------------------------------------------------------------
--- 1.5 External webhook subscriptions (managed exclusively through agent tools,
--- not REST CRUD — see Phase 6/7 of the plan).
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS whatsapp_webhooks (
+-- External webhook subscriptions
+CREATE TABLE whatsapp_webhooks (
   id TEXT PRIMARY KEY,
   url TEXT NOT NULL,
   events TEXT[] NOT NULL DEFAULT ARRAY['*']::text[],
@@ -1101,10 +914,8 @@ CREATE TABLE IF NOT EXISTS whatsapp_webhooks (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ---------------------------------------------------------------------------
--- 1.6 Webhook delivery failure / dead-letter bookkeeping.
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS whatsapp_webhook_failures (
+-- Webhook delivery failure / dead-letter bookkeeping
+CREATE TABLE whatsapp_webhook_failures (
   id TEXT PRIMARY KEY,
   webhook_id TEXT NOT NULL REFERENCES whatsapp_webhooks(id) ON DELETE CASCADE,
   event TEXT NOT NULL,
@@ -1117,26 +928,24 @@ CREATE TABLE IF NOT EXISTS whatsapp_webhook_failures (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_whatsapp_webhook_failures_webhook ON whatsapp_webhook_failures(webhook_id);
-CREATE INDEX IF NOT EXISTS idx_whatsapp_webhook_failures_created ON whatsapp_webhook_failures(created_at);
+CREATE INDEX idx_whatsapp_webhook_failures_webhook ON whatsapp_webhook_failures(webhook_id);
+CREATE INDEX idx_whatsapp_webhook_failures_created ON whatsapp_webhook_failures(created_at);
 ` },
-  { version: 24, name: 'observability_schema', sql: `-- Observability schema: traces, spans, logs, metric samples, config.
--- Stored in the same embedded Postgres as the core schema; isolated in its own schema namespace.
+  { version: 5, name: 'observability', sql: `-- Observability schema: traces, spans, logs, metric samples, config, OTLP,
+-- alerting, and cost analytics rollup.
 --
 -- DOMAIN SEGREGATION: every row is tagged with \`domain\` ∈ ('APP','AGENT'):
---   AGENT = AI/LLM turn lifecycle (turns, journey, llm calls, tool decisions/executions, crew, retrieval)
---   APP   = normal application operations (HTTP requests, auth, DB queries, WebSocket, channels, automation, startup, integrations)
--- This lets the UI filter "show me only agent issues" vs "show me only app issues" vs "both" with one toggle.
+--   AGENT = AI/LLM turn lifecycle (turns, journey, llm calls, tool decisions, crew, retrieval)
+--   APP   = normal application operations (HTTP, auth, DB, WebSocket, channels, automation, startup)
 
 CREATE SCHEMA IF NOT EXISTS observability;
 
 -- 1. TRACES — one row per turn (AGENT) or per app request/operation (APP)
-CREATE TABLE IF NOT EXISTS observability.traces (
+CREATE TABLE observability.traces (
   trace_id        TEXT PRIMARY KEY,
   root_span_id    TEXT NOT NULL,
   domain          TEXT NOT NULL CHECK(domain IN ('APP','AGENT')) DEFAULT 'AGENT',
-  kind            TEXT NOT NULL,   -- AGENT: 'turn','autonomous_run','crew_mission','task_executor'
-                                  -- APP:   'http_request','ws_connection','auth','db_query','channel_event','automation_run','startup','integration_call','job'
+  kind            TEXT NOT NULL,
   session_id      TEXT,
   turn_id         TEXT,
   user_text       TEXT,
@@ -1153,21 +962,19 @@ CREATE TABLE IF NOT EXISTS observability.traces (
   cost_usd        NUMERIC(12,6) NOT NULL DEFAULT 0
 );
 
-CREATE INDEX IF NOT EXISTS idx_traces_session_started ON observability.traces (session_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_traces_status_started ON observability.traces (status, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_traces_kind_started ON observability.traces (kind, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_traces_domain_started ON observability.traces (domain, started_at DESC);
+CREATE INDEX idx_traces_session_started ON observability.traces (session_id, started_at DESC);
+CREATE INDEX idx_traces_status_started ON observability.traces (status, started_at DESC);
+CREATE INDEX idx_traces_kind_started ON observability.traces (kind, started_at DESC);
+CREATE INDEX idx_traces_domain_started ON observability.traces (domain, started_at DESC);
 
 -- 2. SPANS — the tree (llm, tool, tool_decision, journey_stage, agent, retrieval, internal)
---    For APP traces, kinds are: 'http','ws','auth','db','channel','automation','integration','job','internal'
-CREATE TABLE IF NOT EXISTS observability.spans (
+CREATE TABLE observability.spans (
   span_id         TEXT PRIMARY KEY,
   trace_id        TEXT NOT NULL REFERENCES observability.traces(trace_id) ON DELETE CASCADE,
   parent_span_id  TEXT,
   domain          TEXT NOT NULL CHECK(domain IN ('APP','AGENT')) DEFAULT 'AGENT',
   name            TEXT NOT NULL,
-  kind            TEXT NOT NULL,   -- AGENT: 'llm','tool','tool_decision','journey_stage','agent','retrieval','internal'
-                                  -- APP:   'http','ws','auth','db','channel','automation','integration','job','internal'
+  kind            TEXT NOT NULL,
   status          TEXT NOT NULL CHECK(status IN ('ok','error','unset')),
   started_at      TIMESTAMPTZ NOT NULL,
   ended_at        TIMESTAMPTZ,
@@ -1176,12 +983,12 @@ CREATE TABLE IF NOT EXISTS observability.spans (
   events          JSONB NOT NULL DEFAULT '[]'::jsonb
 );
 
-CREATE INDEX IF NOT EXISTS idx_spans_trace_started ON observability.spans (trace_id, started_at);
-CREATE INDEX IF NOT EXISTS idx_spans_parent ON observability.spans (parent_span_id);
-CREATE INDEX IF NOT EXISTS idx_spans_domain ON observability.spans (domain);
+CREATE INDEX idx_spans_trace_started ON observability.spans (trace_id, started_at);
+CREATE INDEX idx_spans_parent ON observability.spans (parent_span_id);
+CREATE INDEX idx_spans_domain ON observability.spans (domain);
 
 -- 3. LOGS — structured, linked to trace/span, tagged by domain
-CREATE TABLE IF NOT EXISTS observability.logs (
+CREATE TABLE observability.logs (
   id           BIGSERIAL PRIMARY KEY,
   trace_id     TEXT,
   span_id      TEXT,
@@ -1194,63 +1001,43 @@ CREATE TABLE IF NOT EXISTS observability.logs (
   payload      JSONB
 );
 
-CREATE INDEX IF NOT EXISTS idx_logs_trace_ts ON observability.logs (trace_id, ts);
-CREATE INDEX IF NOT EXISTS idx_logs_ts ON observability.logs (ts DESC);
-CREATE INDEX IF NOT EXISTS idx_logs_session_ts ON observability.logs (session_id, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_logs_domain_ts ON observability.logs (domain, ts DESC);
+CREATE INDEX idx_logs_trace_ts ON observability.logs (trace_id, ts);
+CREATE INDEX idx_logs_ts ON observability.logs (ts DESC);
+CREATE INDEX idx_logs_session_ts ON observability.logs (session_id, ts DESC);
+CREATE INDEX idx_logs_domain_ts ON observability.logs (domain, ts DESC);
 
--- 4. METRIC SAMPLES — time-series for UI charts, tagged by domain via labels
-CREATE TABLE IF NOT EXISTS observability.metric_samples (
+-- 4. METRIC SAMPLES — time-series for UI charts
+CREATE TABLE observability.metric_samples (
   id         BIGSERIAL PRIMARY KEY,
   ts         TIMESTAMPTZ NOT NULL,
   name       TEXT NOT NULL,
   value      DOUBLE PRECISION NOT NULL,
-  labels     JSONB NOT NULL DEFAULT '{}'::jsonb  -- includes { "domain": "APP"|"AGENT" }
+  labels     JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
-CREATE INDEX IF NOT EXISTS idx_metrics_name_ts ON observability.metric_samples (name, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_metrics_domain_ts ON observability.metric_samples ((labels->>'domain'), ts DESC);
+CREATE INDEX idx_metrics_name_ts ON observability.metric_samples (name, ts DESC);
+CREATE INDEX idx_metrics_domain_ts ON observability.metric_samples ((labels->>'domain'), ts DESC);
 
--- 5. CONFIG — single row (id=1)
-CREATE TABLE IF NOT EXISTS observability.config (
-  id              INT PRIMARY KEY DEFAULT 1 CHECK(id = 1),
-  retention_days  INT NOT NULL DEFAULT 30 CHECK(retention_days BETWEEN 1 AND 90),
-  capture_prompts BOOLEAN NOT NULL DEFAULT TRUE,
-  enabled         BOOLEAN NOT NULL DEFAULT TRUE
+-- 5. CONFIG — single row (id=1) with OTLP and alerting settings
+CREATE TABLE observability.config (
+  id                      INT PRIMARY KEY DEFAULT 1 CHECK(id = 1),
+  retention_days          INT NOT NULL DEFAULT 30 CHECK(retention_days BETWEEN 1 AND 90),
+  capture_prompts         BOOLEAN NOT NULL DEFAULT TRUE,
+  enabled                 BOOLEAN NOT NULL DEFAULT TRUE,
+  otlp_enabled            BOOLEAN NOT NULL DEFAULT FALSE,
+  otlp_endpoint           TEXT    NOT NULL DEFAULT 'http://localhost:4318/v1/traces',
+  otlp_protocol           TEXT    NOT NULL DEFAULT 'http' CHECK(otlp_protocol IN ('http', 'grpc')),
+  otlp_headers            JSONB   NOT NULL DEFAULT '{}'::jsonb,
+  alerting_enabled        BOOLEAN NOT NULL DEFAULT FALSE,
+  alerting_error_rate_pct INT     NOT NULL DEFAULT 10  CHECK(alerting_error_rate_pct BETWEEN 1 AND 100),
+  alerting_latency_p95_ms INT     NOT NULL DEFAULT 30000 CHECK(alerting_latency_p95_ms BETWEEN 100 AND 600000),
+  alerting_window_minutes INT     NOT NULL DEFAULT 15  CHECK(alerting_window_minutes BETWEEN 1 AND 1440)
 );
 
-INSERT INTO observability.config (id) VALUES (1)
-  ON CONFLICT (id) DO NOTHING;
-` },
-  { version: 25, name: 'observability_otlp_alerts', sql: `-- V025 — Observability: OTLP export, alerting, cost analytics (Phase 11 v1.1+).
---
--- Extends the observability.config table with:
---   * OTLP external collector settings (enable, endpoint, protocol, headers)
---   * Alerting settings (enable, error-rate threshold, latency SLO threshold)
---   * Cost analytics rollup materialized view
---
--- All new columns are nullable/defaulted so existing rows upgrade cleanly.
+INSERT INTO observability.config (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
--- ─── OTLP external collector ────────────────────────────────────────────────
-ALTER TABLE observability.config
-  ADD COLUMN IF NOT EXISTS otlp_enabled    BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS otlp_endpoint   TEXT    NOT NULL DEFAULT 'http://localhost:4318/v1/traces',
-  ADD COLUMN IF NOT EXISTS otlp_protocol   TEXT    NOT NULL DEFAULT 'http' CHECK(otlp_protocol IN ('http', 'grpc')),
-  ADD COLUMN IF NOT EXISTS otlp_headers    JSONB   NOT NULL DEFAULT '{}'::jsonb;
-
--- ─── Alerting ───────────────────────────────────────────────────────────────
-ALTER TABLE observability.config
-  ADD COLUMN IF NOT EXISTS alerting_enabled          BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS alerting_error_rate_pct   INT     NOT NULL DEFAULT 10  CHECK(alerting_error_rate_pct BETWEEN 1 AND 100),
-  ADD COLUMN IF NOT EXISTS alerting_latency_p95_ms   INT     NOT NULL DEFAULT 30000 CHECK(alerting_latency_p95_ms BETWEEN 100 AND 600000),
-  ADD COLUMN IF NOT EXISTS alerting_window_minutes   INT     NOT NULL DEFAULT 15  CHECK(alerting_window_minutes BETWEEN 1 AND 1440);
-
--- ─── Cost analytics rollup ──────────────────────────────────────────────────
--- Per-provider, per-model, per-day cost rollup derived from traces.
--- The traces table has \`provider\` and \`model\` columns directly (not an
--- \`attributes\` JSONB column), so we reference them directly.
--- Refreshed on-demand by the API (or a scheduled job).
-CREATE MATERIALIZED VIEW IF NOT EXISTS observability.cost_rollup_daily AS
+-- 6. Cost analytics rollup (materialized view, refreshed on-demand)
+CREATE MATERIALIZED VIEW observability.cost_rollup_daily AS
   SELECT
     date_trunc('day', started_at)::date              AS day,
     COALESCE(provider, 'unknown')                    AS provider,
@@ -1265,11 +1052,12 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS observability.cost_rollup_daily AS
   WHERE cost_usd IS NOT NULL
   GROUP BY 1, 2, 3, 4
   ORDER BY 1 DESC, 2, 3;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_cost_rollup_daily
+
+CREATE UNIQUE INDEX idx_cost_rollup_daily
   ON observability.cost_rollup_daily (day, provider, model, domain);
 
--- ─── Alerts table (persisted alert events) ──────────────────────────────────
-CREATE TABLE IF NOT EXISTS observability.alerts (
+-- 7. Alerts — persisted alert events
+CREATE TABLE observability.alerts (
   id          BIGSERIAL PRIMARY KEY,
   triggered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   type        TEXT NOT NULL CHECK(type IN ('error_rate', 'latency_p95')),
@@ -1281,7 +1069,8 @@ CREATE TABLE IF NOT EXISTS observability.alerts (
   resolved    BOOLEAN NOT NULL DEFAULT FALSE,
   resolved_at TIMESTAMPTZ
 );
-CREATE INDEX IF NOT EXISTS idx_alerts_unresolved ON observability.alerts (resolved, triggered_at DESC) WHERE NOT resolved;
-CREATE INDEX IF NOT EXISTS idx_alerts_triggered ON observability.alerts (triggered_at DESC);
+
+CREATE INDEX idx_alerts_unresolved ON observability.alerts (resolved, triggered_at DESC) WHERE NOT resolved;
+CREATE INDEX idx_alerts_triggered ON observability.alerts (triggered_at DESC);
 ` },
 ];

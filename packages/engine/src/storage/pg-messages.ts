@@ -401,9 +401,13 @@ export function archiveSessionMessages(ctx: MessageContext, sessionId: string): 
 export async function getMessagesPage(
   ctx: MessageContext,
   sessionId: string,
-  opts: { limit?: number; before?: string },
+  opts: { limit?: number; before?: string; includeSystem?: boolean },
 ): Promise<{ messages: Array<Record<string, unknown>>; total: number; hasMore: boolean }> {
-  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const includeSystem = Boolean(opts.includeSystem);
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), includeSystem ? 500 : 200);
+  const roleFilter = includeSystem
+    ? `role IN ('user', 'assistant', 'system', 'tool')`
+    : `role IN ('user', 'assistant')`;
   const result = await ctx.pool.query(
     `SELECT id, session_id as "sessionId", role, content, tool_calls as "toolCalls",
             token_count as "tokenCount", parts, metadata, attachments, created_at as "createdAt",
@@ -412,7 +416,7 @@ export async function getMessagesPage(
             platform_chat_id as "platformChatId"
      FROM messages
      WHERE session_id = $1
-       AND role IN ('user', 'assistant')
+       AND ${roleFilter}
        AND archived_at IS NULL
        AND ($2::text IS NULL OR created_at < (SELECT created_at FROM messages WHERE id = $2 AND session_id = $1))
      ORDER BY created_at DESC
@@ -422,7 +426,7 @@ export async function getMessagesPage(
   const hasMore = result.rows.length > limit;
   const rows = result.rows.slice(0, limit);
   const totalResult = await ctx.pool.query(
-    `SELECT COUNT(*)::int as cnt FROM messages WHERE session_id = $1 AND role IN ('user', 'assistant') AND archived_at IS NULL`,
+    `SELECT COUNT(*)::int as cnt FROM messages WHERE session_id = $1 AND ${roleFilter} AND archived_at IS NULL`,
     [sessionId],
   );
   const total = totalResult.rows[0].cnt as number;

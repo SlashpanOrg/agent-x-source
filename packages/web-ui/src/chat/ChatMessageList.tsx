@@ -45,7 +45,8 @@ export const ChatMessageList = memo(function ChatMessageList({ items, loadingSte
     const hasText = !!(msg.content?.trim() || msg.parts?.some((p) => p.type === 'text' && p.content?.trim()));
     const hasQuestionnaire = msg.parts?.some((p) => p.type === 'questionnaire');
     const hasCrewPicker = msg.parts?.some((p) => p.type === 'crew_roster_picker');
-    const showLoading = isLast && msg.streaming && !hasText && !hasQuestionnaire && !hasCrewPicker;
+    const hasPermission = msg.parts?.some((p) => p.type === 'permission');
+    const showLoading = isLast && msg.streaming && !hasText && !hasQuestionnaire && !hasCrewPicker && !hasPermission;
 
     if (msg.role === 'user') {
       return <ChatUserMessage message={msg} onCrewClick={onViewCrewByCallsign} />;

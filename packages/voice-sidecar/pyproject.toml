@@ -11,7 +11,7 @@ voice = [
   "huggingface-hub[hf_xet]>=0.28.0",
   "kokoro-onnx",
   "silero-vad",
-  "numpy",
+  "numpy>=2.1.0",
   "soundfile",
   "torch>=2.0.0",
   "torchaudio>=2.0.0",

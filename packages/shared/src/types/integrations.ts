@@ -137,6 +137,11 @@ export interface IntegrationOAuthConfig {
   resource?: string;
   /** Redirect URI registered with the provider. Defaults to /api/integrations/oauth/callback on current host. */
   redirectPath?: string;
+  /**
+   * Provider rejects unknown redirect URIs (shared OAuth client + server-side allowlist).
+   * Agent-X still uses localhost; user must ask the provider to whitelist the shown URI.
+   */
+  redirectAllowlistRequired?: boolean;
 }
 
 /** Auth flow for stdio MCP packages that ship their own OAuth helper (Google Drive, etc.). */

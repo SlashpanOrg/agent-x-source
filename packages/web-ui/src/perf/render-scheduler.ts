@@ -14,6 +14,7 @@ const P0_IMMEDIATE = new Set([
   'task_aborted',
   'provider_error',
   'permission_required',
+  'permission_resolved',
   'permission_batch_required',
   'step_cap_reached',
   'notification_created',
@@ -101,6 +102,7 @@ export class RenderScheduler {
   private readonly p2Queue: TelemetryEvent[] = [];
   private readonly p3ByWorker = new Map<string, TelemetryEvent>();
   private flushHandle: number | null = null;
+  private flushHandleIsTimeout = false;
   private lastHeartbeatDelivered = 0;
   private pendingTokenUsage: TelemetryEvent | null = null;
   private readonly heartbeatMinMs: number;
@@ -124,6 +126,24 @@ export class RenderScheduler {
     this.loadingStepMinMs = options?.loadingStepMinMs ?? 120;
     this.crewWorkerProgressMinMs = options?.crewWorkerProgressMinMs ?? 120;
     ensureRenderInstrumentation();
+    // When the window becomes visible again, immediately flush any events that
+    // accumulated while hidden (setTimeout may have been throttled to ~1s/tick).
+    if (typeof document !== 'undefined') {
+      this.visibilityHandler = () => {
+        if (!document.hidden && this.hasPending()) {
+          this.cancelFlush();
+          this.flush();
+        }
+      };
+      document.addEventListener('visibilitychange', this.visibilityHandler);
+    }
+  }
+
+  private visibilityHandler: (() => void) | null = null;
+
+  private hasPending(): boolean {
+    return this.p0Queue.length > 0 || this.p1Queue.length > 0 || this.p2Queue.length > 0
+      || this.p3ByWorker.size > 0 || this.pendingTokenUsage != null || this.pendingLoadingStep != null;
   }
 
   enqueue(ev: TelemetryEvent): void {
@@ -193,13 +213,38 @@ export class RenderScheduler {
     if (this.flushHandle != null) return;
     const run = () => {
       this.flushHandle = null;
+      this.flushHandleIsTimeout = false;
       this.flush();
     };
-    if (immediate) {
-      this.flushHandle = requestAnimationFrame(run);
+    // When the document is hidden (window backgrounded, tab unfocused, minimized),
+    // browsers completely PAUSE requestAnimationFrame — events would pile up in
+    // the queues indefinitely and never reach React handlers. Use setTimeout(0)
+    // instead, which is only throttled to ~1s (not paused) in background tabs.
+    // This ensures streaming continues to update the UI even when the window is
+    // not focused, which is critical for long-running agent turns.
+    const isHidden = typeof document !== 'undefined' && document.hidden;
+    if (isHidden) {
+      // setTimeout(0) is throttled to ~1s in background tabs but NOT paused.
+      // For P0 (immediate) events, use a shorter delay to minimize latency.
+      const delay = immediate ? 0 : 16;
+      this.flushHandle = window.setTimeout(run, delay) as unknown as number;
+      this.flushHandleIsTimeout = true;
     } else {
       this.flushHandle = requestAnimationFrame(run);
+      this.flushHandleIsTimeout = false;
     }
+  }
+
+  /** Cancel any pending flush handle (rAF or setTimeout). */
+  private cancelFlush(): void {
+    if (this.flushHandle == null) return;
+    if (this.flushHandleIsTimeout) {
+      clearTimeout(this.flushHandle);
+    } else {
+      cancelAnimationFrame(this.flushHandle);
+    }
+    this.flushHandle = null;
+    this.flushHandleIsTimeout = false;
   }
 
   private flush(): void {
@@ -266,13 +311,42 @@ export class RenderScheduler {
     if (hasPending) this.scheduleFlush();
   }
 
-  /** Flush any coalesced token usage on turn end. */
+  /**
+   * Flush ALL pending events immediately — used on unmount and on visibility
+   * regain. Previously only flushed pendingTokenUsage, which meant P0/P1/P2/P3
+   * events queued while the window was hidden were permanently lost when the
+   * component unmounted (e.g. chat panel re-render during backgrounded state).
+   */
   flushPending(): void {
+    this.cancelFlush();
+    // Deliver everything in priority order, bypassing throttle gates.
+    for (const ev of this.p0Queue.splice(0)) { this.deliver(ev); recordTelemetryDelivered(); }
+    for (const ev of this.p1Queue.splice(0)) { this.deliver(ev); recordTelemetryDelivered(); }
     if (this.pendingTokenUsage) {
       this.deliver(this.pendingTokenUsage);
       this.pendingTokenUsage = null;
       this.lastTokenDelivered = Date.now();
       recordTelemetryDelivered();
+    }
+    if (this.pendingLoadingStep) {
+      this.deliver(this.pendingLoadingStep);
+      this.pendingLoadingStep = null;
+      this.lastLoadingStepDelivered = Date.now();
+      recordTelemetryDelivered();
+    }
+    for (const ev of this.p2Queue.splice(0)) { this.deliver(ev); recordTelemetryDelivered(); }
+    if (this.p3ByWorker.size > 0) {
+      for (const [, ev] of this.p3ByWorker.entries()) { this.deliver(ev); recordTelemetryDelivered(); }
+      this.p3ByWorker.clear();
+    }
+  }
+
+  /** Remove visibility listener and cancel any pending flush. */
+  destroy(): void {
+    this.cancelFlush();
+    if (this.visibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
     }
   }
 }

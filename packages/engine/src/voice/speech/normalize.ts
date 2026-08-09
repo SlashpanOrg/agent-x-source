@@ -28,21 +28,9 @@ export function normalizeTextForSpeech(text: string, options: NormalizeSpeechOpt
   out = out.replace(UNICODE_TAG_RE, ' ');
   out = out.replace(/[#>*_~|]/g, ' ');
   out = out.replace(/\s+/g, ' ').trim();
-  out = expandSymbols(out);
 
   if (out.length > maxChars) {
     out = `${out.slice(0, maxChars - 40).trim()}… I can continue if you ask.`;
   }
   return out;
-}
-
-function expandSymbols(text: string): string {
-  return text
-    .replace(/\s*&\s*/g, ' and ')
-    .replace(/\s*@\s*/g, ' at ')
-    .replace(/\s*#\s*/g, ' number ')
-    .replace(/\s*\+\s*/g, ' plus ')
-    .replace(/\s*=\s*/g, ' equals ')
-    .replace(/\s*\/\s*/g, ' slash ')
-    .replace(/\s*%\s*/g, ' percent ');
 }

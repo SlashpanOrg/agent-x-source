@@ -55,6 +55,13 @@ export interface TurnOrchestratorHost {
   readonly abortSignal: AbortSignal | undefined;
   readonly maxCompletionSteps: number;
   readonly crewPrivateCompletionSteps: number;
+  /** Current thinking mode — controls reasoning effort override. */
+  readonly currentThinkingMode: import('@agentx/shared').ThinkingMode;
+  /** Current output mode — controls max output token cap. */
+  readonly currentOutputMode: import('@agentx/shared').OutputMode;
+  /** Thinking-mode-aware step cap (from getToolPolicy). Used in stopWhen to
+   *  enforce tool budgets per thinking mode (light=3, medium=~50%, high=unlimited). */
+  readonly modeStepCap: number;
 
   // ── Conversation / turn state (live references) ───────────────────────
   readonly messages: CompletionMessage[];

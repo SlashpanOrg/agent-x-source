@@ -11,7 +11,6 @@ import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { getDataDir, getConfigDir, getCacheDir, agentXConfigSchema, voiceConfigSchema, authManager, buildPublicSystemCapabilities, resolvePerformanceSettings, buildPerformanceShowcase, getLogger, normalizeClientSituation } from '@agentx/shared';
 import type { AgentXConfig } from '@agentx/shared';
 import { getEngine, destroyAgent, clearEngine, applyPerformanceSettings, setCurrentClientSituation, getCurrentClientSituation } from '../../engine.js';
-import { getGeoLocationService } from '@agentx/engine';
 import {
   redactConfigForClient,
   mergeConfigPreservingSecrets,
@@ -22,6 +21,7 @@ import { mergeVoiceConfig, getBackgroundTaskPool, applyWebSearchConfigFromAgentC
 import { applyChannelsConfig } from '../../channels-sync.js';
 import { validateProviderConfig, AVAILABLE_PROVIDERS } from './providers.js';
 import { validateConfig, DATA_DIR, pathExists } from './shared.js';
+import { reconcileVoiceKitState } from '../../voice/setup.js';
 
 export function createSystemRouter(): Router {
   const r = Router();
@@ -81,9 +81,10 @@ export function createSystemRouter(): Router {
     }
   });
 
-  r.get('/api/config', (_req, res) => {
+  r.get('/api/config', async (_req, res) => {
     const eng = getEngine();
     try {
+      await reconcileVoiceKitState();
       const raw = eng.configManager.load();
       // Heal keys that were previously persisted as redacted bullet placeholders
       // (invalid in HTTP headers). One-time repair on read.
@@ -167,9 +168,14 @@ export function createSystemRouter(): Router {
             const prev = existing.voice?.xai?.apiKey;
             const raw = typeof inc?.apiKey === 'string' ? inc.apiKey.trim() : '';
             const placeholder = !raw || raw === REDACTED_SECRET || raw.includes('•');
+            const hasNewKey = Boolean(raw) && !placeholder;
+            const explicitlyCleared = inc?.apiKeyConfigured === false;
             let apiKey = prev;
-            if (inc?.apiKeyConfigured === false) apiKey = '';
-            else if (!placeholder) apiKey = raw;
+            if (explicitlyCleared && !hasNewKey) {
+              apiKey = '';
+            } else if (hasNewKey) {
+              apiKey = raw;
+            }
             const { apiKeyConfigured: _drop, ...incRest } = inc ?? {};
             return {
               ...existing.voice?.xai,
@@ -396,19 +402,20 @@ export function createSystemRouter(): Router {
   // The web-ui uses this to display location in the footer and docking station.
   r.get('/api/geolocation', (_req, res) => {
     try {
-      const svc = getGeoLocationService();
-      const result = svc?.getCurrent();
-      if (!result) {
-        res.json({ city: null, fullLabel: null, cityLabel: 'Location not found', resolved: false });
+      const situation = getCurrentClientSituation();
+      const label = situation?.locationLabel?.trim();
+      if (!label) {
+        res.json({ city: null, fullLabel: null, cityLabel: '', resolved: false });
         return;
       }
+      const city = label.split(',')[0]?.trim() || label;
       res.json({
-        city: result.city,
-        fullLabel: result.fullLabel,
-        cityLabel: result.cityLabel,
-        method: result.method,
-        vpnSuspected: result.vpnSuspected,
-        resolvedAt: result.resolvedAt,
+        city,
+        fullLabel: label,
+        cityLabel: city,
+        method: situation?.locationMethod ?? 'user_set',
+        vpnSuspected: false,
+        resolvedAt: Date.now(),
         resolved: true,
       });
     } catch (e: unknown) {
@@ -420,21 +427,17 @@ export function createSystemRouter(): Router {
   // Force a geolocation refresh (e.g. user clicked "retry").
   r.post('/api/geolocation/refresh', async (_req, res) => {
     try {
-      const svc = getGeoLocationService();
-      if (!svc) {
-        res.json({ ok: false, error: 'Geolocation service not available' });
-        return;
-      }
-      const result = await svc.refresh();
+      const situation = getCurrentClientSituation();
+      const label = situation?.locationLabel?.trim();
       res.json({
         ok: true,
-        city: result?.city ?? null,
-        fullLabel: result?.fullLabel ?? null,
-        cityLabel: result?.cityLabel ?? 'Location not found',
-        method: result?.method ?? 'timezone_only',
-        vpnSuspected: result?.vpnSuspected ?? false,
-        resolvedAt: result?.resolvedAt ?? Date.now(),
-        resolved: !!result,
+        city: label ? (label.split(',')[0]?.trim() || label) : null,
+        fullLabel: label ?? null,
+        cityLabel: label ? (label.split(',')[0]?.trim() || label) : '',
+        method: situation?.locationMethod ?? 'timezone_only',
+        vpnSuspected: false,
+        resolvedAt: Date.now(),
+        resolved: Boolean(label),
       });
     } catch (e: unknown) {
       getLogger().error('POST_GEOLOCATION_REFRESH', e instanceof Error ? e : String(e));

@@ -70,6 +70,7 @@ export function CrewHubDialog({
 }: CrewHubDialogProps) {
   const activeCategory = categories[categoryIndex];
   const [profileCrew, setProfileCrew] = useState<PrebuiltCrew | null>(null);
+  const [profileLoadingId, setProfileLoadingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [searchLoading, setSearchLoading] = useState(false);
@@ -179,7 +180,9 @@ export function CrewHubDialog({
   }, []);
 
   const handleOpenProfile = useCallback(async (item: HubCardCrew) => {
+    setProfileLoadingId(item.catalogId);
     const crew = await resolveCardCrew(item);
+    setProfileLoadingId(null);
     if (crew) setProfileCrew(crew);
   }, [resolveCardCrew]);
 
@@ -483,6 +486,7 @@ export function CrewHubDialog({
                             showPrivateChat={!!onPrivateChat}
                             callLoading={callLoading}
                             showCall={!!onCall}
+                            profileLoading={profileLoadingId === pc.catalogId}
                             onOpenProfile={(item) => { void handleOpenProfile(item); }}
                             onRecruit={(item) => { void handleRecruit(item); }}
                             onDeactivate={onRemove}

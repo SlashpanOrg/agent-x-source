@@ -64,7 +64,7 @@ export const clientSituationSchema = z.object({
   longitude: z.number().min(-180).max(180).optional(),
   accuracyMeters: z.number().min(0).max(1_000_000).optional(),
   source: z.enum(['browser', 'desktop', 'server']),
-  locationMethod: z.enum(['gps', 'ip', 'timezone_only']).optional(),
+  locationMethod: z.enum(['gps', 'ip', 'timezone_only', 'user_set']).optional(),
   locationConfidence: z.enum(['high', 'low', 'unknown']).optional(),
   vpnSuspected: z.boolean().optional(),
 }).optional();
@@ -98,6 +98,10 @@ export const chatMessageSchema = z.object({
     primaryCrewId: z.string().optional(),
   }).optional(),
   clientSituation: clientSituationSchema,
+  /** Thinking mode — controls tool budget, reasoning depth, retrieval. */
+  thinkingMode: z.enum(['light', 'medium', 'high']).optional(),
+  /** Output mode — controls response verbosity and format. */
+  outputMode: z.enum(['brief', 'moderate', 'detailed']).optional(),
 });
 
 export const crewSuggestionEvaluateSchema = z.object({
@@ -176,6 +180,8 @@ export const chatSteerSchema = z.object({
   crewIntakeFromPicker: z.boolean().optional(),
   primaryCrewId: z.string().optional(),
   clientSituation: clientSituationSchema,
+  thinkingMode: z.enum(['light', 'medium', 'high']).optional(),
+  outputMode: z.enum(['brief', 'moderate', 'detailed']).optional(),
 });
 
 export const clarificationRespondSchema = z.object({
@@ -207,8 +213,13 @@ export const crewRosterPickerUpdateSchema = z.object({
 });
 
 export const sessionMessagesQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
   before: z.string().min(1).optional(),
+  /** When true, include system/tool ledger messages (parity with session export). */
+  includeSystem: z.preprocess(
+    (v) => v === true || v === 'true' || v === '1',
+    z.boolean().optional(),
+  ),
 });
 
 export const permissionRespondSchema = z.object({

@@ -28,6 +28,7 @@ import {
   resolveCommandCodeOpenAiBaseUrl,
 } from '@agentx/shared';
 import { resolveGoogleNativeBaseUrl } from '../providers/google/gemini-metadata.js';
+import { looksLikeFailedPdfExtract } from '../documents/text-quality.js';
 
 /** Defaults for OpenAI-compatible chat paths only. Native SDK providers use their package defaults. */
 const DEFAULT_BASE_URLS: Record<string, string> = {
@@ -344,18 +345,30 @@ export function createAiSdkTools(
   const activeOutputCalls = new Map<string, string>(); // callId -> tool name
 
   // Lightweight deterministic guard to stop looped/dead-end tool calls
-  const recentCalls: Array<{ id: string; key: string; argsSummary: string; outputSummary: string; timestamp: number }> = [];
-  const MAX_RECENT_CALLS = 12;
+  const recentCalls: Array<{ id: string; key: string; argsSummary: string; outputSummary: string; timestamp: number; success: boolean }> = [];
+  const MAX_RECENT_CALLS = 24;
 
   function toolCallKey(toolId: string, args: Record<string, unknown>): string {
     if (toolId === 'knowledge_base_search' && typeof args['query'] === 'string') return `kb:${String(args['query'])}`;
-    if (toolId === 'deep_web_search' && typeof args['query'] === 'string') return `web:${String(args['query'])}`;
+    if ((toolId === 'deep_web_search' || toolId === 'web_search') && typeof args['query'] === 'string') {
+      return `web:${String(args['query'])}`;
+    }
     if (toolId === 'web_fetch' && typeof args['url'] === 'string') return `fetch:${String(args['url'])}`;
     if (toolId === 'python_rpc' && typeof args['script'] === 'string') return `py:${String(args['script']).slice(0, 200)}`;
     if (toolId === 'shell_exec' && typeof args['command'] === 'string') return `sh:${String(args['command']).slice(0, 200)}`;
     if (toolId === 'bash' && typeof args['command'] === 'string') return `sh:${String(args['command']).slice(0, 200)}`;
     if (toolId === 'run_command' && (typeof args['command'] === 'string' || typeof args['cmd'] === 'string')) return `sh:${String(args['command'] ?? args['cmd']).slice(0, 200)}`;
     if (toolId === 'execute' && typeof args['command'] === 'string') return `sh:${String(args['command']).slice(0, 200)}`;
+    if (toolId === 'tool_search' && typeof args['query'] === 'string') return `search:${String(args['query']).toLowerCase().trim()}`;
+    if (toolId === 'tool_describe' && typeof args['tool'] === 'string') return `describe:${String(args['tool'])}`;
+    if (toolId === 'tool_call') {
+      const inner = typeof args['tool'] === 'string' ? args['tool'] : 'unknown';
+      const innerArgs = args['arguments'] ?? args['args'] ?? {};
+      return `call:${inner}:${JSON.stringify(innerArgs).slice(0, 180)}`;
+    }
+    if ((toolId === 'pdf_read' || toolId === 'file_read' || toolId === 'image_ocr') && typeof args['path'] === 'string') {
+      return `${toolId}:${String(args['path'])}`;
+    }
     return `${toolId}:${JSON.stringify(args).slice(0, 200)}`;
   }
 
@@ -365,7 +378,9 @@ export function createAiSdkTools(
   }
 
   const CONSECUTIVE_FAILURE_THRESHOLD = 5;
+  const NON_PROGRESS_THRESHOLD = 4;
   let consecutiveFailures = 0;
+  let consecutiveNonProgress = 0;
 
   function guardTool(toolId: string, args: Record<string, unknown>): { error: string; message: string } | null {
     const now = Date.now();
@@ -375,19 +390,68 @@ export function createAiSdkTools(
     }
 
     if (consecutiveFailures >= CONSECUTIVE_FAILURE_THRESHOLD) {
-      return { error: 'CIRCUIT_BREAKER', message: `${consecutiveFailures} consecutive tool calls have failed in this turn. Stop invoking more tools, summarize the failures for the user, and ask how they would like to proceed.` };
+      return { error: 'CIRCUIT_BREAKER', message: `${consecutiveFailures} consecutive tool calls have failed in this turn. Stop invoking more tools, summarize what you know for the user, and deliver the best answer possible — or ask one clear question if blocked.` };
+    }
+
+    if (consecutiveNonProgress >= NON_PROGRESS_THRESHOLD) {
+      return {
+        error: 'STALL_BREAKER',
+        message: `${consecutiveNonProgress} consecutive tool calls produced no progress (repeated/garbage/empty results). Stop tool thrashing. Use the document content already in context (or tell the user what is blocked) and deliver the deliverable.`,
+      };
     }
 
     const key = toolCallKey(toolId, args);
     const previous = recentCalls.filter((c) => c.id === toolId && c.key === key);
 
     if (toolId === 'web_fetch' && previous.length > 0) {
-      // Refetching the same URL is almost always a loop
       return { error: 'REPEAT_FETCH', message: `You already fetched this URL in this turn. Re-fetching the same URL is not allowed. Use the result you have, try a different source, or ask the user.` };
     }
 
-    if ((toolId === 'knowledge_base_search' || toolId === 'deep_web_search') && previous.length > 0) {
-      return { error: 'REPEAT_SEARCH', message: `You already ran this exact ${toolId} query in this turn. Repeating the same search is not allowed. Use the results already returned or ask the user.` };
+    if ((toolId === 'knowledge_base_search' || toolId === 'deep_web_search' || toolId === 'web_search') && previous.length > 0) {
+      return { error: 'REPEAT_SEARCH', message: `You already ran this exact ${toolId} query in this turn. Repeating the same search is not allowed. Use the results already returned, [SESSION RESEARCH] from prior turns, or ask the user.` };
+    }
+
+    // Meta-discovery thrash: tool_search/tool_describe must not dominate the turn.
+    if (toolId === 'tool_search') {
+      const searches = recentCalls.filter((c) => c.id === 'tool_search');
+      if (previous.length >= 1) {
+        return { error: 'REPEAT_META', message: `You already searched for that tool query. Use tool_call/pdf_read/image_ocr on the known tool — do not keep searching.` };
+      }
+      if (searches.length >= 3) {
+        return { error: 'META_BUDGET', message: `tool_search budget exhausted this turn (${searches.length} searches). Stop discovering tools and execute the task with tools you already know (pdf_read, image_ocr, file_read).` };
+      }
+    }
+    if (toolId === 'tool_describe' && previous.length >= 1) {
+      return { error: 'REPEAT_META', message: `You already described that tool. Call it now with tool_call or the dedicated tool id.` };
+    }
+
+    // General identical replay: same tool + same args more than once is almost always a loop.
+    if (previous.length >= 1 && !['todo_write', 'ask_clarification'].includes(toolId)) {
+      return {
+        error: 'REPEAT_TOOL',
+        message: `You already ran ${toolId} with the same arguments this turn. Do not repeat it. Use the prior result, switch strategy once, or answer the user with what you have.`,
+      };
+    }
+
+    // Path-level PDF thrash across file_read/pdf_read/tool_call wrappers.
+    if (toolId === 'pdf_read' || toolId === 'file_read' || toolId === 'tool_call' || toolId === 'image_ocr') {
+      const path = typeof args['path'] === 'string'
+        ? args['path']
+        : (typeof (args['arguments'] as { path?: string } | undefined)?.path === 'string'
+          ? (args['arguments'] as { path: string }).path
+          : null);
+      if (path) {
+        const samePath = recentCalls.filter((c) =>
+          (c.id === 'pdf_read' || c.id === 'file_read' || c.id === 'tool_call' || c.id === 'image_ocr')
+          && c.argsSummary.includes(path),
+        );
+        if (samePath.length >= 2) {
+          return {
+            error: 'REPEAT_DOC_READ',
+            message: `You already attempted to read "${path}" multiple times. Stop re-reading it. If OCR text is already in the user message, analyse it and produce the deliverable. If not, tell the user extraction failed — do not loop.`,
+          };
+        }
+      }
     }
 
     return null;
@@ -395,12 +459,40 @@ export function createAiSdkTools(
 
   function recordCall(toolId: string, args: Record<string, unknown>, output: string, success: boolean): void {
     const key = toolCallKey(toolId, args);
-    recentCalls.push({ id: toolId, key, argsSummary: JSON.stringify(args).slice(0, 200), outputSummary: output.slice(0, 200), timestamp: Date.now() });
+    recentCalls.push({
+      id: toolId,
+      key,
+      argsSummary: JSON.stringify(args).slice(0, 200),
+      outputSummary: output.slice(0, 200),
+      timestamp: Date.now(),
+      success,
+    });
     if (recentCalls.length > MAX_RECENT_CALLS) recentCalls.shift();
-    if (success) {
+
+    // Treat "success" with garbage PDF extract / empty discovery as non-progress failures.
+    let effectiveSuccess = success;
+    let progressed = success;
+    if (success && (toolId === 'pdf_read' || toolId === 'file_read' || toolId === 'tool_call') && looksLikeFailedPdfExtract(output)) {
+      effectiveSuccess = false;
+      progressed = false;
+    }
+    if (success && (toolId === 'tool_search' || toolId === 'tool_describe' || toolId === 'file_find' || toolId === 'folder_list' || toolId === 'folder_tree')) {
+      progressed = false; // discovery alone is not task progress
+    }
+    if (success && /PERMISSION DENIED|PERMISSION_INSTRUCTED|\[Security\] Blocked|No files matched|No knowledge-base matches/i.test(output)) {
+      effectiveSuccess = false;
+      progressed = false;
+    }
+
+    if (effectiveSuccess) {
       consecutiveFailures = 0;
     } else {
       consecutiveFailures += 1;
+    }
+    if (progressed) {
+      consecutiveNonProgress = 0;
+    } else {
+      consecutiveNonProgress += 1;
     }
   }
 
@@ -415,6 +507,12 @@ export function createAiSdkTools(
     }
     if (toolId === 'deep_web_search' && lower.includes('found 0 ') || output.toLowerCase().includes('no results')) {
       return `[REFLECTION: web search returned no useful results. Do not repeat with the same query. Use what you know, try a different query, or ask the user.]\n${output}`;
+    }
+    if ((toolId === 'pdf_read' || toolId === 'file_read' || toolId === 'tool_call') && /PDF_UNREADABLE|no usable extractable text|ÿÿÿ/i.test(output)) {
+      return `[REFLECTION: PDF extraction failed or returned garbage. Do NOT retry the same read. If OCR text is already in the user message, analyse it now. Otherwise ask the user one clear question.]\n${output}`;
+    }
+    if (toolId === 'tool_search') {
+      return `[REFLECTION: prefer calling pdf_read/image_ocr/file_read directly for attached documents. Avoid further tool_search.]\n${output}`;
     }
     return output;
   }
@@ -786,6 +884,7 @@ export async function* aiSdkStream(
       ...(tools ? { tools, stopWhen: stepCountIs(100), toolChoice: 'auto' as const } : {}),
       temperature: 0,
       maxOutputTokens: resolveMaxOutputTokens(config.maxOutputTokens),
+      maxRetries: 2,
       abortSignal,
     });
 

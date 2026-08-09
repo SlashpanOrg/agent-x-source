@@ -33,6 +33,10 @@ export interface StorableSession extends RecordMeta {
   tokenUsed: number;
   tokenAvailable: number;
   compactionCount?: number;
+  /** Persisted thinking mode for this session — controls tool budget, reasoning depth. */
+  thinkingMode?: string | null;
+  /** Persisted output mode for this session — controls response verbosity. */
+  outputMode?: string | null;
 }
 
 export interface StorableMessage extends RecordMeta, Record<string, unknown> {
@@ -226,7 +230,7 @@ export interface StorageAdapter {
   /** Message/part pagination and hydration (optional — primarily Postgres-backed). */
   getMessagesPage?(
     sessionId: string,
-    opts: { limit?: number; before?: string },
+    opts: { limit?: number; before?: string; includeSystem?: boolean },
   ): Promise<{ messages: Array<Record<string, unknown>>; total: number; hasMore: boolean }>;
   getParts?(sessionId: string): Array<Record<string, unknown>>;
   getPartsForMessages?(

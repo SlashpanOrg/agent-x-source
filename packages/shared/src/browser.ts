@@ -5,6 +5,8 @@ export {
   partsCorruptedByCrossTurn,
   partsToolIdsMismatch,
   partsTextExceedsContent,
+  partsTextTruncatesContent,
+  syncTextPartsWithCanonicalContent,
   dedupeToolParts,
   buildPartsFromDbRows,
   assignPartsToAssistantMessage,
@@ -18,6 +20,16 @@ export {
 export type { MessagePart, PersistedToolCall } from './utils/message-parts.js';
 
 export { appendStreamText, repairStreamTextGlitches, extractStreamTextDelta } from './utils/stream-text.js';
+
+export {
+  sanitizeForJson,
+  mapOverNonCodeSegments,
+  decodeLiteralUnicodeEscapes,
+  stripInvisibleFormatChars,
+  stripResidualInvisibleEscapeSpellings,
+  sanitizeAssistantDisplayText,
+  stripToolNoise,
+} from './utils/text-sanitize.js';
 
 export {
   upsertDeepSearchPart,
@@ -65,6 +77,11 @@ export type {
   QuestionnaireAnswerValue,
   QuestionnaireResponseState,
 } from './types/questionnaire.js';
+
+export type {
+  PermissionOutcomeRecord,
+  PermissionOutcomeDecision,
+} from './types/permission-outcome.js';
 
 export type { ClarificationField, ClarificationSource } from './types/events.js';
 
@@ -257,6 +274,27 @@ export {
 } from './utils/call-transcript-divider.js';
 export type { CallDividerVariant, CallDividerMeta } from './utils/call-transcript-divider.js';
 
+export {
+  CREW_VOICE_SESSION_PREFIX,
+  crewVoiceSessionId,
+  isCrewVoiceSessionId,
+  textSessionIdFromVoiceSessionId,
+} from './utils/crew-voice-session.js';
+
+// Client situation — web-ui location context and docking display
+export type {
+  ClientSituation,
+  ClientSituationSource,
+  ClientLocationMethod,
+  ClientLocationConfidence,
+} from './types/client-situation.js';
+export {
+  normalizeClientSituation,
+  isClientLocationKnown,
+  clientLocationCityLabel,
+  formatClientSituationBlock,
+} from './utils/client-situation.js';
+
 export type {
   DeepSearchContentType,
   DeepSearchDepth,
@@ -287,3 +325,10 @@ export type {
   TraceExportBundle,
 } from './types/observability.js';
 export type { MetricSample, ObservabilityDomain } from './types/telemetry.js';
+
+// Turn modes — needed by web-ui TurnModeChip component
+export type { ThinkingMode, OutputMode } from './types/turn-mode.js';
+export {
+  THINKING_MODE_LABELS,
+  OUTPUT_MODE_LABELS,
+} from './types/turn-mode.js';

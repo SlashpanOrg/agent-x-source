@@ -1,4 +1,7 @@
-import { int16ToFloat32 } from './pcm.js';
+import { int16ToFloat32, mergeInt16Chunks } from './pcm.js';
+
+/** Buffer ~300ms of assistant audio before starting play — avoids first-word jitter. */
+const MIN_FIRST_PLAYBACK_SAMPLES = 7_200;
 
 export class StreamingPlayback {
   private context: AudioContext | null = null;
@@ -6,6 +9,8 @@ export class StreamingPlayback {
   private nextStartTime = 0;
   private readonly defaultSampleRate: number;
   private lastChunks: Array<{ pcm: Int16Array; sampleRate: number }> = [];
+  private primingChunks: Int16Array[] = [];
+  private primingSampleCount = 0;
 
   constructor(defaultSampleRate = 24_000) {
     this.defaultSampleRate = defaultSampleRate;
@@ -24,15 +29,26 @@ export class StreamingPlayback {
 
   async enqueuePcm(pcm: Int16Array, sampleRate = this.defaultSampleRate): Promise<void> {
     this.lastChunks.push({ pcm, sampleRate });
+    let playPcm = pcm;
+    if (this.activeSources.length === 0) {
+      this.primingChunks.push(pcm);
+      this.primingSampleCount += pcm.length;
+      if (this.primingSampleCount < MIN_FIRST_PLAYBACK_SAMPLES) return;
+      playPcm = mergeInt16Chunks(this.primingChunks);
+      this.primingChunks = [];
+      this.primingSampleCount = 0;
+    }
     const ctx = await this.ensureContext();
-    const floats = int16ToFloat32(pcm);
+    const floats = int16ToFloat32(playPcm);
     const channel = new Float32Array(floats);
     const buffer = ctx.createBuffer(1, channel.length, sampleRate);
     buffer.copyToChannel(channel, 0);
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
-    const startAt = Math.max(ctx.currentTime, this.nextStartTime);
+    const startAt = this.activeSources.length === 0
+      ? ctx.currentTime + 0.12
+      : Math.max(ctx.currentTime, this.nextStartTime);
     source.start(startAt);
     this.nextStartTime = startAt + buffer.duration;
     this.activeSources.push(source);
@@ -72,6 +88,8 @@ export class StreamingPlayback {
       }
     }
     this.activeSources = [];
+    this.primingChunks = [];
+    this.primingSampleCount = 0;
     if (this.context) {
       this.nextStartTime = this.context.currentTime;
     }

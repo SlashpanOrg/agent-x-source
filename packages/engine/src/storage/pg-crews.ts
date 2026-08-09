@@ -36,6 +36,7 @@ export function createCrew(ctx: CrewContext, input: CrewCreateInput): Crew {
     traits: input.traits,
     tools: input.tools,
     tags: input.tags,
+    certifications: input.certifications,
     systemPrompt: input.systemPrompt,
   });
   const crew: Crew = {
@@ -57,6 +58,7 @@ export function createCrew(ctx: CrewContext, input: CrewCreateInput): Crew {
     toolPreferences: input.toolPreferences,
     tools: input.tools,
     tags: input.tags,
+    certifications: input.certifications,
     permissions: input.permissions,
     model: input.model,
     protocol: input.protocol,
@@ -70,7 +72,7 @@ export function createCrew(ctx: CrewContext, input: CrewCreateInput): Crew {
   if (existingIdx >= 0) ctx.cache.crews[existingIdx] = crew;
   else ctx.cache.crews.push(crew);
   ctx.write(
-    `INSERT INTO crews (id, name, title, description, system_prompt, expertise, traits, tool_preferences, enabled_tools, disabled_tools, is_default, metadata, source, catalog_id, search_text, suggestable, created_at, updated_at)
+    `INSERT INTO crews (id, name, title, description, system_prompt, expertise, traits, tool_preferences, enabled_tools, disabled_tools, is_default, metadata, source, catalog_id, search_text, suggestable, certifications, created_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
      ON CONFLICT (id) DO UPDATE SET
        name = EXCLUDED.name,
@@ -88,6 +90,7 @@ export function createCrew(ctx: CrewContext, input: CrewCreateInput): Crew {
        catalog_id = EXCLUDED.catalog_id,
        search_text = EXCLUDED.search_text,
        suggestable = EXCLUDED.suggestable,
+       certifications = EXCLUDED.certifications,
        updated_at = EXCLUDED.updated_at`,
     [
       crew.id,
@@ -106,6 +109,7 @@ export function createCrew(ctx: CrewContext, input: CrewCreateInput): Crew {
       crew.catalogId ?? null,
       searchText,
       crew.suggestable !== false,
+      crew.certifications ?? [],
       now,
       now,
     ]
@@ -127,12 +131,13 @@ export function updateCrew(ctx: CrewContext, id: string, updates: Partial<Crew>)
     traits: crew.traits,
     tools: crew.tools,
     tags: crew.tags,
+    certifications: crew.certifications,
     systemPrompt: crew.systemPrompt,
   });
   ctx.cache.crews[idx] = crew;
   ctx.write(
-    `UPDATE crews SET name=$1, title=$2, description=$3, system_prompt=$4, expertise=$5, traits=$6, tool_preferences=$7, enabled_tools=$8, disabled_tools=$9, is_default=$10, metadata=$11, source=$12, catalog_id=$13, search_text=$14, suggestable=$15, updated_at=$16
-     WHERE id=$17`,
+    `UPDATE crews SET name=$1, title=$2, description=$3, system_prompt=$4, expertise=$5, traits=$6, tool_preferences=$7, enabled_tools=$8, disabled_tools=$9, is_default=$10, metadata=$11, source=$12, catalog_id=$13, search_text=$14, suggestable=$15, certifications=$16, updated_at=$17
+     WHERE id=$18`,
     [
       crew.name,
       crew.title || null,
@@ -149,6 +154,7 @@ export function updateCrew(ctx: CrewContext, id: string, updates: Partial<Crew>)
       crew.catalogId ?? null,
       crew.searchText,
       crew.suggestable !== false,
+      crew.certifications ?? [],
       crew.updatedAt,
       id,
     ]

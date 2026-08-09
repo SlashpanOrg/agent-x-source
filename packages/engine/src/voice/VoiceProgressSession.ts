@@ -1,4 +1,8 @@
-import { pickAckPhrase } from './voiceFillerPolicy.js';
+import {
+  pickShortVoiceAck,
+  voiceProgressLineForStage,
+  voiceProgressLineForTool,
+} from './voiceProgressPhrases.js';
 
 export type VoiceProgressStage =
   | 'ack'
@@ -29,17 +33,24 @@ export class VoiceProgressSession {
   private lastSpokenAt = 0;
   private lastLine = '';
   private readonly turnStartedAt = Date.now();
+  private lastToolLine = '';
 
   constructor(options: VoiceProgressSessionOptions = {}) {
     this.enabled = options.enabled !== false;
     this.speakToolProgress = options.speakToolProgress !== false;
     this.onSpeak = options.onSpeak;
-    this.throttleMs = options.throttleMs ?? 2500;
+    this.throttleMs = options.throttleMs ?? 3500;
     this.skipInitialAck = options.skipInitialAck === true;
-    this.delayedProgressMs = options.delayedProgressMs ?? 8000;
+    this.delayedProgressMs = options.delayedProgressMs ?? 6000;
   }
 
-  async handleEngineEvent(event: { type?: string; stage?: string; tool?: string }): Promise<void> {
+  async handleEngineEvent(event: {
+    type?: string;
+    stage?: string;
+    tool?: string;
+    description?: string;
+    elapsedMs?: number;
+  }): Promise<void> {
     if (!this.enabled || !this.onSpeak) return;
     const type = event.type ?? '';
     let line: string | null = null;
@@ -47,18 +58,25 @@ export class VoiceProgressSession {
 
     if (type === 'loading_start') {
       if (this.skipInitialAck) return;
-      line = pickAckPhrase();
+      line = pickShortVoiceAck();
       stage = 'ack';
-    } else if (type === 'tool_start' && this.speakToolProgress) {
+    } else if (
+      (type === 'tool_executing' || type === 'tool_start')
+      && this.speakToolProgress
+    ) {
       const tool = event.tool ?? 'tool';
-      line = `Running ${tool.replace(/_/g, ' ')}.`;
+      line = voiceProgressLineForTool(tool, event.description);
       stage = 'tool';
+      if (line && line === this.lastToolLine) return;
+      this.lastToolLine = line ?? '';
     } else if (type === 'crew_activity') {
-      line = 'Coordinating with the crew.';
+      line = 'Crew working.';
       stage = 'crew';
-    } else if (type === 'heartbeat') {
+    } else if (type === 'turn_heartbeat' || type === 'heartbeat') {
       if (this.skipInitialAck && Date.now() - this.turnStartedAt < this.delayedProgressMs) return;
-      line = 'Still working on it.';
+      const elapsed = event.elapsedMs ?? Date.now() - this.turnStartedAt;
+      if (elapsed < this.delayedProgressMs) return;
+      line = voiceProgressLineForStage(event.stage ?? 'execution');
       stage = 'waiting';
     }
 
@@ -70,7 +88,7 @@ export class VoiceProgressSession {
     if (!this.enabled || !this.onSpeak) return;
     const now = Date.now();
     if (line === this.lastLine && now - this.lastSpokenAt < this.throttleMs) return;
-    if (now - this.lastSpokenAt < this.throttleMs && stage !== 'ack') return;
+    if (now - this.lastSpokenAt < this.throttleMs && stage !== 'ack' && stage !== 'tool') return;
     this.lastLine = line;
     this.lastSpokenAt = now;
     await this.onSpeak(line, stage);
@@ -78,6 +96,7 @@ export class VoiceProgressSession {
 
   reset(): void {
     this.lastLine = '';
+    this.lastToolLine = '';
     this.lastSpokenAt = 0;
   }
 }

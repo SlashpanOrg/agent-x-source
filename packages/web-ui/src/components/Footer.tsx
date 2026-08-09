@@ -51,22 +51,21 @@ export function Footer({ onToggleLogs, logsOpen }: FooterProps) {
   const crewCall = useCrewCallOptional();
   const commsCtx = useVoiceCommsOptional();
   const comms = commsCtx?.comms;
-  const showFooterMic = Boolean(voice?.voiceReady && !voice.wakeWordEnabled);
-  const showWakeIndicator = Boolean(voice?.voiceReady && voice.wakeWordEnabled);
+  const showFooterMic = Boolean(voice?.voiceReady && voice?.commsActive);
   const showMinimizedCall = Boolean(crewCall?.minimized && crewCall.phase !== 'idle' && crewCall.target);
   const callActivityColor = particlePhaseCss(crewCall?.particlePhase ?? 'paused');
 
   // Derive voice status text from the dashboard comms session so the user can
   // see the exact voice state (listening/thinking/speaking) from any page.
   const voiceStatusText = useMemo(() => {
-    if (!voice?.voiceActive || !comms) return null;
+    if (!voice?.commsActive || !comms) return null;
     const phase = comms.commsPhase;
     if (phase === 'operator_record') return 'listening';
     if (phase === 'agent_tx') return 'speaking';
     if (phase === 'operator_stt' || phase === 'relay_process' || phase === 'agent_prep') return 'thinking';
     if (phase === 'boot' || phase === 'link') return 'connecting';
     return comms.isDuplex ? 'listening' : 'idle';
-  }, [voice?.voiceActive, comms?.commsPhase, comms?.isDuplex]);
+  }, [voice?.commsActive, comms?.commsPhase, comms?.isDuplex]);
 
   const voiceStatusColor = (() => {
     if (!voiceStatusText) return colors.text.dim;
@@ -77,15 +76,17 @@ export function Footer({ onToggleLogs, logsOpen }: FooterProps) {
     return colors.text.secondary;
   })();
 
-  const footerMicColor = !voice
-    ? colors.text.dim
-    : voice.warmupPhase === 'ready'
-      ? colors.accent.green
-      : voice.warmupPhase === 'booting'
-        ? colors.accent.orange
-        : voice.warmupPhase === 'failed'
-          ? colors.accent.red
-          : colors.text.dim;
+  const footerMicColor = voiceStatusText
+    ? voiceStatusColor
+    : !voice
+      ? colors.text.dim
+      : voice.warmupPhase === 'ready'
+        ? colors.accent.green
+        : voice.warmupPhase === 'booting'
+          ? colors.accent.orange
+          : voice.warmupPhase === 'failed'
+            ? colors.accent.red
+            : colors.text.dim;
 
   const footerMicTitle = !voice
     ? 'Voice unavailable'
@@ -94,7 +95,7 @@ export function Footer({ onToggleLogs, logsOpen }: FooterProps) {
       : voice.warmupPhase === 'booting'
         ? 'Warming voice engine…'
         : voice.warmupPhase === 'ready'
-          ? 'Voice engine ready'
+          ? (comms?.statusLabel ?? 'Voice engine ready')
           : 'Voice idle';
 
   useEffect(() => {
@@ -200,40 +201,6 @@ export function Footer({ onToggleLogs, logsOpen }: FooterProps) {
             <span style={{ color: colors.border.default }}>/</span>
           </>
         )}
-        {showWakeIndicator && voice && (
-          <>
-            <Box
-              component="span"
-              title={`Wake word active — say "${voice.wakePhrase}" in chat voice mode`}
-              sx={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 0.5,
-                color: colors.accent.green,
-                letterSpacing: '0.04em',
-                userSelect: 'none',
-              }}
-            >
-              <Box
-                component="span"
-                sx={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  bgcolor: colors.accent.green,
-                  boxShadow: `0 0 6px ${colors.accent.green}`,
-                  animation: 'agentx-wake-pulse 2s ease-in-out infinite',
-                  '@keyframes agentx-wake-pulse': {
-                    '0%, 100%': { opacity: 0.45, transform: 'scale(0.85)' },
-                    '50%': { opacity: 1, transform: 'scale(1)' },
-                  },
-                }}
-              />
-              <span>wake · {voice.wakePhrase}</span>
-            </Box>
-            <span style={{ color: colors.border.default }}>/</span>
-          </>
-        )}
         {showFooterMic && voice && (
           <>
             <Box
@@ -319,23 +286,23 @@ export function Footer({ onToggleLogs, logsOpen }: FooterProps) {
             <span style={{ color: colors.border.default }}>/</span>
           </>
         )}
-        <Box
-          component="span"
-          title={geoLocation.fullLabel}
-          sx={{
-            display: 'inline-flex', alignItems: 'center', gap: '2px',
-            cursor: 'default', userSelect: 'none', letterSpacing: '0.5px',
-            color: geoLocation.resolved && !geoLocation.vpnSuspected
-              ? colors.text.dim
-              : colors.accent.orange,
-            transition: 'color 0.15s',
-            '&:hover': { color: colors.text.secondary },
-          }}
-        >
-          <LocationOnIcon sx={{ fontSize: 12 }} />
-          {geoLocation.cityLabel}
-        </Box>
-        <span style={{ color: colors.border.default }}>/</span>
+        {geoLocation.resolved && (
+          <>
+            <Box
+              component="span"
+              title={geoLocation.fullLabel}
+              sx={{
+                display: 'inline-flex', alignItems: 'center', gap: '2px',
+                cursor: 'default', userSelect: 'none', letterSpacing: '0.5px',
+                color: colors.text.dim,
+              }}
+            >
+              <LocationOnIcon sx={{ fontSize: 12 }} />
+              {geoLocation.cityLabel}
+            </Box>
+            <span style={{ color: colors.border.default }}>/</span>
+          </>
+        )}
         {version && (
           <>
             <span>v{version}</span>

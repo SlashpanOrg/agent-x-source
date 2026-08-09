@@ -5,7 +5,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 
-import { chat, sessions, models, crews, crewSuggestions, providers, settings, permissions, sessionPermissions, markdownDocuments, modelBenchmark, type TodoItem, type SessionInfo, type Crew, type ModelInfo, type ConnectionState, type CrewSuggestionEvaluation, type CrewMatchCandidate, type IntegrationActionPreview } from '../../api';
+import { chat, sessions, models, crews, crewSuggestions, providers, settings, permissions, sessionPermissions, sessionTurnModes, markdownDocuments, modelBenchmark, type TodoItem, type SessionInfo, type Crew, type ModelInfo, type ConnectionState, type CrewSuggestionEvaluation, type CrewMatchCandidate, type IntegrationActionPreview } from '../../api';
+import type { ThinkingMode, OutputMode } from '@agentx/shared';
 import type { PrebuiltCrew } from '../crew/hub-types';
 import type { ChatInputBarHandle } from '../ChatInputBar';
 import { readWebSearchForcePreference, writeWebSearchForcePreference } from '../WebSearchGlobeToggle';
@@ -38,6 +39,8 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
   }, [setSearchParams]);
   const [view, setView] = useState<ChatView>(sessionId ? 'chat' : 'sessions');
   const [sessionList, setSessionList] = useState<SessionInfo[]>([]);
+  const sessionListRef = useRef(sessionList);
+  useEffect(() => { sessionListRef.current = sessionList; }, [sessionList]);
   const [currentSessionTitle, setCurrentSessionTitle] = useState<string | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(sessionId ?? null);
   const [isCrewPrivateSession, setIsCrewPrivateSession] = useState(false);
@@ -124,6 +127,45 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
   // Unified permission state
   const [bypassPermissions, setBypassPermissionsState] = useState(false);
   const [toolPermissions, setToolPermissions] = useState<Record<string, { targetPath: string | null; decision: string }>>({});
+
+  // Turn modes — thinking effort + output verbosity (persisted per session in DB)
+  const [thinkingMode, setThinkingModeState] = useState<ThinkingMode>('medium');
+  const [outputMode, setOutputModeState] = useState<OutputMode>('moderate');
+
+  // Persist thinking mode to DB and update local state
+  const setThinkingMode = useCallback((mode: ThinkingMode) => {
+    setThinkingModeState(mode);
+    const sid = currentSessionIdRef.current ?? currentSessionId;
+    if (sid) {
+      sessionTurnModes.set(sid, { thinkingMode: mode }).catch(() => { /* best-effort */ });
+    }
+  }, [currentSessionId]);
+
+  // Persist output mode to DB and update local state
+  const setOutputMode = useCallback((mode: OutputMode) => {
+    setOutputModeState(mode);
+    const sid = currentSessionIdRef.current ?? currentSessionId;
+    if (sid) {
+      sessionTurnModes.set(sid, { outputMode: mode }).catch(() => { /* best-effort */ });
+    }
+  }, [currentSessionId]);
+
+  // Restore modes from DB when session changes
+  useEffect(() => {
+    if (!currentSessionId) return;
+    let cancelled = false;
+    sessionTurnModes.get(currentSessionId).then((modes) => {
+      if (cancelled) return;
+      setThinkingModeState(modes.thinkingMode);
+      setOutputModeState(modes.outputMode);
+    }).catch(() => {
+      if (!cancelled) {
+        setThinkingModeState('medium');
+        setOutputModeState('moderate');
+      }
+    });
+    return () => { cancelled = true; };
+  }, [currentSessionId]);
 
   const fetchSessionPermissions = useCallback(async (sessionId: string) => {
     try {
@@ -367,6 +409,11 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
   useEffect(() => {
     const candidate = lastTurnFeedbackCandidateRef.current;
     if (!candidate || sessionRestoringRef.current) return;
+    // Do not show the feedback card until the turn is fully complete (turn_state:done).
+    // message_received sets the candidate, but the turn may still be doing post-
+    // processing (memory extraction, skill generation, reflection). The turn-level
+    // `streaming` state stays true until turn_state:done arrives.
+    if (streaming) return;
     const msg = messages.find((m) => m.id === candidate.messageId);
     lastTurnFeedbackCandidateRef.current = null;
     if (!msg || msg.turnFeedback || msg.streaming) return;
@@ -379,7 +426,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     })) {
       setPendingFeedbackMessageId(candidate.messageId);
     }
-  }, [messages]);
+  }, [messages, streaming]);
 
   // ─── Scroll state, refs, effects (extracted to useChatScroll) ───
   const {
@@ -419,8 +466,11 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     loadSessions, loadTodos, generateTitle, openChildSession,
     handleShowSessions, handleSelectSession, handleNewSession, startNewSession, resetSessionViewState,
     handleArchiveSession, handleDeleteSessionContent, handleDeleteSession,
+    handleConfirmDeleteSession,
     clearSessionModalOpen, setClearSessionModalOpen,
     clearSessionBusy, setClearSessionBusy,
+    deleteSessionPending, setDeleteSessionPending,
+    deleteSessionBusy,
   } = useChatSessionLifecycle({
     navigate, isCrewPrivateSession, coreSession, sessionId, location, crewList,
     setView, setCurrentSessionId, setCurrentSessionTitle, setSessionList, setCrewList, setTodoItems,
@@ -431,7 +481,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     setSessionRestoring, setIsCrewPrivateSession, setCrewPrivateHost, setPrivateHostCrewId,
     setParentSessionId, setCrewWorkers, setBypassPermissionsState,
     setTurnActivity, setCurrentStep,
-    currentSessionIdRef, chatReturnToRef, skipRestoreRef, titleGeneratedRef,
+    currentSessionIdRef, sessionListRef, chatReturnToRef, skipRestoreRef, titleGeneratedRef,
     sessionRestoringRef, isInitialLoadRef, lastTurnFeedbackCandidateRef, rateLimitSeenRef,
     crewMissionSessionIdRef, tokenInputRef, tokenOutputRef, isAtBottomRef, messagesContainerRef,
     jumpSuppressScrollTopRef, turnActiveRef, activeTurnIdRef, messagesRef, resetScrollState,
@@ -809,7 +859,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
   } = useChatSend({
     messages, streaming, attachments, currentProvider, currentModel,
     isCrewPrivateSession, webSearchAvailable, webSearchForce, crewSuggestionRequested, currentSessionId,
-    coreSession,
+    coreSession, thinkingMode, outputMode,
     setMessages, setAttachments, setWarnings, setCrewList,
     setTurnActivity, setLoadingSteps, setStreaming,
     setPermissionPrompt, setPendingPermissionCount,
@@ -895,6 +945,10 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     bypassPermissions, toolPermissions,
     setBypassPermissions, toggleBypassPermissions, revokeSessionPermissions, setToolPermission,
 
+    // Turn modes
+    thinkingMode, setThinkingMode,
+    outputMode, setOutputMode,
+
     // Dropdown anchors
     providerMenuAnchor, setProviderMenuAnchor,
     modelMenuAnchor, setModelMenuAnchor,
@@ -911,6 +965,9 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
 
     // Clear session
     clearSessionModalOpen, setClearSessionModalOpen, clearSessionBusy, setClearSessionBusy,
+
+    // Delete session (list grid)
+    deleteSessionPending, setDeleteSessionPending, deleteSessionBusy,
 
     // Web search
     webSearchAvailable, setWebSearchAvailable, webSearchForce, setWebSearchForce,
@@ -935,6 +992,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     handleSend, handleResend, handleCancel, handleStopAndSend, handleAddToQueue, handleSteer,
     handleFileSelect, handleRemoveAttachment, handleShowSessions, handleSelectSession,
     handleNewSession, handleArchiveSession, handleDeleteSessionContent, handleDeleteSession,
+    handleConfirmDeleteSession,
     handleQuestionnaireRespond, handleQuestionnaireCancel,
     handleCrewRosterPickerSubmit, handleCrewRosterPickerSkip,
     handleTurnFeedback, handleSaveMarkdown, handleViewCrewDossier, handleViewCrewByCallsign,

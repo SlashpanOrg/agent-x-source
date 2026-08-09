@@ -62,6 +62,7 @@ export type EngineEvent =
   | { type: 'processing_progress'; stage: string; progress: number }
   | { type: 'processing_complete'; result: FormattedResponse }
   | { type: 'permission_required'; requestId: string; tool: string; path: string; riskLevel: string; integrationPreview?: IntegrationActionPreview; forAutomation?: boolean; commandPreview?: string; argsSummary?: string }
+  | { type: 'permission_resolved'; tool: string; path?: string; riskLevel?: string; decision: string; label: string; instruction?: string; actionSummary?: string; decidedAt: string }
   | { type: 'token_update'; used: number; available: number }
   | { type: 'error'; code: string; message: string; recoverable: boolean; actions?: RemediationAction[]; description?: string; details?: Record<string, unknown> }
   | { type: 'provider_error'; provider: string; model: string; statusCode?: number; message: string; recoverable: boolean; actions?: RemediationAction[] }

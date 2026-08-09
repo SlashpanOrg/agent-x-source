@@ -34,6 +34,7 @@ import {
   findNodesBySessionAndCategory as findNodesBySessionAndCategoryImpl,
   getNode as getNodeImpl,
   hasChatMemoryTurn as hasChatMemoryTurnImpl,
+  hasTaggedMemory as hasTaggedMemoryImpl,
   seedSystemInitNode as seedSystemInitNodeImpl,
 } from './fabric-node-crud.js';
 import type { NodeCrudContext } from './fabric-node-crud.js';
@@ -373,6 +374,10 @@ export class MemoryFabric {
   /** Skip duplicate chat-turn embeddings (same session + user turn label). */
   async hasChatMemoryTurn(sourceSessionId: string, label: string): Promise<boolean> {
     return hasChatMemoryTurnImpl(this.nodeCrudCtx(), sourceSessionId, label);
+  }
+
+  async hasTaggedMemory(sourceSessionId: string, tag: string, label: string): Promise<boolean> {
+    return hasTaggedMemoryImpl(this.nodeCrudCtx(), sourceSessionId, tag, label);
   }
 
   async createNode(input: MemoryNodeInput): Promise<MemoryNode> {

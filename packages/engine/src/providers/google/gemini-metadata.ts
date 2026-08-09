@@ -206,7 +206,16 @@ export function buildGoogleAiSdkProviderOptions(
   modelId: string,
   reasoningEffort?: ReasoningEffortLevel,
 ): { google: { thinkingConfig: GoogleThinkingConfig } } | undefined {
-  if (!reasoningEffort) return undefined;
+  if (!reasoningEffort || reasoningEffort === 'minimal') {
+    // When the user hasn't configured an effort, resolve the model's deterministic
+    // default instead of relying on Google's server-side default (which is often
+    // "high" and varies by model). This makes behaviour predictable.
+    const profile = matchThinkingProfile(normalizeGoogleModelId(modelId));
+    if (!profile) return undefined;
+    const defaultLevel = profile.defaultLevel as 'minimal' | 'low' | 'medium' | 'high';
+    if (!profile.nativeLevels.includes(defaultLevel)) return undefined;
+    return { google: { thinkingConfig: { thinkingLevel: defaultLevel } } };
+  }
   if (reasoningEffort === 'none') {
     return { google: { thinkingConfig: { thinkingBudget: 0 } } };
   }

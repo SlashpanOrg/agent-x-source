@@ -166,20 +166,42 @@ if (existsSync(engineChild)) {
 // Playwright's browser binaries are not part of the npm package. Bundle them
 // next to the shipped package so the packaged app works without a separate
 // `npx playwright install` step on the user's machine.
+// Cache outside dist/ so tsup `clean: true` does not force a ~300MB re-download every build.
+const playwrightBrowserCache = join(webApiDir, '.cache', 'playwright-browsers');
 const bundledBrowsers = join(targetModulesDir, 'playwright-core', '.local-browsers');
 const playwrightCli = join(targetModulesDir, 'playwright', 'cli.js');
+
+function copyPlaywrightBrowsersFromCache() {
+  if (!existsSync(playwrightBrowserCache)) return false;
+  mkdirSync(dirname(bundledBrowsers), { recursive: true });
+  cpSync(playwrightBrowserCache, bundledBrowsers, { recursive: true, dereference: true });
+  console.log('Restored Playwright browsers from .cache/playwright-browsers');
+  return true;
+}
+
+function savePlaywrightBrowsersToCache() {
+  if (!existsSync(bundledBrowsers)) return;
+  mkdirSync(playwrightBrowserCache, { recursive: true });
+  rmSync(playwrightBrowserCache, { recursive: true, force: true });
+  cpSync(bundledBrowsers, playwrightBrowserCache, { recursive: true, dereference: true });
+  console.log('Cached Playwright browsers to .cache/playwright-browsers');
+}
+
 if (existsSync(playwrightCli) && !existsSync(bundledBrowsers)) {
-  try {
-    console.log('Installing Playwright Chromium browsers into package (this may take a minute)...');
-    execSync(`node "${playwrightCli}" install chromium`, {
-      cwd: targetModulesDir,
-      env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: '0' },
-      stdio: 'inherit',
-      timeout: 600000,
-    });
-    console.log('Playwright Chromium browsers installed');
-  } catch (e) {
-    console.warn('Failed to install Playwright browsers; packaged app will need `npx playwright install chromium` at runtime:', e instanceof Error ? e.message : e);
+  if (!copyPlaywrightBrowsersFromCache()) {
+    try {
+      console.log('Installing Playwright Chromium browsers into package (this may take a minute)...');
+      execSync(`node "${playwrightCli}" install chromium`, {
+        cwd: targetModulesDir,
+        env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: '0' },
+        stdio: 'inherit',
+        timeout: 600000,
+      });
+      console.log('Playwright Chromium browsers installed');
+      savePlaywrightBrowsersToCache();
+    } catch (e) {
+      console.warn('Failed to install Playwright browsers; packaged app will need `npx playwright install chromium` at runtime:', e instanceof Error ? e.message : e);
+    }
   }
 }
 

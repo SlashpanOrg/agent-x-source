@@ -4,11 +4,11 @@ import { mergeVoiceConfig, isVoiceAssetInstalled } from '../src/voice/VoiceAsset
 import { VoiceProgressSession } from '../src/voice/VoiceProgressSession.js';
 
 describe('voice speech normalization', () => {
-  it('strips markdown and expands symbols', () => {
+  it('strips markdown without mangling symbols', () => {
     const out = normalizeTextForSpeech('**Hello** `@user` + 50%\n```js\nconsole.log(1)\n```');
     expect(out).toContain('Hello');
     expect(out).not.toContain('```');
-    expect(out.toLowerCase()).toContain('percent');
+    expect(out).toContain('50%');
   });
 
   it('truncates very long responses', () => {
@@ -58,6 +58,16 @@ describe('VoiceProgressSession', () => {
     await progress.speak('Got it.', 'ack');
     await progress.speak('Got it.', 'ack');
     expect(spoken).toEqual(['Got it.']);
+  });
+
+  it('speaks on tool_executing with short tool phrase', async () => {
+    const spoken: string[] = [];
+    const progress = new VoiceProgressSession({
+      onSpeak: async (line) => { spoken.push(line); },
+      throttleMs: 0,
+    });
+    await progress.handleEngineEvent({ type: 'tool_executing', tool: 'web_search' });
+    expect(spoken).toEqual(['Searching the web.']);
   });
 
   it('skips initial ack when configured', async () => {

@@ -44,16 +44,49 @@ async function extractPdfText(path: string, onProgress?: ExtractProgress): Promi
   const pdfData = await pdfjs.getDocument({ url: path } as unknown as any).promise;
   const total = pdfData.numPages;
   const pages: string[] = [];
+  let hasRealText = false;
   for (let i = 1; i <= total; i++) {
     const page = await pdfData.getPage(i);
     const text = await page.getTextContent();
     const pageText = text.items.map((item: any) => item.str).join(' ').replace(/\s+/g, ' ').trim();
+    if (pageText.length > 0) hasRealText = true;
     pages.push(pageText.length > 0 ? pageText : `(no extractable text on page ${i})`);
     if (onProgress && (i === 1 || i === total || i % 10 === 0)) {
       await onProgress(`Extracting page ${i}/${total}`, i / Math.max(total, 1));
     }
   }
-  return { kind: 'text', content: pages.join('\n\n'), pages };
+
+  // If the PDF has real text, return it.
+  // BUT: scanned PDFs often have a digital signature or metadata fragment that
+  // pdfjs extracts as "real text" (e.g. "Digitally signed by ..."). This sets
+  // hasRealText=true and short-circuits the OCR pipeline. Detect this by
+  // checking if the total extracted text is suspiciously short relative to the
+  // page count (less than 50 chars per page on average → likely just metadata).
+  if (hasRealText) {
+    const totalText = pages.join('');
+    const cleaned = totalText.replace(/\(no extractable text on page \d+\)/g, '').trim();
+    const avgCharsPerPage = cleaned.length / total;
+    if (avgCharsPerPage < 50) {
+      // The "real text" is likely just a digital signature or metadata fragment.
+      // Treat this as a scanned PDF so the OCR pipeline runs.
+      return { kind: 'error', content: `Scanned PDF — ${total} page(s), minimal extractable text (likely just metadata/signature, ${Math.round(avgCharsPerPage)} chars/page avg)` };
+    }
+    // CID / broken-ToUnicode garbage can be long but unusable — reject it.
+    try {
+      const { isUsableExtractedText } = await import('../documents/text-quality.js');
+      if (!isUsableExtractedText(cleaned, { pageCount: total })) {
+        return { kind: 'error', content: `Scanned PDF — ${total} page(s), extracted text failed quality checks (likely CID/encoding garbage)` };
+      }
+    } catch { /* best-effort */ }
+    return { kind: 'text', content: pages.join('\n\n'), pages };
+  }
+
+  // Scanned/image-only PDF — no usable text. Return `kind: 'error'` (not 'text')
+  // so callers like Agent.buildAiMessagesForTurn() — which treat any non-empty
+  // `extractTextForAgent()` result as "already have the content" and skip further
+  // processing — correctly fall through to their own vision-attach / OCR pipeline
+  // instead of being short-circuited by a placeholder summary string.
+  return { kind: 'error', content: `Scanned PDF — ${total} page(s), no extractable text (image-based/scanned)` };
 }
 
 async function extractDocx(path: string): Promise<AttachmentPreview> {

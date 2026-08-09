@@ -475,8 +475,6 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
             onClick={() => {
               if (voiceConfig.enabled) return;
               const isXai = engine === 'realtime_xai';
-              const ready = engine === 'stt_llm_tts' ? kitReady : xaiConfigured;
-              if (!ready) return;
               void persistVoice({
                 ...voiceConfig,
                 enabled: true,
@@ -1177,7 +1175,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
                     wakeWord: { ...voiceConfig.wakeWord, enabled: e.target.checked },
                   });
                 }}
-                disabled={engine === 'realtime_xai' ? true : !kitReady}
+                disabled={engine === 'realtime_xai' ? !xaiConfigured : !kitReady}
               />
             )}
             label={<Typography sx={{ fontSize: '0.72rem', ...settingsMonoSx }}>Wake word ("{wakePhraseLabel}")</Typography>}

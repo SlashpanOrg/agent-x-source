@@ -8,14 +8,13 @@ import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import MicIcon from '@mui/icons-material/Mic';
 import MicOffIcon from '@mui/icons-material/MicOff';
-import PublicIcon from '@mui/icons-material/Public';
 import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
 import ShieldIcon from '@mui/icons-material/Shield';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 import FiberNewIcon from '@mui/icons-material/FiberNew';
 import { colors, alphaColor, MONO, getActiveScheme } from '../../theme';
 import { useVoiceOptional, useVoiceCommsOptional } from './VoiceProvider';
-import { voiceDisabledReason } from '../../voice/support';
+import { voiceDisabledReason, notifyVoiceConfigUpdated } from '../../voice/support';
 import { ThinkingOrb } from 'thinking-orbs';
 import { VoiceParticleField, type ParticlePhase } from './VoiceParticleField';
 import { VoiceTranscriptPanel } from './VoiceTranscriptPanel';
@@ -47,13 +46,11 @@ type ButtonPhase = 'disabled' | 'connecting' | 'idle' | 'recording' | 'thinking'
 export function VoiceAgentCard({
   onActiveChange,
   onPhaseChange,
-  searchWeb,
   bypassChip,
   voiceprintEnabled,
 }: {
   onActiveChange?: (active: boolean) => void;
   onPhaseChange?: (phase: ParticlePhase) => void;
-  searchWeb: boolean;
   bypassChip: boolean;
   voiceprintEnabled?: boolean;
 }) {
@@ -62,6 +59,7 @@ export function VoiceAgentCard({
   const personaName = usePersonaName();
   const envBlocked = voiceDisabledReason();
   const voiceActive = voiceCtx?.voiceActive ?? false;
+  const sessionActive = voiceCtx?.commsActive ?? false;
   const setVoiceActive = voiceCtx?.setVoiceActive;
   const setConversationMode = voiceCtx?.setConversationMode;
   const comms = commsCtx?.comms;
@@ -92,23 +90,23 @@ export function VoiceAgentCard({
     setVoiceActive?.(true);
   }, [setConversationMode, setVoiceActive]);
 
-  // Push toggle state to backend
+  // Push toggle state to backend whenever wake or manual voice is active.
   useEffect(() => {
-    if (voiceActive && sessionReady && comms) {
-      comms.session.setToggles({ searchWeb, bypassChip, voiceprintEnabled });
+    if (sessionActive && sessionReady && comms) {
+      comms.session.setToggles({ bypassChip, voiceprintEnabled });
     }
-  }, [voiceActive, sessionReady, searchWeb, bypassChip, voiceprintEnabled, comms]);
+  }, [sessionActive, sessionReady, bypassChip, voiceprintEnabled, comms]);
 
   // Derive button phase — connecting stays blue; thinking is orange only after a turn.
   const phase: ButtonPhase = useMemo(() => {
-    if (!voiceActive || !sessionReady || !comms) return 'disabled';
+    if (!sessionActive || !sessionReady || !comms) return 'disabled';
     if (comms.commsPhase === 'boot' || comms.commsPhase === 'link') return 'connecting';
     if (comms.session.state === 'connecting') return 'connecting';
     if (comms.commsPhase === 'operator_record') return 'recording';
     if (comms.commsPhase === 'agent_tx') return 'speaking';
     if (comms.commsPhase === 'operator_stt' || comms.commsPhase === 'relay_process' || comms.commsPhase === 'agent_prep') return 'thinking';
     return 'idle';
-  }, [voiceActive, sessionReady, comms]);
+  }, [sessionActive, sessionReady, comms]);
 
   const particlePhase: ParticlePhase = phase;
 
@@ -143,8 +141,8 @@ export function VoiceAgentCard({
 
   // Notify parent of active state changes (for connection pulses)
   useEffect(() => {
-    onActiveChange?.(voiceActive && sessionReady);
-  }, [voiceActive, sessionReady, onActiveChange]);
+    onActiveChange?.(sessionActive && sessionReady);
+  }, [sessionActive, sessionReady, onActiveChange]);
 
   // Notify parent of phase changes (for dashboard-wide particle field)
   useEffect(() => {
@@ -159,7 +157,7 @@ export function VoiceAgentCard({
 
   const statusText = (() => {
     if (checkingHistory) return 'Checking…';
-    if (!voiceActive) return 'Click to activate';
+    if (!sessionActive) return 'Click to activate';
     if (!sessionReady) return 'Voice kit required';
     if (phase === 'disabled') return 'Click to activate';
     if (phase === 'connecting') return comms?.statusLabel || 'Connecting…';
@@ -169,20 +167,25 @@ export function VoiceAgentCard({
     return comms?.statusLabel || (comms?.isDuplex ? 'Listening…' : 'Hold Space to speak');
   })();
 
-  // Live lines: partial while recording; agent text while speaking (and briefly after,
-  // while agentText is still held — VoiceTranscriptPanel sticks it until history lands).
-  // Do not feed finalTranscript during thinking — that duplicated the user turn.
-  const liveUser = phase === 'recording'
-    ? (comms?.session.partialTranscript || '').trim()
-    : '';
-  const liveAgent = (phase === 'speaking' || phase === 'idle')
-    ? (comms?.session.agentText || '').trim()
-    : '';
+  // Live lines: the user text is partial while recording and the final text after
+  // transcript_final. The agent text is held until the turn completes so it doesn't
+  // vanish between the live stream and the history reload.
+  const liveUser = (comms?.session.transcript || '').trim();
+  const liveAgent = (comms?.session.agentText || '').trim();
 
-  // Reload history when a turn settles, and when thinking starts (user utterance just persisted).
-  const transcriptRefresh = phase === 'idle' || phase === 'disabled' || phase === 'thinking'
-    ? `${comms?.session.finalTranscript ?? ''}|${comms?.session.agentText ?? ''}|${voiceActive}|${phase}`
-    : 'live';
+  // Reload history whenever a turn settles. finalTranscript changes on the user
+  // utterance, agentText appears on the live stream, and agentTurnComplete fires
+  // once the response is fully persisted. Including both in the key makes the
+  // transcript panel reload immediately after each side of a turn lands.
+  const transcriptRefresh = useMemo(() => {
+    if (!sessionActive) return `disabled|${sessionActive}`;
+    const final = comms?.session.finalTranscript ?? '';
+    const agent = comms?.session.agentText ?? '';
+    if (comms?.session.agentTurnComplete) return `complete|${final}|${agent}|${comms.session.agentTurnComplete}`;
+    if (final) return `user|${final}|${agent}`;
+    if (agent) return `agent|${final}|${agent}`;
+    return 'live';
+  }, [sessionActive, comms?.session.finalTranscript, comms?.session.agentText, comms?.session.agentTurnComplete]);
 
   return (
     <Box sx={{
@@ -203,7 +206,7 @@ export function VoiceAgentCard({
         overflow: 'hidden',
         bgcolor: alphaColor(colors.bg.primary, '40'),
       }}>
-        <Box sx={{ position: 'absolute', inset: 0, zIndex: 0, opacity: voiceActive && sessionReady ? 1 : 0.55 }}>
+        <Box sx={{ position: 'absolute', inset: 0, zIndex: 0, opacity: sessionActive && sessionReady ? 1 : 0.55 }}>
           <VoiceParticleField
             phase={particlePhase}
             active={phase !== 'disabled'}
@@ -439,6 +442,7 @@ export function VoiceAgentCard({
           </Box>
         </DialogContent>
       </Dialog>
+
     </Box>
   );
 }
@@ -488,29 +492,18 @@ export function VoiceToggleChip({
 
 /** Exported so BentoDashboard can render toggles in the card header (right-aligned). */
 export function VoiceAgentHeaderToggles({
-  searchWeb,
   bypassChip,
   voiceprintEnabled,
-  onSearchWebChange,
   onBypassChipChange,
   onVoiceprintEnabledChange,
 }: {
-  searchWeb: boolean;
   bypassChip: boolean;
   voiceprintEnabled: boolean;
-  onSearchWebChange: (v: boolean) => void;
   onBypassChipChange: (v: boolean) => void;
   onVoiceprintEnabledChange: (v: boolean) => void;
 }) {
   return (
     <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-      <VoiceToggleChip
-        icon={<PublicIcon sx={{ fontSize: 13 }} />}
-        active={searchWeb}
-        activeColor={colors.accent.blue}
-        onClick={() => onSearchWebChange(!searchWeb)}
-        title={searchWeb ? 'Web search enabled' : 'Enable web search'}
-      />
       <VoiceToggleChip
         icon={<RecordVoiceOverIcon sx={{ fontSize: 13 }} />}
         active={voiceprintEnabled}
@@ -537,17 +530,13 @@ export function VoiceAgentHeaderToggles({
  * provider/model selectors are also shown.
  */
 export function VoiceAgentHeaderControls({
-  searchWeb,
   bypassChip,
   voiceprintEnabled,
-  onSearchWebChange,
   onBypassChipChange,
   onVoiceprintEnabledChange,
 }: {
-  searchWeb: boolean;
   bypassChip: boolean;
   voiceprintEnabled: boolean;
-  onSearchWebChange: (v: boolean) => void;
   onBypassChipChange: (v: boolean) => void;
   onVoiceprintEnabledChange: (v: boolean) => void;
 }) {
@@ -570,6 +559,23 @@ export function VoiceAgentHeaderControls({
   const voiceModel = voiceCfg?.provider?.activeModel ?? null;
   const kokoroVoiceId = voiceCfg?.tts?.voiceId ?? 'kokoro-af';
   const xaiVoiceId = voiceCfg?.xai?.voice ?? 'eve';
+
+  const voice = useVoiceOptional();
+  const wakeEnabled = voice?.wakeWordEnabled ?? false;
+
+  const handleWakeToggle = useCallback(async () => {
+    const cfg = voice?.voiceConfig;
+    if (!cfg) return;
+    const next: VoiceConfig = {
+      ...cfg,
+      enabled: !wakeEnabled ? true : cfg.enabled,
+      wakeWord: { ...cfg.wakeWord, enabled: !wakeEnabled },
+    };
+    try {
+      await voiceApi.updateConfig(next);
+      notifyVoiceConfigUpdated(next);
+    } catch { /* ignore */ }
+  }, [voice?.voiceConfig, wakeEnabled]);
 
   // Load configured providers, current default, and voice config
   const loadConfig = async () => {
@@ -705,13 +711,6 @@ export function VoiceAgentHeaderControls({
   return (
     <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
       <VoiceToggleChip
-        icon={<PublicIcon sx={{ fontSize: 13 }} />}
-        active={searchWeb}
-        activeColor={colors.accent.blue}
-        onClick={() => onSearchWebChange(!searchWeb)}
-        title={searchWeb ? 'Web search enabled' : 'Enable web search'}
-      />
-      <VoiceToggleChip
         icon={<RecordVoiceOverIcon sx={{ fontSize: 13 }} />}
         active={voiceprintEnabled}
         activeColor={colors.accent.blue}
@@ -724,6 +723,13 @@ export function VoiceAgentHeaderControls({
         activeColor={colors.accent.orange}
         onClick={() => onBypassChipChange(!bypassChip)}
         title={bypassChip ? 'Bypass enabled — auto-approve tools' : 'Enable bypass — auto-approve tools'}
+      />
+      <VoiceToggleChip
+        icon={<MicIcon sx={{ fontSize: 13 }} />}
+        active={wakeEnabled}
+        activeColor={colors.accent.green}
+        onClick={handleWakeToggle}
+        title={wakeEnabled ? 'Wake word on — say the wake phrase to start' : 'Enable wake word'}
       />
       <ConfigChip
         label={engineLabel}

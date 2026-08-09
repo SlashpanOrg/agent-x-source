@@ -4,7 +4,7 @@
  * Shows a sci-fi themed progress UI with progress for the RAM-tier model only
  * (via /neural-cortex/embeddings/*) and rotating status messages.
  */
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
@@ -47,7 +47,7 @@ const STATUS_MESSAGES = [
   'Neural core online. Standing by...',
 ];
 
-interface ModelProgressState {
+export interface ModelProgressState {
   id: string;
   displayName: string;
   status: 'not_started' | 'pending' | 'downloading' | 'complete' | 'error';
@@ -103,9 +103,11 @@ interface EmbeddingModelDownloadProps {
   onAvailabilityErrorChange?: (hasAvailabilityError: boolean) => void;
   /** Optional tier notice shown inside the Initializing Neural Core card. */
   banner?: { headline: string; body: string };
+  /** Optional extra models to include in the same progress (e.g. voice assets). */
+  extraModels?: ModelProgressState[];
 }
 
-export function EmbeddingModelDownload({ onReadyChange, onAvailabilityErrorChange, banner }: EmbeddingModelDownloadProps) {
+export function EmbeddingModelDownload({ onReadyChange, onAvailabilityErrorChange, banner, extraModels = [] }: EmbeddingModelDownloadProps) {
   const [models, setModels] = useState<ModelProgressState[]>([]);
   const [allComplete, setAllComplete] = useState(false);
   const [hasError, setHasError] = useState(false);
@@ -164,9 +166,13 @@ export function EmbeddingModelDownload({ onReadyChange, onAvailabilityErrorChang
     return () => { cleanup?.(); };
   }, [startDownload]);
 
+  const allExtrasComplete = extraModels.length === 0 || extraModels.every((m) => m.status === 'complete');
+  const combinedAllComplete = allComplete && allExtrasComplete;
+  const combinedHasError = hasError || extraModels.some((m) => m.status === 'error');
+
   useEffect(() => {
-    onReadyChange?.(allComplete && !hasError);
-  }, [allComplete, hasError, onReadyChange]);
+    onReadyChange?.(combinedAllComplete && !combinedHasError);
+  }, [combinedAllComplete, combinedHasError, onReadyChange]);
 
   useEffect(() => {
     onAvailabilityErrorChange?.(hasUnavailableError && !allComplete);
@@ -181,8 +187,9 @@ export function EmbeddingModelDownload({ onReadyChange, onAvailabilityErrorChang
   }, [startDownload]);
 
   // ── Overall percentage = total downloaded MB / total downloadable MB ──────
-  const totalDownloadedMB = models.reduce((sum, m) => sum + m.downloadedMB, 0);
-  const totalDownloadableMB = models.reduce((sum, m) => sum + m.totalMB, 0);
+  const effectiveModels = useMemo(() => [...models, ...extraModels], [models, extraModels]);
+  const totalDownloadedMB = effectiveModels.reduce((sum, m) => sum + m.downloadedMB, 0);
+  const totalDownloadableMB = effectiveModels.reduce((sum, m) => sum + m.totalMB, 0);
   const overallPercentage = totalDownloadableMB > 0 ? Math.round((totalDownloadedMB / totalDownloadableMB) * 100) : 0;
   const lastMessageBucket = useRef(0);
 
@@ -261,11 +268,11 @@ export function EmbeddingModelDownload({ onReadyChange, onAvailabilityErrorChang
             fontFamily: '"JetBrains Mono", monospace',
             fontSize: '2.5rem',
             fontWeight: 700,
-            color: allComplete ? colors.accent.green : hasError ? (hasUnavailableError ? colors.accent.orange : colors.accent.red) : colors.accent.blue,
+            color: combinedAllComplete ? colors.accent.green : combinedHasError ? (hasUnavailableError ? colors.accent.orange : colors.accent.red) : colors.accent.blue,
             transition: 'all 0.3s',
             lineHeight: 1,
           }}>
-            {allComplete ? '100' : hasError ? (hasUnavailableError ? 'PAUSED' : 'ERR') : overallPercentage}%
+            {combinedAllComplete ? '100' : combinedHasError ? (hasUnavailableError ? 'PAUSED' : 'ERR') : overallPercentage}%
           </Typography>
         </Box>
 
@@ -278,30 +285,30 @@ export function EmbeddingModelDownload({ onReadyChange, onAvailabilityErrorChang
           <Typography sx={{
             fontFamily: '"JetBrains Mono", monospace',
             fontSize: '0.72rem',
-            color: allComplete ? colors.accent.green : hasError ? (hasUnavailableError ? colors.accent.orange : colors.accent.red) : colors.accent.blue,
+            color: combinedAllComplete ? colors.accent.green : combinedHasError ? (hasUnavailableError ? colors.accent.orange : colors.accent.red) : colors.accent.blue,
             opacity: 0.85,
             letterSpacing: 0.5,
             transition: 'opacity 0.3s',
           }}>
-            {hasError
+            {combinedHasError
               ? (hasUnavailableError
                 ? '◆ MODEL UNAVAILABLE FROM ENDPOINT — NEURAL CORE PAUSED · CONTINUE WHEN READY'
                 : '◆ DOWNLOAD FAILED — RESOLVE AND RETRY')
-              : allComplete ? '◆ NEURAL CORE ONLINE — ALL SYSTEMS NOMINAL' : `◆ ${statusMessage}`}
+              : combinedAllComplete ? '◆ NEURAL CORE ONLINE — ALL SYSTEMS NOMINAL' : `◆ ${statusMessage}`}
           </Typography>
         </Box>
 
         {/* Per-model progress bars */}
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, maxWidth: 560, mx: 'auto', width: '100%' }}>
-          {models.map((model) => (
+          {effectiveModels.map((model) => (
             <ModelProgressBar key={model.id} model={model} />
           ))}
         </Box>
 
         {/* Error details */}
-        {hasError && (
+        {combinedHasError && (
           <Box sx={{ maxWidth: 560, mx: 'auto', width: '100%' }}>
-            {models.filter((m) => m.status === 'error').map((m) => (
+            {effectiveModels.filter((m) => m.status === 'error').map((m) => (
               <Typography key={m.id} sx={{
                 fontFamily: '"JetBrains Mono", monospace',
                 fontSize: '0.65rem',
@@ -344,7 +351,7 @@ export function EmbeddingModelDownload({ onReadyChange, onAvailabilityErrorChang
             opacity: 0.5,
             letterSpacing: 1,
           }}>
-            {allComplete
+            {combinedAllComplete
               ? '◆ MODELS CACHED LOCALLY · OFFLINE CAPABILITY ENABLED'
               : '◆ DOWNLOADING TO ~/.local/share/agentx/models · NO DATA LEAVES YOUR MACHINE AFTER DOWNLOAD'}
           </Typography>

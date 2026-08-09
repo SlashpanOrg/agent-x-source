@@ -350,6 +350,14 @@ export function startServer(port = PORT): ReturnType<typeof server.listen> {
     } catch (e) {
       getLogger().warn('STARTUP', `Knowledge base manager init failed: ${e instanceof Error ? e.message : String(e)}`);
     }
+    void import('./voice/setup.js').then(({ reconcileVoiceKitState }) =>
+      reconcileVoiceKitState().catch((e: unknown) => {
+        getLogger().warn(
+          'STARTUP',
+          `Voice kit reconcile failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }),
+    );
     getLogger().info('SERVER', `Agent-X web API listening on ${HOST}:${port} (v${VERSION})`);
     startupSpan.end();
   });

@@ -70,7 +70,7 @@ async function buildVoiceCapabilities(config: VoiceConfig): Promise<VoiceCapabil
 
   // xAI realtime only needs an API key; local checks are skipped.
   if (engine === 'realtime_xai') {
-    const xaiConfigured = Boolean(config.xai?.apiKey);
+    const xaiConfigured = Boolean(config.xai?.apiKey?.trim() || process.env['XAI_API_KEY']?.trim());
     return {
       os: process.platform,
       arch: process.arch,
@@ -140,7 +140,7 @@ async function buildVoiceCapabilities(config: VoiceConfig): Promise<VoiceCapabil
     },
     vadInstalled,
     gpuAvailable: detectCudaEnv(),
-    canRunWeb: canRunBase && config.enabled !== false,
+    canRunWeb: canRunBase,
     canRunChannels: canRunBase && config.mode?.channels !== 'off',
     engine,
   };
@@ -535,6 +535,171 @@ async function runVoiceSetup(): Promise<void> {
     voiceState.setupRunning = false;
     voiceInfo('Voice deployment finished', { running: false, phase: voiceState.setupStatus.phase });
   }
+}
+
+let reconcileInFlight: Promise<void> | null = null;
+
+/** Register bundled/on-disk voice assets into config after reinstall or config reset. */
+async function reconcileVoiceAssetsRegistered(): Promise<string[]> {
+  const registered: string[] = [];
+  let cfg = getVoiceConfig();
+  let manifest;
+  try {
+    manifest = loadVoiceModelsManifest();
+  } catch (error) {
+    voiceWarn('Voice asset reconcile skipped — manifest unavailable', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return registered;
+  }
+
+  const bundleDir = resolveVoiceBundleDir();
+  if (bundleDir) {
+    const bootstrapped = await bootstrapBundledVoiceAssets({
+      manifest,
+      bundleDir,
+      dataDir: voiceDataDir(),
+      getConfig: getVoiceConfig,
+      addAsset: addDownloadedAsset,
+    });
+    if (bootstrapped.length > 0) {
+      voiceInfo('Voice assets bootstrapped from bundle', { bootstrapped });
+      registered.push(...bootstrapped);
+      cfg = getVoiceConfig();
+    }
+  }
+
+  const assets = resolveSetupCatalogEntries();
+  for (const asset of assets) {
+    if (isVoiceAssetInstalled(cfg, asset.id)) continue;
+
+    if (await getAssetManager().isInstalled(asset.id)) {
+      voiceInfo('Voice asset found on disk; re-registering without download', { assetId: asset.id });
+      addDownloadedAsset({
+        assetId: asset.id,
+        kind: asset.kind,
+        engine: asset.engine,
+        version: asset.downloadUrl,
+        installedAt: new Date().toISOString(),
+      });
+      await registerAliasAssets(manifest, asset.id, voiceDataDir(), getVoiceConfig, addDownloadedAsset);
+      registered.push(asset.id);
+      cfg = getVoiceConfig();
+      continue;
+    }
+
+    const manifestEntry = getManifestEntry(manifest, asset.id);
+    if (manifestEntry?.aliasOf && isVoiceAssetInstalled(getVoiceConfig(), manifestEntry.aliasOf)) {
+      await registerAliasAssets(manifest, manifestEntry.aliasOf, voiceDataDir(), getVoiceConfig, addDownloadedAsset);
+    }
+  }
+
+  return registered;
+}
+
+/** Turn voice on when the kit is operational and the user has not explicitly disabled it. */
+async function healVoiceEnablementIfNeeded(reconciledAssetIds: string[]): Promise<void> {
+  const eng = getEngine();
+  let raw = eng.configManager.load();
+  if (raw.voice?.enabled === false) return;
+
+  let merged = mergeVoiceConfig(raw.voice);
+  const neverConfigured = raw.voice == null || raw.voice.enabled === undefined;
+
+  // First launch: opt into voice so docking waits for kit deploy + warmup before dashboard.
+  if (neverConfigured) {
+    const isXai = merged.engine === 'realtime_xai';
+    const web = merged.mode?.web;
+    const nextWeb = isXai
+      ? 'duplex'
+      : (web === 'duplex' ? 'duplex' : 'push-to-talk');
+    eng.configManager.save({
+      ...raw,
+      voice: mergeVoiceConfig({
+        ...merged,
+        enabled: true,
+        mode: { ...merged.mode, web: nextWeb },
+      }),
+    });
+    raw = eng.configManager.load();
+    merged = mergeVoiceConfig(raw.voice);
+  }
+
+  const caps = await buildVoiceCapabilities(merged);
+  const kitOperational = Boolean(caps.canRunWeb);
+  if (!kitOperational) return;
+
+  const wasEnabled = raw.voice?.enabled === true;
+  const justReconciled = reconciledAssetIds.length > 0;
+  const webOff = !merged.mode?.web || merged.mode.web === 'off';
+
+  if (!wasEnabled && !justReconciled && !neverConfigured) return;
+
+  if (merged.enabled && !webOff) return;
+
+  const isXai = merged.engine === 'realtime_xai';
+  const nextWeb = isXai
+    ? 'duplex'
+    : (merged.mode?.web === 'duplex' ? 'duplex' : 'push-to-talk');
+
+  eng.configManager.save({
+    ...raw,
+    voice: mergeVoiceConfig({
+      ...merged,
+      enabled: true,
+      mode: { ...merged.mode, web: nextWeb },
+    }),
+  });
+  voiceInfo('Voice module auto-enabled after kit reconcile', {
+    reconciled: justReconciled,
+    wasEnabled,
+    engine: merged.engine,
+  });
+}
+
+/**
+ * After reinstall, voice model files often remain on disk while config.downloadedAssets
+ * is empty — capabilities then report the kit as missing until Settings is opened.
+ */
+export async function reconcileVoiceKitState(): Promise<void> {
+  if (reconcileInFlight) {
+    await reconcileInFlight;
+    return;
+  }
+  reconcileInFlight = (async () => {
+    try {
+      const reconciled = await reconcileVoiceAssetsRegistered();
+      await healVoiceEnablementIfNeeded(reconciled);
+
+      const eng = getEngine();
+      const raw = eng.configManager.load();
+      if (raw.voice?.enabled === false) return;
+
+      const cfg = getVoiceConfig();
+      const caps = await buildVoiceCapabilities(cfg);
+      if (caps.canRunWeb) return;
+
+      const engine = cfg.engine ?? 'stt_llm_tts';
+      if (engine === 'realtime_xai') return;
+
+      if (!caps.pythonAvailable || !caps.ffmpegAvailable) {
+        voiceWarn('Voice kit auto-deploy skipped — python or ffmpeg unavailable');
+        return;
+      }
+
+      if (!voiceState.setupRunning) {
+        voiceInfo('Voice kit incomplete after reconcile — starting automatic deploy');
+        void runVoiceSetup();
+      }
+    } catch (error) {
+      voiceWarn('Voice kit reconcile failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      reconcileInFlight = null;
+    }
+  })();
+  await reconcileInFlight;
 }
 
 export {

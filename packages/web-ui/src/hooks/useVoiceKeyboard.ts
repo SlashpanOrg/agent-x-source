@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { getComposerKeyboardState, isEditableTypingTarget } from '../voice/composer-keyboard-state';
 import { shouldBeginPushToTalkOnSpace, shouldEndPushToTalkOnSpace } from '../voice/wake-phrase';
 
 const DOUBLE_TAP_SPACE_MS = 350;
@@ -42,11 +43,32 @@ export function useVoiceKeyboard(options: {
         return;
       }
       if (event.key === ' ' || event.code === 'Space') {
+        const composer = getComposerKeyboardState();
+        const inEditable = isEditableTypingTarget(event.target);
+
         if (event.repeat) {
-          // Keep holding Space from scrolling / activating focused controls.
-          if (opts.globalSpace) {
+          if (spacePttHeldRef.current) {
             event.preventDefault();
             event.stopPropagation();
+          } else if (opts.globalSpace && !inEditable) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+          return;
+        }
+
+        // Never steal Space from text inputs — except empty focused composer PTT.
+        if (inEditable) {
+          const emptyComposerPtt =
+            opts.pushToTalk &&
+            !opts.pushToTalkBlocked &&
+            composer.focused &&
+            composer.empty;
+          if (emptyComposerPtt) {
+            event.preventDefault();
+            event.stopPropagation();
+            spacePttHeldRef.current = true;
+            opts.onBeginPushToTalk();
           }
           return;
         }
@@ -74,8 +96,8 @@ export function useVoiceKeyboard(options: {
           !opts.pushToTalkBlocked &&
           shouldBeginPushToTalkOnSpace({
             globalSpace: opts.globalSpace,
-            composerFocused: opts.composerFocused,
-            composerEmpty: opts.composerEmpty,
+            composerFocused: composer.focused,
+            composerEmpty: composer.empty,
             repeat: false,
           })
         ) {
@@ -90,19 +112,22 @@ export function useVoiceKeyboard(options: {
     const onKeyUp = (event: KeyboardEvent) => {
       const opts = optionsRef.current;
       if (event.key !== ' ' && event.code !== 'Space') return;
+      const composer = getComposerKeyboardState();
+      const inEditable = isEditableTypingTarget(event.target);
+
       if (
         opts.pushToTalk &&
         spacePttHeldRef.current &&
         shouldEndPushToTalkOnSpace({
           globalSpace: opts.globalSpace,
-          composerFocused: opts.composerFocused,
+          composerFocused: composer.focused,
         })
       ) {
         event.preventDefault();
         event.stopPropagation();
         spacePttHeldRef.current = false;
         opts.onEndPushToTalk();
-      } else if (opts.globalSpace) {
+      } else if (opts.globalSpace && !inEditable) {
         // Prevent page scroll / button activation on keyup too.
         event.preventDefault();
         event.stopPropagation();

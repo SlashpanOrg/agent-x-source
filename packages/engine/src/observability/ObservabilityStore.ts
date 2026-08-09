@@ -156,7 +156,7 @@ export class ObservabilityStore {
         model = EXCLUDED.model,
         input_tokens = EXCLUDED.input_tokens,
         output_tokens = EXCLUDED.output_tokens,
-        tool_call_count = EXCLUDED.tool_call_count,
+        tool_call_count = GREATEST(observability.traces.tool_call_count, EXCLUDED.tool_call_count),
         cost_usd = EXCLUDED.cost_usd
     `;
     // Non-throwing: returns false on failure so callers can skip dependent

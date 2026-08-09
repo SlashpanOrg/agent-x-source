@@ -21,6 +21,11 @@ export class InputNormalizer {
     this.attachmentResolver.setWorkspaceRoot(root);
   }
 
+  /** Bind the active session id — used for session-scoped attachment copies. */
+  setSessionId(id: string | null | undefined): void {
+    this.attachmentResolver.setSessionId(id);
+  }
+
   async sanitize(turn: InternalUserTurn): Promise<NormalizedTurn> {
     const warnings: NormalizationWarning[] = [];
 
@@ -49,7 +54,7 @@ export class InputNormalizer {
     }
 
     // PASS 5: Attachment Resolution
-    const cleanAttachments = await this.pass5Attachments(turn.attachments);
+    const cleanAttachments = await this.pass5Attachments(turn.attachments, turn.sessionId);
 
     return {
       turnId: turn.turnId,
@@ -196,7 +201,8 @@ export class InputNormalizer {
 
   private pass5Attachments(
     attachments: InternalUserTurn['attachments'],
+    sessionId: string,
   ): Promise<NormalizedAttachment[]> {
-    return this.attachmentResolver.resolve(attachments);
+    return this.attachmentResolver.resolve(attachments, sessionId);
   }
 }

@@ -15,6 +15,7 @@ export function catalogEntryToSummary(entry: CatalogEntry): CatalogSummary {
     tone: entry.tone,
     tools: entry.tools,
     tags: entry.tags,
+    certifications: entry.certifications,
     requiresMedicalDisclaimer: crewRequiresMedicalDisclaimer({
       categoryId: entry.categoryId,
       requiresMedicalDisclaimer: entry.requiresMedicalDisclaimer,

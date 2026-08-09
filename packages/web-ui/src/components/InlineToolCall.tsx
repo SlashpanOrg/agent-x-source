@@ -31,14 +31,15 @@ function InlineToolCallComponent({ tool, compactTop }: { tool: InlineToolData; c
   const label = display.subtitle ? `${display.title}: ${display.subtitle}` : display.title;
 
   return (
-    <Box sx={{ mb: 0.25, mt: compactTop ? -0.625 : 0 }}>
+    <Box sx={{ mb: 0.15, mt: compactTop ? -0.5 : 0 }}>
       <Typography sx={{
         display: 'inline',
-        fontSize: '0.68rem',
+        fontSize: '0.6rem',
         fontFamily: "'JetBrains Mono', monospace",
         letterSpacing: '0.02em',
         color: isRunning ? colors.text.secondary : colors.text.dim,
-        fontWeight: isRunning ? 600 : 400,
+        fontWeight: 400,
+        opacity: isRunning ? 1 : 0.75,
         textDecoration: isError ? 'line-through' : 'none',
         ...(isRunning ? { animation: 'agentx-pulse 1.4s ease-in-out infinite' } : {}),
       }}>
@@ -46,14 +47,15 @@ function InlineToolCallComponent({ tool, compactTop }: { tool: InlineToolData; c
       </Typography>
 
       {isRunning && (
-        <Box sx={{ mt: 0.25, pl: 0 }}>
+        <Box sx={{ mt: 0.15, pl: 0 }}>
           <Typography sx={{
-            fontSize: '0.55rem',
+            fontSize: '0.5rem',
             color: colors.text.dim,
             fontFamily: "'JetBrains Mono', monospace",
             lineHeight: 1.4,
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
+            opacity: 0.7,
           }}>
             {tool.streamOutput?.trim()
               ? tool.streamOutput.trimEnd().split('\n').slice(-4).join('\n')

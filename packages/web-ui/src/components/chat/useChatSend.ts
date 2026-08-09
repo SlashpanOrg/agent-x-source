@@ -46,6 +46,8 @@ export interface UseChatSendInputs {
   crewSuggestionRequested: boolean;
   currentSessionId: string | null;
   coreSession: unknown;
+  thinkingMode: 'light' | 'medium' | 'high';
+  outputMode: 'brief' | 'moderate' | 'detailed';
   // Setters
   setMessages: React.Dispatch<React.SetStateAction<UIMessage[]>>;
   setAttachments: React.Dispatch<React.SetStateAction<FileAttachment[]>>;
@@ -77,7 +79,7 @@ export interface UseChatSendInputs {
 export function useChatSend({
   messages, streaming, attachments, currentProvider, currentModel,
   isCrewPrivateSession, webSearchAvailable, webSearchForce, crewSuggestionRequested, currentSessionId,
-  coreSession,
+  coreSession, thinkingMode, outputMode,
   setMessages, setAttachments, setWarnings, setCrewList,
   setTurnActivity, setLoadingSteps, setStreaming, setCrewSuggestionRequested,
   setPermissionPrompt, setPendingPermissionCount,
@@ -99,6 +101,8 @@ export function useChatSend({
   const webSearchForceRef = useRef(webSearchForce);
   const crewSuggestionRequestedRef = useRef(crewSuggestionRequested);
   const coreSessionRef = useRef(coreSession);
+  const thinkingModeRef = useRef(thinkingMode);
+  const outputModeRef = useRef(outputMode);
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { streamingRef.current = streaming; }, [streaming]);
@@ -112,6 +116,8 @@ export function useChatSend({
   useEffect(() => { crewSuggestionRequestedRef.current = crewSuggestionRequested; }, [crewSuggestionRequested]);
   useEffect(() => { coreSessionRef.current = coreSession; }, [coreSession]);
   useEffect(() => { currentSessionIdRef.current = currentSessionId; }, [currentSessionId]);
+  useEffect(() => { thinkingModeRef.current = thinkingMode; }, [thinkingMode]);
+  useEffect(() => { outputModeRef.current = outputMode; }, [outputMode]);
 
   const assertCanSendAttachments = useCallback((): boolean => {
     const hasImage = attachmentsRef.current.some((a) => isImageMimeType(a.mimeType));
@@ -327,6 +333,8 @@ export function useChatSend({
         clientSituation,
         crewSuggestionRequestedRef.current,
         options?.todoDisposition,
+        thinkingModeRef.current,
+        outputModeRef.current,
       );
       // One-shot: reset the crew suggestion toggle after the request is dispatched.
       if (crewSuggestionRequestedRef.current) {
@@ -465,9 +473,11 @@ export function useChatSend({
 
   // ─── handleResend ───
   const handleResend = useCallback(async (text: string) => {
-    if (!text || streamingRef.current || !currentProviderRef.current || !currentModelRef.current) return;
+    if (!text || !currentProviderRef.current || !currentModelRef.current) return;
     if (!(await ensureSession())) return;
 
+    // Cancel any in-flight turn first — do not gate on streamingRef or a stuck
+    // streaming flag blocks retry entirely (no UI feedback, no new request).
     try { await chat.cancel(); } catch { /* ignore */ }
     resendInProgressRef.current = true;
     setTurnActivity(null);
@@ -475,19 +485,31 @@ export function useChatSend({
     beginTurnUi();
 
     const placeholderId = crypto.randomUUID();
-    setMessages(prev => {
+    setMessages((prev) => {
       const withoutAssistant = prev[prev.length - 1]?.role === 'assistant' ? prev.slice(0, -1) : prev;
       const tip = withoutAssistant[withoutAssistant.length - 1];
       if (tip?.role === 'user') {
-        return [...withoutAssistant, { id: placeholderId, role: 'assistant' as const, content: '', streaming: true }];
+        outgoingTurnRef.current = {
+          userId: tip.id,
+          userContent: tip.content,
+          placeholderId,
+        };
+        return [...withoutAssistant, {
+          id: placeholderId,
+          role: 'assistant' as const,
+          content: '',
+          streaming: true,
+          parts: [],
+        }];
       }
+      outgoingTurnRef.current = null;
       return withoutAssistant;
     });
     requestAnimationFrame(() => scrollMessagesToBottom('smooth'));
 
     try {
       const clientSituation = await collectClientSituation();
-      const result = await chat.send(sanitizeForJson(text), undefined, true, undefined, undefined, undefined, undefined, undefined, undefined, undefined, clientSituation);
+      const result = await chat.send(sanitizeForJson(text), undefined, true, undefined, undefined, undefined, undefined, undefined, undefined, undefined, clientSituation, undefined, undefined, thinkingModeRef.current, outputModeRef.current);
       if (result?.turnId) activeTurnIdRef.current = result.turnId;
       if (result?.async) return;
       setMessages(prev => {
@@ -514,7 +536,7 @@ export function useChatSend({
       });
       endTurnUi();
     }
-  }, [ensureSession, beginTurnUi, endTurnUi, scrollMessagesToBottom, setTurnActivity, setLoadingSteps, setMessages, setWarnings, resendInProgressRef, activeTurnIdRef, streamingRef, currentProviderRef, currentModelRef]);
+  }, [ensureSession, beginTurnUi, endTurnUi, scrollMessagesToBottom, setTurnActivity, setLoadingSteps, setMessages, setWarnings, resendInProgressRef, activeTurnIdRef, outgoingTurnRef, currentProviderRef, currentModelRef]);
 
   // ─── markCrewRosterPickerResolved ───
   const markCrewRosterPickerResolved = useCallback((
@@ -750,7 +772,7 @@ export function useChatSend({
     const fileRefs = attachmentRefs.length > 0 ? attachmentRefs : undefined;
     setAttachments([]);
     try {
-      const result = await chat.stopAndSend(cleaned, fileRefs);
+      const result = await chat.stopAndSend(cleaned, fileRefs, thinkingModeRef.current, outputModeRef.current);
       if (result?.turnId) activeTurnIdRef.current = result.turnId;
       if (result?.async) return;
       if (result?.message) {
@@ -798,7 +820,7 @@ export function useChatSend({
     const fileRefs = attachmentRefs.length > 0 ? attachmentRefs : undefined;
     setAttachments([]);
     try {
-      const result = await chat.steer(cleaned, fileRefs);
+      const result = await chat.steer(cleaned, fileRefs, thinkingModeRef.current, outputModeRef.current);
       if (result?.turnId) activeTurnIdRef.current = result.turnId;
       if (result?.async) return;
       if (result?.message) {

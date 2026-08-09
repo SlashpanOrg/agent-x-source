@@ -6,6 +6,7 @@ import {
   normalizeMessageForUi,
   normalizeVoiceAssistantContent,
   repairStreamTextGlitches,
+  stripToolNoise as sharedStripToolNoise,
   type MessagePart,
 } from '@agentx/shared/browser';
 
@@ -60,20 +61,9 @@ export function sanitizeForJson(text: string): string {
   return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
 }
 
-const TOOL_NOISE = [
-  /\n?🔧 Calling: [^\n]+/g,
-  /\n?✅ Result: [^\n]+/g,
-  /\n?━{10,}[^\n]*/g,
-  /\n?\[STEP \d+\][^\n]*/g,
-  /\n?\[STEP \d+ COMPLETE\][^\n]*/g,
-];
-
+/** Decode literal \\uXXXX escapes + strip tool noise (shared sanitizer). */
 export function stripToolNoise(content: string, options?: { trim?: boolean }): string {
-  if (!content) return '';
-  let out = content;
-  for (const re of TOOL_NOISE) out = out.replace(re, '');
-  out = out.replace(/\n{3,}/g, '\n\n');
-  return options?.trim === false ? out : out.trim();
+  return sharedStripToolNoise(content, options);
 }
 
 function partsTextLead(message: { parts?: Array<{ type: string; content?: string }> }): string {
@@ -113,6 +103,17 @@ export function displayContent(message: { content?: string; parts?: Array<{ type
   const partsText = repairStreamTextGlitches(stripToolNoise(raw));
 
   if (!contentText) return partsText;
+  if (!partsText) return contentText;
+
+  // Prefer finished message content when parts are a truncated stream prefix
+  // (coalesce race: last stream_chunk never flushed into parts).
+  if (contentText.length > partsText.length + 8) {
+    if (contentText.startsWith(partsText)) return contentText;
+    const lead = partsText.slice(0, Math.min(40, partsText.length));
+    if (lead.length >= 16 && contentText.includes(lead) && partsText.length / contentText.length < 0.9) {
+      return contentText;
+    }
+  }
 
   const contentLead = stripToolNoise(contentText).slice(0, 80);
   const partsLead = partsTextLead(message);
@@ -216,6 +217,22 @@ export function stripTrailingStreamPreamble<T extends {
     return messages.slice(0, -1);
   }
   return messages;
+}
+
+/**
+ * True when two assistant texts are the same reply (exact, prefix, or shared lead).
+ * Used to merge/ignore late stream chunks after message_received instead of spawning
+ * a duplicate bubble (visible until hard refresh clears the ephemeral copy).
+ */
+export function assistantTextsOverlap(a: string | undefined, b: string | undefined): boolean {
+  const left = (a ?? '').trim();
+  const right = (b ?? '').trim();
+  if (!left || !right) return false;
+  if (left === right) return true;
+  if (left.startsWith(right) || right.startsWith(left)) return true;
+  const lead = Math.min(64, left.length, right.length);
+  if (lead < 24) return false;
+  return left.slice(0, lead) === right.slice(0, lead);
 }
 
 /** True when the last assistant message is a non-streaming questionnaire card. */

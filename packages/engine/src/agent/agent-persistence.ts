@@ -22,6 +22,8 @@ import {
   isCrewVoiceSessionId,
   takeCallDividerForPersist,
   type SessionResumeState,
+  type ThinkingMode,
+  type OutputMode,
 } from '@agentx/shared';
 import type { SessionManager } from '../session/SessionManager.js';
 import type { ToolExecutor } from '../tools/ToolExecutor.js';
@@ -41,6 +43,10 @@ export interface PersistenceContext {
   options: Readonly<AgentOptions>;
   sessionPermissionStore: SessionPermissionStore;
   getPersistStore(): StorageAdapter | null;
+  /** Current turn's thinking mode — persisted per-message for debugging. */
+  thinkingMode?: ThinkingMode;
+  /** Current turn's output mode — persisted per-message for debugging. */
+  outputMode?: OutputMode;
 }
 
 // ─── Resume-state helpers ───
@@ -240,6 +246,8 @@ export function persistAssistantMessage(ctx: PersistenceContext, msg: Message): 
     if (channel && !metadata['channel']) metadata['channel'] = channel;
     if (cfg.activeProvider && !metadata['provider']) metadata['provider'] = cfg.activeProvider;
     if (cfg.activeModel && !metadata['model']) metadata['model'] = cfg.activeModel;
+    if (ctx.thinkingMode && !metadata['thinkingMode']) metadata['thinkingMode'] = ctx.thinkingMode;
+    if (ctx.outputMode && !metadata['outputMode']) metadata['outputMode'] = ctx.outputMode;
     if (isCrewVoiceSessionId(ctx.sessionId) && !metadata['callDivider']) {
       const divider = takeCallDividerForPersist(ctx.sessionId);
       if (divider) metadata['callDivider'] = divider;
@@ -267,6 +275,8 @@ export function persistUserMessage(ctx: PersistenceContext, msg: Message): void 
     if (channel && !metadata['channel']) metadata['channel'] = channel;
     if (cfg.activeProvider && !metadata['provider']) metadata['provider'] = cfg.activeProvider;
     if (cfg.activeModel && !metadata['model']) metadata['model'] = cfg.activeModel;
+    if (ctx.thinkingMode && !metadata['thinkingMode']) metadata['thinkingMode'] = ctx.thinkingMode;
+    if (ctx.outputMode && !metadata['outputMode']) metadata['outputMode'] = ctx.outputMode;
     if (isCrewVoiceSessionId(msg.sessionId) && !metadata['callDivider']) {
       const divider = takeCallDividerForPersist(msg.sessionId);
       if (divider) metadata['callDivider'] = divider;

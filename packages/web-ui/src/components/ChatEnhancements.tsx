@@ -32,6 +32,7 @@ import FlagIcon from '@mui/icons-material/Flag';
 import GroupIcon from '@mui/icons-material/Group';
 import { sessions, type ConnectionState, type Checkpoint } from '../api';
 import type { Crew } from '../api';
+import { ConfirmDeleteDialog } from './ConfirmDeleteDialog';
 import { colors, alphaColor } from '../theme';
 import { crewRequiresMedicalDisclaimer } from '@agentx/shared/browser';
 
@@ -640,6 +641,8 @@ export function CheckpointDrawer({
   const [list, setList] = useState<Checkpoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
+  const [deletePendingId, setDeletePendingId] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!sessionId) return;
@@ -665,6 +668,19 @@ export function CheckpointDrawer({
     if (!sessionId) return;
     try { await sessions.deleteCheckpoint(sessionId, ckptId); refresh(); } catch { /* ignore */ }
   };
+
+  const confirmDelete = async () => {
+    if (!deletePendingId) return;
+    setDeleteBusy(true);
+    try {
+      await handleDelete(deletePendingId);
+      setDeletePendingId(null);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const pendingDelete = deletePendingId ? list.find((c) => c.id === deletePendingId) : null;
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth
@@ -709,13 +725,22 @@ export function CheckpointDrawer({
               </Box>
               <Chip size="small" label={restoring === c.id ? 'Restoring…' : 'Restore'} onClick={() => handleRestore(c.id)}
                 sx={{ height: 22, fontSize: '0.55rem', bgcolor: alphaColor(colors.accent.green, '15'), color: colors.accent.green, cursor: 'pointer', '&:hover': { bgcolor: alphaColor(colors.accent.green, '28') } }} />
-              <IconButton size="small" onClick={() => handleDelete(c.id)} sx={{ color: colors.text.dim, '&:hover': { color: colors.accent.red } }}>
+              <IconButton size="small" onClick={() => setDeletePendingId(c.id)} sx={{ color: colors.text.dim, '&:hover': { color: colors.accent.red } }}>
                 <CloseIcon sx={{ fontSize: 12 }} />
               </IconButton>
             </Box>
           ))}
         </Box>
       </DialogContent>
+      <ConfirmDeleteDialog
+        open={Boolean(deletePendingId)}
+        busy={deleteBusy}
+        title="DELETE CHECKPOINT"
+        description="Permanently delete checkpoint"
+        itemName={pendingDelete?.label}
+        onClose={() => setDeletePendingId(null)}
+        onConfirm={() => { void confirmDelete(); }}
+      />
     </Dialog>
   );
 }

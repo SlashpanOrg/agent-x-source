@@ -7,6 +7,9 @@ export interface CollectedCompletion {
   latencyMs: number;
 }
 
+/** Per-test network safety net so a slow/unresponsive provider cannot hang the clearance scan. */
+const BENCHMARK_REQUEST_TIMEOUT_MS = 90_000;
+
 export async function collectCompletion(
   provider: ProviderInterface,
   request: CompletionRequest,
@@ -16,14 +19,27 @@ export async function collectCompletion(
   let reasoningText = '';
   const toolCallsByIndex = new Map<number, CompletionToolCall>();
 
-  for await (const chunk of provider.complete({ ...request, stream: true })) {
-    applyChunk(
-      chunk,
-      (t) => { text += t; },
-      (t) => { reasoningText += t; },
-      toolCallsByIndex,
-    );
-    if (chunk.type === 'done') break;
+  const timedRequest: CompletionRequest = {
+    ...request,
+    stream: true,
+    signal: request.signal ?? AbortSignal.timeout(BENCHMARK_REQUEST_TIMEOUT_MS),
+  };
+
+  try {
+    for await (const chunk of provider.complete(timedRequest)) {
+      applyChunk(
+        chunk,
+        (t) => { text += t; },
+        (t) => { reasoningText += t; },
+        toolCallsByIndex,
+      );
+      if (chunk.type === 'done') break;
+    }
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error(`Benchmark request timed out after ${BENCHMARK_REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw err;
   }
 
   return {

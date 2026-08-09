@@ -91,6 +91,7 @@ export interface CrewHubCardProps {
   showPrivateChat?: boolean;
   callLoading?: boolean;
   showCall?: boolean;
+  profileLoading?: boolean;
   onOpenProfile: (item: HubCardCrew) => void;
   onRecruit: (item: HubCardCrew) => void;
   onDeactivate: (rosterId: string) => void;
@@ -107,6 +108,7 @@ function CrewHubCardComponent({
   showPrivateChat,
   callLoading,
   showCall,
+  profileLoading,
   onOpenProfile,
   onRecruit,
   onDeactivate,
@@ -213,8 +215,10 @@ function CrewHubCardComponent({
 
         <Box sx={{ display: 'flex', gap: 0.5, mt: 'auto' }}>
           <Tooltip title="View dossier" arrow>
-            <IconButton size="small" onClick={() => onOpenProfile(item)} sx={dossierBtnSx}>
-              <AssignmentIndIcon sx={{ fontSize: 14 }} />
+            <IconButton size="small" onClick={() => onOpenProfile(item)} disabled={profileLoading} sx={dossierBtnSx}>
+              {profileLoading
+                ? <CircularProgress size={12} />
+                : <AssignmentIndIcon sx={{ fontSize: 14 }} />}
             </IconButton>
           </Tooltip>
           {showPrivateChat && onPrivateChat && (
