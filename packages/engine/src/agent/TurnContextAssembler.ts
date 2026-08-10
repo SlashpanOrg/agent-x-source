@@ -10,6 +10,8 @@ export interface TurnContextOptions {
   currentUserMessage: string;
   scopePath?: string | null;
   structuredSummary?: string;
+  /** Harness + goal prompt blocks from adoption services (X-INT-05). */
+  adoptionBlocks?: string[];
   /** Max chars for the injected context block (token-efficient default ~2k). */
   maxBlockChars?: number;
   /** When true, omit recent exchange (history already in completion messages). */
@@ -106,6 +108,12 @@ export function buildTurnContext(opts: TurnContextOptions): TurnContextResult {
 
   if (opts.structuredSummary?.trim()) {
     lines.push('', 'Session summary:', abbreviate(opts.structuredSummary.trim(), 800));
+  }
+
+  if (opts.adoptionBlocks?.length) {
+    for (const block of opts.adoptionBlocks) {
+      if (block.trim()) lines.push('', block.trim());
+    }
   }
 
   const exchange = opts.skipRecentExchange ? '' : recentExchange(opts.messages);

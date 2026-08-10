@@ -77,7 +77,7 @@ export interface ChatThreadViewProps {
   turnActivityStage?: string;
   bottomRef: React.RefObject<HTMLDivElement | null>;
   onResend: (text: string) => void;
-  onOpenChildSession: (props: { childSessionId: string; label: string; kind: 'sub_agent' | 'crew_worker'; status: 'running' | 'done' | 'error'; task?: string }) => void;
+  onOpenChildSession: (props: { childSessionId: string; label: string; kind: 'sub_agent' | 'crew_worker'; status: 'running' | 'done' | 'error' | 'admitted'; task?: string }) => void;
   onQuestionnaireRespond: (messageId: string, response: string) => void;
   onQuestionnaireCancel?: (messageId: string) => void;
   onCrewRosterPickerSubmit: (messageId: string, selected: CrewMatchCandidate[]) => void;

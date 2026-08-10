@@ -14,7 +14,7 @@ interface ChatMessageListProps {
   loadingSteps: Array<{ id: string; label: string; status: string }> | null;
   onResend: (text: string) => void;
   bottomRef: React.RefObject<HTMLDivElement | null>;
-  onOpenChildSession?: (props: { childSessionId: string; label: string; kind: 'sub_agent' | 'crew_worker'; status: 'running' | 'done' | 'error'; task?: string }) => void;
+  onOpenChildSession?: (props: { childSessionId: string; label: string; kind: 'sub_agent' | 'crew_worker'; status: 'running' | 'done' | 'error' | 'admitted'; task?: string }) => void;
   onQuestionnaireRespond?: (messageId: string, response: string) => void;
   onQuestionnaireCancel?: (messageId: string) => void;
   onCrewRosterPickerSubmit?: (messageId: string, selected: CrewMatchCandidate[]) => void;

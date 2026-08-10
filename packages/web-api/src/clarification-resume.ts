@@ -7,6 +7,7 @@ import {
   isCrewPrivateSessionRecord,
 } from './chat-helpers.js';
 import { turnRegistry } from './turn-registry.js';
+import { getCommandJournal } from '@agentx/engine';
 import { loadSessionResumeState, clearSessionResumeState, saveSessionResumeState } from './session-resume-state.js';
 
 type MessageStore = {
@@ -95,6 +96,35 @@ ${answerBlock}
 [/QUESTIONNAIRE_ALREADY_ANSWERED]`;
 }
 
+export function buildOpenClarificationResumeInstruction(
+  baseInstruction: string,
+  userAnswer: string,
+): string {
+  const answer = userAnswer.trim();
+  return `${baseInstruction}
+
+[CLARIFICATION_ANSWER]
+The user replied to your prior clarification question. Continue the original request using this answer. Do not re-ask unless still ambiguous.
+
+${answer}
+[/CLARIFICATION_ANSWER]`;
+}
+
+/** When the user answers an open clarification, resume on a new turn with the original prompt. */
+export function resolveOpenClarificationChatTurn(
+  sessionId: string,
+  baseInstruction: string,
+  userAnswer: string,
+): { priorUserText: string; instruction: string } | null {
+  const resume = loadSessionResumeState(sessionId);
+  if (resume?.kind !== 'open_clarification' || !resume.userText?.trim()) return null;
+  clearSessionResumeState(sessionId);
+  return {
+    priorUserText: resume.userText.trim(),
+    instruction: buildOpenClarificationResumeInstruction(baseInstruction, userAnswer),
+  };
+}
+
 export function collectSessionQuestionnaireAnswers(sessionId: string, includeAnswer?: string): string[] {
   const msgs = getMessageStore()?.getMessages?.(sessionId) ?? [];
   const answers = collectAnsweredQuestionnaireTexts(msgs);
@@ -164,6 +194,21 @@ export async function handleClarificationRespond(
     return { ok: false, error: 'no-pending-clarification', status: 409 };
   }
 
+  if (resume?.kind === 'open_clarification' && resume.userText) {
+    clearSessionResumeState(sessionId);
+    agent.clearClarificationResumeState?.();
+    const activeSess = getEngine().sessionManager.getActiveSession?.()
+      ?? getEngine().sessionManager.getSessionById(sessionId);
+    const crewPrivateChat = isCrewPrivateSessionRecord(activeSess);
+    const instruction = buildOpenClarificationResumeInstruction(
+      buildTurnInstruction({ crewPrivate: crewPrivateChat }) ?? '',
+      trimmed,
+    );
+    const turn = turnRegistry.create(sessionId);
+    runAgentTurnAsync(agent, resume.userText, instruction, false, turn.turnId, sessionId);
+    return { ok: true, resumed: true };
+  }
+
   const questionnaireMessageId = pending?.messageId ?? resume?.questionnaireMessageId ?? resume?.messageId;
   if (pending) {
     markQuestionnaireAnswered(sessionId, pending.messageId, pending.part, trimmed);
@@ -177,6 +222,8 @@ export async function handleClarificationRespond(
     const crewPrivateChat = isCrewPrivateSessionRecord(activeSess);
     const instruction = buildTurnInstruction({ crewPrivate: crewPrivateChat });
     const turn = turnRegistry.create(sessionId);
+    const idempotencyKey = `clarification-resume:${sessionId}:${trimmed.slice(0, 40)}`;
+    void getCommandJournal().receive('clarification_resume', sessionId, { trimmed }, idempotencyKey).catch(() => {});
     runAgentTurnAsync(
       agent,
       resume.userText,
@@ -216,6 +263,8 @@ export async function handleClarificationRespond(
       allAnswers.length > 0 ? allAnswers : trimmed,
     );
     const turn = turnRegistry.create(sessionId);
+    const idempotencyKey = `clarification-resume:${sessionId}:${trimmed.slice(0, 40)}`;
+    void getCommandJournal().receive('clarification_resume', sessionId, { trimmed }, idempotencyKey).catch(() => {});
     runAgentTurnAsync(
       agent,
       priorUserText,

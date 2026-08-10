@@ -10,7 +10,10 @@ import { join } from 'node:path';
 import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { getDataDir, getConfigDir, getCacheDir, agentXConfigSchema, voiceConfigSchema, authManager, buildPublicSystemCapabilities, resolvePerformanceSettings, buildPerformanceShowcase, getLogger, normalizeClientSituation } from '@agentx/shared';
 import type { AgentXConfig } from '@agentx/shared';
-import { getEngine, destroyAgent, clearEngine, applyPerformanceSettings, setCurrentClientSituation, getCurrentClientSituation } from '../../engine.js';
+import { getEngine, destroyAgent, clearEngine, applyPerformanceSettings, applyAdoptionSettings, setCurrentClientSituation, getCurrentClientSituation } from '../../engine.js';
+import { getOrCreateBoundSessionAgent } from '../../engine/agent-lifecycle.js';
+import { getResidentSessionManager } from '@agentx/engine';
+import { isResidentSessionsEnabled } from '@agentx/shared';
 import {
   redactConfigForClient,
   mergeConfigPreservingSecrets,
@@ -31,8 +34,30 @@ export function createSystemRouter(): Router {
     res.json(buildPublicSystemCapabilities(os.totalmem()));
   });
 
-  r.post('/api/system/app-visibility', (_req, res) => {
-    res.json({ ok: true });
+  r.post('/api/system/app-visibility', async (req, res) => {
+    const visible = req.body?.visible !== false;
+    let detachedSessionId: string | undefined;
+    if (!visible && isResidentSessionsEnabled()) {
+      try {
+        const eng = getEngine();
+        const agent = eng.agent;
+        if (agent?.processing) {
+          const sessionId = agent.sessionId;
+          const session = eng.sessionManager.getSessionById(sessionId);
+          if (session) {
+            const bound = getOrCreateBoundSessionAgent(session);
+            const manager = getResidentSessionManager();
+            manager.register(sessionId, bound, 'active');
+            if (await manager.detach(sessionId)) {
+              detachedSessionId = sessionId;
+            }
+          }
+        }
+      } catch (err) {
+        getLogger().warn('APP_VISIBILITY', err instanceof Error ? err.message : String(err));
+      }
+    }
+    res.json({ ok: true, detachedSessionId });
   });
 
   // ───── Setup / Config ─────
@@ -216,6 +241,7 @@ export function createSystemRouter(): Router {
       }
       eng.configManager.save(merged);
       applyPerformanceSettings(merged);
+      applyAdoptionSettings(merged);
       applyWebSearchConfigFromAgentConfig(merged);
       void applyChannelsConfig(merged).catch((e: unknown) => {
         getLogger().warn('CHANNELS', `Failed to apply channel config: ${e instanceof Error ? e.message : String(e)}`);

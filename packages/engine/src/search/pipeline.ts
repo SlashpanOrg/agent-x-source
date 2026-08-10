@@ -95,6 +95,9 @@ export async function runDeepSearchPipeline(
     });
 
     const contentType = inferTypeFromPage(hit.url, page);
+    // Shopping results must be real product pages, not reviews, listicles,
+    // category pages, or generic search results that happen to mention a product.
+    if (plan.intent.includes('product') && contentType !== 'product') return;
     const scores = scoreSearchResult({
       query,
       hit,
@@ -133,13 +136,29 @@ export async function runDeepSearchPipeline(
 
   emit({ phase: 'scoring', message: 'Ranking results…', searched, fetched: fetchedCount });
 
-  const results = fetchedResults
+  const rankedResults = fetchedResults
     .sort((a, b) => b.scores.final - a.scores.final)
-    .slice(0, maxResults);
+    .filter((result, index, all) => {
+      if (!plan.intent.includes('product')) return true;
+      const productKey = `${result.extracted.brand ?? ''} ${result.title}`
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+      return all.findIndex((candidate) => (
+        `${candidate.extracted.brand ?? ''} ${candidate.title}`
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim() === productKey
+      )) === index;
+    });
+  const results = rankedResults.slice(0, maxResults);
 
   // If fetch/scoring produced nothing but we had SERP hits, return top snippets without page fetch.
   if (results.length === 0 && merged.length > 0) {
-    for (const hit of merged.slice(0, maxResults)) {
+    const fallbackHits = plan.intent.includes('product')
+      ? merged.filter((hit) => inferTypeFromPage(hit.url, null) === 'product')
+      : merged;
+    for (const hit of fallbackHits.slice(0, maxResults)) {
       const scores = scoreSearchResult({
         query,
         hit,

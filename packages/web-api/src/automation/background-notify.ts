@@ -52,14 +52,24 @@ export function startBackgroundTaskNotifier(): void {
 
   unsubscribe = eng.telemetry.onEvent((rawEvent: TelemetryEvent) => {
     const ev = rawEvent as unknown as Record<string, unknown>;
-    if (ev['type'] !== 'background_task_complete') return;
-
-    void handleBackgroundTaskComplete(ev).catch((err) => {
-      getLogger('BackgroundNotify').warn(
-        'background-notify',
-        `Failed to create notification: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    });
+    const type = ev['type'];
+    if (type === 'background_task_complete') {
+      void handleBackgroundTaskComplete(ev).catch((err) => {
+        getLogger('BackgroundNotify').warn(
+          'background-notify',
+          `Failed to create notification: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+      return;
+    }
+    if (type === 'quality_gate_fail') {
+      void handleQualityGateFail(ev).catch((err) => {
+        getLogger('BackgroundNotify').warn(
+          'background-notify',
+          `Gate failure notify failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
   });
 
   getLogger('BackgroundNotify').info('background-notify', 'Background task notifier started');
@@ -140,4 +150,22 @@ async function handleBackgroundTaskComplete(ev: Record<string, unknown>): Promis
       `Failed to publish notification for task ${taskId}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+async function handleQualityGateFail(ev: Record<string, unknown>): Promise<void> {
+  const service = getAutomationService();
+  if (!service) return;
+  const command = String(ev['command'] ?? 'gate');
+  const output = String(ev['output'] ?? ev['failures'] ?? 'Quality gate failed').slice(0, 2000);
+  const channels = resolveBackgroundNotifyChannels(
+    getNotificationChannelStatus(getEngine().configManager.load(), getTelegramRuntimeHints()),
+  );
+  await service.publishNotification({
+    taskId: null,
+    kind: 'automation_failure',
+    title: 'Quality gate failed',
+    body: `Command: ${command}\n\n${output}`,
+    channels,
+    payload: { type: 'quality_gate_fail', command, output },
+  });
 }

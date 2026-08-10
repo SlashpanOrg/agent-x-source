@@ -21,6 +21,7 @@ export interface BackgroundTaskResourceUsage {
 export type BackgroundTaskStatus =
   | 'pending'
   | 'queued'
+  | 'admitted'
   | 'running'
   | 'completed'
   | 'failed'

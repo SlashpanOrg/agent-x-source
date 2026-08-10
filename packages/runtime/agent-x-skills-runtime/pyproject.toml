@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-x-skills-runtime"
+version = "0.1.0"
+description = "Minimal runner shim for Agent-X executable skills"
+requires-python = ">=3.9"
+
+[project.scripts]
+agentx-skill-run = "agent_x_skills_runtime.runner:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent_x_skills_runtime*"]

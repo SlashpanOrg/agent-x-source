@@ -12,6 +12,7 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 let agentRuntime: AgentRuntime | null = null;
+let backgroundSessionCount = 0;
 const PORT = DEFAULT_PORT;
 
 const isDev = process.env['NODE_ENV'] === 'development' || !app.isPackaged;
@@ -360,6 +361,52 @@ function attachExternalLinkHandlers(win: BrowserWindow, appOrigin: string): void
 
 // ==================== Window ====================
 
+async function refreshBackgroundSessionIndicator(): Promise<void> {
+  try {
+    const res = await fetch(`http://localhost:${PORT}/api/resident-sessions`);
+    if (!res.ok) return;
+    const data = await res.json() as { enabled?: boolean; sessions?: Array<{ status: string }> };
+    if (!data.enabled) {
+      backgroundSessionCount = 0;
+    } else {
+      backgroundSessionCount = (data.sessions ?? []).filter((s) => s.status === 'detached').length;
+    }
+    updateTrayPresentation();
+  } catch { /* server may be unavailable */ }
+}
+
+function updateTrayPresentation(): void {
+  const portLabel = `Running on port ${PORT}`;
+  const base = backgroundSessionCount > 0
+    ? `Agent-X — ${portLabel} (${backgroundSessionCount} in background)`
+    : `Agent-X — ${portLabel}`;
+  tray?.setToolTip(base);
+  tray?.setContextMenu(buildTrayMenu());
+}
+
+function buildTrayMenu(): Menu {
+  const updateMenu = {
+    label: 'Check for Updates…',
+    click: () => { checkForUpdates(true); },
+  };
+  const items: Electron.MenuItemConstructorOptions[] = [
+    { label: 'Open Agent-X', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
+  ];
+  if (backgroundSessionCount > 0) {
+    items.push({
+      label: `${backgroundSessionCount} session(s) running in background`,
+      enabled: false,
+    });
+  }
+  items.push(
+    { type: 'separator' },
+    updateMenu,
+    { type: 'separator' },
+    { label: 'Quit Agent-X', click: () => { isQuitting = true; app.quit(); } },
+  );
+  return Menu.buildFromTemplate(items);
+}
+
 async function notifyAppVisibility(visible: boolean): Promise<void> {
   try {
     await fetch(`http://localhost:${PORT}/api/system/app-visibility`, {
@@ -367,6 +414,9 @@ async function notifyAppVisibility(visible: boolean): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ visible }),
     });
+    if (!visible) {
+      setTimeout(() => { void refreshBackgroundSessionIndicator(); }, 500);
+    }
   } catch { /* server may not be ready yet */ }
 }
 
@@ -465,18 +515,7 @@ function createTray(): void {
   }
   tray.setToolTip('Agent-X — Starting...');
 
-  const updateMenu = {
-    label: 'Check for Updates…',
-    click: () => { checkForUpdates(true); },
-  };
-
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open Agent-X', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
-    { type: 'separator' },
-    updateMenu,
-    { type: 'separator' },
-    { label: 'Quit Agent-X', click: () => { isQuitting = true; app.quit(); } },
-  ]));
+  tray.setContextMenu(buildTrayMenu());
 
   tray.on('click', () => {
     tray?.popUpContextMenu();
@@ -712,9 +751,11 @@ app.whenReady().then(async () => {
   try {
     createTray();
     await startServer();
-    tray?.setToolTip(`Agent-X — Running on port ${PORT}`);
+    tray?.setToolTip(`Agent-X — Starting...`);
     createWindow();
     registerHotkey();
+    void refreshBackgroundSessionIndicator();
+    setInterval(() => { void refreshBackgroundSessionIndicator(); }, 30_000);
     if (Notification.isSupported()) {
       try {
         new Notification({ title: 'Agent-X', body: 'Desktop notifications are ready.', silent: true }).show();

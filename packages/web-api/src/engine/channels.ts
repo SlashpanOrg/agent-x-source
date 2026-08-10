@@ -118,7 +118,10 @@ export function ensureChannelAgent(channel: ChannelBindingId = 'telegram', sende
     }
   }
 
-  const agent = createAgent(cfg, session, { attachToEngine: false });
+  const agent = createAgent(cfg, session, {
+    attachToEngine: false,
+    leaseOwnerNamespace: `channel:${channel}`,
+  });
   map.set(cacheKey, agent);
   if (channel === 'telegram') eng.channelAgent = agent;
 

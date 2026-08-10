@@ -287,7 +287,7 @@ export class PostgresStorageAdapter implements StorageAdapter {
   constructor(config: PostgresConfig) {
     const poolConfig = {
       ...config,
-      max: getEnvInt('PG_POOL_MAX', config.max, 20),
+      max: getEnvInt('PG_POOL_MAX', config.max, 8),
       idleTimeoutMillis: getEnvInt('PG_POOL_IDLE_TIMEOUT_MS', config.idleTimeoutMillis, 30_000),
       connectionTimeoutMillis: getEnvInt('PG_CONNECTION_TIMEOUT_MS', config.connectionTimeoutMillis, 5_000),
       allowExitOnIdle: getEnvBool('PG_POOL_ALLOW_EXIT_ON_IDLE', config.allowExitOnIdle, false),

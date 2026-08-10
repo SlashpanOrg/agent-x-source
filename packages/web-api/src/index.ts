@@ -15,8 +15,10 @@ import { requestLogger } from './middleware/request-logger.js';
 import { requestMetrics } from './middleware/request-metrics.js';
 import { requestObservabilityMiddleware } from './middleware/request-observability.js';
 import { setDefaultEmbeddingCacheDir } from '@agentx/engine';
-import { setupWebSocket, shutdownWebSocket } from './ws.js';
+import { drainForShutdown } from './shutdown-coordinator.js';
+import { markEngineShuttingDown } from '@agentx/engine';
 import { setupVoiceWebSocket } from './voice-ws.js';
+import { setupWebSocket, shutdownWebSocket } from './ws.js';
 import { attachWebSocketUpgradeRouter } from './ws-upgrade-router.js';
 import { applyChannelsConfig } from './channels-sync.js';
 import { registerEmbeddedPostgresController } from './pg-lifecycle-bridge.js';
@@ -293,22 +295,25 @@ export function startServer(port = PORT): ReturnType<typeof server.listen> {
     shuttingDown = true;
     const log = getLogger();
     log.info('SHUTDOWN', `Received ${signal}. Starting graceful shutdown...`);
+    markEngineShuttingDown();
 
-    server.close(() => {
-      void (async () => {
-        try {
-          const eng = getEngine();
-          await eng.crewManager.flushPersist();
-          await eng.storageAdapter.flushWrites?.();
-        } catch (e) {
-          log.warn('SHUTDOWN', `Durable flush failed: ${e instanceof Error ? e.message : e}`);
-        }
-        shutdownWebSocket();
-        void shutdownAutomation();
-        void shutdownAgentXOverviewBridge();
-        try { void getEngine().serviceContext?.channelService?.stop(); } catch { /* ignore */ }
-        log.info('SHUTDOWN', 'Server closed.');
-      })();
+    void drainForShutdown(30_000).finally(() => {
+      server.close(() => {
+        void (async () => {
+          try {
+            const eng = getEngine();
+            await eng.crewManager.flushPersist();
+            await eng.storageAdapter.flushWrites?.();
+          } catch (e) {
+            log.warn('SHUTDOWN', `Durable flush failed: ${e instanceof Error ? e.message : e}`);
+          }
+          shutdownWebSocket();
+          void shutdownAutomation();
+          void shutdownAgentXOverviewBridge();
+          try { void getEngine().serviceContext?.channelService?.stop(); } catch { /* ignore */ }
+          log.info('SHUTDOWN', 'Server closed.');
+        })();
+      });
     });
   };
 

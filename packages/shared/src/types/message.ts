@@ -56,6 +56,8 @@ export interface MessageMetadata {
     variant: CallDividerVariant;
     label: string;
   };
+  /** Compaction file-tracking artifact when this message is a compaction summary. */
+  compactionArtifact?: import('./communication.js').CompactionArtifact;
 }
 
 export type InputType =

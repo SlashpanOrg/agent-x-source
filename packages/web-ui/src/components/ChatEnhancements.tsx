@@ -28,7 +28,6 @@ import CompressIcon from '@mui/icons-material/Compress';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import DownloadIcon from '@mui/icons-material/Download';
-import FlagIcon from '@mui/icons-material/Flag';
 import GroupIcon from '@mui/icons-material/Group';
 import { sessions, type ConnectionState, type Checkpoint } from '../api';
 import type { Crew } from '../api';
@@ -160,7 +159,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/think',    description: 'Force the agent to plan before acting',         icon: <PsychologyIcon sx={{ fontSize: 13 }} />, example: '/think build a CRUD app' },
   { name: '/yolo',     description: 'Toggle full-auto approval for the next turn',   icon: <BoltIcon sx={{ fontSize: 13 }} /> },
   { name: '/export',   description: 'Download full session trajectory as JSON',      icon: <DownloadIcon sx={{ fontSize: 13 }} /> },
-  { name: '/goal',     description: 'Set a multi-step goal (Goal Mode)',             icon: <FlagIcon sx={{ fontSize: 13 }} />, example: '/goal Build a chat app with auth' },
 ];
 
 export function SlashCommandMenu({

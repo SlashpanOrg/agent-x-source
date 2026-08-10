@@ -3,6 +3,8 @@ import type { AgentXConfig, WebSearchToolsConfig } from '@agentx/shared';
 /** @deprecated Legacy placeholder — never send or persist. Kept for merge of old clients. */
 export const REDACTED_SECRET = '••••••••';
 
+/** Adoption toggles (`config.adoption`) store feature flags only — no secrets to redact (P0-CFG-07). */
+
 function isCorruptSecret(value: unknown): boolean {
   if (typeof value !== 'string') return false;
   const v = value.trim();

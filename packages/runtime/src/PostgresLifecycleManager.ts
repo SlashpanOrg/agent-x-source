@@ -312,7 +312,7 @@ export class PostgresLifecycleManager {
       '-h', this.options.host,
       '-p', this.options.port.toString(),
       '-c', `shared_buffers=${sharedBuffers}`,
-      '-c', 'max_connections=10',
+      '-c', 'max_connections=20',
       '-c', `work_mem=${workMem}`,
       '-c', 'maintenance_work_mem=32MB',
       '-c', 'max_wal_size=512MB',

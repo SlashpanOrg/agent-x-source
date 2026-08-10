@@ -19,7 +19,7 @@ import {
   syncTextPartsWithCanonicalContent,
   type MessagePart,
 } from '@agentx/shared/browser';
-import { chat, todos, type TelemetryEvent, type Crew, type ConnectionState, type CrewSuggestionEvaluation, type IntegrationActionPreview, type TodoItem } from '../../api';
+import { chat, todos, adoption, type TelemetryEvent, type Crew, type ConnectionState, type CrewSuggestionEvaluation, type IntegrationActionPreview, type TodoItem } from '../../api';
 import type { UIMessage, PartEntry, ToolCall, SubAgent } from '../../chat/types';
 import { upsertDeepSearchPartEntry } from '../../chat/types';
 import { updateLastMessage, attachChildSessionToAssistant, isTimeoutWarning, replaceWarning, clearTimeoutWarnings } from './message-helpers';
@@ -1359,7 +1359,74 @@ const handleTodoUpdate = (ev: TelemetryEvent, ctx: EventHandlerContext): void =>
   if (items.length > 0) ctx.setTasksExpanded(true);
 };
 
-/** Mark a background / fire-and-forget sub-agent card done when the task finishes. */
+/** Mark admitted / background sub-agent complete when parent receives completion event. */
+const handleSubagentAdmittedComplete = (ev: TelemetryEvent, ctx: EventHandlerContext): void => {
+  const childSessionId = String(ev.childSessionId ?? '').trim();
+  const taskId = String(ev.taskId ?? '').trim();
+  const success = ev.success !== false;
+  const summary = String(ev.summary ?? ev.result ?? '').trim();
+  if (!childSessionId && !taskId) return;
+  const matchId = (id: string) =>
+    (childSessionId && id === childSessionId) || (taskId && id === taskId);
+  ctx.setMessages((prev) => {
+    let targetIdx = -1;
+    for (let i = prev.length - 1; i >= 0; i--) {
+      const m = prev[i]!;
+      if (m.role !== 'assistant') continue;
+      if (m.subAgents?.some((a) => matchId(a.id))) {
+        targetIdx = i;
+        break;
+      }
+    }
+    if (targetIdx < 0) return prev;
+    const target = prev[targetIdx]!;
+    const subAgents = (target.subAgents ?? []).map((a) => {
+      if (!matchId(a.id)) return a;
+      return {
+        ...a,
+        status: (success ? 'done' : 'error') as 'done' | 'error',
+        currentStep: success ? 'Done' : 'Failed',
+        result: summary || a.result,
+        sessionBound: true,
+      };
+    });
+    const parts = (target.parts ?? []).map((p) => {
+      if (p.type !== 'subagent' || !p.agent || !matchId(p.agent.id)) return p;
+      return {
+        ...p,
+        agent: {
+          ...p.agent,
+          status: (success ? 'done' : 'error') as 'done' | 'error',
+          currentStep: success ? 'Done' : 'Failed',
+          result: summary || p.agent.result,
+          sessionBound: true,
+        },
+      };
+    });
+    const next = [...prev];
+    next[targetIdx] = { ...target, subAgents, parts };
+    return next;
+  });
+  if (summary) {
+    const toast = success ? `Sub-agent complete: ${summary.slice(0, 120)}` : `Sub-agent failed: ${summary.slice(0, 120)}`;
+    ctx.setWarnings((w) => replaceWarning(w, toast));
+  }
+};
+
+/** Attach admitted sub-agent handle when admission path spawns without waiting. */
+const handleSubagentAdmitted = (ev: TelemetryEvent, ctx: EventHandlerContext): void => {
+  const taskId = String(ev.taskId ?? '').trim();
+  if (!taskId) return;
+  ctx.setMessages((prev) =>
+    attachChildSessionToAssistant(
+      ensureAssistantBubble(prev, ctx.turnActiveRef.current),
+      taskId,
+      'Sub-Agent',
+      'sub_agent',
+      `Admitted (${taskId.slice(0, 8)})`,
+    ),
+  );
+};
 const handleBackgroundTaskComplete = (ev: TelemetryEvent, ctx: EventHandlerContext): void => {
   const childSessionId = String(ev.childSessionId ?? '').trim();
   const taskId = String(ev.taskId ?? '').trim();
@@ -1491,6 +1558,16 @@ const telemetryDispatch: Record<string, (ev: TelemetryEvent, ctx: EventHandlerCo
   // Agent & session
   child_session_started: handleChildSessionStarted,
   agent_spawned: handleAgentSpawned,
+
+  subagent_admitted: handleSubagentAdmitted,
+  subagent_admitted_complete: handleSubagentAdmittedComplete,
+  agent_message: noopHandler,
+  steer_message: (_ev, ctx) => {
+    const instruction = String(_ev.instruction ?? '').trim();
+    if (instruction) {
+      ctx.setCurrentStep(`Steered: ${instruction.slice(0, 80)}`);
+    }
+  },
 
   // Misc
   command_action: handleCommandAction,
@@ -1698,14 +1775,28 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
           const resultStr: string = typeof result === 'string' ? result
             : (result && typeof result === 'object' ? String((result as Record<string, unknown>).output || (result as Record<string, unknown>).message || JSON.stringify(result)) : '');
           if (toolName === 'delegate_to_subagent' && last.subAgents) {
-            // Fire-and-forget ack must NOT mark the chip done — child is still working.
+            // Fire-and-forget / admitted ack must NOT mark the chip done — child is still working.
             const startedBg = /started in background/i.test(resultStr);
-            if (startedBg) {
+            const admittedAck = /"admitted"\s*:\s*true/.test(resultStr);
+            if (startedBg || admittedAck) {
               const newSubAgents = last.subAgents.map((a: SubAgent) =>
-                a.id === callId || a.status === 'running'
-                  ? { ...a, status: 'running' as const }
-                  : a);
-              return updateLastMessage(prev, { subAgents: newSubAgents });
+                a.id === callId
+                  ? { ...a, status: (admittedAck ? 'admitted' : 'running') as SubAgent['status'], sessionBound: true }
+                  : a.status === 'running'
+                    ? a
+                    : a);
+              const newParts = (last.parts || []).map((p: PartEntry) =>
+                p.type === 'subagent' && p.agent?.id === callId
+                  ? {
+                      ...p,
+                      agent: {
+                        ...p.agent!,
+                        status: (admittedAck ? 'admitted' : 'running') as SubAgent['status'],
+                        sessionBound: true,
+                      },
+                    }
+                  : p);
+              return updateLastMessage(prev, { subAgents: newSubAgents, parts: newParts });
             }
             const newSubAgents = last.subAgents.map((a: SubAgent) =>
               a.status !== 'running' ? a : { ...a, status: 'done' as const, result: resultStr });
@@ -1899,6 +1990,15 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
     const handleEvent = (ev: TelemetryEvent) => {
       if (!eventBelongsToViewSession(ev, viewSessionIdRef.current)) return;
 
+      const sid = viewSessionIdRef.current;
+      const genEv = ev as unknown as { generation?: number; sequence?: number };
+      if (sid && typeof genEv.generation === 'number') {
+        sessionStorage.setItem(`gen:${sid}`, String(genEv.generation));
+        if (typeof genEv.sequence === 'number') {
+          sessionStorage.setItem(`seq:${sid}`, String(genEv.sequence));
+        }
+      }
+
       // While a permission/questionnaire prompt is active, hold all subsequent
       // events so the turn does not continue under the user's prompt. The queue
       // is flushed once the prompt is cleared.
@@ -1967,6 +2067,17 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
                 const normalized = normalizeTodoItems(items);
                 setTodoItems(normalized);
                 if (normalized.length > 0) setTasksExpanded(true);
+              })
+              .catch(() => {});
+            const storedGen = Number(sessionStorage.getItem(`gen:${viewSessionId}`) ?? 0);
+            adoption.sessionSnapshot(viewSessionId)
+              .then((snap) => {
+                if (viewSessionIdRef.current !== viewSessionId) return;
+                const gen = Number(snap.generation ?? 0);
+                sessionStorage.setItem(`gen:${viewSessionId}`, String(gen));
+                if (storedGen > 0 && storedGen !== gen) {
+                  setWarnings((prev) => [...prev.filter((w) => !w.startsWith('Session re-synced')), 'Session re-synced from server snapshot (generation changed).']);
+                }
               })
               .catch(() => {});
           }

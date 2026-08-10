@@ -22,6 +22,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@agentx/runtime': fileURLToPath(new URL('./packages/server/tests/__mocks__/runtime-mock.ts', import.meta.url)),
+      '@agentx/engine/harness': fileURLToPath(new URL('./packages/engine/src/harness/index.ts', import.meta.url)),
     },
   },
 });

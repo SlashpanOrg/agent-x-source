@@ -1,3 +1,4 @@
+import type { QualityGateConfig } from '@agentx/shared';
 import { getLogger } from '@agentx/shared';
 import type { AgentXConfig, SessionEvent } from '@agentx/shared';
 import type { Agent } from './Agent.js';
@@ -39,6 +40,7 @@ import {
   verifyGoal as verifyGoalHelper,
   verifyFacts as verifyFactsHelper,
 } from './task-executor-verify.js';
+import { getQualityGateRunner } from '../quality-gates/QualityGateRunner.js';
 
 export interface TaskStep {
   id: string;
@@ -62,6 +64,7 @@ export interface TaskPlan {
   currentStepIndex: number;
   createdAt: string;
   updatedAt: string;
+  qualityGates?: QualityGateConfig;
 }
 
 export interface TaskExecutorResult {
@@ -346,6 +349,29 @@ export class TaskExecutor {
 
     // Save cross-session memory after task
     await this.saveTaskMemory(plan);
+
+    if (plan.qualityGates?.commands?.length) {
+      const gateResult = await getQualityGateRunner().run(
+        plan.qualityGates,
+        this.agent['scopePath'] as string,
+        undefined,
+        (ev) => this.onSessionEvent?.({ type: ev.type as string, ...ev } as SessionEvent),
+      );
+      if (!gateResult.passed) {
+        const gateOutput = gateResult.failures
+          .map((f) => `${f.command} (exit ${f.exitCode ?? '?'}): ${f.output}`)
+          .join('\n');
+        const completed = plan.steps.filter((s) => s.status === 'completed');
+        const newSteps = await this.replan(goal, completed, gateOutput, 'Quality gate failure', failureHistory);
+        if (newSteps.length > 0) {
+          plan.steps.push(...newSteps);
+          plan.updatedAt = new Date().toISOString();
+          getLogger().info('TASK_EXECUTOR', `Replanning after gate failure — ${newSteps.length} new step(s)`);
+          return await this.executePlan(plan, failureHistory, goal);
+        }
+        return this.makeResult(false, plan, `Quality gates failed: ${gateOutput}`);
+      }
+    }
 
     // Phase 3: Final goal verification
     const goalVerified = await this.verifyGoal(goal, plan);

@@ -76,6 +76,15 @@ export class CategoryDetector {
     { category: 'finance', sub: 'break-even', weight: 3, signals: ['break-even'], patterns: [/\bbreak[- ]?even\b/i] },
     { category: 'finance', sub: 'roi', weight: 2, signals: ['roi'], patterns: [/\broi\b/i, /\breturn\s+on\s+investment\b/i] },
     { category: 'finance', sub: 'calculation', weight: 2, signals: ['finance'], patterns: [/\bbudget\b/i, /\bforecast\b/i, /\binvoice\b/i, /\bp&l\b/i, /\bprofit\b/i, /\bloss\b/i] },
+    { category: 'finance', sub: 'personal', weight: 3, signals: ['personal-finance'], patterns: [/\bpersonal\s+finance\b/i, /\bmy\s+(?:budget|savings|expenses|portfolio)\b/i, /\bretirement\b/i] },
+    { category: 'finance', sub: 'corporate', weight: 3, signals: ['corporate-finance'], patterns: [/\bcorporate\s+finance\b/i, /\bcash\s*flow\b/i, /\bfinancial\s+model\b/i, /\bfinancial\s+statements?\b/i] },
+
+    // Shopping, travel, and bookings — consumer workflows should be routed
+    // to the right live-data/integration tools without requiring technical
+    // wording from the user.
+    { category: 'shopping', sub: 'product', weight: 3, signals: ['shopping'], patterns: [/\b(?:shop|shopping|buy|purchase|price|deal|retailer|amazon|ebay|etsy)\b/i, /\bproducts?\s+(?:to buy|to purchase|recommend(?:ed)?|worth buying)\b/i] },
+    { category: 'booking', sub: 'travel', weight: 3, signals: ['booking'], patterns: [/\b(?:flight|hotel|airbnb|train|rental car|travel tickets?|event tickets?)\b/i, /\b(?:book|booking|reserve|reservation)\b.*\b(?:trip|travel|room|hotel|flight|train|car|ticket|table)\b/i] },
+    { category: 'travel', sub: 'planning', weight: 3, signals: ['travel-planning'], patterns: [/\b(?:vacation|holiday|trip|travel|itinerary)\b/i] },
 
     // Marketing
     { category: 'marketing', sub: 'tweet', weight: 3, signals: ['tweet'], patterns: [/\btweet\b/i, /\bsocial\s+post\b/i] },

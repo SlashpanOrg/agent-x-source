@@ -7,7 +7,7 @@
 import { Router } from 'express';
 import { getLogger, normalizeClientSituation, sanitizeForJson } from '@agentx/shared';
 import type { TurnAttachment } from '@agentx/shared';
-import { getEngine, getOrCreateAgent, setCurrentClientSituation } from '../../engine.js';
+import { getSessionGenerationManager } from '@agentx/engine';
 import {
   runAgentTurnAsync,
   cancelActiveSessionTurn,
@@ -20,9 +20,14 @@ import { validate, chatMessageSchema, chatSteerSchema } from '../../validation.j
 import { ensureSubscribed, persistMessageDirect } from '../../ws.js';
 import { turnRegistry } from '../../turn-registry.js';
 import { maybeAugmentChatInstruction, handleChannelHandoffRequest } from '../../channel-session-bridge.js';
+import {
+  resolveOpenClarificationChatTurn,
+} from '../../clarification-resume.js';
 import { waitForIdle } from './shared.js';
 import { messageQueue } from './shared.js';
 import { assertChatWorkspaceAttachments } from '../../workspace.js';
+import { getEngine, getOrCreateAgent, setCurrentClientSituation } from '../../engine.js';
+import { getSessionConnection } from '../../session-connection.js';
 
 function normalizeChatAttachments(
   attachments: TurnAttachment[] | undefined,
@@ -76,7 +81,7 @@ export function createChatRouter(): Router {
 
       // ─── Safety: reset stuck agent ───
       if (agent.processing) {
-        try { agent.cancel(); } catch (e) { /* ignore */ }
+        try { getSessionConnection(agent).cancel(); } catch (e) { /* ignore */ }
         await new Promise(r => setTimeout(r, 250));
         if (agent.processing) {
           res.status(503).json({ error: 'Agent is busy. Please try again in a moment.' });
@@ -141,6 +146,15 @@ export function createChatRouter(): Router {
       const augmentedInstruction = sid
         ? maybeAugmentChatInstruction(eng, sid, fullText, instruction)
         : instruction;
+
+      const openResume = sid && !retry
+        ? resolveOpenClarificationChatTurn(sid, augmentedInstruction ?? '', fullText)
+        : null;
+      if (openResume) {
+        agent.clearClarificationResumeState?.();
+      }
+      const turnUserText = openResume?.priorUserText ?? fullText;
+      const turnInstruction = openResume?.instruction ?? augmentedInstruction;
 
       // Persist the user message immediately so a mid-turn page refresh still shows it.
       if (sid && !retry) {
@@ -224,7 +238,7 @@ export function createChatRouter(): Router {
         unsub();
       });
 
-      runAgentTurnAsync(agent, fullText, augmentedInstruction, retry, turn.turnId, sid, undefined, undefined, delegateCrewIds, crewSuggestionResolved, crewIntakeFromPicker, primaryCrewId, {
+      runAgentTurnAsync(agent, turnUserText, turnInstruction, retry, turn.turnId, sid, undefined, undefined, delegateCrewIds, crewSuggestionResolved, crewIntakeFromPicker, primaryCrewId, {
         ...(forceWebSearch ? { forceWebSearch: true } : {}),
         userMessagePersisted: true,
         ...(clientSituation ? { clientSituation } : {}),
@@ -276,7 +290,7 @@ export function createChatRouter(): Router {
 
       // ─── Safety: reset stuck agent if processing flag leaked from previous call ───
       if (agent.processing) {
-        try { agent.cancel(); } catch (e) { /* ignore */ }
+        try { getSessionConnection(agent).cancel(); } catch (e) { /* ignore */ }
         await new Promise(r => setTimeout(r, 250));
         if (agent.processing) {
           res.status(503).json({ error: 'Agent is busy. Please try again in a moment.' });
@@ -321,6 +335,15 @@ export function createChatRouter(): Router {
         ? maybeAugmentChatInstruction(eng, sid, fullText, instruction)
         : instruction;
 
+      const openResume = sid && !retry
+        ? resolveOpenClarificationChatTurn(sid, augmentedInstruction ?? '', fullText)
+        : null;
+      if (openResume) {
+        agent.clearClarificationResumeState?.();
+      }
+      const turnUserText = openResume?.priorUserText ?? fullText;
+      const turnInstruction = openResume?.instruction ?? augmentedInstruction;
+
       // Persist the user message immediately so a mid-turn page refresh still shows it.
       if (sid && !retry) {
         persistMessageDirect(sid, 'user', fullText, { attachments });
@@ -348,7 +371,7 @@ export function createChatRouter(): Router {
       }
 
       const turn = turnRegistry.create(sid);
-      runAgentTurnAsync(agent, fullText, augmentedInstruction, retry, turn.turnId, sid, undefined, undefined, delegateCrewIds, crewSuggestionResolved, crewIntakeFromPicker, primaryCrewId, {
+      runAgentTurnAsync(agent, turnUserText, turnInstruction, retry, turn.turnId, sid, undefined, undefined, delegateCrewIds, crewSuggestionResolved, crewIntakeFromPicker, primaryCrewId, {
         res,
         ...(forceWebSearch ? { forceWebSearch: true } : {}),
         userMessagePersisted: true,
@@ -384,7 +407,7 @@ export function createChatRouter(): Router {
       if (!agent) { res.status(400).json({ error: 'no-session' }); return; }
       const sid = (eng.sessionManager.getActiveSession?.() as { id?: string } | null | undefined)?.id;
       if (sid) cancelActiveSessionTurn(sid);
-      agent.cancel();
+      getSessionConnection(agent).cancel();
       res.json({ ok: true });
     } catch (e) {
       getLogger().error('POST_API_CHAT_CANCEL', e instanceof Error ? e : String(e));    res.status(500).json({ error: 'cancel-failed' });
@@ -439,7 +462,7 @@ export function createChatRouter(): Router {
       const eng = getEngine();
       const agent = eng.agent;
       if (!agent) { res.status(400).json({ error: 'no-session' }); return; }
-      agent.cancel();
+      getSessionConnection(agent).cancel();
       await waitForIdle(agent);
       ensureSubscribed();
       const fullText = sanitizeForJson(text ?? '');
@@ -499,7 +522,7 @@ export function createChatRouter(): Router {
       const eng = getEngine();
       const agent = eng.agent;
       if (!agent) { res.status(400).json({ error: 'no-session' }); return; }
-      agent.cancel();
+      getSessionConnection(agent).cancel();
       await waitForIdle(agent);
       ensureSubscribed();
       const fullText = sanitizeForJson(text ?? '');
@@ -552,7 +575,7 @@ export function createChatRouter(): Router {
     }
   });
 
-  r.get('/api/chat/stream', (req, res) => {
+  r.get('/api/chat/stream', async (req, res) => {
     const eng = getEngine();
     let eventId = 0;
 
@@ -573,7 +596,11 @@ export function createChatRouter(): Router {
       } catch (e) { /* connection closed */ }
     };
 
-    sendEvent('connected', { timestamp: new Date().toISOString() });
+    const sessionId = eng.agent?.sessionId;
+    const generation = sessionId
+      ? await getSessionGenerationManager().getGeneration(sessionId)
+      : 0;
+    sendEvent('connected', { timestamp: new Date().toISOString(), generation, sessionId });
 
     // Subscribe to telemetry bus ONLY — agent events are already bridged to telemetry
     // in createAgent(). Subscribing to both would cause duplicate events.

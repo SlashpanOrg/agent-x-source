@@ -411,12 +411,16 @@ export function createSessionsRouter(): Router {
           checkpoints.push(...store.listCheckpoints(sid));
         }
       } catch (e) { /* skip */ }
+      const compactionArtifacts = (messages as Array<Record<string, unknown>>)
+        .map((m) => (m['metadata'] as Record<string, unknown> | undefined)?.compactionArtifact)
+        .filter(Boolean);
       const exportData = {
         sessionId: sid,
         exportedAt: new Date().toISOString(),
-        version: '1.0',
+        version: '1.1',
         messageCount: messages.length,
         messages,
+        compactionArtifacts,
         contextFiles,
         checkpoints,
       };

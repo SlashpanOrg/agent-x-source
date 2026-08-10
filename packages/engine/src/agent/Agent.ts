@@ -16,8 +16,9 @@ import type {
   StorageAdapter,
   ThinkingMode,
   OutputMode,
+  AdoptionAgentMessage,
 } from '@agentx/shared';
-import { FailoverReason, generateMessageId, getLogger, type ChannelKind, getConfigDir, formatClientSituationBlock, isMessagingChannel, formatQuestionnaireForMessagingChannel, shouldUseQuestionnaireClarification, type PermissionHandlerResult, type PermissionOutcomeRecord, parseChannelBindingFromSessionId, allowsCrewInvolvement, crewParticipationMode, deniesAutonomousCrewTools, THINKING_MODE_TOOL_BUDGET, THINKING_MODE_REASONING_EFFORT, THINKING_MODE_SKIP_RETRIEVAL, THINKING_MODE_SKIP_REFORMULATE, THINKING_MODE_SKIP_EXTRACT_MEMORIES, THINKING_MODE_ALLOW_DEEP_SEARCH, DEFAULT_THINKING_MODE, DEFAULT_OUTPUT_MODE, isValidThinkingMode, isValidOutputMode } from '@agentx/shared';
+import { FailoverReason, generateMessageId, getLogger, type ChannelKind, getConfigDir, formatClientSituationBlock, isMessagingChannel, formatQuestionnaireForMessagingChannel, shouldUseQuestionnaireClarification, type PermissionHandlerResult, type PermissionOutcomeRecord, parseChannelBindingFromSessionId, allowsCrewInvolvement, crewParticipationMode, deniesAutonomousCrewTools, THINKING_MODE_TOOL_BUDGET, THINKING_MODE_REASONING_EFFORT, THINKING_MODE_SKIP_RETRIEVAL, THINKING_MODE_SKIP_REFORMULATE, THINKING_MODE_SKIP_EXTRACT_MEMORIES, THINKING_MODE_ALLOW_DEEP_SEARCH, DEFAULT_THINKING_MODE, DEFAULT_OUTPUT_MODE, isValidThinkingMode, isValidOutputMode, isInterAgentMessagingEnabled, isSubagentAdmissionEnabled } from '@agentx/shared';
 import { summarizeToolAction, type PermissionOutcomeEmit } from '../services/tool/ToolPermissionService.js';
 import { Scope } from '../concurrency/Scope.js';
 import { getAttachmentService } from '../attachments/index.js';
@@ -74,7 +75,20 @@ import { EnhancedToolExecutor } from '../tools/EnhancedToolExecutor.js';
 import { registerPerformanceTuneTarget } from '../performance/PerformanceGovernor.js';
 import { ToolRegistry } from '../tools/ToolRegistry.js';
 import { createDefaultToolkit } from '../tools/toolkit.js';
-import { CommandRegistry } from '../commands/index.js';
+import { createDefaultRegistry } from '../commands/index.js';
+import { getHarnessService } from '../harness/HarnessService.js';
+import { reviewAutoRefine, trackTurnForAutoRefine } from '../harness/auto-refine.js';
+import { getGoalService } from '../goal/GoalService.js';
+import { maybeSyncGoalFromUserPrompt } from '../goal/goal-from-prompt.js';
+import { applyAdoptionTurnPolicy, clearAdoptionTurnPolicy } from '../adoption/adoption-turn-policy.js';
+import { CLARIFICATION_AWAITING_USER } from './ClarificationTurnPause.js';
+import { getExecutableSkillRegistry } from '../executable-skills/ExecutableSkillRegistry.js';
+import { getDurableTurnStore } from '../durable-turn/DurableTurnStore.js';
+import { getSessionGenerationManager } from '../session-generation/SessionGenerationManager.js';
+import { isEngineShuttingDown } from '../runtime/ShutdownGate.js';
+import { SessionAlreadyActiveError } from '../session-lease/errors.js';
+import { CompactionFileTracker } from './CompactionFileTracker.js';
+import { registerCompactionFileTracker, unregisterCompactionFileTracker } from './CompactionFileTrackerAccess.js';
 import { GitManager } from '../session/GitManager.js';
 import { BackgroundQueue } from '../session/BackgroundQueue.js';
 import { FileWatcher } from '../session/FileWatcher.js';
@@ -97,9 +111,17 @@ import { TurnFeedbackLogger, type TurnOutcome } from './TurnFeedbackLogger.js';
 import { CACHE_BOUNDARY_MARKER } from '../communication/prompt/PromptComposer.js';
 import { DecisionEngine } from './DecisionEngine.js';
 import type { DecisionResult } from './DecisionEngine.js';
+import { profileRequest } from './request-profile.js';
 import { parseKbMentionSourceIds, runTurnJourney } from './TurnJourney.js';
 import type { KbDocumentTurnPolicy } from '../knowledge-base/kb-document-access-guard.js';
 import { AgentBus, getAgentBus } from './AgentBus.js';
+import { SteerMessageHandler } from './SteerMessageHandler.js';
+import {
+  deliverInterAgentMessage,
+  processPendingInterAgentMessages,
+  type InterAgentDeliveryContext,
+} from '../inter-agent-messaging/InterAgentMessageDelivery.js';
+import { incrementAdoptionMetric } from '../adoption/adoption-metrics.js';
 import { SpecialistRegistry } from './SpecialistRegistry.js';
 import type { SpecialistType } from './SpecialistRegistry.js';
 import { SkillGenerator } from './SkillGenerator.js';
@@ -158,7 +180,7 @@ import {
   type WebSearchTurnPolicy,
 } from '../search/web-search-policy.js';
 import { SessionRunner } from '../session/SessionRunner.js';
-import { getLoadingSteps, generateDiff, modelMessageContentToText as modelMessageContentToTextHelper, estimateToolSchemaChars as estimateToolSchemaCharsHelper, toFriendlyError as toFriendlyErrorHelper, detectTaskType as detectTaskTypeHelper, checkConnectivity as checkConnectivityHelper, buildIdentityBlock as buildIdentityBlockHelper, simpleComplete as simpleCompleteHelper, endSession as endSessionHelper, getHealth as getHealthHelper, initializeDiagnosticsAsync as initializeDiagnosticsAsyncHelper, research as researchHelper, compactContext as compactContextHelper, tagCrewPrivateAssistant as tagCrewPrivateAssistantHelper, buildLinkedContextPromptBlock as buildLinkedContextPromptBlockHelper, getProviderCredentials as getProviderCredentialsHelper, getProviderFactoryOptions as getProviderFactoryOptionsHelper, getUserTimezone as getUserTimezoneHelper, getUtcOffset as getUtcOffsetHelper, type ConnectivityContext, type SimpleCompleteContext, type SessionLifecycleContext, type HealthContext, type DiagnosticsContext, type ResearchContext, type CompactContext, type CrewPrivateContext, type LinkedContextContext, type ProviderCredentialsContext, type TimezoneContext } from './agent-helpers.js';
+import { getLoadingSteps, generateDiff, modelMessageContentToText as modelMessageContentToTextHelper, estimateToolSchemaChars as estimateToolSchemaCharsHelper, toFriendlyError as toFriendlyErrorHelper, detectTaskType as detectTaskTypeHelper, checkConnectivity as checkConnectivityHelper, buildIdentityBlock as buildIdentityBlockHelper, simpleComplete as simpleCompleteHelper, endSession as endSessionHelper, getHealth as getHealthHelper, initializeDiagnosticsAsync as initializeDiagnosticsAsyncHelper, research as researchHelper, compactContext as compactContextHelper, findLatestCompactionFileSet, tagCrewPrivateAssistant as tagCrewPrivateAssistantHelper, buildLinkedContextPromptBlock as buildLinkedContextPromptBlockHelper, getProviderCredentials as getProviderCredentialsHelper, getProviderFactoryOptions as getProviderFactoryOptionsHelper, getUserTimezone as getUserTimezoneHelper, getUtcOffset as getUtcOffsetHelper, type ConnectivityContext, type SimpleCompleteContext, type SessionLifecycleContext, type HealthContext, type DiagnosticsContext, type ResearchContext, type CompactContext, type CrewPrivateContext, type LinkedContextContext, type ProviderCredentialsContext, type TimezoneContext } from './agent-helpers.js';
 
 import {
   superviseCrewMission as superviseCrewMissionHelper,
@@ -261,6 +283,8 @@ export interface AgentOptions {
   thinkingMode?: import('@agentx/shared').ThinkingMode;
   /** Output mode for this turn — controls response verbosity and format. */
   outputMode?: import('@agentx/shared').OutputMode;
+  /** Lease owner namespace (e.g. `ui:web`, `channel:telegram`) for session lease attribution. */
+  leaseOwnerNamespace?: string;
 }
 
 /** Parse Yes/No from clarify-first questionnaire answers (`Shall I …?: Yes`). */
@@ -302,6 +326,8 @@ export class Agent {
   private pendingInstruction: string | null = null;
   /** User choice when starting a turn with leftover incomplete TASKS. */
   private todoDispositionThisTurn: 'continue' | 'skip' | 'defer' | null = null;
+  private goalContinuationThisTurn = false;
+  private durableTurnFailedThisTurn = false;
   private pendingVoiceMerge: { messageId: string; prefixContent: string } | null = null;
   private pendingDelegateCrewIds: string[] | null = null;
   private turnWebSearchPolicy: WebSearchTurnPolicy = 'off';
@@ -497,13 +523,15 @@ export class Agent {
   /** Set when clarification wait was aborted (e.g. turn timeout) — forces resume path on next answer. */
   private clarificationStale = false;
   private activeClarificationResume: {
-    kind: 'questionnaire' | 'crew_intake';
+    kind: 'questionnaire' | 'crew_intake' | 'open_clarification';
     questionnaireMessageId: string;
     userText?: string;
     delegateCrewIds?: string[];
     primaryCrewId?: string;
     crewIntakeFromPicker?: boolean;
   } | null = null;
+  /** Original user text for the in-flight turn (clarification resume). */
+  private pendingTurnUserText = '';
   private _missionEventSeq = 0;
   private missionContextProvider?: () => { revision: number; block: string };
   private lastMissionContextRevision = -1;
@@ -609,7 +637,12 @@ export class Agent {
   private _commandQueue: CommandQueue | null = null;
   public get commandQueue(): CommandQueue { if (!this._commandQueue) this._commandQueue = new CommandQueue(); return this._commandQueue; }
   private _runStateMgr: RunStateManager | null = null;
-  public get runStateMgr(): RunStateManager { if (!this._runStateMgr) this._runStateMgr = new RunStateManager(); return this._runStateMgr; }
+  public get runStateMgr(): RunStateManager {
+    if (!this._runStateMgr) {
+      this._runStateMgr = new RunStateManager(this.options.leaseOwnerNamespace);
+    }
+    return this._runStateMgr;
+  }
   private _telegramConnected = false;
   private _telegramChatId: number | null = null;
   /** Active inbound messaging channel for the current turn (telegram/slack/discord/email). */
@@ -648,6 +681,11 @@ export class Agent {
   }
   public contextTracker!: ContextTracker;
   private compactionMarkerIndices: number[] = [];
+  private compactionFileTracker = new CompactionFileTracker();
+  private compactionInFlight = false;
+  private steerHandler: SteerMessageHandler;
+  private followUpAgentMessages: string[] = [];
+  private interAgentAutoBlocks: string[] = [];
   sessionLogger: SessionLogger | null = null;
   onTokenLog: ((opts: { inputTokens: number; outputTokens: number; costUsd: number; crewId?: string }) => void) | null = null;
   onSessionEvent: ((event: SessionEvent) => void) | null = null;
@@ -689,6 +727,11 @@ export class Agent {
     return this.clarificationResolve != null;
   }
 
+  /** Session is waiting on the user (open question or questionnaire in flight). */
+  isSessionPausedForUserInput(): boolean {
+    return this.isAwaitingClarification() || this.activeClarificationResume != null;
+  }
+
   /** Abort a pending questionnaire wait (e.g. turn timeout). Next answer uses the resume path. */
   abortClarificationWait(): void {
     if (!this.clarificationReject) return;
@@ -700,7 +743,7 @@ export class Agent {
   }
 
   getClarificationResumeState(): {
-    kind: 'questionnaire' | 'crew_intake';
+    kind: 'questionnaire' | 'crew_intake' | 'open_clarification';
     messageId: string;
     questionnaireMessageId?: string;
     userText?: string;
@@ -841,37 +884,17 @@ export class Agent {
     }
 
     this.activeClarificationResume = {
-      kind: this.activeClarificationResume?.kind ?? 'questionnaire',
+      kind: 'open_clarification',
       questionnaireMessageId: messageId,
-      userText: this.activeClarificationResume?.userText,
+      userText: this.pendingTurnUserText || this.activeClarificationResume?.userText,
       delegateCrewIds: this.activeClarificationResume?.delegateCrewIds,
       primaryCrewId: this.activeClarificationResume?.primaryCrewId,
       crewIntakeFromPicker: this.activeClarificationResume?.crewIntakeFromPicker,
     };
     this.emit({ type: 'message_received', message: clarMsg, elapsed: 0 });
+    this.emit({ type: 'clarification_paused', messageId });
 
-    let response: string;
-    try {
-      response = await new Promise<string>((resolve, reject) => {
-        this.clarificationResolve = resolve;
-        this.clarificationReject = reject;
-      });
-    } finally {
-      this.clarificationResolve = null;
-      this.clarificationReject = null;
-    }
-    this.activeClarificationResume = null;
-
-    if (response && response !== '(skipped)') {
-      this.messages.push({ role: 'user', content: response });
-    }
-
-    this.turnState.setPhase('running', 'resuming');
-    this.emit({
-      type: 'loading_start',
-      stage: this.options.promptProfile === 'crew_private' ? 'crew_private' : 'thinking',
-    });
-    return response;
+    throw new Error(CLARIFICATION_AWAITING_USER);
   }
 
   private async waitForQuestionnaireResponse(questionnaire: QuestionnairePayload): Promise<string> {
@@ -1034,7 +1057,9 @@ export class Agent {
         ? { kind: 'crew_private', hostCrewId: crewHost.id, hostCrewName: crewHost.name, hostCrewCallsign: crewHost.callsign }
         : undefined,
     );
+    registerCompactionFileTracker(this.sessionId, this.compactionFileTracker);
     this.eventBus = options.eventBus ?? new AgentEventBus();
+    this.steerHandler = new SteerMessageHandler(this.eventBus);
     this._onPart = options.onPart;
 
     // ─── Initialize Autonomous Diagnostics System ───
@@ -1304,7 +1329,7 @@ export class Agent {
 
     // Initialize user command registry (global singleton, not stored on `this`)
     {
-      const cmdRegistry = new CommandRegistry();
+      const cmdRegistry = createDefaultRegistry();
       const ucr = new UserCommandRegistry(cmdRegistry);
       setUserCommandRegistryInstance(ucr);
       const userCmds = options.config['commands'] as UserCommandConfig[] | undefined;
@@ -1680,12 +1705,40 @@ export class Agent {
           messageId: exec.getInboundSourceMessageId() ?? undefined,
         }
       : undefined;
+    const fireAndForget =
+      !!background && !!(this.options.channelSession || channelContext?.channel);
+
+    if (isSubagentAdmissionEnabled() && fireAndForget) {
+      const admitted = this.subAgents.spawnAdmitted(
+        instruction,
+        toolsList ?? [],
+        timeout,
+        undefined,
+        channelContext,
+      );
+      if (admitted.mode === 'admitted' && admitted.handle) {
+        return {
+          success: true,
+          output: JSON.stringify({
+            admitted: true,
+            taskId: admitted.handle.taskId,
+            childSessionId: admitted.handle.childSessionId,
+            status: admitted.handle.status,
+            message: 'Sub-agent admitted — completion arrives via subagent_admitted_complete event.',
+          }),
+          elapsed: 0,
+          agentId: admitted.handle.taskId,
+        };
+      }
+      if (admitted.mode === 'blocking' && admitted.result) {
+        return { success: false, output: admitted.result, elapsed: 0 };
+      }
+    }
+
     const task = this.subAgents.spawn(instruction, toolsList ?? [], timeout, this.maxSubAgents, undefined, !!background, channelContext);
     // On desktop chat the parent ALWAYS waits for the child to finish
     // so it can merge results and continue the turn. Fire-and-forget only when the
     // user is on a messaging channel (or inbound channel context) and asked not to wait.
-    const fireAndForget =
-      !!background && !!(this.options.channelSession || channelContext?.channel);
     if (fireAndForget) {
       this.emit({ type: 'task_backgrounded', taskId: task.id } as EngineEvent);
       return {
@@ -1886,10 +1939,18 @@ export class Agent {
     return r;
   }
 
-  async sendMessage(content: string, options?: { instruction?: string; userId?: string; channelId?: string; sourceChannel?: string; sourceMessageId?: string; retry?: boolean; delegateCrewIds?: string[]; crewSuggestionResolved?: boolean; crewIntakeFromPicker?: boolean; primaryCrewId?: string; forceWebSearch?: boolean; voiceTurn?: boolean; userMessagePersisted?: boolean; voiceContinuation?: boolean; voiceMergeIntoMessage?: { messageId: string; prefixContent: string }; resumeCrewIntake?: { originalUserText: string; intakeAnswer: string; delegateCrewIds: string[]; primaryCrewId?: string }; clientSituation?: ClientSituation | null; attachments?: import('@agentx/shared').TurnAttachment[]; /** How to treat leftover incomplete TASKS at turn start. */ todoDisposition?: 'continue' | 'skip' | 'defer'; speaker?: VoiceSessionSpeaker | null; /** Thinking mode — controls tool budget, reasoning depth, retrieval. */ thinkingMode?: ThinkingMode; /** Output mode — controls response verbosity and format. */ outputMode?: OutputMode }): Promise<Message> {
+  async sendMessage(content: string, options?: { instruction?: string; userId?: string; channelId?: string; sourceChannel?: string; sourceMessageId?: string; retry?: boolean; delegateCrewIds?: string[]; crewSuggestionResolved?: boolean; crewIntakeFromPicker?: boolean; primaryCrewId?: string; forceWebSearch?: boolean; voiceTurn?: boolean; userMessagePersisted?: boolean; voiceContinuation?: boolean; voiceMergeIntoMessage?: { messageId: string; prefixContent: string }; resumeCrewIntake?: { originalUserText: string; intakeAnswer: string; delegateCrewIds: string[]; primaryCrewId?: string }; clientSituation?: ClientSituation | null; attachments?: import('@agentx/shared').TurnAttachment[]; /** How to treat leftover incomplete TASKS at turn start. */ todoDisposition?: 'continue' | 'skip' | 'defer'; speaker?: VoiceSessionSpeaker | null; /** Thinking mode — controls tool budget, reasoning depth, retrieval. */ thinkingMode?: ThinkingMode; /** Output mode — controls response verbosity and format. */ outputMode?: OutputMode; goalContinuation?: boolean }): Promise<Message> {
     const startTime = Date.now();
+    if (isEngineShuttingDown()) {
+      throw new Error('server_shutting_down');
+    }
+    if (options?.userMessagePersisted === false && this.isSessionPausedForUserInput()) {
+      getLogger().warn('AGENT', `Skipping internal turn while session ${this.sessionId} awaits user input`);
+      throw new Error('session_awaiting_user_input');
+    }
     const turnId = `turn-${startTime}`;
     this.currentTurnId = turnId;
+    this.syncDurableTurnStart(turnId);
 
     return withSpan('agent.turn', 'agent', async (span) => {
       span.setAttribute('trace.kind', 'turn');
@@ -1914,12 +1975,20 @@ export class Agent {
       this.subAgents.ingestBackgroundResultsForSession(this.sessionId);
       this.toolExecutor?.setTurnAborted(false);
 
+      if (isInterAgentMessagingEnabled()) {
+        this.interAgentAutoBlocks = [];
+        await this.processInboundInterAgentMessages();
+      }
+
       // ─── UNIFIED: Ensure single session run + enqueue for concurrency ───
       try {
-        this.runStateMgr.ensureRunning(this.sessionId);
+        await this.runStateMgr.ensureRunning(this.sessionId);
       } catch (e) {
         this.lifecycle.forceTransition('idle');
         this.scope = null;
+        if (e instanceof SessionAlreadyActiveError) {
+          throw e;
+        }
         throw e;
       }
       void this.commandQueue.enqueue(this.sessionId, {
@@ -1985,6 +2054,7 @@ export class Agent {
 
     // Store the per-message instruction for injection during completion (not in history)
     this.pendingInstruction = options?.instruction || null;
+    this.mergeInterAgentAutoBlocksIntoPendingInstruction();
     this.pendingVoiceMerge = options?.voiceMergeIntoMessage ?? null;
     this.pendingDelegateCrewIds = options?.delegateCrewIds?.length ? [...options.delegateCrewIds] : null;
     if (options?.clientSituation) {
@@ -1993,6 +2063,7 @@ export class Agent {
 
     // Leftover TASKS from a prior turn — honor the user's pre-send disposition.
     this.todoDispositionThisTurn = options?.todoDisposition ?? null;
+    this.goalContinuationThisTurn = options?.goalContinuation === true;
 
     // ─── Turn modes: thinking effort + output verbosity ───
     // If the caller explicitly provides a mode, use it. Otherwise preserve the
@@ -2010,6 +2081,28 @@ export class Agent {
       this.currentOutputMode = DEFAULT_OUTPUT_MODE;
     }
     getLogger().info('AGENT', `Turn modes: thinking=${this.currentThinkingMode}, output=${this.currentOutputMode}`);
+
+    if (!options?.goalContinuation) {
+      applyAdoptionTurnPolicy({
+        sessionId: this.sessionId,
+        userText: cleanContent,
+        goalContinuation: false,
+        sourceChannel: options?.sourceChannel,
+        voiceTurn: options?.voiceTurn === true,
+        thinkingMode: this.currentThinkingMode,
+        outputMode: this.currentOutputMode,
+      });
+      maybeSyncGoalFromUserPrompt(this.sessionId, cleanContent, this.currentThinkingMode);
+    } else {
+      applyAdoptionTurnPolicy({
+        sessionId: this.sessionId,
+        userText: cleanContent,
+        goalContinuation: true,
+        thinkingMode: this.currentThinkingMode,
+        outputMode: this.currentOutputMode,
+      });
+    }
+
     if (this.todoDispositionThisTurn === 'skip') {
       this.todoManager.clear();
     } else if (this.todoDispositionThisTurn === 'defer' && this.todoManager.hasIncomplete()) {
@@ -2146,8 +2239,14 @@ export class Agent {
         : retryHint;
     }
 
-    // Add user message (clean, without instruction)
-    if (!options?.retry && !options?.voiceContinuation) {
+    // Add user message (clean, without instruction) — only for real user turns
+    const realUserTurn =
+      !options?.retry
+      && !options?.voiceContinuation
+      && !options?.goalContinuation
+      && cleanContent.trim().length > 0;
+
+    if (realUserTurn) {
       const turnBoundary = this.messages.length > 0
         ? `\n[TURN ${this.currentTurnId} — treat prior messages as context only unless the user references them]`
         : '';
@@ -2156,11 +2255,17 @@ export class Agent {
         content: cleanContent + turnBoundary,
         attachments: resolvedAttachments,
       } as CompletionMessage);
-    }
-
-    // Record in context tracker
-    if (!options?.voiceContinuation) {
       this.contextTracker.record('user', cleanContent);
+      this.pendingTurnUserText = cleanContent;
+    } else if (!options?.voiceContinuation && options?.instruction) {
+      this.pendingInstruction = this.pendingInstruction
+        ? `${this.pendingInstruction}\n\n${options.instruction}`
+        : options.instruction;
+    } else if (!options?.voiceContinuation && !options?.goalContinuation && cleanContent.trim()) {
+      // Internal turn text (no user bubble) — treat as instruction
+      this.pendingInstruction = this.pendingInstruction
+        ? `${this.pendingInstruction}\n\n${cleanContent}`
+        : cleanContent;
     }
 
     const messageMetadata: Record<string, unknown> = {};
@@ -2187,11 +2292,9 @@ export class Agent {
       ...(Object.keys(messageMetadata).length > 0 ? { metadata: messageMetadata } : {}),
     } as Message;
 
-    if (!options?.retry && !options?.voiceContinuation) {
-      if (!options?.userMessagePersisted) {
-        this.persistUserMessage(userMessage);
-        this.emit({ type: 'message_sent', message: userMessage });
-      }
+    if (realUserTurn && !options?.userMessagePersisted) {
+      this.persistUserMessage(userMessage);
+      this.emit({ type: 'message_sent', message: userMessage });
       const userTokens = estimateTokens(cleanContent);
       this.tokenTracker.addTokenUsage(userTokens, 0);
       const ctxWindow = this.getContextWindow();
@@ -2263,6 +2366,7 @@ export class Agent {
     const decision = this.decisionEngine.classify(cleanContent, conversationLen, {
       lastAssistantMessage: typeof lastAssistantEntry?.content === 'string' ? lastAssistantEntry.content : undefined,
       voiceTurn: options?.voiceTurn === true,
+      goalActive: getGoalService().getStatus(this.sessionId).status === 'active',
     });
 
     // ─── MODEL CAPABILITY CHECK: warn if model lacks function calling for task intents ───
@@ -2506,8 +2610,12 @@ export class Agent {
     this.lastRagResults = [];
     this.lastJourneyBlock = '';
     {
+      const requestProfile = profileRequest(content);
+      const referencesLocalContext = /@(?:kb|template)\[/.test(content) || (options?.attachments?.length ?? 0) > 0;
       const skipJourney =
-        this.currentDecision.skipRag === true || this.currentDecision.skipTools === true;
+        this.currentDecision.skipRag === true
+        || this.currentDecision.skipTools === true
+        || (requestProfile.isConsumerRequest && !referencesLocalContext);
       const toolIds = this.toolRegistry?.list().map((t) => t.id) ?? [];
       try {
         const journey = await runTurnJourney({
@@ -2654,11 +2762,14 @@ export class Agent {
       this.emitTurnState('done');
       this.emit({ type: 'loading_end' });
 
+      void this.maybeEnqueueFollowUpAgentMessages();
+
       // Log turn outcome for feedback loop
       this.logTurnOutcome(startTime, true, content);
 
       return assistantMessage;
     } catch (error) {
+      this.durableTurnFailedThisTurn = true;
       this.stopTurnHeartbeat();
       this.turnState.cancel();
       this.emitTurnState('cancelled');
@@ -2737,6 +2848,10 @@ export class Agent {
       });
       throw error;
     } finally {
+      this.syncDurableTurnFinish(
+        this.userCancelledTurn ? 'cancelled' : this.durableTurnFailedThisTurn ? 'error' : 'complete',
+      );
+      this.durableTurnFailedThisTurn = false;
       this.activeInboundChannel = null;
       this.toolExecutor?.setMessagingPermissionMode(false);
       this.toolExecutor?.setInboundSourceChannel(null);
@@ -2745,11 +2860,14 @@ export class Agent {
       this.turnWebSearchPolicy = 'off';
       this.pendingVoiceMerge = null;
       this.todoDispositionThisTurn = null;
+      this.goalContinuationThisTurn = false;
+      clearAdoptionTurnPolicy();
       this.toolExecutor?.setTurnAborted(false);
       this.toolExecutor?.setThirdPartyTurnPolicy(null);
       this.toolExecutor?.setKbDocumentTurnPolicy(null);
       this.userCancelledTurn = false;
       this.completeTurnTelemetry(startTime);
+      trackTurnForAutoRefine(this);
       this.lifecycle.forceTransition('idle');
       this.scope = null;
       this.runStateMgr.release(this.sessionId);
@@ -3452,7 +3570,8 @@ export class Agent {
       // request never got a full checklist. Traditional coded loop — not prompt-only.
       // Skip when the user deferred/skipped leftover todos for a new question.
       const skipCompletionGate = this.todoDispositionThisTurn === 'defer'
-        || this.todoDispositionThisTurn === 'skip';
+        || this.todoDispositionThisTurn === 'skip'
+        || this.goalContinuationThisTurn;
       if (!this.userCancelledTurn && !this.options.delegatedWorker && !this.isDelegatedWorker && !skipCompletionGate) {
         let completionRound = 0;
         while (completionRound < MAX_COMPLETION_CONTINUATIONS) {
@@ -3460,6 +3579,7 @@ export class Agent {
             todos: this.todoManager.getItems(),
             userText: lastUserText,
             completionRound,
+            exemptGoalContinuation: this.goalContinuationThisTurn,
           });
           if (!gate.block) break;
 
@@ -3472,6 +3592,7 @@ export class Agent {
             todos: this.todoManager.getItems(),
             userText: lastUserText,
             completionRound,
+            exemptGoalContinuation: this.goalContinuationThisTurn,
           });
           if (!gateAfterWait.block) break;
 
@@ -3671,6 +3792,17 @@ export class Agent {
           tokenCount: 0,
         };
       }
+      if (error instanceof Error && error.message === CLARIFICATION_AWAITING_USER) {
+        return {
+          id: '__clarify__',
+          sessionId: this.sessionId,
+          role: 'assistant',
+          content: '',
+          toolCalls: null,
+          createdAt: new Date().toISOString(),
+          tokenCount: 0,
+        };
+      }
       if (error instanceof Error && (error.name === 'NoOutputGeneratedError' || error.message.includes('No output generated'))) {
         const toolSummary = this.toolCallLogForReflection
           .map((t) => `- ${t.name}: ${t.success ? 'OK' : 'FAILED'}`)
@@ -3853,7 +3985,128 @@ export class Agent {
       bypassPermissions: this.bypassPermissions,
       thinkingMode: this.currentThinkingMode,
       outputMode: this.currentOutputMode,
+      getHarnessPromptBlock: () => getHarnessService().getPromptBlock(this.sessionId),
+      getGoalPromptBlock: () => getGoalService().getPromptBlock(this.sessionId),
+      getExecutableSkillsPromptBlock: () => {
+        const registry = getExecutableSkillRegistry();
+        if (!registry.isEnabled()) return '';
+        if (registry.list().length === 0) {
+          registry.refresh(this.scopePath ?? this.config.workspacePath);
+        }
+        return registry.getMetadataPromptBlock();
+      },
     };
+  }
+
+  isCompactionInFlight(): boolean {
+    return this.compactionInFlight;
+  }
+
+  private syncDurableTurnStart(turnId: string): void {
+    const durable = getDurableTurnStore();
+    if (!durable.isEnabled()) return;
+    void getSessionGenerationManager()
+      .getGeneration(this.sessionId)
+      .then((generation) => durable.create(this.sessionId, generation, turnId))
+      .then(() => durable.updateStatus(turnId, 'running'))
+      .catch(() => { /* best-effort */ });
+  }
+
+  private syncDurableTurnFinish(status: 'complete' | 'error' | 'cancelled'): void {
+    const durable = getDurableTurnStore();
+    if (!durable.isEnabled() || !this.currentTurnId) return;
+    void durable
+      .updateStatus(this.currentTurnId, status, this.partialTurnContent || undefined)
+      .catch(() => { /* best-effort */ });
+  }
+
+  async refineHarness(instructions?: string, scope: 'local' | 'global' = 'local'): Promise<{ ok: boolean; error?: string }> {
+    const trajectory = this.messages.slice(-24).map((m) => `${m.role}: ${String(m.content ?? '').slice(0, 500)}`).join('\n');
+    const result = await getHarnessService().refine(this.sessionId, {
+      scope,
+      instructions,
+      trajectorySummary: trajectory,
+      isCompactionInFlight: () => this.isCompactionInFlight(),
+      complete: (prompt) => this.runSimpleComplete(prompt),
+    });
+    return { ok: result.ok, error: result.error };
+  }
+
+  private maybeEnqueueFollowUpAgentMessages(): void {
+    if (!this.followUpAgentMessages.length || this.lifecycle.isProcessing()) return;
+    if (this.isSessionPausedForUserInput()) return;
+    const prompt = this.followUpAgentMessages.join('\n\n');
+    this.followUpAgentMessages = [];
+    setTimeout(() => {
+      if (this.lifecycle.isProcessing() || this.isSessionPausedForUserInput()) return;
+      void this.sendMessage('', { userMessagePersisted: false, instruction: prompt });
+    }, 400);
+  }
+
+  private mergeInterAgentAutoBlocksIntoPendingInstruction(): void {
+    if (!this.interAgentAutoBlocks.length) return;
+    const block = `[INTER_AGENT_MESSAGES]\n${this.interAgentAutoBlocks.join('\n---\n')}\n[/INTER_AGENT_MESSAGES]`;
+    this.pendingInstruction = this.pendingInstruction
+      ? `${this.pendingInstruction}\n\n${block}`
+      : block;
+    this.interAgentAutoBlocks = [];
+  }
+
+  private buildInterAgentDeliveryContext(): InterAgentDeliveryContext {
+    return {
+      sessionId: this.sessionId,
+      isProcessing: () => this.lifecycle.isProcessing(),
+      appendAutoBlock: (text) => {
+        this.interAgentAutoBlocks.push(text);
+      },
+      queueFollowUp: (text) => {
+        this.followUpAgentMessages.push(text);
+      },
+      steer: (instruction) => {
+        if (!this.steerHandler.handleSessionSteer(this.sessionId, instruction)) return false;
+        if (this.lifecycle.isProcessing()) {
+          this.userCancelledTurn = true;
+          this.cancel();
+          setTimeout(() => {
+            void this.sendMessage('', { userMessagePersisted: false, instruction });
+          }, 200);
+        }
+        return true;
+      },
+      emitAgentMessage: (msg) => {
+        incrementAdoptionMetric('agent_messages_delivered_total');
+        this.emit({
+          type: 'agent_message',
+          message: msg as unknown as Record<string, unknown>,
+        });
+      },
+    };
+  }
+
+  private async processInboundInterAgentMessages(): Promise<void> {
+    try {
+      await processPendingInterAgentMessages(this.buildInterAgentDeliveryContext());
+    } catch (e) {
+      getLogger().warn('INTER_AGENT', e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async deliverInterAgentMessage(msg: AdoptionAgentMessage): Promise<void> {
+    if (!isInterAgentMessagingEnabled()) return;
+    const wasProcessing = this.lifecycle.isProcessing();
+    await deliverInterAgentMessage(this.buildInterAgentDeliveryContext(), msg);
+    if (!wasProcessing) {
+      if (msg.deliveryMode === 'follow_up') {
+        this.maybeEnqueueFollowUpAgentMessages();
+      } else if (msg.deliveryMode !== 'steer') {
+        this.mergeInterAgentAutoBlocksIntoPendingInstruction();
+        const instr = this.pendingInstruction;
+        if (instr) {
+          this.pendingInstruction = null;
+          void this.sendMessage('', { userMessagePersisted: false, instruction: instr });
+        }
+      }
+    }
   }
 
   private buildLinkedContextPromptBlock(): string | null {
@@ -4199,6 +4452,7 @@ export class Agent {
 
   /** End the session — clear ephemeral turn context. */
   endSession(): void {
+    unregisterCompactionFileTracker(this.sessionId);
     endSessionHelper(this._sessionLifecycleCtx());
   }
 
@@ -4211,6 +4465,10 @@ export class Agent {
   /**
    * Simple non-streaming completion for internal tasks (summarization, memory extraction).
    */
+  async runSimpleComplete(prompt: string): Promise<string> {
+    return this.simpleComplete(prompt);
+  }
+
   private async simpleComplete(prompt: string): Promise<string> {
     return simpleCompleteHelper(
       { provider: this.provider, config: this.config } as SimpleCompleteContext,
@@ -4280,6 +4538,34 @@ export class Agent {
         setCompactionCount: (n) => { this._compactionCount = n; },
         sessionManager: this.sessionManager,
         sessionId: this.sessionId,
+        isRefineInFlight: () => getHarnessService().isRefineInFlight(this.sessionId),
+        getCompactionFileSet: () => {
+          const snap = this.compactionFileTracker.snapshot();
+          if (snap.filesRead.length || snap.filesModified.length) return snap;
+          const fromHistory = findLatestCompactionFileSet(this.messages as never);
+          if (fromHistory) {
+            this.compactionFileTracker.restore(fromHistory);
+            return this.compactionFileTracker.snapshot();
+          }
+          return snap;
+        },
+        onCompactionComplete: (fileSet) => {
+          this.emit({
+            type: 'compaction_artifact',
+            filesRead: fileSet.filesRead,
+            filesModified: fileSet.filesModified,
+          });
+          this.compactionFileTracker.clear();
+          reviewAutoRefine(this, 'compaction');
+        },
+        onCompactionArtifact: (artifact) => {
+          try {
+            this.sessionManager?.persistSessionFields?.(this.sessionId, {
+              lastCompactionArtifact: artifact,
+            });
+          } catch { /* best-effort */ }
+        },
+        setCompactionInFlight: (v) => { this.compactionInFlight = v; },
       } as CompactContext,
       promptEstimate,
     );

@@ -55,6 +55,7 @@ export function healOrphanedUserMessages(
         inserted = {
           ...snapUser,
           id: snapUser['id'] ?? `healed-user-${String(msg['id'] ?? i)}`,
+          metadata: snapUser['metadata'] ?? msg['metadata'],
         };
         break;
       }

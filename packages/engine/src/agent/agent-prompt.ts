@@ -41,6 +41,9 @@ import {
   createMemoryContextSection,
   createSystemOverrideSection,
   createTurnModeSection,
+  createHarnessSection,
+  createGoalSection,
+  createExecutableSkillsSection,
   type SectionContext,
 } from '../prompt/assembly/index.js';
 import { createDocumentStudioSection } from './document-studio-prompts.js';
@@ -154,6 +157,9 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createTaskPanelSection())
       .register(createActiveTodosSection(secCtx))
       .register(createMemoryContextSection(secCtx))
+      .register(createHarnessSection(secCtx))
+      .register(createGoalSection(secCtx))
+      .register(createExecutableSkillsSection(secCtx))
       .register(createInstructionsSection(secCtx.scopePath));
     if (systemOverride) {
       ctx.promptAssembly.register(createSystemOverrideSection(systemOverride));
@@ -177,6 +183,9 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createTaskPanelSection())
       .register(createActiveTodosSection(secCtx))
       .register(createMemoryContextSection(secCtx))
+      .register(createHarnessSection(secCtx))
+      .register(createGoalSection(secCtx))
+      .register(createExecutableSkillsSection(secCtx))
       .register(createInstructionsSection(secCtx.scopePath));
   } else {
     ctx.promptAssembly
@@ -211,6 +220,9 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createTaskPanelSection())
       .register(createActiveTodosSection(secCtx))
       .register(createMemoryContextSection(secCtx))
+      .register(createHarnessSection(secCtx))
+      .register(createGoalSection(secCtx))
+      .register(createExecutableSkillsSection(secCtx))
       .register(createInstructionsSection(secCtx.scopePath));
   }
 

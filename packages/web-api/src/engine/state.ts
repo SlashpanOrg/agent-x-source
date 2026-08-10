@@ -49,9 +49,12 @@ import {
   setDbMetricsSink,
   setSpanMetricsSink,
   type AgentMetricsApi,
+  setAdoptionDbPool,
+  runAdoptionStartupSweeps,
 } from '@agentx/engine';
 import type { AgentXConfig, TelemetryBus, StorageAdapter, ChannelBindingId, ChannelSessionBinding, ClientSituation } from '@agentx/shared';
 import {
+  configureAdoptionFromConfig,
   getDataDir,
   getLogger,
   resolveWorkspacePath,
@@ -149,6 +152,10 @@ export function applyPerformanceSettings(config: AgentXConfig | null): void {
   applyPerformanceGovernor(config?.performance);
 }
 
+export function applyAdoptionSettings(config: AgentXConfig | null): void {
+  configureAdoptionFromConfig(config);
+}
+
 /** @deprecated Use applyPerformanceSettings */
 export const applyRuntimeSettings = applyPerformanceSettings;
 
@@ -186,6 +193,7 @@ export function getEngine(): EngineState {
 
   syncLocalModelConfig(configManager);
   applyPerformanceSettings(loadedConfig);
+  applyAdoptionSettings(loadedConfig);
 
   const initialWorkspace = loadedConfig
     ? resolveWorkspacePath(loadedConfig.workspacePath)
@@ -199,6 +207,10 @@ export function getEngine(): EngineState {
   initLogCollector();
 
   const embeddedPgDefault = 'postgresql://agentx:agentx@127.0.0.1:3335/agentx';
+
+  function isEmbeddedPgConnectionString(conn: string): boolean {
+    return /(?:127\.0\.0\.1|localhost):3335\b/.test(conn);
+  }
   const pluginPgConnection = (() => {
     try {
       const cfg = pluginRegistry.getConfig('postgresql');
@@ -250,9 +262,14 @@ export function getEngine(): EngineState {
     getLogger().info('STORAGE', 'Deferred storage mode — waiting for setup wizard Postgres choice');
     storageAdapter = new DeferredStorageAdapter();
   } else {
+    const embeddedPg = isEmbeddedPgConnectionString(pgConnectionString);
+    const defaultPoolMax = embeddedPg ? 6 : 20;
+    if (embeddedPg && !process.env['AGENTX_OBS_PG_POOL_SIZE']) {
+      process.env['AGENTX_OBS_PG_POOL_SIZE'] = '1';
+    }
     pgAdapter = new PostgresStorageAdapter({
       connectionString: pgConnectionString,
-      max: loadedConfig?.postgres?.poolSize ?? 20,
+      max: loadedConfig?.postgres?.poolSize ?? defaultPoolMax,
       lazyHydrate,
       onProgress: reportStorageProgress,
       connectionTimeoutMillis: 30_000,
@@ -284,6 +301,10 @@ export function getEngine(): EngineState {
       await pgAdapter.connect();
       const pool = pgAdapter.getPool();
       if (pool) {
+        setAdoptionDbPool(pool);
+        void runAdoptionStartupSweeps().catch((e) => {
+          getLogger().warn('ADOPTION_STARTUP', e instanceof Error ? e.message : String(e));
+        });
         reportStorageProgress('Initializing neural memory fabric…');
         const fabric = new MemoryFabric(pool);
         await fabric.heal(reportStorageProgress);
@@ -555,6 +576,7 @@ export function setEngineDEK(dek: Buffer | null): void {
       if (normalized) {
         applyWebSearchConfigFromAgentConfig(state.configManager.load());
         applyPerformanceSettings(state.configManager.load());
+        applyAdoptionSettings(state.configManager.load());
       }
     } catch { /* not configured yet */ }
 

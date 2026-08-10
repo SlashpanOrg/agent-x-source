@@ -41,6 +41,12 @@ export interface SectionContext {
   sessionId?: string;
   /** Live TASKS checklist for planning (not just UI). */
   getTodos?: () => Array<{ id: number; title: string; status: string }>;
+  /** Continual harness supplemental block (when enabled). */
+  getHarnessPromptBlock?: () => string;
+  /** Active persistent goal block (when enabled). */
+  getGoalPromptBlock?: () => string;
+  /** Executable skill metadata block (when enabled). */
+  getExecutableSkillsPromptBlock?: () => string;
   /**
    * When true, incomplete todos are parked for a later turn — answer the new
    * user message only; do not resume or completion-gate the old checklist.
@@ -550,6 +556,22 @@ export function createCategoryOverlaySection(ctx: SectionContext): PromptSection
     finance: [
       '[CATEGORY_OVERLAY: finance]',
       'For finance/tax/calculation questions, compute the exact answer. State the formatted currency and then include the raw unformatted digits on their own: e.g., "The tax owed is $10,000." and on a new line "Raw: 10000". The message must contain the comma-free digits.',
+      'For personal or corporate finance, distinguish estimates from verified figures, state assumptions, and never execute a transfer, purchase, trade, booking, or other financial action without explicit confirmation.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    shopping: [
+      '[CATEGORY_OVERLAY: shopping]',
+      'For shopping requests, use live product/search data when available. Return a short ranked shortlist with price, rating/review evidence, retailer, and direct links. Avoid generic articles, duplicates, unsupported claims, and unnecessary follow-up questions.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    booking: [
+      '[CATEGORY_OVERLAY: booking]',
+      'For booking requests, search current availability and prices when tools are available. Clarify only details that materially change the result (such as dates, destination, or party size), then present concise options. Never finalize a reservation or payment without explicit confirmation.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    travel: [
+      '[CATEGORY_OVERLAY: travel]',
+      'For vacation and travel planning, infer sensible defaults and provide a practical itinerary with travel time, budget assumptions, and current links when relevant. Ask at most one focused clarification when a missing detail materially changes the plan.',
       '[/CATEGORY_OVERLAY]',
     ],
     marketing: [
@@ -1731,5 +1753,32 @@ export function createSystemOverrideSection(text: string): PromptSection<string>
     load: () => text,
     render: (t) => t,
     diff: () => null,
+  };
+}
+
+export function createHarnessSection(ctx: SectionContext): PromptSection<string> {
+  return {
+    key: 'core/harness',
+    load: () => ctx.getHarnessPromptBlock?.() ?? '',
+    render: (block) => (block ? `[CONTINUAL HARNESS]\n${block}\n[/CONTINUAL HARNESS]` : ''),
+    diff: (prev, current) => (prev === current ? null : current),
+  };
+}
+
+export function createGoalSection(ctx: SectionContext): PromptSection<string> {
+  return {
+    key: 'core/goal',
+    load: () => ctx.getGoalPromptBlock?.() ?? '',
+    render: (block) => (block ? `[ACTIVE GOAL]\n${block}\n[/ACTIVE GOAL]` : ''),
+    diff: (prev, current) => (prev === current ? null : current),
+  };
+}
+
+export function createExecutableSkillsSection(ctx: SectionContext): PromptSection<string> {
+  return {
+    key: 'core/executable-skills',
+    load: () => ctx.getExecutableSkillsPromptBlock?.() ?? '',
+    render: (block) => (block ? `[EXECUTABLE SKILLS]\n${block}\n[/EXECUTABLE SKILLS]` : ''),
+    diff: (prev, current) => (prev === current ? null : current),
   };
 }

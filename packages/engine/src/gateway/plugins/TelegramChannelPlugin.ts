@@ -16,6 +16,7 @@ import { VoiceService, convertWavToOggOpus, mergeVoiceConfig } from '../../voice
 import { mkdirSync, existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { sendViaSessionConnection } from '../../session-connection/channel-send.js';
 
 export class TelegramChannelPlugin implements ChannelPlugin {
   readonly id = 'telegram';
@@ -669,12 +670,12 @@ export class TelegramChannelPlugin implements ChannelPlugin {
       return await new Promise<Message>((resolve, reject) => {
         rejectRef = reject;
         scheduleTurnTimeout();
-        void agent.sendMessage(item.text, {
+        void sendViaSessionConnection(agent, item.text, {
           sourceChannel: 'telegram',
           channelId: String(item.chatId),
           sourceMessageId: item.platformMessageId != null ? String(item.platformMessageId) : undefined,
         })
-          .then(resolve)
+          .then((msg) => resolve(msg))
           .catch(reject);
       });
     } catch (err) {
@@ -823,6 +824,10 @@ export class TelegramChannelPlugin implements ChannelPlugin {
     switch (cmd) {
       case 'start':
         return null;
+
+      case 'refine':
+      case 'goal':
+        return 'Harness refine and goals are configured in the desktop/web Settings → Adoption tab. Telegram uses the linked session context but does not expose /refine or /goal commands in v1.';
 
       case 'help':
         return [
@@ -991,7 +996,7 @@ export class TelegramChannelPlugin implements ChannelPlugin {
 
       case 'retry': {
         if (this.agent.processing) return '⏳ Agent is still processing. Use /cancel first.';
-        void this.agent.sendMessage('[RETRY_LAST]').catch(() => {});
+        void sendViaSessionConnection(this.agent, '[RETRY_LAST]').catch(() => {});
         return '🔄 Retrying last message...';
       }
 

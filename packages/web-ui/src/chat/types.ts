@@ -17,7 +17,7 @@ export interface SubAgent {
   id: string;
   name: string;
   task: string;
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'error' | 'admitted';
   result?: string;
   toolCalls?: ToolCall[];
   kind?: 'sub_agent' | 'crew_worker';

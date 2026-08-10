@@ -14,6 +14,13 @@ export { FileWatcher } from './session/FileWatcher.js';
 export { BackgroundQueue } from './session/BackgroundQueue.js';
 export { InMemoryQueue } from './queue/InMemoryQueue.js';
 export { PgBossQueue } from './queue/PgBossQueue.js';
+export {
+  tryClaimAutomationTask,
+  releaseAutomationTaskClaim,
+  DEFAULT_JOB_CLAIM_TTL_MS,
+  type JobClaimResult,
+  type JobClaimPool,
+} from './queue/job-claim.js';
 export { JOB_NAMES } from './queue/job-names.js';
 export { registerNoOpJobWorkers } from './queue/workers/index.js';
 export { registerToolWorkers, createToolWorker } from './queue/workers/index.js';
@@ -100,6 +107,52 @@ export { OllamaProvider } from './providers/OllamaProvider.js';
 export { GoogleProvider } from './providers/GoogleProvider.js';
 export { LMStudioProvider } from './providers/LMStudioProvider.js';
 export { CommandParser, CommandRegistry, createDefaultRegistry } from './commands/index.js';
+export {
+  HarnessService,
+  HarnessFileStore,
+  getHarnessService,
+  setHarnessServiceInstance,
+  formatHarnessForPrompt,
+} from './harness/index.js';
+export { GoalService, getGoalService } from './goal/index.js';
+export { QualityGateRunner, getQualityGateRunner } from './quality-gates/index.js';
+export { DurableTurnStore, getDurableTurnStore } from './durable-turn/index.js';
+export {
+  SessionLeaseManager,
+  getSessionLeaseManager,
+  releaseAllSessionLeaseManagers,
+  SessionAlreadyActiveError,
+} from './session-lease/index.js';
+export { CommandJournal, getCommandJournal } from './command-journal/index.js';
+export { ExecutableSkillRegistry, getExecutableSkillRegistry } from './executable-skills/index.js';
+export {
+  runExecutableSkill,
+  discoverSkillPackages,
+  parseSkillMd,
+  SKILL_PRECEDENCE_ORDER,
+} from './executable-skills/index.js';
+export { ResidentSessionManager, getResidentSessionManager } from './resident/ResidentSessionManager.js';
+export type { ResidentSessionRecord, ResidentSessionStatus } from './resident/ResidentSessionManager.js';
+export type { SessionConnection, SessionSnapshot } from './session-connection/SessionConnection.js';
+export { InProcessSessionConnection, createInProcessSessionConnection } from './session-connection/InProcessSessionConnection.js';
+export { sendViaSessionConnection, cancelViaSessionConnection } from './session-connection/channel-send.js';
+export { SubAgentAdmissionManager, getSubAgentAdmissionManager } from './subagent-admission/index.js';
+export { InterAgentMessageService, getInterAgentMessageService } from './inter-agent-messaging/index.js';
+export {
+  SessionGenerationManager,
+  getSessionGenerationManager,
+  type SessionEventEnvelope,
+} from './session-generation/index.js';
+export { incrementAdoptionMetric, getAdoptionMetrics } from './adoption/adoption-metrics.js';
+export {
+  configureAdoptionFromConfig,
+  DEFAULT_ADOPTION_SETTINGS,
+  getAdoptionSettings,
+  getAdoptionFeatureFlags,
+} from '@agentx/shared';
+export { setAdoptionDbPool, getAdoptionDbPool } from './adoption/adoption-db.js';
+export { runAdoptionStartupSweeps } from './adoption/adoption-startup.js';
+export { markEngineShuttingDown, isEngineShuttingDown } from './runtime/ShutdownGate.js';
 export type { CommandInterface, CommandContext, CommandResult } from './commands/index.js';
 export { ToolRegistry, ToolExecutor, EnhancedToolExecutor, PermissionManager, ScopeGuard } from './tools/index.js';
 export { PythonRPCExecutor, getPythonRPC } from './tools/PythonRPCExecutor.js';

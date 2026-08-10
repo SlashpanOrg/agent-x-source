@@ -39,7 +39,7 @@ export interface MessagePart extends Record<string, unknown> {
     id: string;
     name: string;
     task: string;
-    status: 'running' | 'done' | 'error';
+    status: 'running' | 'done' | 'error' | 'admitted';
     result?: string;
     kind?: 'sub_agent' | 'crew_worker';
     toolCalls?: PersistedToolCall[];
@@ -601,6 +601,7 @@ export function assignPartsToAssistantMessage(
   assistantIndex: number,
 ): DbPartRow[] {
   const msg = messages[assistantIndex]!;
+  const messageId = String(msg['id'] ?? '');
   const msgCreatedAt = ((msg['created_at'] as string) ?? (msg['createdAt'] as string)) || '';
 
   let prevUserCreatedAt = '';
@@ -612,6 +613,11 @@ export function assignPartsToAssistantMessage(
   }
 
   return allParts.filter((p) => {
+    // A part linked to this message ID is authoritative even when its
+    // created_at is a few milliseconds after the assistant row. This happens
+    // when the stream part writer and final message writer commit concurrently.
+    const partMessageId = String(p['message_id'] ?? p['messageId'] ?? '');
+    if (messageId && partMessageId === messageId) return true;
     const pca = (p['created_at'] as string) || '';
     if (prevUserCreatedAt && pca && pca <= prevUserCreatedAt) return false;
     if (msgCreatedAt && pca && pca > msgCreatedAt) return false;

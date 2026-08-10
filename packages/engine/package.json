@@ -13,7 +13,7 @@
   },
   "scripts": {
     "prebuild": "node scripts/generate-migration-registry.mjs",
-    "build": "tsup && node -e \"const fs=require('fs');const path=require('path');fs.mkdirSync('dist/data',{recursive:true});fs.copyFileSync('data/crew-catalog.manifest.json','dist/data/crew-catalog.manifest.json');fs.mkdirSync('dist/voice',{recursive:true});fs.copyFileSync(path.join('..','voice-sidecar','voice-models.manifest.json'),'dist/voice/voice-models.manifest.json')\"",
+    "build": "tsup && node -e \"const fs=require('fs');const path=require('path');fs.mkdirSync('dist/data',{recursive:true});fs.copyFileSync('data/crew-catalog.manifest.json','dist/data/crew-catalog.manifest.json');fs.mkdirSync('dist/voice',{recursive:true});fs.copyFileSync(path.join('..','voice-sidecar','voice-models.manifest.json'),'dist/voice/voice-models.manifest.json');const copyDir=(s,d)=>{fs.mkdirSync(d,{recursive:true});for(const e of fs.readdirSync(s,{withFileTypes:true})){const sp=path.join(s,e.name);const dp=path.join(d,e.name);if(e.isDirectory())copyDir(sp,dp);else fs.copyFileSync(sp,dp);}};copyDir('skills','dist/skills');\"",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },

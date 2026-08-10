@@ -124,6 +124,7 @@ export type EngineEvent =
   | { type: 'diff_preview'; tool: string; filePath: string; diff: string; oldContent?: string; newContent?: string }
   | { type: 'command_action'; action: 'show_watch_status'; entries: Array<{ pattern: string; command: string }> }
   | { type: 'clarification_required'; questionnaire: QuestionnairePayload }
+  | { type: 'clarification_paused'; messageId: string }
   | { type: 'model_capability_warning'; model: string; missing: string[]; message: string }
   | { type: 'intent_detected'; intent: string; confidence: number; reasons?: string[] }
   | { type: 'crew_suggestion'; evaluation: import('./crew-catalog.js').CrewSuggestionEvaluation; message?: string }
@@ -188,7 +189,21 @@ export type EngineEvent =
   | { type: 'verification_gate_triggered'; filePath: string; reason: string }
   | { type: 'read_before_write_blocked'; filePath: string; reason: string }
   | { type: 'safety_gate_blocked'; operation: string; reason: string }
-  | { type: 'completion_finished'; message: string };
+  | { type: 'completion_finished'; message: string }
+  // Prime Agent adoption events
+  | { type: 'harness_refinement_start'; sessionId: string; scope: string }
+  | { type: 'harness_refinement_complete'; sessionId: string; scope: string; summary: string; editCount: number }
+  | { type: 'harness_refinement_failed'; sessionId: string; error: string }
+  | { type: 'harness_rollback_complete'; sessionId: string; rollbackId: string }
+  | { type: 'goal_status_changed'; sessionId: string; status: string; objective?: string }
+  | { type: 'goal_continuation'; sessionId: string; continuationsUsed: number }
+  | { type: 'quality_gate_start'; sessionId: string; commandCount: number }
+  | { type: 'quality_gate_pass'; sessionId: string }
+  | { type: 'quality_gate_fail'; sessionId: string; failures: Array<{ command: string; output: string }> }
+  | { type: 'compaction_artifact'; filesRead: string[]; filesModified: string[] }
+  | { type: 'session_generation_bump'; sessionId: string; generation: number; reason: string }
+  | { type: 'subagent_admitted'; taskId: string; childSessionId: string; parentSessionId: string }
+  | { type: 'subagent_admitted_complete'; taskId: string; childSessionId: string; parentSessionId: string; success: boolean; summary: string };
 
 export interface FormattedResponse {
   content: string;

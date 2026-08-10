@@ -29,6 +29,7 @@ export function saveSessionResumeState(sessionId: string, state: SessionResumeSt
       delegateCrewIds: state.delegateCrewIds,
       primaryCrewId: state.primaryCrewId,
       crewIntakeFromPicker: state.crewIntakeFromPicker,
+      generationCursor: state.generationCursor,
     },
     createdAt: state.createdAt,
   });
@@ -54,6 +55,7 @@ export function loadSessionResumeState(sessionId: string): SessionResumeState | 
     delegateCrewIds: payload.delegateCrewIds as string[] | undefined,
     primaryCrewId: payload.primaryCrewId as string | undefined,
     crewIntakeFromPicker: payload.crewIntakeFromPicker as boolean | undefined,
+    generationCursor: typeof payload.generationCursor === 'number' ? payload.generationCursor : undefined,
     createdAt: String(row['created_at'] ?? row['createdAt'] ?? new Date().toISOString()),
   };
 }

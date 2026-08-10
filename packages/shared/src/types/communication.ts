@@ -245,6 +245,18 @@ export interface CompactionMarker {
   createdAt: number;
 }
 
+/** Files touched across a compaction boundary (Prime adoption). */
+export interface CompactionFileSet {
+  filesRead: string[];
+  filesModified: string[];
+}
+
+export interface CompactionArtifact {
+  summaryIndex: number;
+  createdAt: string;
+  fileSet: CompactionFileSet;
+}
+
 // === PROVIDER ROUTE CONTRACTS ===
 
 export type ProviderRouteId = string;

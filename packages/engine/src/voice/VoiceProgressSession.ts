@@ -53,6 +53,9 @@ export class VoiceProgressSession {
   }): Promise<void> {
     if (!this.enabled || !this.onSpeak) return;
     const type = event.type ?? '';
+    if (type === 'goal_status_changed' || type.startsWith('harness_') || type === 'goal_continuation') {
+      return;
+    }
     let line: string | null = null;
     let stage: VoiceProgressStage = 'thinking';
 

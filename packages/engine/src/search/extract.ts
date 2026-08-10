@@ -55,6 +55,45 @@ function pickJsonLdRating(blocks: Record<string, unknown>[]): string | undefined
   return undefined;
 }
 
+function pickJsonLdReviewCount(blocks: Record<string, unknown>[]): string | undefined {
+  for (const block of blocks) {
+    const ar = block.aggregateRating as { reviewCount?: string | number; ratingCount?: string | number } | undefined;
+    const count = ar?.reviewCount ?? ar?.ratingCount;
+    if (count != null) return String(count);
+  }
+  return undefined;
+}
+
+function pickJsonLdOfferValue(blocks: Record<string, unknown>[], key: 'price' | 'availability'): string | undefined {
+  for (const block of blocks) {
+    const offers = Array.isArray(block.offers) ? block.offers : [block.offers];
+    for (const offer of offers) {
+      if (!offer || typeof offer !== 'object') continue;
+      const value = (offer as Record<string, unknown>)[key];
+      if (typeof value === 'string' || typeof value === 'number') return String(value);
+    }
+  }
+  return undefined;
+}
+
+function pickJsonLdBrand(blocks: Record<string, unknown>[]): string | undefined {
+  return pickJsonLdValue(blocks, 'brand');
+}
+
+function pickJsonLdReviewHighlights(blocks: Record<string, unknown>[]): string[] {
+  const highlights: string[] = [];
+  for (const block of blocks) {
+    const reviews = Array.isArray(block.review) ? block.review : block.review ? [block.review] : [];
+    for (const review of reviews) {
+      if (!review || typeof review !== 'object') continue;
+      const body = (review as Record<string, unknown>).reviewBody;
+      if (typeof body === 'string' && body.trim()) highlights.push(body.trim().slice(0, 180));
+      if (highlights.length >= 2) return highlights;
+    }
+  }
+  return highlights;
+}
+
 function pickJsonLdValue(blocks: Record<string, unknown>[], key: string): string | undefined {
   for (const block of blocks) {
     const val = block[key];
@@ -92,6 +131,12 @@ export interface PageExtract {
   ogType?: string;
   videoId?: string;
   rating?: string;
+  reviewCount?: string;
+  reviewHighlights?: string[];
+  price?: string;
+  availability?: string;
+  brand?: string;
+  isProduct?: boolean;
   duration?: string;
 }
 
@@ -129,6 +174,16 @@ export async function fetchAndExtractPage(url: string): Promise<PageExtract | nu
       ?? undefined;
     const ogType = metaContent(html, 'og:type');
     const rating = pickJsonLdRating(jsonLd);
+    const reviewCount = pickJsonLdReviewCount(jsonLd);
+    const reviewHighlights = pickJsonLdReviewHighlights(jsonLd);
+    const price = pickJsonLdOfferValue(jsonLd, 'price');
+    const availability = pickJsonLdOfferValue(jsonLd, 'availability');
+    const brand = pickJsonLdBrand(jsonLd);
+    const isProduct = jsonLd.some((block) => {
+      const type = block['@type'];
+      return (typeof type === 'string' && /product/i.test(type))
+        || (Array.isArray(type) && type.some((item) => /product/i.test(String(item))));
+    });
     const duration = metaContent(html, 'video:duration') ?? pickJsonLdValue(jsonLd, 'duration');
 
     let videoId: string | undefined;
@@ -151,6 +206,12 @@ export async function fetchAndExtractPage(url: string): Promise<PageExtract | nu
       ogType,
       videoId,
       rating,
+      reviewCount,
+      reviewHighlights,
+      price,
+      availability,
+      brand,
+      isProduct,
       duration,
     };
   } catch {
@@ -197,6 +258,16 @@ async function fetchAndExtractPageLegacy(url: string): Promise<PageExtract | nul
     ?? undefined;
   const ogType = metaContent(html, 'og:type');
   const rating = pickJsonLdRating(jsonLd);
+  const reviewCount = pickJsonLdReviewCount(jsonLd);
+  const reviewHighlights = pickJsonLdReviewHighlights(jsonLd);
+  const price = pickJsonLdOfferValue(jsonLd, 'price');
+  const availability = pickJsonLdOfferValue(jsonLd, 'availability');
+  const brand = pickJsonLdBrand(jsonLd);
+  const isProduct = jsonLd.some((block) => {
+    const type = block['@type'];
+    return (typeof type === 'string' && /product/i.test(type))
+      || (Array.isArray(type) && type.some((item) => /product/i.test(String(item))));
+  });
   const duration = metaContent(html, 'video:duration') ?? pickJsonLdValue(jsonLd, 'duration');
 
   let videoId: string | undefined;
@@ -216,6 +287,12 @@ async function fetchAndExtractPageLegacy(url: string): Promise<PageExtract | nul
     ogType,
     videoId,
     rating,
+    reviewCount,
+    reviewHighlights,
+    price,
+    availability,
+    brand,
+    isProduct,
     duration,
   };
 }
@@ -235,6 +312,11 @@ export function pageExtractToDeepSearchExtracted(page: PageExtract): DeepSearchE
     publishedAt: page.publishedAt,
     videoId: page.videoId,
     rating: page.rating,
+    reviewCount: page.reviewCount,
+    reviewHighlights: page.reviewHighlights,
+    price: page.price,
+    availability: page.availability,
+    brand: page.brand,
     duration: page.duration,
   };
 }
@@ -255,6 +337,7 @@ export function inferTypeFromPage(url: string, page: PageExtract | null): DeepSe
   if (/\.pdf$/i.test(path)) return 'document';
 
   const og = page?.ogType?.toLowerCase() ?? '';
+  if (page?.isProduct) return 'product';
   if (og.includes('video')) return 'video';
   if (og.includes('article')) return 'article';
   if (og.includes('product')) return 'product';

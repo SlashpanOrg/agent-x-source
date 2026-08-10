@@ -21,6 +21,9 @@ import { createChatRouter } from './legacy/chat.js';
 import { createSettingsRouter } from './legacy/settings.js';
 import { createSessionsRouter } from './legacy/sessions.js';
 import { createSubagentsRouter } from './legacy/subagents.js';
+import { createAdoptionRouter } from './adoption.js';
+import { createResidentSessionsRouter } from './resident-sessions.js';
+import { createExecutableSkillsRouter } from './executable-skills.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -49,6 +52,9 @@ export function router(ctx: ApiContext): Router {
   r.use(createSettingsRouter());
   r.use(createSessionsRouter());
   r.use(createSubagentsRouter(ctx));
+  r.use(createAdoptionRouter());
+  r.use(createResidentSessionsRouter());
+  r.use(createExecutableSkillsRouter());
   // ───── Static file serve (mounted last so it never shadows API routes) ─────
   r.use(createStaticRouter());
   return r;

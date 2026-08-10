@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Crew, EngineEvent, CollaborationProtocol, AgentXConfig, PermissionRule, QuestionnairePayload, StorageAdapter } from '@agentx/shared';
-import { generateMessageId, CREW_DOMAIN_KEYWORDS, appendStreamText, extractStreamTextDelta } from '@agentx/shared';
+import { generateMessageId, CREW_DOMAIN_KEYWORDS, appendStreamText, extractStreamTextDelta, isInterAgentMessagingEnabled } from '@agentx/shared';
 import type { ProviderInterface } from '../providers/ProviderInterface.js';
 import type { AgentEventBus } from '../EventBus.js';
 import { resolveMaxOutputTokens } from '@agentx/shared';
@@ -17,6 +17,8 @@ import type { SessionManager } from '../session/SessionManager.js';
 import { resolveCrewToolIds } from './crew-tools.js';
 import { autoComposeCrewMembers, assessCrewNeed } from './crew-auto-compose.js';
 import { buildCrewVoiceBlock, buildCrewScopeBlock, buildCrewToneLine } from './crew-persona.js';
+import { getInterAgentMessageService } from '../inter-agent-messaging/InterAgentMessageService.js';
+import { getAgentBus } from './AgentBus.js';
 import { CHAT_MARKDOWN_PROMPT } from '../prompt/assembly/sections.js';
 
 const STOP_WORDS = new Set(['and', 'the', 'of', 'in', 'for', 'to', 'a', 'an', 'is', 'on', 'at', 'by', 'with', 'or', 'as', 'be', 'it', 'no', 'not', 'but', 'from', 'has', 'had', 'was', 'are', 'were', 'been', 'can', 'will', 'may', 'shall', 'should', 'would', 'could']);
@@ -138,6 +140,11 @@ export class CrewOrchestrator {
     this.sessionId = id;
   }
 
+  /** Virtual session id for orchestrator crew sibling messaging (X-INT-21). */
+  private crewSiblingSessionId(crewId: string): string {
+    return `${this.sessionId}::crew:${crewId}`;
+  }
+
   addMember(crew: Crew): void {
     if (this.members.some(m => m.crew.id === crew.id)) return;
     const expertise = crew.expertise && crew.expertise.length > 0
@@ -154,9 +161,15 @@ export class CrewOrchestrator {
       this.primaryMember = this.members[0]!;
       this.primaryMember.active = true;
     }
+    if (isInterAgentMessagingEnabled()) {
+      getAgentBus().registerAgent(this.crewSiblingSessionId(crew.id), expertise);
+    }
   }
 
   removeMember(crewId: string): void {
+    if (isInterAgentMessagingEnabled()) {
+      getAgentBus().unregisterAgent(this.crewSiblingSessionId(crewId));
+    }
     this.members = this.members.filter(m => m.crew.id !== crewId);
     if (this.primaryMember?.crew.id === crewId) {
       this.primaryMember = this.members[0] ?? null;
@@ -905,6 +918,27 @@ Do NOT proactively scan folders, list files, or read code unless instructed. If 
     const quotaError = this.checkQuota(to);
     if (quotaError) return `[${quotaError}]`;
 
+    const fromSid = this.crewSiblingSessionId(fromId);
+    const toSid = this.crewSiblingSessionId(toId);
+    if (isInterAgentMessagingEnabled()) {
+      try {
+        await getInterAgentMessageService().enqueue(
+          fromSid,
+          toSid,
+          'crew_message',
+          {
+            fromCrewId: fromId,
+            toCrewId: toId,
+            fromName: from.crew.name,
+            toName: to.crew.name,
+            text: message,
+          },
+          'auto',
+          'sibling',
+        );
+      } catch { /* best-effort */ }
+    }
+
     this.conversation.push({
       id: generateMessageId(),
       from: from.crew.name,
@@ -926,6 +960,31 @@ Do NOT proactively scan folders, list files, or read code unless instructed. If 
         timestamp: new Date().toISOString(),
         replyTo: fromId,
       });
+
+      if (isInterAgentMessagingEnabled()) {
+        try {
+          await getInterAgentMessageService().enqueue(
+            toSid,
+            fromSid,
+            'crew_response',
+            {
+              fromCrewId: toId,
+              toCrewId: fromId,
+              fromName: to.crew.name,
+              toName: from.crew.name,
+              text: content,
+            },
+            'auto',
+            'sibling',
+          );
+        } catch { /* best-effort */ }
+      }
+      this.eventBus.emit({
+        type: 'crew_sibling_message',
+        fromCrewId: fromId,
+        toCrewId: toId,
+        direction: 'response',
+      } as unknown as EngineEvent);
 
       return content;
     } catch (err) {

@@ -27,6 +27,8 @@ export interface DecisionContext {
   lastAssistantMessage?: string;
   /** Voice turns always take the standard path so per-turn voice instructions apply. */
   voiceTurn?: boolean;
+  /** Active goal — continuation acks must not use fast_reply (X-INT-10). */
+  goalActive?: boolean;
 }
 
 /**
@@ -66,6 +68,9 @@ export class DecisionEngine {
     if (FAREWELL.test(trimmed) && words <= 6)
       return this.result('farewell', 'fast_reply', 'Pattern: farewell');
     if (ACK.test(trimmed) && words <= 4) {
+      if (context?.goalActive) {
+        return this.result('task', 'standard', 'Active goal — skip fast_reply');
+      }
       // "yes please" / "no" after the assistant asked a question is an answer
       // to that question — route standard so turn context + tools apply.
       if (assistantAwaitingUserDecision(context?.lastAssistantMessage)) {

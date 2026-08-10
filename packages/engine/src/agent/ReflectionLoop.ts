@@ -28,6 +28,11 @@ export class ReflectionLoop {
     toolCallsUsed: Array<{ name: string; success: boolean; output: string; elapsed: number }>,
     finalResponse: string,
   ): Promise<ReflectionResult | null> {
+    const { getHarnessService } = await import('../harness/HarnessService.js');
+    if (getHarnessService().isRefineInFlight(agent.sessionId)) {
+      logger.debug('REFLECTION', 'Skipped — harness refine in flight');
+      return null;
+    }
     // Only reflect on substantial tasks (2+ tool calls)
     if (toolCallsUsed.length < 2) return null;
 

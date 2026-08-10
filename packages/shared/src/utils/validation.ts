@@ -262,6 +262,28 @@ function migrateConfigPerformanceKey(raw: unknown): unknown {
   return obj;
 }
 
+const adoptionFeatureToggleSchema = z.object({ enabled: z.boolean().optional() }).optional();
+
+const adoptionHarnessSettingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  autoRefineOnCompaction: z.boolean().optional(),
+  autoRefineIntervalTurns: z.number().int().min(0).optional(),
+  memoryFabricIngest: z.boolean().optional(),
+}).optional();
+
+export const adoptionSettingsSchema = z.object({
+  harness: adoptionHarnessSettingsSchema,
+  goals: adoptionFeatureToggleSchema,
+  qualityGates: adoptionFeatureToggleSchema,
+  durableTurns: adoptionFeatureToggleSchema,
+  wsGenerationReplay: adoptionFeatureToggleSchema,
+  sessionLease: adoptionFeatureToggleSchema,
+  subagentAdmission: adoptionFeatureToggleSchema,
+  interAgentMessaging: adoptionFeatureToggleSchema,
+  executableSkills: adoptionFeatureToggleSchema,
+  residentSessions: adoptionFeatureToggleSchema,
+}).optional();
+
 export const agentXConfigSchema = z.preprocess(migrateConfigPerformanceKey, z.object({
   provider: z.object({
     activeProvider: providerIdSchema,
@@ -293,6 +315,7 @@ export const agentXConfigSchema = z.preprocess(migrateConfigPerformanceKey, z.ob
   channels: notificationChannelsConfigSchema,
   voice: voiceConfigSchema,
   performance: performanceSettingsSchema,
+  adoption: adoptionSettingsSchema,
   maxSubAgents: z.number().min(1).max(20).optional(),
   maxSteps: z.number().int().min(1).max(100).optional(),
   maxRetries: z.number().int().min(0).max(10).optional(),
