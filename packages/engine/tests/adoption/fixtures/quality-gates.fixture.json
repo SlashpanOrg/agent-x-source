@@ -1,0 +1,5 @@
+{
+  "commands": ["npm test"],
+  "maxRetries": 2,
+  "timeoutMs": 60000
+}

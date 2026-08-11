@@ -706,18 +706,6 @@ export function useChatSend({
 
     try {
       markAnswered();
-      // Insert a user message showing the questionnaire submission so the user
-      // can see their own answers in the chat flow. Without this, the questionnaire
-      // card silently changes to "answered" but the submission is invisible.
-      const submissionMsg: UIMessage = {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: `📋 **Questionnaire Response**\n\n${response}`,
-        streaming: false,
-      };
-      const placeholderId = crypto.randomUUID();
-      setMessages((prev) => [...prev, submissionMsg, { id: placeholderId, role: 'assistant', content: '', streaming: true }]);
-      requestAnimationFrame(() => scrollMessagesToBottom('smooth'));
       const result = await agent.respondToClarification(response, currentSessionIdRef.current ?? undefined);
       if (result.ok) {
         setStreaming(true);

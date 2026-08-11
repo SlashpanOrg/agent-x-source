@@ -516,6 +516,18 @@ export class TurnOrchestrator implements ITurnOrchestrator {
         };
         return assistantMessage;
       }
+      if (error instanceof Error && error.message === 'CLARIFICATION_AWAITING_USER') {
+        assistantMessage = {
+          id: '__clarify__',
+          sessionId,
+          role: 'assistant',
+          content: '',
+          toolCalls: null,
+          createdAt: new Date().toISOString(),
+          tokenCount: 0,
+        };
+        return assistantMessage;
+      }
       if (error instanceof Error && (error.name === 'NoOutputGeneratedError' || error.message.includes('No output generated'))) {
         const toolSummary = this.host.toolCallLogForReflection
           .map((t) => `- ${t.name}: ${t.success ? 'OK' : 'FAILED'}`)

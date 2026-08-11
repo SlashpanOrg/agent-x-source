@@ -23,4 +23,14 @@ describe('web-search-intent scheduling', () => {
     const intent = analyzeWebSearchIntentHeuristic('what is the latest bangalore news right now');
     expect(intent.shouldForceSearch).toBe(true);
   });
+
+  it('forces live search for shopping and booking requests', () => {
+    expect(analyzeWebSearchIntentHeuristic('find the best price for a cordless vacuum').shouldForceSearch).toBe(true);
+    expect(analyzeWebSearchIntentHeuristic('book a hotel in Lisbon for next weekend').shouldForceSearch).toBe(true);
+  });
+
+  it('does not mistake product engineering language for shopping', () => {
+    expect(analyzeWebSearchIntentHeuristic('design a product API for our platform').shouldForceSearch).toBe(false);
+    expect(analyzeWebSearchIntentHeuristic('book a meeting with the finance team').shouldForceSearch).toBe(false);
+  });
 });

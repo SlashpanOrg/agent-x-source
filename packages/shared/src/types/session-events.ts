@@ -14,3 +14,12 @@ export type SessionEvent =
   | { type: 'task_interrupted'; sessionId: string; sequence: number; timestamp: number; payload: { taskId?: string; goal?: string; lastStepIndex?: number; totalSteps?: number; lastEventType?: string } }
   | { type: 'task_progress'; sessionId: string; sequence: number; timestamp: number; payload: { taskId: string; goal: string; phase: string; stepIndex: number; completedSteps: number; totalSteps: number; percent: number } }
   | { type: 'crew_mission_snapshot'; sessionId: string; sequence: number; timestamp: number; payload: { missionId: string; phase: string; success?: boolean; snapshot: Record<string, unknown> } };
+
+/** WS replay envelope with generation cursor (Prime adoption). */
+export interface SessionEventEnvelope<T = Record<string, unknown>> {
+  generation: number;
+  sequence: number;
+  sessionId: string;
+  timestamp: number;
+  payload: T;
+}

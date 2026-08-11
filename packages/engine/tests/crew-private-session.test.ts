@@ -72,4 +72,24 @@ describe('SessionManager crew private sessions', () => {
     expect(peek?.hostCrewId).toBe('crew-x');
     expect(mgr.getActiveSession()?.id).toBe(active.id);
   });
+
+  it('creates voice sessions without requiring a private text session', () => {
+    const mgr = new SessionManager({ storageAdapter: createMockStorageAdapter() });
+    const crew = { id: 'crew-call', name: 'Riley', callsign: 'riley' };
+    expect(mgr.findCrewPrivateSession(crew.id)).toBeNull();
+
+    const voice = mgr.createCrewVoiceSession(
+      'openai',
+      'gpt-4o',
+      process.cwd(),
+      `call:${crew.id}`,
+      crew,
+    );
+    expect(voice.id).toBe(`voice:call:${crew.id}`);
+    expect(voice.contextKind).toBe('crew_private');
+    expect(voice.hostCrewId).toBe(crew.id);
+    // Still no empty private text chat.
+    expect(mgr.findCrewPrivateSession(crew.id)).toBeNull();
+    expect(mgr.findCrewVoiceSessionForCrew(crew.id)?.id).toBe(voice.id);
+  });
 });

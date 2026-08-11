@@ -6,6 +6,7 @@ import { TelegramChannelPlugin } from './plugins/TelegramChannelPlugin.js';
 import { WebSocketChannelPlugin } from './plugins/WebSocketChannelPlugin.js';
 import type { GatewayConfig, ChannelPlugin } from './types.js';
 import { getLogger } from '@agentx/shared';
+import { sendViaSessionConnection } from '../session-connection/channel-send.js';
 
 export class Gateway {
   readonly registry = new ChannelRegistry();
@@ -121,7 +122,7 @@ export class Gateway {
       const { text, userId, channelId: parsedChannelId } = parsed;
 
       // Pass the parsed message with metadata to the agent
-      await this.agentRef.sendMessage(text, {
+      await sendViaSessionConnection(this.agentRef, text, {
         userId,
         channelId: parsedChannelId,
         sourceChannel: channelId,

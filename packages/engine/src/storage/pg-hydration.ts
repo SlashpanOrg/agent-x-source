@@ -7,6 +7,7 @@ import type {
 import type { SessionEvent, Crew } from '@agentx/shared';
 import { getLogger } from '@agentx/shared';
 import type { CacheState } from './pg-helpers.js';
+import { findLatestCompactionFileSet } from '../agent/agent-helpers.js';
 
 const logger = getLogger();
 
@@ -149,6 +150,7 @@ export async function hydrateCache(ctx: HydrationContext): Promise<void> {
       msgs.push(msg);
       ctx.cache.messages.set(msg.sessionId, msgs);
     }
+    hydrateCompactionArtifactsFromMessages(ctx);
     const checkpoints = await ctx.pool.query('SELECT id, session_id, label, messages, created_at FROM checkpoints ORDER BY created_at ASC');
     for (const row of checkpoints.rows) {
       const r = row as { id: string; session_id: string; label: string; messages: string; created_at: string };
@@ -280,11 +282,18 @@ export async function hydrateMessageCache(ctx: HydrationContext, sessionId: stri
       if (row) ctx.cache.sessions.set(sessionId, row);
     }
     const messages = await ctx.pool.query(
-      `SELECT id,session_id as "sessionId",role,content,tool_calls as "toolCalls",token_count as "tokenCount",created_at as "createdAt"
+      `SELECT id,session_id as "sessionId",role,content,tool_calls as "toolCalls",token_count as "tokenCount",metadata,created_at as "createdAt"
        FROM messages WHERE session_id = $1 AND archived_at IS NULL ORDER BY created_at ASC`,
       [sessionId]
     );
-    const msgs = messages.rows as StorableMessage[];
+    const msgs = messages.rows.map((row) => {
+      const raw = row as Record<string, unknown>;
+      let metadata = raw['metadata'];
+      if (typeof metadata === 'string') {
+        try { metadata = JSON.parse(metadata); } catch { metadata = undefined; }
+      }
+      return { ...raw, metadata } as StorableMessage;
+    });
     // Merge DB snapshot with any in-flight cache rows not yet flushed when the
     // SELECT ran — otherwise a concurrent voice persist can vanish from cache.
     const prior = ctx.cache.messages.get(sessionId) ?? [];
@@ -296,6 +305,7 @@ export async function hydrateMessageCache(ctx: HydrationContext, sessionId: stri
       msgs.sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')));
     }
     ctx.cache.messages.set(sessionId, msgs);
+    hydrateCompactionArtifactsFromMessages(ctx);
     const parts = await ctx.pool.query(
       'SELECT * FROM message_parts WHERE session_id = $1 ORDER BY created_at ASC',
       [sessionId]
@@ -339,4 +349,26 @@ export function purgeSessionCache(ctx: HydrationContext, id: string): void {
   ctx.cache.permissionRules.delete(id);
   ctx.cache.taskSnapshots.delete(id);
   ctx.cache.turnFeedback.delete(id);
+}
+
+/** Restore compaction file-set metadata onto session cache rows from message metadata (P1-COMP-09). */
+export function hydrateCompactionArtifactsFromMessages(ctx: HydrationContext): void {
+  for (const [sessionId, msgs] of ctx.cache.messages) {
+    const fileSet = findLatestCompactionFileSet(msgs);
+    if (!fileSet) continue;
+    const session = ctx.cache.sessions.get(sessionId);
+    if (!session) continue;
+    const prev = (session as StorableSession & { lastCompactionArtifact?: unknown }).lastCompactionArtifact as
+      | { fileSet?: { filesRead: string[]; filesModified: string[] } }
+      | undefined;
+    if (prev?.fileSet && prev.fileSet.filesRead.length + prev.fileSet.filesModified.length > 0) continue;
+    ctx.cache.sessions.set(sessionId, {
+      ...session,
+      lastCompactionArtifact: {
+        fileSet,
+        summaryIndex: msgs.length,
+        createdAt: new Date().toISOString(),
+      },
+    } as StorableSession);
+  }
 }

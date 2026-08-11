@@ -80,7 +80,7 @@ function nextActionHint(items: TodoItem[]): string {
   return 'NEXT: all todos completed.';
 }
 
-/** Create or update session todos (Cursor-compatible). Updates the right-panel TASKS list live. */
+/** Create or update session todos. Updates the right-panel TASKS list live. */
 export async function todoWrite(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
   const mgr = getSessionTodoManager(context.sessionId);
   if (!mgr) return { success: false, output: 'Todo manager not available for this session', error: 'NOT_AVAILABLE' };

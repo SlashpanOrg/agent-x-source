@@ -23,7 +23,7 @@ export interface MentionInputHandle {
   focus: () => void;
   /** Insert a crew chip (serializes as @crew[callsign:name]). */
   insertMention: (crew: { callsign: string; name?: string }) => void;
-  /** Insert an inline file chip (Cursor-style) at the active @ query or caret. */
+  /** Insert an inline file chip at the active @ query or caret. */
   insertFileChip: (file: { id: string; name: string; path: string; relativePath: string }) => void;
   /** Insert an inline folder chip (serializes as @folder[relativePath]). */
   insertFolderChip: (folder: { id: string; name: string; path: string; relativePath: string }) => void;

@@ -17,7 +17,7 @@ const logger = getLogger();
 
 function toStatus(status: string): BackgroundTaskStatus {
   const s = status as BackgroundTaskStatus;
-  return ['pending', 'queued', 'running', 'completed', 'failed', 'cancelled'].includes(s) ? s : 'queued';
+  return ['pending', 'queued', 'admitted', 'running', 'completed', 'failed', 'cancelled'].includes(s) ? s : 'queued';
 }
 
 export class BackgroundTaskService {
@@ -182,7 +182,7 @@ export class BackgroundTaskService {
 
   getRunningTasksForSession(sessionId: string): SubAgentRecord[] {
     return this.getTasksForSession(sessionId).filter(
-      (t) => t.status === 'running' || t.status === 'pending' || t.status === 'queued',
+      (t) => t.status === 'running' || t.status === 'pending' || t.status === 'queued' || t.status === 'admitted',
     );
   }
 
@@ -191,13 +191,15 @@ export class BackgroundTaskService {
   }
 
   getAllRunning(): SubAgentRecord[] {
-    return this.listTasks().filter((t) => t.status === 'running' || t.status === 'pending' || t.status === 'queued');
+    return this.listTasks().filter(
+      (t) => t.status === 'running' || t.status === 'pending' || t.status === 'queued' || t.status === 'admitted',
+    );
   }
 
   cancelTask(id: string): boolean {
     const task = this.tasks.get(id);
     if (!task) return false;
-    if (['pending', 'running', 'queued'].includes(task.status)) {
+    if (['pending', 'running', 'queued', 'admitted'].includes(task.status)) {
       this.taskCancelled(id);
       return true;
     }

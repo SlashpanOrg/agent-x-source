@@ -1,11 +1,14 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server, IncomingMessage } from 'http';
 import { getEngine } from './engine.js';
+import { turnRegistry } from './turn-registry.js';
+import { buildSessionSnapshot } from './adoption-snapshot.js';
+import { getCommandJournal, getSessionGenerationManager, MemoryFabric, startAppSpan, SessionAlreadyActiveError } from '@agentx/engine';
 import { validateWebSocketConnection } from './auth.js';
 import { registerWebSocketRoute } from './ws-upgrade-router.js';
-import { getLogger, stripToolNoise, appendStreamText, repairStreamTextGlitches, type MessagePart, attachDeepSearchPartsFromTools, attachChartPartsFromTools, deepSearchBundleFromMetadata, upsertDeepSearchPart } from '@agentx/shared';
+import { getSessionConnection } from './session-connection.js';
+import { getLogger, stripToolNoise, appendStreamText, repairStreamTextGlitches, type MessagePart, attachDeepSearchPartsFromTools, attachChartPartsFromTools, deepSearchBundleFromMetadata, upsertDeepSearchPart, dedupeResponseDocumentParts, dedupeToolParts } from '@agentx/shared';
 import type { DeepSearchProgress, EngineEvent, EventHandler, Message, MessageMetadata, NormalizedAttachment } from '@agentx/shared';
-import { MemoryFabric, startAppSpan } from '@agentx/engine';
 import { metricsRegistry } from './metrics/MetricsRegistry.js';
 
 interface PartRecord {
@@ -20,17 +23,6 @@ interface PartRecord {
   timestamp: number;
 }
 
-/**
- * Incrementally persist each AI SDK part event to PostgreSQL.
- */
-export function persistPart(sessionId: string, part: PartRecord): void {
-  if (!sessionId) return;
-  try {
-    const eng = getEngine();
-    const store = eng.sessionManager.getStorageAdapter();
-    if (store?.insertPart) { store.insertPart(sessionId, part); }
-  } catch { /* best-effort */ }
-}
 interface SubAgentRecord { id: string; name: string; task: string; status: 'running' | 'done' | 'error'; result?: string }
 interface CrewInfo { crewId: string; name: string; callsign: string; color?: string; icon?: string; confidence?: string; reasons?: string[] }
 interface ToolCallRecord { id: string; name: string; args: unknown; status: string; result?: string; elapsed?: number; metadata?: Record<string, unknown> }
@@ -83,7 +75,9 @@ function appendContextFile(
   },
   messageId?: string,
 ): void {
-  if (!sessionId || !content) return;
+  // Structured assistant parts can be the complete message (questionnaires
+  // intentionally have no assistant text). Do not discard those snapshots.
+  if (!sessionId || (!content && !extra?.parts?.length)) return;
 
   // Crew-attributed messages: persist for crew_private (Agent path); skip for Agent-X delegation (orchestrator persists)
   if (crew) {
@@ -325,6 +319,7 @@ async function handleWsMessage(ws: WebSocket, msg: { type: string; [key: string]
         broadcast({ type: 'error', message: 'Invalid message: text is required' });
         return;
       }
+      const idempotencyKey = typeof msg.idempotencyKey === 'string' ? msg.idempotencyKey : undefined;
       try {
         const eng = getEngine();
         const agent = eng.agent;
@@ -332,10 +327,47 @@ async function handleWsMessage(ws: WebSocket, msg: { type: string; [key: string]
           broadcast({ type: 'engine_event', event: 'error', data: { code: 'no-session', message: 'No active session — create a session first' } });
           return;
         }
+        if (idempotencyKey) {
+          const journal = getCommandJournal();
+          const existing = await journal.getByKey(idempotencyKey);
+          if (existing?.status === 'completed' && existing.result) {
+            ws.send(JSON.stringify({ type: 'idempotent_replay', idempotencyKey, result: existing.result }));
+            return;
+          }
+          if (existing?.status === 'received') {
+            ws.send(JSON.stringify({ type: 'idempotent_in_flight', idempotencyKey }));
+            return;
+          }
+          await journal.receive('ws_chat_message', agent.sessionId, { text: text.slice(0, 200) }, idempotencyKey);
+        }
         ensureSubscribed();
-        await agent.sendMessage(text);
+        const connection = getSessionConnection(agent);
+        const message = await connection.sendMessage(text);
+        if (idempotencyKey) {
+          const msg = message as { id?: string } | null | undefined;
+          void getCommandJournal().complete(idempotencyKey, { messageId: msg?.id });
+        }
       } catch (e: unknown) {
+        if (e instanceof SessionAlreadyActiveError) {
+          ws.send(JSON.stringify({
+            type: 'session_already_active',
+            code: 'session_already_active',
+            holderOwnerId: e.holderOwnerId,
+          }));
+          return;
+        }
         const message = e instanceof Error ? e.message : 'Chat failed';
+        if (idempotencyKey) {
+          void getCommandJournal().fail(idempotencyKey, message);
+        }
+        if (message === 'session_already_active') {
+          ws.send(JSON.stringify({ type: 'session_already_active', code: 'session_already_active' }));
+          return;
+        }
+        if (message === 'server_shutting_down') {
+          ws.send(JSON.stringify({ type: 'server_shutting_down' }));
+          return;
+        }
         broadcast({ type: 'engine_event', event: 'error', data: { code: 'AGENT_ERROR', message } });
       }
       break;
@@ -343,7 +375,7 @@ async function handleWsMessage(ws: WebSocket, msg: { type: string; [key: string]
     case 'cancel': {
       const eng = getEngine();
       const agent = eng.agent;
-      if (agent) agent.cancel();
+      if (agent) getSessionConnection(agent).cancel();
       break;
     }
     case 'permission_respond': {
@@ -390,6 +422,8 @@ async function handleWsMessage(ws: WebSocket, msg: { type: string; [key: string]
     case 'subscribe': {
       const sessionId = msg.sessionId;
       if (typeof sessionId !== 'string' || !sessionId) break;
+      const clientKind = typeof msg.clientKind === 'string' ? msg.clientKind : 'web';
+      getLogger().debug('WS', `subscribe ${sessionId} client=${clientKind}`);
       try {
         const eng = getEngine();
         const agent = eng.agent;
@@ -439,6 +473,34 @@ async function handleWsMessage(ws: WebSocket, msg: { type: string; [key: string]
             }));
           }
         } catch { /* best-effort */ }
+
+        const lastGeneration = typeof msg.lastGeneration === 'number' ? msg.lastGeneration : undefined;
+        const lastSequence = typeof msg.lastSequence === 'number' ? msg.lastSequence : 0;
+        const genMgr = getSessionGenerationManager();
+        const currentGeneration = await genMgr.getGeneration(sessionId);
+        if (lastGeneration != null && lastGeneration !== currentGeneration) {
+          const snapshot = await buildSessionSnapshot(sessionId);
+          ws.send(JSON.stringify({
+            type: 'attach_ack',
+            mode: 'snapshot',
+            generation: currentGeneration,
+            snapshot,
+          }));
+        } else if (lastGeneration != null) {
+          const events = await genMgr.getEventsSince(sessionId, currentGeneration, lastSequence);
+          ws.send(JSON.stringify({
+            type: 'attach_ack',
+            mode: 'replay',
+            generation: currentGeneration,
+            events,
+          }));
+        } else {
+          ws.send(JSON.stringify({
+            type: 'attach_ack',
+            mode: 'live',
+            generation: currentGeneration,
+          }));
+        }
       } catch {
         // best-effort
       }
@@ -600,16 +662,28 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
 
   unsubscribeFromAgent = agent.events.on((event: EngineEvent) => {
     const evType: string = event.type;
-    broadcast({
+    const sessionIdForEnvelope = subscribedSessionId || agent.sessionId || '';
+    const basePayload = {
       type: 'engine_event',
       event: evType,
-      sessionId: subscribedSessionId || undefined,
+      sessionId: sessionIdForEnvelope || undefined,
       data: {
         ...(event as unknown as Record<string, unknown>),
-        // Stamp owning session so clients can isolate mid-turn streams after navigation.
-        ...(subscribedSessionId ? { sessionId: subscribedSessionId } : {}),
+        ...(sessionIdForEnvelope ? { sessionId: sessionIdForEnvelope } : {}),
       },
-    });
+    };
+
+    void getSessionGenerationManager()
+      .wrap(sessionIdForEnvelope, basePayload as Record<string, unknown>)
+      .then((envelope) => {
+        broadcast({
+          type: 'session_event',
+          generation: envelope.generation,
+          sequence: envelope.sequence,
+          ...envelope.payload,
+        });
+      })
+      .catch(() => broadcast(basePayload as Record<string, unknown>));
 
     // Accumulate thinking deltas
     // Use the session ID captured at subscription time — NOT getActiveSession().
@@ -660,14 +734,6 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
           id,
           agent: { id, name: sa.name, task: sa.task, status: 'running', kind: 'sub_agent' },
         });
-        persistPart(currentSessionId, {
-          type: 'subagent',
-          toolName: 'delegate_to_subagent',
-          toolCallId: id,
-          content: description,
-          toolArgs: { name: sa.name, task: sa.task, status: 'running', kind: 'sub_agent' },
-          timestamp: Date.now(),
-        });
       } else {
         const id = event.callId ?? `tool-${Date.now()}-${toolCallMap.size}`;
         toolCallMap.set(id, { id, name: toolName, args: eventArgs, status: 'running' });
@@ -676,8 +742,6 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
           id,
           tool: { id, name: toolName, args: eventArgs, status: 'running' },
         });
-        // Persist part to PostgreSQL immediately
-        persistPart(currentSessionId, { type: 'tool-call', toolName, toolCallId: id, toolArgs: typeof eventArgs === 'object' ? eventArgs : undefined, timestamp: Date.now() });
       }
     }
     if (event.type === 'tool_complete') {
@@ -711,16 +775,6 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
               agent: { ...accumulatedParts[partIdx]!.agent!, status: sa.status, result: sa.result },
             };
           }
-          persistPart(currentSessionId, {
-            type: 'subagent',
-            toolName: 'delegate_to_subagent',
-            toolCallId: id,
-            content: sa.task,
-            toolArgs: { name: sa.name, task: sa.task, status: sa.status, kind: 'sub_agent' },
-            toolResult: resultStr,
-            toolSuccess: sa.status !== 'error',
-            timestamp: Date.now(),
-          });
         }
       } else {
         const id = event.callId;
@@ -767,18 +821,6 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
         }
       }
 
-      // Persist tool result to PostgreSQL parts table immediately
-      if (toolName !== 'delegate_to_subagent') {
-        const id = event.callId;
-        persistPart(currentSessionId, {
-          type: 'tool-result',
-          toolName,
-          toolCallId: id,
-          toolResult: resultStr,
-          toolSuccess: true,
-          timestamp: Date.now(),
-        });
-      }
     }
 
     // Track crew activity for real-time UI updates
@@ -817,16 +859,6 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
             id: childId,
             agent: { ...accumulatedParts[partIdx]!.agent!, id: childId, name: matched.name },
           };
-        }
-        if (currentSessionId) {
-          persistPart(currentSessionId, {
-            type: 'subagent',
-            toolName: 'delegate_to_subagent',
-            toolCallId: childId,
-            content: matched.task,
-            toolArgs: { name: matched.name, task: matched.task, status: matched.status, kind: 'sub_agent' },
-            timestamp: Date.now(),
-          });
         }
       }
     }
@@ -916,29 +948,8 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
               subAgents: prevSubs,
               parts: prevParts.length > 0 ? prevParts : undefined,
             });
-            persistPart(currentSessionId, {
-              type: 'subagent',
-              toolName: 'delegate_to_subagent',
-              toolCallId: patched.id,
-              content: patched.task,
-              toolArgs: { name: patched.name, task: patched.task, status: patched.status, kind: 'sub_agent' },
-              toolResult: patched.result,
-              toolSuccess: patched.status !== 'error',
-              timestamp: Date.now(),
-            });
           }
         } catch { /* best-effort */ }
-      } else if (sa && currentSessionId) {
-        persistPart(currentSessionId, {
-          type: 'subagent',
-          toolName: 'delegate_to_subagent',
-          toolCallId: sa.id,
-          content: sa.task,
-          toolArgs: { name: sa.name, task: sa.task, status: sa.status, kind: 'sub_agent' },
-          toolResult: sa.result,
-          toolSuccess: sa.status !== 'error',
-          timestamp: Date.now(),
-        });
       }
     }
 
@@ -957,10 +968,19 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
         // Reset first — new user turn must not inherit prior turn parts
         resetAccumulators();
         const rawMsg = event.message?.content;
-        if (isActiveSession && sess && typeof rawMsg === 'string' && sess.title === 'New Session') {
-          const firstLine = String(rawMsg).split('\n')[0] || '';
-          const title = firstLine.slice(0, 80).trim();
-          if (title.length > 0) eng.sessionManager.updateSession({ title });
+        if (sessionId && typeof rawMsg === 'string') {
+          const store = eng.sessionManager.getStorageAdapter?.();
+          const row = store?.getSession?.(sessionId)
+            ?? (isActiveSession ? sess : null)
+            ?? eng.sessionManager.getSessionById?.(sessionId);
+          if (row && (row.title === 'New Session' || !String(row.title ?? '').trim())) {
+            const firstLine = String(rawMsg).split('\n')[0] || '';
+            const title = firstLine.slice(0, 80).trim();
+            if (title.length > 0) {
+              store?.updateSession?.(sessionId, { title });
+              if (isActiveSession && sess) eng.sessionManager.updateSession({ title });
+            }
+          }
         }
         const msg: Message | undefined = event.message;
         const text = msg?.content ?? '';
@@ -978,20 +998,43 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
           const isUpdate = event.isUpdate === true;
           const text = repairStreamTextGlitches(stripToolNoise(msg?.content ?? ''));
           const crew = msg?.crew;
-          if (sessionId && text) {
+          const hasPersistableParts = Array.isArray(msg?.parts) && msg.parts.length > 0;
+          if (sessionId && (text || hasPersistableParts)) {
             const thinkingText = accumulatedThinking
               ? repairStreamTextGlitches(accumulatedThinking)
               : undefined;
             const extra = buildExtra(thinkingText);
+            // Clarification/questionnaire messages carry their UI card on the
+            // event itself and may have intentionally empty text.
+            if (Array.isArray(msg?.parts) && msg.parts.length > 0) {
+              const incomingParts = msg.parts as MessagePart[];
+              const incomingIds = new Set(incomingParts.map((part) => part.id));
+              const accumulated = Array.isArray(extra.parts) ? extra.parts as MessagePart[] : [];
+              const merged = [
+                ...accumulated.filter((part) => !incomingIds.has(part.id)),
+                ...incomingParts,
+              ];
+              extra.parts = dedupeResponseDocumentParts(dedupeToolParts(merged, true));
+            }
             extra.attachments = msg?.attachments;
             if (typeof msg?.id === 'string') lastPersistedAssistantId = msg.id;
             if (isUpdate && msg?.id) {
               const store = eng.sessionManager.getStorageAdapter();
               const existing = store.getMessages?.(sessionId)?.find((m) => m.id === msg.id);
-              const existingParts = Array.isArray(existing?.parts) ? existing.parts : [];
-              const newParts = Array.isArray(extra.parts) ? extra.parts : [];
-              // Prefer the richer turn snapshot over naive concat (avoids duplicate tools/subagents).
-              const mergedParts = newParts.length > 0 ? newParts : existingParts;
+              const existingParts = Array.isArray(existing?.parts) ? existing.parts as MessagePart[] : [];
+              const newParts = Array.isArray(extra.parts) ? extra.parts as MessagePart[] : [];
+              // Keep chronology from the first finalize; overlay rich/response updates.
+              // When a response_document arrives, drop sibling text parts so DB matches live UI.
+              const incomingHasResponseDocument = newParts.some((part) => part.type === 'response_document');
+              const incomingIds = new Set(newParts.map((part) => part.id).filter(Boolean));
+              const mergedParts = dedupeResponseDocumentParts(dedupeToolParts([
+                ...existingParts.filter((part) => (
+                  part.type !== 'response_document'
+                  && !(incomingHasResponseDocument && part.type === 'text')
+                  && (!part.id || !incomingIds.has(part.id))
+                )),
+                ...newParts,
+              ], true));
               const prevMeta = typeof existing?.metadata === 'string'
                 ? (() => { try { return JSON.parse(existing.metadata as string) as Record<string, unknown>; } catch { return {}; } })()
                 : { ...(existing?.metadata as Record<string, unknown> | undefined) };
@@ -1034,10 +1077,21 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
         }
       }
 
-      if (event.type === 'compaction_complete') {
-        const summary = event.summary;
+      if (event.type === 'compaction_complete' || event.type === 'compaction_artifact') {
+        const summary = event.type === 'compaction_complete' ? event.summary : undefined;
+        const filesRead = (event as { filesRead?: string[] }).filesRead;
+        const filesModified = (event as { filesModified?: string[] }).filesModified;
         if (sessionId && summary?.trim()) {
-          appendContextFile(sessionId, 'system', `[COMPACTION SUMMARY — ${new Date().toISOString()}]\n${summary.trim()}`);
+          const fileLine = filesRead?.length || filesModified?.length
+            ? `\n[files read: ${(filesRead ?? []).join(', ') || '(none)'}; modified: ${(filesModified ?? []).join(', ') || '(none)'}]`
+            : '';
+          appendContextFile(sessionId, 'system', `[COMPACTION SUMMARY — ${new Date().toISOString()}]\n${summary.trim()}${fileLine}`);
+        } else if (sessionId && event.type === 'compaction_artifact' && (filesRead?.length || filesModified?.length)) {
+          appendContextFile(
+            sessionId,
+            'system',
+            `[COMPACTION ARTIFACT — ${new Date().toISOString()}]\n[files read: ${(filesRead ?? []).join(', ') || '(none)'}; modified: ${(filesModified ?? []).join(', ') || '(none)'}]`,
+          );
         }
       }
     } catch {

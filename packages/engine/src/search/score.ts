@@ -60,6 +60,10 @@ function extractQualityScore(page: PageExtract | null): number {
   if (page.title) score += 0.2;
   if (page.description || page.excerpt) score += 0.25;
   if (page.imageUrl) score += 0.15;
+  if (page.price) score += 0.1;
+  if (page.rating) score += 0.1;
+  if (page.reviewCount) score += 0.05;
+  if (page.isProduct) score += 0.1;
   if (page.publishedAt) score += 0.1;
   return Math.min(1, score);
 }
@@ -71,6 +75,8 @@ function typeFitScore(contentType: DeepSearchContentType, intent: string[]): num
   if (intent.includes('social') && (contentType === 'social_profile' || contentType === 'social_post')) return 1;
   if (intent.includes('movie') && contentType === 'movie') return 1;
   if (intent.includes('product') && contentType === 'product') return 1;
+  if ((intent.includes('booking') || intent.includes('travel')) && (contentType === 'product' || contentType === 'place' || contentType === 'event')) return 0.9;
+  if (intent.includes('finance') && (contentType === 'article' || contentType === 'document')) return 0.9;
   if (contentType === 'generic') return 0.45;
   return 0.35;
 }

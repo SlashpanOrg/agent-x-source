@@ -66,8 +66,8 @@ function buildTerminalLines(
     { type: 'success', text: `  \u2713 Crew         ${crewLine}` },
     { type: 'blank', text: '' },
     { type: 'heading', text: '  CAPABILITIES' },
-    { type: 'dim', text: '  218 tools \u00B7 18 providers' },
-    { type: 'dim', text: '  4 channels \u00B7 Multi-agent mesh \u00B7 Persistent memory' },
+    { type: 'dim', text: '  292 tools \u00B7 18 providers' },
+    { type: 'dim', text: '  5 channels \u00B7 Multi-agent mesh \u00B7 Persistent memory' },
     { type: 'dim', text: '  AES-256-GCM encrypted storage \u00B7 Self-destruct tamper protection' },
     { type: 'blank', text: '' },
     // Only when LAUNCH is clickable — never while still preparing.

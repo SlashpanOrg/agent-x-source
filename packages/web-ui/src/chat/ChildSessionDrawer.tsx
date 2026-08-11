@@ -24,7 +24,7 @@ export interface ChildSessionLiveActivity {
   thinking?: string;
   streamContent?: string;
   toolCalls?: ToolCall[];
-  status?: 'running' | 'done' | 'error';
+  status?: 'running' | 'done' | 'error' | 'admitted';
 }
 
 interface ChildSessionDrawerProps {

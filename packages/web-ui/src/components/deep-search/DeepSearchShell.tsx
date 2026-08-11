@@ -4,6 +4,7 @@ import type { DeepSearchProgress, DeepSearchResultBundle } from '@agentx/shared/
 import { colors, alphaColor, getActiveScheme } from '../../theme';
 import { ThinkingOrb } from 'thinking-orbs';
 import { DeepSearchResultCard } from './DeepSearchResultCard';
+import { ProductResultsGrid } from './ProductResultsGrid';
 import { ResearchBoardTrigger } from './DeepSearchResearchBoard';
 import { searchResultsRowSx, deepSearchShellSx } from './card-utils';
 import { formatSearchProvidersList } from './provider-labels';
@@ -22,13 +23,15 @@ function ProgressStrip({ progress, running }: { progress?: DeepSearchProgress; r
       alignItems: 'center',
       gap: 0.75,
     }}>
-      <ThinkingOrb
-        state='searching'
-        size={20}
-        theme={getActiveScheme() === 'dark' ? 'dark' : 'light'}
-        aria-label={`${phase} · ${message}`}
-        style={{ flexShrink: 0 }}
-      />
+      {running && phase !== 'done' && (
+        <ThinkingOrb
+          state='searching'
+          size={20}
+          theme={getActiveScheme() === 'dark' ? 'dark' : 'light'}
+          aria-label={`${phase} · ${message}`}
+          style={{ flexShrink: 0 }}
+        />
+      )}
       <Typography sx={{ fontSize: '0.54rem', color: colors.accent.blue, fontFamily: "'JetBrains Mono', monospace" }}>
         {phase.toUpperCase()} · {message}
         {progress?.searched != null ? ` · scanned ${progress.searched}` : ''}
@@ -52,6 +55,7 @@ export function DeepSearchShell({
   const results = bundle?.results ?? [];
   const stats = bundle?.stats;
   const providersLabel = formatSearchProvidersList(bundle, results);
+  const isProductSearch = bundle?.plan.intent.includes('product') ?? false;
 
   return (
     <Box sx={deepSearchShellSx}>
@@ -111,11 +115,15 @@ export function DeepSearchShell({
       )}
 
       {results.length > 0 ? (
-        <Box className="ax-scroll-x" sx={searchResultsRowSx}>
-          {results.map((result, i) => (
-            <DeepSearchResultCard key={result.id} result={result} rank={i + 1} />
-          ))}
-        </Box>
+        isProductSearch ? (
+          <ProductResultsGrid results={results} />
+        ) : (
+          <Box className="ax-scroll-x" sx={searchResultsRowSx}>
+            {results.map((result, i) => (
+              <DeepSearchResultCard key={result.id} result={result} rank={i + 1} />
+            ))}
+          </Box>
+        )
       ) : running ? (
         <Box sx={{ px: 1, py: 1 }}>
           <Typography sx={{ fontSize: '0.58rem', color: colors.text.dim, fontStyle: 'italic' }}>

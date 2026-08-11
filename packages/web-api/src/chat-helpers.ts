@@ -4,6 +4,7 @@ import { applyWebSearchConfigFromAgentConfig, getPersonaStore, isWebSearchAvaila
 import type { AgentPersonaConfig, AgentXConfig, ClientSituation, Message, StorageAdapter, StorableMessage, TurnAttachment } from '@agentx/shared';
 import { normalizeClientSituation } from '@agentx/shared';
 import { getEngine } from './engine.js';
+import { getCommandJournal } from '@agentx/engine';
 import { persistMessageDirect } from './ws.js';
 import { turnRegistry } from './turn-registry.js';
 import { getLogger, sanitizeForJson, generateId } from '@agentx/shared';
@@ -208,6 +209,9 @@ export function runAgentTurnAsync(
     outputMode?: 'brief' | 'moderate' | 'detailed';
   },
 ): void {
+  const journalKey = `chat:${sessionId}:${turnId}`;
+  void getCommandJournal().receive('chat_turn', sessionId, { turnId }, journalKey);
+
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   let maxTurnTimer: ReturnType<typeof setTimeout> | undefined;
   let timeoutPaused = false;
@@ -274,6 +278,7 @@ export function runAgentTurnAsync(
       finalizeTurn();
       const partial = agent.getPartialTurnContent?.() ?? '';
       turnRegistry.fail(turnId, 'The operation was aborted due to timeout', partial);
+      void getCommandJournal().fail(journalKey, 'The operation was aborted due to timeout');
       if (partial) {
         persistMessageDirect(sessionId, 'assistant', partial + '\n\n⚠ Turn timed out — partial output saved.');
       }
@@ -372,11 +377,13 @@ export function runAgentTurnAsync(
       }
       if (message.id === '__clarify__') {
         turnRegistry.complete(turnId, message);
+      void getCommandJournal().complete(journalKey, { messageId: message?.id });
         onComplete?.(message);
         endHttp();
         return;
       }
       turnRegistry.complete(turnId, message);
+      void getCommandJournal().complete(journalKey, { messageId: message?.id });
       try { getEngine().sessionManager.updateSession({ updatedAt: new Date().toISOString() }); } catch { /* best-effort */ }
       onComplete?.(message);
       endHttp();
@@ -388,6 +395,7 @@ export function runAgentTurnAsync(
       if (isAbort) {
         const partial = agent.getPartialTurnContent?.() ?? '';
         turnRegistry.cancel(turnId);
+        void getCommandJournal().fail(journalKey, 'Cancelled');
         persistToolLedger(agent, sessionId);
         onError?.('Cancelled', partial);
         endHttp();
@@ -396,6 +404,7 @@ export function runAgentTurnAsync(
       const errMsg = e instanceof Error ? e.message : 'chat-failed';
       const partial = agent.getPartialTurnContent?.() ?? '';
       turnRegistry.fail(turnId, errMsg, partial);
+      void getCommandJournal().fail(journalKey, errMsg);
       persistToolLedger(agent, sessionId);
       if (partial) {
         try { persistMessageDirect(sessionId, 'assistant', partial); } catch { /* best-effort */ }

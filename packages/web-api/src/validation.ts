@@ -244,8 +244,8 @@ export const createCheckpointSchema = z.object({
   label: z.string().min(1, 'label is required'),
 });
 
-export const generateTitleSchema = z.object({
-  message: z.string().min(1),
+export const updateSessionSchema = z.object({
+  title: z.string().optional(),
 });
 
 export const turnFeedbackSchema = z.object({
@@ -253,10 +253,6 @@ export const turnFeedbackSchema = z.object({
   rating: z.enum(['positive', 'negative', 'skipped']),
   turnSummary: z.string().max(500).optional(),
   metadata: z.record(z.unknown()).optional(),
-});
-
-export const updateSessionSchema = z.object({
-  title: z.string().optional(),
 });
 
 export const providerValidateSchema = z.object({

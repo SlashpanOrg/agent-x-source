@@ -15,8 +15,8 @@ import SmartToyIcon from '@mui/icons-material/SmartToy';
 import BadgeIcon from '@mui/icons-material/Badge';
 import { CheckCircle } from '../CheckCircle';
 import { colors, alphaColor } from '../../theme';
-import { crewTheme } from '../../styles/crew-theme';
 import { copyToClipboard } from '../../utils/clipboard';
+import { crewTheme } from '../../styles/crew-theme';
 import { subagents, type SubAgentTaskInfo } from '../../api';
 import type { SxProps } from '@mui/material/styles';
 import {
@@ -79,7 +79,7 @@ export const ChatRightSidebar = React.memo(function ChatRightSidebar(props: Chat
       try {
         const list = await subagents.bySession(currentSessionId);
         // Only keep in-flight agents — completed/failed/cancelled drop out of the sidebar.
-        if (!cancelled) setSubAgents(list.filter((a) => a.status === 'running'));
+        if (!cancelled) setSubAgents(list.filter((a) => a.status === 'running' || a.status === 'admitted' || a.status === 'queued'));
       } catch {
         if (!cancelled) setSubAgents([]);
       }
@@ -307,7 +307,10 @@ export const ChatRightSidebar = React.memo(function ChatRightSidebar(props: Chat
                         {a.instruction?.slice(0, 40) || a.id.slice(0, 8)}
                       </Typography>
                       <Typography sx={{ fontSize: '0.5rem', fontFamily: "'JetBrains Mono', monospace", color: colors.text.dim, textTransform: 'uppercase' }}>
-                        running
+                        {a.status}
+                      </Typography>
+                      <Typography sx={{ fontSize: '0.45rem', fontFamily: "'JetBrains Mono', monospace", color: colors.text.tertiary }}>
+                        {a.id.slice(0, 8)}
                       </Typography>
                     </Box>
                   </Tooltip>

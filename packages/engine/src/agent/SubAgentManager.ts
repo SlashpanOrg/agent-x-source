@@ -18,6 +18,11 @@ import { getSubAgentServiceInstance, type SubAgentService } from './SubAgentServ
 import { getChannelServiceInstance } from '../services/ServiceContext.js';
 import { injectTraceparent, extractTraceparent } from '../observability/context.js';
 import type { ChannelId, OutboundMessage } from '../services/channel/IChannelService.js';
+import type { SubAgentAdmissionResult, SubAgentSpawnHandle } from '@agentx/shared';
+import { isInterAgentMessagingEnabled } from '@agentx/shared';
+import { getSubAgentAdmissionManager } from '../subagent-admission/SubAgentAdmissionManager.js';
+import { getInterAgentMessageService } from '../inter-agent-messaging/InterAgentMessageService.js';
+import { incrementAdoptionMetric } from '../adoption/adoption-metrics.js';
 import { getPerformanceLanes } from '../performance/PerformanceGovernor.js';
 
 /** Fallback only if Performance lanes are unavailable at construction. */
@@ -291,6 +296,116 @@ export class SubAgentManager {
   }
 
   /**
+   * Non-blocking admission path (Prime Agent Phase 3).
+   * Returns a handle immediately; work continues on a background fiber.
+   */
+  spawnAdmitted(
+    instruction: string,
+    tools: string[] = [],
+    timeout = 60_000,
+    name?: string,
+    channelContext?: { channel?: string; threadId?: string; messageId?: string },
+  ): SubAgentAdmissionResult {
+    const admissionMgr = getSubAgentAdmissionManager();
+    if (!admissionMgr.isEnabled()) {
+      return { mode: 'blocking' };
+    }
+    const slot = admissionMgr.reserveSlot();
+    if (!slot.ok) {
+      return { mode: 'blocking', result: slot.reason };
+    }
+
+    const task = this.spawn(instruction, tools, timeout, DEFAULT_MAX_CONCURRENT, undefined, true, channelContext);
+    const handle: SubAgentSpawnHandle = {
+      taskId: task.id,
+      childSessionId: task.childSessionId ?? task.id,
+      name,
+      status: 'admitted',
+      admittedAt: new Date().toISOString(),
+    };
+    admissionMgr.register(handle);
+    this.service.updateTask(task.id, { status: 'admitted' });
+
+    this.eventBus.emit({
+      type: 'subagent_admitted',
+      taskId: handle.taskId,
+      childSessionId: handle.childSessionId,
+      parentSessionId: this.parentSessionId ?? '',
+    } as EngineEvent);
+    incrementAdoptionMetric('subagent_admitted_total');
+
+    return { mode: 'admitted', handle };
+  }
+
+  notifyParentSubAgentComplete(taskId: string, result: string, success = true): void {
+    const task = this.agents.get(taskId) ?? this.completedAgents.get(taskId);
+    const childSessionId = task?.childSessionId ?? taskId;
+    const parentSessionId = this.parentSessionId ?? '';
+    this.eventBus.emit({
+      type: 'subagent_admitted_complete',
+      taskId,
+      childSessionId,
+      parentSessionId,
+      success,
+      summary: result.slice(0, 300),
+    } as EngineEvent);
+
+    if (isInterAgentMessagingEnabled() && parentSessionId) {
+      void getInterAgentMessageService().enqueue(
+        childSessionId,
+        parentSessionId,
+        'subagent_complete',
+        { taskId, summary: result.slice(0, 500), success },
+        'auto',
+        'parent',
+      );
+    }
+    if (task?.background && parentSessionId) {
+      void this.persistAdmittedCompleteNoteToParent(task, result, success);
+    }
+  }
+
+  private async persistAdmittedCompleteNoteToParent(
+    task: SubAgentTask,
+    result: string,
+    success: boolean,
+  ): Promise<void> {
+    if (!this.parentAgent || !this.parentSessionId) return;
+    try {
+      const sessionManager = (this.parentAgent as unknown as {
+        sessionManager?: {
+          getStorageAdapter?: () => {
+            insertMessage?: (msg: Record<string, unknown>) => void;
+            ensureSessionHydrated?: (sessionId: string) => Promise<void>;
+          };
+        };
+      }).sessionManager;
+      const store = sessionManager?.getStorageAdapter?.();
+      if (!store?.insertMessage) return;
+      if (store.ensureSessionHydrated) {
+        await store.ensureSessionHydrated(this.parentSessionId);
+      }
+      const snippet = result.slice(0, 1200);
+      const content = success
+        ? `[subagent_admitted_complete] task ${task.id} finished.\n${snippet}`
+        : `[subagent_admitted_complete] task ${task.id} failed.\n${snippet}`;
+      store.insertMessage({
+        sessionId: this.parentSessionId,
+        role: 'assistant',
+        content,
+        metadata: {
+          subagentAdmittedComplete: true,
+          taskId: task.id,
+          childSessionId: task.childSessionId ?? task.id,
+          success,
+        },
+      });
+    } catch {
+      /* best-effort transcript note */
+    }
+  }
+
+  /**
    * Execute a sub-agent task — uses SmartSubAgent if tools are specified, otherwise raw LLM call.
    * Runs concurrently with other sub-agents (no parent serialLock — that previously
    * forced all sub-agents to run one-at-a-time and defeated spawnParallel).
@@ -299,6 +414,7 @@ export class SubAgentManager {
     return extractTraceparent(task as unknown as Record<string, unknown>, async () => {
     task.status = 'running';
     task.startTime = Date.now();
+    getSubAgentAdmissionManager().markRunning(task.id);
     this.service.taskStarted(task.id, task.startTime);
     this.service.recordHeartbeat(task.id);
     const startMemory = process.memoryUsage().heapUsed;
@@ -522,6 +638,8 @@ export class SubAgentManager {
         this.notifyChannelOnCompletion(task, result, elapsed).catch((err) => {
           getLogger('SubAgentManager').warn('background-notify', `Channel notification failed for task ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
         });
+        this.notifyParentSubAgentComplete(task.id, result);
+        getSubAgentAdmissionManager().complete(task.id, 'completed');
       }
       this.finalizeTask(agentId);
     }
@@ -541,6 +659,10 @@ export class SubAgentManager {
         summary: `Failed: ${error}`,
         elapsed: Date.now() - (task.startTime ?? Date.now()),
       } as EngineEvent);
+      if (task.background) {
+        this.notifyParentSubAgentComplete(agentId, error, false);
+        getSubAgentAdmissionManager().complete(agentId, 'failed');
+      }
       this.finalizeTask(agentId);
     }
   }

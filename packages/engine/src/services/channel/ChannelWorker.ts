@@ -4,6 +4,7 @@ import type { Agent } from '../../agent/Agent.js';
 import type { ChannelId, IChannelService, OutboundMessage } from './IChannelService.js';
 import type { InboundPayload } from './IChannelService.js';
 import { InboundQueue } from './InboundQueue.js';
+import { sendViaSessionConnection } from '../../session-connection/channel-send.js';
 
 export interface ChannelWorkerOptions {
   inboundQueue: InboundQueue;
@@ -53,7 +54,7 @@ export class ChannelWorker {
       });
       return;
     }
-    const response = await agent.sendMessage(payload.text, {
+    const response = await sendViaSessionConnection(agent, payload.text, {
       channelId: payload.threadId ?? payload.sender.id,
       userId: payload.sender.id,
       sourceChannel: payload.channel,

@@ -9,7 +9,16 @@ import type {
   TelemetryEvent,
 } from '@agentx/shared';
 import { generateAxId, generateId, getLogger } from '@agentx/shared';
-import { effectiveAutomationNotifyChannels, getNotificationChannelStatus, inferAutomationSourceChannel, normalizeAutomationTaskOrigin, SessionPermissionStore, startAppSpan } from '@agentx/engine';
+import {
+  effectiveAutomationNotifyChannels,
+  getNotificationChannelStatus,
+  inferAutomationSourceChannel,
+  normalizeAutomationTaskOrigin,
+  SessionPermissionStore,
+  startAppSpan,
+  tryClaimAutomationTask,
+  releaseAutomationTaskClaim,
+} from '@agentx/engine';
 import { broadcast } from '../ws.js';
 import { getEngine } from '../engine.js';
 import { getTelegramRuntimeHints } from '../channels-sync.js';
@@ -589,20 +598,63 @@ export class AutomationService {
     }
   }
 
-  async recordRun(taskId: string, status: 'success' | 'failed', _trigger: 'schedule' | 'event' | 'manual' = 'schedule'): Promise<void> {
+  async recordRun(
+    taskId: string,
+    status: 'success' | 'failed',
+    trigger: 'schedule' | 'event' | 'manual' = 'schedule',
+    opts?: { runId?: string; coalesced?: boolean },
+  ): Promise<void> {
     const completedOnce = status === 'success';
     await this.pool.query(
       `UPDATE automation_tasks SET
         last_run_at = NOW(),
         last_run_status = $2,
         run_count = run_count + 1,
+        claimed_at = NULL,
+        claimed_by = NULL,
         updated_at = NOW(),
         status = CASE WHEN schedule_type = 'once' AND $3 THEN 'completed' ELSE status END
        WHERE id = $1`,
       [taskId, status, completedOnce],
     );
-    // automation_runs_total counter is incremented by the worker span lifecycle
-    // (in the finally block of runAutomationTurn) to avoid double-counting.
+    if (opts?.runId) {
+      await this.recordAutomationRun({
+        runId: opts.runId,
+        taskId,
+        trigger,
+        status,
+        coalesced: opts.coalesced ?? false,
+      });
+    }
+  }
+
+  async tryClaimTask(taskId: string, claimHolder: string): Promise<{ ok: boolean; reason?: string }> {
+    const result = await tryClaimAutomationTask(this.pool, taskId, claimHolder);
+    return { ok: result.ok, reason: result.reason };
+  }
+
+  async releaseClaim(taskId: string, claimHolder: string): Promise<void> {
+    await releaseAutomationTaskClaim(this.pool, taskId, claimHolder);
+  }
+
+  async recordAutomationRun(input: {
+    runId: string;
+    taskId: string;
+    trigger: 'schedule' | 'event' | 'manual';
+    status: 'success' | 'failed' | 'coalesced';
+    coalesced?: boolean;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO automation_runs (id, task_id, trigger, status, coalesced, started_at, ended_at)
+       VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+      [
+        input.runId,
+        input.taskId,
+        input.trigger,
+        input.status,
+        input.coalesced ?? false,
+      ],
+    );
   }
 
   async publishNotification(input: {

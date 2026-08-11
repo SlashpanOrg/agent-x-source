@@ -9,6 +9,7 @@
     "build": "pnpm run setup:env && pnpm -r run build",
     "dev": "pnpm run setup:env && pnpm --filter @agentx/web-api run dev",
     "test": "vitest run",
+    "test:adoption": "vitest run packages/engine/tests/adoption packages/engine/tests/harness packages/engine/tests/regressions packages/engine/tests/compaction-file-tracking.test.ts packages/engine/tests/goal packages/engine/tests/quality-gates packages/shared/tests/adoption-types.test.ts packages/web-ui/tests/generation-reconnect.test.ts packages/web-ui/tests/adoption-ui.test.ts",
     "test:retrieval": "vitest run --run packages/engine/tests/retrieval",
     "eval:retrieval": "node scripts/retrieval-eval.mjs",
     "check:retrieval-reindex": "node scripts/retrieval-reindex-check.mjs",

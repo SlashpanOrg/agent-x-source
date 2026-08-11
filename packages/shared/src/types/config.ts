@@ -136,6 +136,9 @@ export interface AgentXConfig extends Record<string, unknown> {
     /** Whether developer mode is enabled; persists across app restarts and reinstalls. */
     devMode?: boolean;
   };
+
+  /** Prime Agent adoption feature toggles (Settings → Advanced or config.json). */
+  adoption?: import('./adoption-settings.js').AdoptionSettings;
 }
 
 export interface DownloadedLocalModel {

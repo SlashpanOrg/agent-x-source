@@ -80,6 +80,10 @@ export function streamRouter(ctx: ObservabilityApiContext): Router {
           const newest = logs[0]!.ts;
           if (newest > lastSeenTs) lastSeenTs = newest;
         }
+        try {
+          const { getAdoptionMetrics } = await import('@agentx/engine');
+          send('adoption_metrics', getAdoptionMetrics());
+        } catch { /* engine metrics optional */ }
       } catch { /* ignore poll errors — connection may be closing */ }
     }, POLL_INTERVAL_MS);
 

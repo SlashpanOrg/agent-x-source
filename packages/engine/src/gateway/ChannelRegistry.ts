@@ -1,6 +1,7 @@
 import type { ChannelPlugin, ChannelRegistryEntry } from './types.js';
 import type { Agent } from '../agent/Agent.js';
-import type { VisualUpdate } from '@agentx/shared';
+import type { VisualUpdate, Message } from '@agentx/shared';
+import { sendViaSessionConnection } from '../session-connection/channel-send.js';
 
 export class ChannelRegistry {
   private channels = new Map<string, ChannelRegistryEntry>();
@@ -60,7 +61,7 @@ export class ChannelRegistry {
       entry.stats.lastActivity = Date.now();
 
       if (this.agentRef) {
-        const response = await this.agentRef.sendMessage(parsed.text);
+        const response = await sendViaSessionConnection(this.agentRef, parsed.text) as Message;
         entry.stats.messagesSent++;
 
         const formatted = await entry.plugin.handleOutgoing(response.content, {

@@ -18,6 +18,12 @@ import {
   takeCallDividerForPersist,
   VOICE_PERMISSION_TIMEOUT_MS,
   VOICE_PERMISSION_TIMEOUT_INSTRUCTION,
+  VOICE_INPUT_SAMPLE_RATE,
+  VOICE_OUTPUT_SAMPLE_RATE,
+  XAI_BARGE_IN_PLAYBACK_GRACE_MS,
+  XAI_SERVER_VAD,
+  XAI_WAKE_SERVER_VAD,
+  VOICE_USER_TRANSCRIPT_DEDUP_MS,
 } from '@agentx/shared';
 import { WebSocketVoiceTransport, ToolService, summarizePermissionArgs, buildCrewPrivateIdentityPrompt, getPersonaStore } from '@agentx/engine';
 import type { VoiceEngineSession, VoiceEngineState } from './types.js';
@@ -59,8 +65,8 @@ import {
 } from '../VoiceSessionSummaryService.js';
 
 const XAI_REALTIME_URL = 'wss://api.x.ai/v1/realtime';
-const VOICE_SAMPLE_RATE = 16_000;
-const OUTPUT_SAMPLE_RATE = 24_000;
+const VOICE_SAMPLE_RATE = VOICE_INPUT_SAMPLE_RATE;
+const OUTPUT_SAMPLE_RATE = VOICE_OUTPUT_SAMPLE_RATE;
 
 interface ToolCallItem {
   call_id: string;
@@ -100,6 +106,11 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   private speakingStartedAt = 0;
   private assistantText = '';
   private userTranscript = '';
+  /** Dedup xAI transcription.completed (same item / same text within a short window). */
+  private handledTranscriptItemIds = new Set<string>();
+  private lastEmittedUserTranscript = '';
+  private lastEmittedUserTranscriptAt = 0;
+  private transcriptCompletedChain: Promise<void> = Promise.resolve();
   private searchWeb = true;
   private bypassChip = false;
   /** Connected MCP / integration provider names last synced into this voice toolkit. */
@@ -131,7 +142,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   private readonly READY_FALLBACK_MS = 5_000;
   private readonly START_TIMEOUT_MS = 60_000;
   /** Match client playback grace — ignore server VAD barge-in during initial TTS. */
-  private readonly BARGE_IN_GRACE_MS = 1_000;
+  private readonly BARGE_IN_GRACE_MS = XAI_BARGE_IN_PLAYBACK_GRACE_MS;
   private apiKey: string;
   private model: string;
   private voice: string;
@@ -558,22 +569,15 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       return true;
     });
     const tools = options?.includeTools === false ? undefined : registry.toSchemas(toolList);
-    // VAD threshold is 0–1 where *higher* = louder audio required (fewer false
-    // positives from speaker echo / ambient noise). 0.72 was far too high.
-    // 0.2 catches natural conversational interruptions quickly, while the client
-    // only forwards frames above XAI_BARGE_IN_MIC_LEVEL (0.04) and triggers a
-    // local barge-in above XAI_BARGE_IN_TRIGGER_LEVEL (0.08). The short prefix /
-    // silence values keep the server turn boundary tight so playback stops and
-    // the reply starts with minimal latency.
+    // VAD: shared with dashboard + call clients (see voice-duplex-params).
+    // Client forwards frames above XAI_BARGE_IN_MIC_LEVEL and triggers local
+    // barge-in above XAI_BARGE_IN_TRIGGER_LEVEL after playback grace.
     // interrupt_response / create_response are OpenAI-only — xAI rejects unknown
     // turn_detection fields and may never emit session.updated.
     const turnDetection = this.mode === 'duplex'
       ? {
           type: 'server_vad',
-          // Higher threshold + longer silence tolerate cafe/ambient noise (xAI default 0.85).
-          threshold: this.wakeWordEnabled ? 0.35 : 0.45,
-          prefix_padding_ms: this.wakeWordEnabled ? 100 : 200,
-          silence_duration_ms: this.wakeWordEnabled ? 500 : 500,
+          ...(this.wakeWordEnabled ? XAI_WAKE_SERVER_VAD : XAI_SERVER_VAD),
         }
       : { type: null };
 
@@ -913,7 +917,14 @@ export class XaiRealtimeSession implements VoiceEngineSession {
         });
         break;
       case 'conversation.item.input_audio_transcription.completed':
-        await this.handleUserTranscriptCompleted(event);
+        this.transcriptCompletedChain = this.transcriptCompletedChain
+          .then(() => this.handleUserTranscriptCompleted(event))
+          .catch((err: unknown) => {
+            getLogger().warn(
+              'XAI_VOICE',
+              `transcript completed handler failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
         break;
       case 'response.created':
         this.handleResponseCreated(event);
@@ -1170,6 +1181,23 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   }
 
   private async handleUserTranscriptCompleted(event: Record<string, unknown>): Promise<void> {
+    const itemId = String(
+      event.item_id
+      ?? (event.item as { id?: string } | undefined)?.id
+      ?? '',
+    ).trim();
+    if (itemId) {
+      if (this.handledTranscriptItemIds.has(itemId)) {
+        getLogger().info('XAI_VOICE', `Skipping duplicate transcription.completed for item ${itemId}`);
+        return;
+      }
+      this.handledTranscriptItemIds.add(itemId);
+      if (this.handledTranscriptItemIds.size > 64) {
+        const first = this.handledTranscriptItemIds.values().next().value;
+        if (first) this.handledTranscriptItemIds.delete(first);
+      }
+    }
+
     // Wait for the speaker identification to finish (started in speech_stopped) so
     // the transcript label and xAI instructions are based on the current speaker.
     if (this.pendingSpeakerPromise) {
@@ -1205,6 +1233,20 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       }
       return;
     }
+
+    const normalized = text.trim().toLowerCase();
+    const now = Date.now();
+    if (
+      normalized
+      && normalized === this.lastEmittedUserTranscript
+      && now - this.lastEmittedUserTranscriptAt < VOICE_USER_TRANSCRIPT_DEDUP_MS
+    ) {
+      getLogger().info('XAI_VOICE', 'Skipping duplicate user transcript within dedup window');
+      return;
+    }
+    this.lastEmittedUserTranscript = normalized;
+    this.lastEmittedUserTranscriptAt = now;
+
     this.transport.sendControl({ type: 'transcript_final', sessionId: this.sessionId, text, empty: false, ...speakerPayload });
     this.persistUserMessage(text);
     // xAI only auto-responds when create_response is true. In wake-word mode we

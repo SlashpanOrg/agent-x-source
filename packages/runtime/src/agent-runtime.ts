@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { homedir, networkInterfaces } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import type { Server } from 'node:http';
-import { ensureLoginShellPath, getLogger } from '@agentx/shared';
+import { ensureLoginShellPath, getLogger, isExecutableSkillsEnabled, getSkillsVenvManager } from '@agentx/shared';
 import { PostgresLifecycleManager } from './PostgresLifecycleManager.js';
 import { RedisLifecycleManager } from './RedisLifecycleManager.js';
 
@@ -335,6 +335,22 @@ export class AgentRuntime {
     setupPythonEnv(resolveRuntimePaths(this.options), this.options.isDev);
   }
 
+  private resolveSkillsShimPath(): string {
+    return join(__dirname, '..', 'agent-x-skills-runtime');
+  }
+
+  async setupSkillsVenv(): Promise<void> {
+    if (!isExecutableSkillsEnabled()) return;
+    const shimPath = this.resolveSkillsShimPath();
+    process.env['AGENTX_SKILLS_RUNTIME_SHIM'] = shimPath;
+    try {
+      await getSkillsVenvManager().ensureReady(shimPath);
+      getLogger().info('STARTUP', 'Executable skills venv ready');
+    } catch (e) {
+      getLogger().warn('STARTUP', `Skills venv bootstrap failed: ${(e as Error).message}`);
+    }
+  }
+
   /**
    * Boot-time Postgres resolution. May defer on true first-run so the wizard can choose.
    */
@@ -483,6 +499,7 @@ export class AgentRuntime {
     getLogger().info('STARTUP', '1/4 Preparing runtime environment…');
     ensureLoginShellPath();
     this.setupPythonEnv();
+    await this.setupSkillsVenv();
 
     // Keep engine/shared getDataDir() aligned with runtime (desktop userData vs server XDG).
     process.env['AGENTX_DATA_DIR'] = this.options.getDataDir();
@@ -558,6 +575,14 @@ export class AgentRuntime {
   }
 
   async stop(): Promise<void> {
+    try {
+      const paths = resolveRuntimePaths(this.options);
+      const coordinatorPath = join(dirname(paths.webApiPath), 'shutdown-coordinator.js');
+      if (existsSync(coordinatorPath)) {
+        const mod = await import(pathToFileURL(coordinatorPath).href) as { drainForShutdown?: (ms: number) => Promise<void> };
+        if (mod.drainForShutdown) await mod.drainForShutdown(30_000);
+      }
+    } catch { /* best-effort */ }
     if (this.httpServer) {
       await new Promise<void>((resolve) => this.httpServer!.close(() => resolve()));
       this.httpServer = null;

@@ -102,6 +102,18 @@ export function CrewCallProvider({ children }: { children: ReactNode }) {
     setTranscript((prev) => {
       const last = prev[prev.length - 1];
       if (last && last.role === role && last.text === trimmed && !last.divider && (last.speakerName ?? null) === (speakerName ?? null)) return prev;
+      // Near-duplicate operator lines (double transcript_final) even if a system
+      // status line landed between them.
+      if (role === 'operator') {
+        const recentDup = [...prev].reverse().find((l) => (
+          !l.divider
+          && l.role === 'operator'
+          && l.text === trimmed
+          && (l.speakerName ?? null) === (speakerName ?? null)
+          && Date.now() - l.at < 2_500
+        ));
+        if (recentDup) return prev;
+      }
       if (last && last.role === role && role !== 'system' && !last.divider && (last.speakerName ?? null) === (speakerName ?? null) && trimmed.startsWith(last.text)) {
         return [...prev.slice(0, -1), { ...last, text: trimmed, at: Date.now(), speakerName }];
       }
@@ -453,8 +465,8 @@ export function CrewCallProvider({ children }: { children: ReactNode }) {
       }
       voice?.retainVoiceEngine();
 
-      // Voice calls use a segregated sibling session: voice:{textSessionId}.
-      // Never bind the uplink to the private text chat session.
+      // Voice calls use a segregated session (`voice:{textId}` or `voice:call:{crewId}`).
+      // Never bind the uplink to the private text chat, and never create one just for a call.
       if (!next.crewId && !next.recruit && !next.sessionId) {
         throw new Error('Call target missing crew identity');
       }

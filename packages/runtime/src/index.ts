@@ -74,6 +74,14 @@ export type {
 } from './RedisLifecycleManager.js';
 
 export {
+  getSkillsVenvManager,
+  SkillsVenvManager,
+  resolveSkillsVenvPath,
+  resolveSkillsVenvPython,
+  applySkillsVenvEnv,
+} from './skills-venv.js';
+
+export {
   AgentRuntime,
   createDesktopRuntimeOptions,
   createServerRuntimeOptions,

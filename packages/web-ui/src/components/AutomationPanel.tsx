@@ -130,6 +130,12 @@ function telemetryToLogEntry(ev: TelemetryEvent): OpsLogEntry | null {
         label: `stream ${(ev as { tool?: string }).tool ?? ''}`,
         detail: String((ev as { output?: string }).output ?? '').slice(0, 300),
       };
+    case 'quality_gate_fail':
+      return {
+        id, ts, level: 'err',
+        label: 'GATE',
+        detail: String((ev as { output?: string }).output ?? (ev as { command?: string }).command ?? 'failed').slice(0, 500),
+      };
     case 'message_received': {
       const msg = (ev as { message?: { role?: string; content?: string } }).message;
       if (msg?.role !== 'assistant') return null;

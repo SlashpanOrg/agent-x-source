@@ -1,8 +1,10 @@
 import type { EngineEvent } from '@agentx/shared';
+import { isInterAgentMessagingEnabled } from '@agentx/shared';
 import type { AgentEventBus } from '../EventBus.js';
 import { getLogger } from '@agentx/shared';
 import { randomUUID } from 'node:crypto';
 import { injectTraceparent, extractTraceparent } from '../observability/context.js';
+import { getInterAgentMessageService } from '../inter-agent-messaging/InterAgentMessageService.js';
 
 const logger = getLogger();
 
@@ -14,6 +16,8 @@ export interface AgentMessage {
   payload: Record<string, unknown>;
   timestamp: number;
   replyTo?: string;
+  deliveryMode?: 'auto' | 'steer' | 'follow_up';
+  receiverRole?: 'parent' | 'sibling' | 'self';
 }
 
 export interface AgentSubscription {
@@ -74,6 +78,47 @@ export class AgentBus {
   }
 
   /**
+   * Route a message to a target session (persisted when inter-agent messaging is enabled).
+   */
+  async sendToSession(
+    fromSessionId: string,
+    toSessionId: string,
+    topic: string,
+    payload: Record<string, unknown>,
+    deliveryMode?: AgentMessage['deliveryMode'],
+    receiverRole?: AgentMessage['receiverRole'],
+  ): Promise<AgentMessage> {
+    if (isInterAgentMessagingEnabled()) {
+      const persisted = await getInterAgentMessageService().enqueue(
+        fromSessionId,
+        toSessionId,
+        topic,
+        payload,
+        deliveryMode ?? 'auto',
+        receiverRole ?? 'sibling',
+      );
+      const msg: AgentMessage = {
+        id: persisted.id,
+        from: fromSessionId,
+        to: toSessionId,
+        topic,
+        payload,
+        timestamp: persisted.timestamp,
+        deliveryMode: persisted.deliveryMode,
+        receiverRole: persisted.receiverRole,
+      };
+      this.messageLog.push(msg);
+      if (this.messageLog.length > 500) this.messageLog.shift();
+      this.eventBus?.emit({
+        type: 'agent_message',
+        message: msg,
+      } as unknown as EngineEvent);
+      return msg;
+    }
+    return this.publish(fromSessionId, toSessionId, topic, payload, undefined, deliveryMode, receiverRole);
+  }
+
+  /**
    * Publish a message to a topic. All subscribers receive it.
    * Injects the current traceparent into the message payload so subscribers
    * can continue the trace (cross-agent distributed tracing, v1.1+).
@@ -84,6 +129,8 @@ export class AgentBus {
     topic: string,
     payload: Record<string, unknown>,
     replyTo?: string,
+    deliveryMode?: AgentMessage['deliveryMode'],
+    receiverRole?: AgentMessage['receiverRole'],
   ): Promise<AgentMessage> {
     // Inject the active span's traceparent into the payload (v1.1+).
     injectTraceparent(payload);
@@ -96,6 +143,8 @@ export class AgentBus {
       payload,
       timestamp: Date.now(),
       replyTo,
+      deliveryMode,
+      receiverRole,
     };
 
     this.messageLog.push(msg);

@@ -1,14 +1,16 @@
 import type { Agent } from '@agentx/engine';
-import { automationRunSessionId, generateAxId, getLogger, sanitizeAutomationNotificationBody } from '@agentx/shared';
+import { automationRunSessionId, generateAxId, getLogger, sanitizeAutomationNotificationBody, isQualityGatesEnabled } from '@agentx/shared';
 import type { TelemetryEvent } from '@agentx/shared';
-import { effectiveAutomationNotifyChannels, getNotificationChannelStatus, getCurrentTraceId, getCurrentSpanId, startAppSpan } from '@agentx/engine';
+import { effectiveAutomationNotifyChannels, getNotificationChannelStatus, getCurrentTraceId, getCurrentSpanId, startAppSpan, getQualityGateRunner } from '@agentx/engine';
 import { createAgent, getEngine, awaitEngineStorageReady, rewireTelegramChannelPermissions } from '../engine.js';
 import { getTelegramRuntimeHints } from '../channels-sync.js';
 import { getPgBoss, getAutomationQueueName } from './boss.js';
 import { AutomationService, deliverExternalNotifications } from './service.js';
 import { automationRunSessionMatchesTask, telemetryEventToPersistedLog } from './log-utils.js';
+import { isMissedTickCoalesced } from './run-coalesce.js';
 import { getActiveWorkspacePath } from '../workspace.js';
 import { metricsRegistry } from '../metrics/MetricsRegistry.js';
+import { DEFAULT_AUTOMATION_QUALITY_GATE_COMMANDS } from './constants.js';
 
 const AUTOMATION_INSTRUCTION_PREFIX = `[Scheduled automation]`;
 
@@ -124,6 +126,38 @@ async function runAutomationTurn(
   }
 
   const resolvedTaskId = task.id;
+  const claimHolder = runId;
+  const claim = await service.tryClaimTask(resolvedTaskId, claimHolder);
+  if (!claim.ok) {
+    metricsRegistry.incrementCounter('job_claim_conflicts_total', {});
+    getLogger().debug('AUTOMATION_WORKER', `Claim failed for ${resolvedTaskId}: ${claim.reason ?? 'held'}`);
+    return;
+  }
+
+  const coalesced = isMissedTickCoalesced(task, targetRunAt);
+  if (coalesced) {
+    metricsRegistry.incrementCounter('automation_ticks_coalesced_total', {});
+    void service.appendRunLog(resolvedTaskId, runId, {
+      level: 'sys',
+      label: 'COALESCE',
+      detail: 'Missed tick coalesced — prior run already covered this slot',
+      eventType: 'automation_run_coalesced',
+    }).catch(() => {});
+    await service.recordAutomationRun({
+      runId,
+      taskId: resolvedTaskId,
+      trigger,
+      status: 'coalesced',
+      coalesced: true,
+    });
+    if (task.scheduleType === 'recurring') {
+      const refreshed = await service.getTask(resolvedTaskId);
+      if (refreshed) await service.scheduleNextRecurringRun(refreshed);
+    }
+    await service.releaseClaim(resolvedTaskId, claimHolder);
+    return;
+  }
+
   const cfg = eng.configManager.load();
   const sessionId = automationRunSessionId(resolvedTaskId);
   let runStatus: 'success' | 'failed' = 'success';
@@ -191,6 +225,26 @@ async function runAutomationTurn(
       metricsRegistry.incrementCounter('automation_steps_total', { type: 'agent_execution', status: 'success' });
       stepSpan.end();
       stepEnded = true;
+      if (isQualityGatesEnabled()) {
+        const gateResult = await getQualityGateRunner().run(
+          { commands: [...DEFAULT_AUTOMATION_QUALITY_GATE_COMMANDS] },
+          scopePath,
+          undefined,
+          (ev) => eng.telemetry.emit(ev as never),
+        );
+        if (!gateResult.passed) {
+          const gateOutput = gateResult.failures
+            .map((f) => `${f.command} (exit ${f.exitCode ?? '?'}): ${f.output}`)
+            .join('\n');
+          void service.appendRunLog(resolvedTaskId, runId, {
+            level: 'err',
+            label: 'GATE',
+            detail: gateOutput.slice(0, 2000),
+            eventType: 'quality_gate_fail',
+          }).catch(() => {});
+          throw new Error(`Quality gate failed:\n${gateOutput.slice(0, 500)}`);
+        }
+      }
       const rawBody = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
         const body = sanitizeAutomationNotificationBody(rawBody, { title: task.title }).slice(0, 4000);
         const channelStatus = getNotificationChannelStatus(cfg, getTelegramRuntimeHints());
@@ -205,7 +259,7 @@ async function runAutomationTurn(
           payload: { taskId: task.id, displayId: task.displayId, runSessionId: sessionId, runId },
         });
       await deliverExternalNotifications(notification, task, eng);
-      await service.recordRun(resolvedTaskId, 'success', trigger);
+      await service.recordRun(resolvedTaskId, 'success', trigger, { runId, coalesced: false });
       if (task.scheduleType === 'recurring') {
         const refreshed = await service.getTask(resolvedTaskId);
         if (refreshed) await service.scheduleNextRecurringRun(refreshed);
@@ -241,7 +295,7 @@ async function runAutomationTurn(
         payload: { taskId: task.id, displayId: task.displayId, error: errMsg, runSessionId: sessionId, runId },
       });
       await deliverExternalNotifications(notification, task, eng);
-      await service.recordRun(resolvedTaskId, 'failed', trigger);
+      await service.recordRun(resolvedTaskId, 'failed', trigger, { runId, coalesced: false });
       runStatus = 'failed';
       span.setAttribute('automation.status', 'failed');
       span.recordError(errMsg);
@@ -265,6 +319,7 @@ async function runAutomationTurn(
         agent.sessionLogger?.close?.();
         agent.endSession();
       } catch { /* best-effort */ }
+      await service.releaseClaim(resolvedTaskId, claimHolder);
     }
   })());
 }

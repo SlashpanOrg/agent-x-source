@@ -134,6 +134,8 @@ vi.mock('../src/commands/builtin/tasks.js', () => ({
   setTaskManagerInstance: vi.fn(),
   setBackgroundQueueInstance: vi.fn(),
   getBackgroundQueueInstance: vi.fn(() => null),
+  bgCommand: { name: 'bg', description: 'bg', execute: vi.fn(async () => ({ success: true, message: '' })) },
+  tasksCommand: { name: 'tasks', description: 'tasks', execute: vi.fn(async () => ({ success: true, message: '' })) },
 }));
 
 vi.mock('ai', async (importOriginal) => {

@@ -1,11 +1,28 @@
 import type { UIMessage } from '../chat/types';
-import { deriveMarkdownTitle, sanitizeMarkdownDeliverable } from '@agentx/shared/browser';
+import {
+  deriveMarkdownTitle,
+  parseResponseDocument,
+  responseDocumentToMarkdown,
+  sanitizeMarkdownDeliverable,
+} from '@agentx/shared/browser';
 import { displayContent } from '../chat/utils';
 import { buildPrintHtml } from './print-template';
 
 /** Serialize a chat message into markdown for document storage (preserves chart parts). */
 export function messageToMarkdownDocument(message: UIMessage): string {
   const chunks: string[] = [];
+  const richPart = message.parts?.find((part) => (
+    part.type === 'response_document'
+    && parseResponseDocument(part.responseDocument).ok
+  ));
+  if (richPart?.type === 'response_document') {
+    const parsed = parseResponseDocument(richPart.responseDocument);
+    if (parsed.ok) {
+      const richMarkdown = richPart.fallbackMarkdown?.trim()
+        || responseDocumentToMarkdown(parsed.document);
+      return sanitizeMarkdownDeliverable(richMarkdown);
+    }
+  }
   if (message.parts?.length) {
     for (const part of message.parts) {
       if (part.type === 'text' && part.content?.trim()) {

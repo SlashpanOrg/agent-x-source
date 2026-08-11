@@ -8,6 +8,7 @@ export {
   partsTextTruncatesContent,
   syncTextPartsWithCanonicalContent,
   dedupeToolParts,
+  dedupeResponseDocumentParts,
   buildPartsFromDbRows,
   assignPartsToAssistantMessage,
   buildPartsForPersist,
@@ -157,6 +158,41 @@ export type {
   ChartParseResult,
 } from './utils/chart-spec.js';
 
+export {
+  RESPONSE_DOCUMENT_VERSION,
+  MAX_RESPONSE_DOCUMENT_BYTES,
+  MAX_RESPONSE_BLOCKS,
+  MAX_RESPONSE_TABLE_CELLS,
+  ResponseToneSchema,
+  ResponseBlockSchema,
+  ResponseDocumentSchema,
+  parseResponseDocument,
+  responseDocumentToMarkdown,
+  responseDocumentPart,
+} from './utils/response-document.js';
+
+export type {
+  ResponseTone,
+  ResponseBlockV1,
+  ResponseDocumentV1,
+  ResponseDocumentParseResult,
+} from './utils/response-document.js';
+
+export {
+  RICH_RESPONSE_COMPILE_DEADLINE_MS,
+  RICH_RESPONSE_MAX_SOURCE_CHARS,
+  RICH_RESPONSE_MIN_PARITY,
+  shouldCompileRichResponse,
+  responseDocumentSemanticParity,
+  compileRichResponseDocument,
+  compileRichResponsePart,
+} from './utils/rich-response-compiler.js';
+
+export type {
+  RichResponseCompileInput,
+  RichResponseCompileResult,
+} from './utils/rich-response-compiler.js';
+
 export type {
   TurnFeedbackRating,
   TurnFeedbackRecord,
@@ -276,10 +312,30 @@ export type { CallDividerVariant, CallDividerMeta } from './utils/call-transcrip
 
 export {
   CREW_VOICE_SESSION_PREFIX,
+  CREW_CALL_ANCHOR_PREFIX,
   crewVoiceSessionId,
   isCrewVoiceSessionId,
+  crewCallAnchorId,
+  isCrewCallAnchorId,
   textSessionIdFromVoiceSessionId,
 } from './utils/crew-voice-session.js';
+
+export {
+  VOICE_INPUT_SAMPLE_RATE,
+  VOICE_OUTPUT_SAMPLE_RATE,
+  XAI_BARGE_IN_MIC_LEVEL,
+  XAI_BARGE_IN_TRIGGER_LEVEL,
+  XAI_BARGE_IN_TRIGGER_FRAMES,
+  XAI_WAKE_BARGE_IN_TRIGGER_LEVEL,
+  XAI_WAKE_BARGE_IN_TRIGGER_FRAMES,
+  XAI_BARGE_IN_PLAYBACK_GRACE_MS,
+  MIN_FIRST_PLAYBACK_SAMPLES,
+  FIRST_PLAYBACK_START_DELAY_SEC,
+  PLAYBACK_IDLE_NOTIFY_MS,
+  XAI_SERVER_VAD,
+  XAI_WAKE_SERVER_VAD,
+  VOICE_USER_TRANSCRIPT_DEDUP_MS,
+} from './utils/voice-duplex-params.js';
 
 // Client situation — web-ui location context and docking display
 export type {

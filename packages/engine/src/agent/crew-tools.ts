@@ -15,6 +15,7 @@ const DOMAIN_TOOL_BUNDLES: Record<string, string[]> = {
   tax: ['file_read', 'pdf_read', 'csv_parse', 'json_parse', 'gen_markdown'],
 };
 
+/** Crew delegation uses subagent admission when adoption.subagents is enabled — see SubAgentService. */
 const CORE_CREW_TOOLS = [
   'file_read', 'file_write', 'file_delete', 'folder_list', 'folder_create',
   'code_search', 'code_replace', 'code_insert', 'code_grep', 'code_definitions',

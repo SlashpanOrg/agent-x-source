@@ -17,7 +17,7 @@ export interface SubAgent {
   id: string;
   name: string;
   task: string;
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'error' | 'admitted';
   result?: string;
   toolCalls?: ToolCall[];
   kind?: 'sub_agent' | 'crew_worker';
@@ -32,7 +32,7 @@ export interface SubAgent {
 import type { QuestionnaireRecord } from '@agentx/shared/browser';
 
 export interface PartEntry extends Record<string, unknown> {
-  type: 'text' | 'tool' | 'subagent' | 'questionnaire' | 'crew_roster_picker' | 'deep_search' | 'chart' | 'thinking' | 'permission';
+  type: 'text' | 'tool' | 'subagent' | 'questionnaire' | 'crew_roster_picker' | 'deep_search' | 'chart' | 'thinking' | 'permission' | 'response_document';
   id: string;
   content?: string;
   tool?: ToolCall;
@@ -42,6 +42,8 @@ export interface PartEntry extends Record<string, unknown> {
   crewRosterPicker?: import('../components/crew/CrewRosterPickerMessage').CrewRosterPickerRecord;
   /** Canonical ChartSpec JSON for structured chart parts. */
   chartJson?: string;
+  responseDocument?: import('@agentx/shared/browser').ResponseDocumentV1;
+  fallbackMarkdown?: string;
   deepSearch?: {
     bundle?: import('@agentx/shared/browser').DeepSearchResultBundle;
     progress?: import('@agentx/shared/browser').DeepSearchProgress;

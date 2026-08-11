@@ -68,6 +68,17 @@ function mapTranscriptLines(messages: ChatMessage[]): TranscriptLine[] {
     const text = sanitizeVoiceDisplayText(content);
     if (!text) continue;
     const speakerName = typeof m.metadata?.speakerName === 'string' ? m.metadata.speakerName : null;
+    // Collapse consecutive identical user turns (double persist / double ASR final).
+    const last = lines[lines.length - 1];
+    if (
+      last
+      && last.role === m.role
+      && last.role === 'user'
+      && last.text === text
+      && (last.speakerName ?? null) === (speakerName ?? null)
+    ) {
+      continue;
+    }
     lines.push({ id, role: m.role, text, speakerName, raw: m });
   }
   return lines;
@@ -200,20 +211,15 @@ export function VoiceTranscriptPanel({
   useEffect(() => {
     if (liveUserClean) {
       setPendingUser(liveUserClean);
-    } else {
-      // Live user text cleared (phase left recording) — drop the stale partial.
-      // The history reload will show the persisted user message if the turn succeeded.
-      setPendingUser('');
     }
+    // Do not clear pending when live text clears — history catch-up clears it below.
   }, [liveUserClean]);
 
   useEffect(() => {
     if (liveAgentClean) {
       setPendingAgent(liveAgentClean);
-    } else {
-      // Live agent text cleared — drop the stale agent partial.
-      setPendingAgent('');
     }
+    // Do not clear pending when live text clears — history catch-up clears it below.
   }, [liveAgentClean]);
 
   // Avoid duplicate lines when history already includes the same utterance

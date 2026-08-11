@@ -12,6 +12,7 @@ import {
   type PartPersistFn,
   type CrewManager,
   type TelegramChannelPlugin,
+  getResidentSessionManager,
 } from '@agentx/engine';
 import type { AgentXConfig, Session, TelemetryEvent } from '@agentx/shared';
 import {
@@ -22,6 +23,7 @@ import {
   isCrewVoiceSessionId,
   parseChannelBindingFromSessionId,
   crewParticipationMode,
+  isResidentSessionsEnabled,
 } from '@agentx/shared';
 import { join } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -114,7 +116,7 @@ export async function hydrateAgentRecentHistory(
 export function createAgent(
   config: AgentXConfig | undefined,
   session: Session,
-  options?: { attachToEngine?: boolean; automationRun?: boolean; delegatedWorker?: boolean },
+  options?: { attachToEngine?: boolean; automationRun?: boolean; delegatedWorker?: boolean; leaseOwnerNamespace?: string },
 ): Agent {
   const eng = getEngine();
   let cfg: AgentXConfig;
@@ -166,11 +168,18 @@ export function createAgent(
     throw new Error('Crew private session is missing host crew identity.');
   }
 
+  const channelBinding = parseChannelBindingFromSessionId(session.id);
   const agent = new Agent({
     config: cfg,
     sessionId: session.id,
     systemPrompt: crewPrivateHost ? buildCrewPrivateIdentityPrompt(crewPrivateHost) : '',
     scopePath: effectiveScopePath,
+    leaseOwnerNamespace: options?.leaseOwnerNamespace
+      ?? (isChannelSessionId(session.id)
+        ? `channel:${channelBinding ?? 'unknown'}`
+        : isAutomationRun
+          ? `automation:${session.id}`
+          : 'ui:shared'),
     toolExecutor: eng.toolkit.executor,
     toolRegistry: eng.toolkit.registry,
     prepareIntegrationTools: async (userText) => {
@@ -357,7 +366,7 @@ export function createAgent(
       ...(automationTaskId ? { automationTaskId, taskId: automationTaskId } : {}),
     } as unknown as TelemetryEvent);
     const ev = event as Record<string, unknown>;
-    if (ev['type'] === 'clarification_required') {
+    if (ev['type'] === 'clarification_required' || ev['type'] === 'clarification_paused') {
       try {
         persistClarificationResumeFromAgent(agent, session.id);
       } catch { /* best-effort */ }
@@ -479,6 +488,9 @@ export function getOrCreateBoundSessionAgent(session: Session, config?: AgentXCo
   eng.sessionManager.restoreSession(session.id);
   const agent = createAgent(config, session, { attachToEngine: false });
   map.set(session.id, agent);
+  if (isResidentSessionsEnabled()) {
+    getResidentSessionManager().register(session.id, agent, 'active');
+  }
   return agent;
 }
 

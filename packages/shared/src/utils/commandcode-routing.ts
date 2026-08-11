@@ -61,8 +61,8 @@ export function readCommandCodeProtocolFromApiRecord(
 
 /**
  * Catalog fallback when /models omits protocol metadata.
- * CommandCode documents: `/v1/messages` for Anthropic (Claude); `/v1/chat/completions`
- * for OpenAI, Google, and open-source models.
+ * CommandCode documents: `/v1/messages` for Anthropic Messages; `/v1/chat/completions`
+ * for OpenAI-compatible, Google, and open-source models.
  */
 export function inferCommandCodeProtocolFromCatalog(modelId: string): CommandCodeApiProtocol {
   const id = modelId.trim().toLowerCase();

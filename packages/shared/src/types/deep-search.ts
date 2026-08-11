@@ -33,6 +33,10 @@ export interface DeepSearchExtracted {
   duration?: string;
   price?: string;
   rating?: string;
+  reviewCount?: string;
+  reviewHighlights?: string[];
+  availability?: string;
+  brand?: string;
   excerpt?: string;
   videoId?: string;
 }

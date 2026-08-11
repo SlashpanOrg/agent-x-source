@@ -3,6 +3,7 @@ import { resolve, dirname, basename, isAbsolute, normalize, sep, relative } from
 import { execSync } from 'node:child_process';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 import { isAgentInternalPath } from '@agentx/shared';
+import { recordCompactionModified, recordCompactionRead } from '../../agent/compaction-file-hooks.js';
 import { IS_WINDOWS } from '../platform.js';
 
 /**
@@ -108,9 +109,11 @@ export async function fileRead(args: Record<string, unknown>, context: ToolExecu
       const total = lines.length;
       const output = sliced.join('\n');
       const meta = { totalLines: total, returnedLines: sliced.length, offset: start };
+      recordCompactionRead(context.sessionId, context.scopePath, filePath);
       return { success: true, output, metadata: meta };
     }
 
+    recordCompactionRead(context.sessionId, context.scopePath, filePath);
     return { success: true, output: content };
   } catch (error) {
     return { success: false, output: `Failed to read file: ${(error as Error).message}`, error: 'READ_ERROR' };
@@ -148,10 +151,12 @@ export async function fileWrite(args: Record<string, unknown>, context: ToolExec
     if (mode === 'append') {
       const contentToAppend = `\n${content}\n`;
       writeFileSync(filePath, contentToAppend, { flag: 'a', encoding: 'utf-8' });
+      recordCompactionModified(context.sessionId, context.scopePath, filePath);
       return { success: true, output: `Appended to ${filePath}` };
     }
     const contentToWrite = content.endsWith('\n') ? content : `${content}\n`;
     writeFileSync(filePath, contentToWrite, 'utf-8');
+    recordCompactionModified(context.sessionId, context.scopePath, filePath);
     return { success: true, output: `Written to ${filePath}` };
   } catch (error) {
     return { success: false, output: `Failed to write file: ${(error as Error).message}`, error: 'WRITE_ERROR' };

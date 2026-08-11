@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
 import { IS_WINDOWS, getShellCommand, getProcessListCommand } from '../platform.js';
 import { DockerSandbox } from '../../sandbox/DockerSandbox.js';
+import { recordCompactionFromShell } from '../../agent/compaction-file-hooks.js';
 import {
   buildShellEnv,
   isTrackedShellPid,
@@ -45,6 +46,7 @@ export async function shellExec(args: Record<string, unknown>, context: ToolExec
   const redirectErr = validateRedirects(command, context.scopePath);
   if (redirectErr) return { success: false, output: redirectErr, error: 'SCOPE_VIOLATION' };
   const cwd = args['cwd'] ? resolve(context.scopePath, args['cwd'] as string) : context.scopePath;
+  recordCompactionFromShell(context.sessionId, context.scopePath, command, cwd);
   const scopeErr = validateCommandScope(command, context.scopePath, cwd);
   if (scopeErr) return { success: false, output: scopeErr, error: 'SCOPE_VIOLATION' };
   const maxShellTimeout = context.voiceTurn ? 20_000 : 600_000;

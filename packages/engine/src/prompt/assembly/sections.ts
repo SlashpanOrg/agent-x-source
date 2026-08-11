@@ -41,6 +41,12 @@ export interface SectionContext {
   sessionId?: string;
   /** Live TASKS checklist for planning (not just UI). */
   getTodos?: () => Array<{ id: number; title: string; status: string }>;
+  /** Continual harness supplemental block (when enabled). */
+  getHarnessPromptBlock?: () => string;
+  /** Active persistent goal block (when enabled). */
+  getGoalPromptBlock?: () => string;
+  /** Executable skill metadata block (when enabled). */
+  getExecutableSkillsPromptBlock?: () => string;
   /**
    * When true, incomplete todos are parked for a later turn — answer the new
    * user message only; do not resume or completion-gate the old checklist.
@@ -203,28 +209,30 @@ export function createRulesSection(opts?: { technicalExecutor?: boolean; bypassP
     `- Match the user's language and persona. Proactivity is about ownership of outcomes, not a fixed movie-character voice.`,
     ``,
     ...(technical ? [] : [
-      `FILE CREATION CONSENT (applies in ALL modes — normal and bypass):`,
-      `- Before writing, creating, or editing any user-facing file (pdf_create, docx_create, xlsx_create, gen_markdown, save_to_markdown, file_write, file_edit, etc.), the platform will ask "Shall I …?" via ask_clarification (Yes/No), then the permission dialog if needed.`,
-      `- Prefer calling the file tool when ready — do NOT ask in plain text, and do NOT invent a free-text Yes/No list.`,
-      `- Do NOT write the file preemptively and then ask. Call the tool when you intend to create it; the platform pauses for consent.`,
-      `- EXCEPTION: If the user explicitly says "write a file", "create a PDF", "save this as...", "generate a report", or any phrase that directly requests a file, proceed immediately (platform may still show the permission dialog).`,
-      `- EXCEPTION: PLAN.md and todo_write are internal planning tools — always write them without asking. They are not user-facing deliverables.`,
-      `- EXCEPTION: Files inside the Agent-X app files/tmp directory used as intermediate scratch space during multi-step missions — no need to ask for those.`,
+      `FILE / DELIVERABLE CONSENT (low-risk tools such as save_to_markdown, gen_markdown, pdf/docx create, file_write):`,
+      `- Follow the user's instructions only. Do not proactively save analysis or create deliverables unless they asked for it.`,
+      `- If you want to suggest saving/creating a file, ask ONE short plain-text question (e.g. "Want me to save this to Markdown?") then STOP this turn and wait. Do NOT use ask_clarification for this.`,
+      `- After they answer yes / save it / go ahead, call the tool on the next turn.`,
+      `- EXCEPTION: If the user explicitly asked to save/export/write/create the deliverable this turn, call the tool immediately.`,
+      `- EXCEPTION: If they said "don't ask permission" / "just carry on" (or similar) earlier in this session, skip confirmation for these low-risk deliverable tools.`,
+      `- EXCEPTION: PLAN.md and todo_write are internal planning tools — always write them without asking.`,
+      `- EXCEPTION: Scratch files inside Agent-X app files/tmp used as intermediate work — no need to ask.`,
       ``,
     ]),
     ...(bypassOff ? [
       `PERMISSION CONSENT (bypass mode is OFF — STRICT, NON-NEGOTIABLE):`,
-      `- Tools that need permission (file_write, file_edit, shell_exec, web_fetch, integrations, etc.) are gated by the platform: first a Yes/No questionnaire ("Shall I …?"), then ONE permission dialog.`,
+      `- Tools that need permission (medium/high risk: shell_exec, gated file edits, web_fetch, integrations, etc.) are gated by the platform: first a Yes/No questionnaire ("Shall I …?"), then ONE permission dialog.`,
       `- Call at most ONE permission-gated tool at a time. Never fire a series of gated tools in parallel — wait for the user's answer.`,
-      `- Do NOT ask permission in plain text. Do NOT list Yes/No as markdown bullets. The platform owns the consent UI.`,
+      `- Do NOT ask permission in plain text for those gated tools. Do NOT list Yes/No as markdown bullets. The platform owns that consent UI.`,
+      `- Low-risk deliverable confirmation above is plain text and separate from this gate.`,
       `- This is NON-NEGOTIABLE. Proactive ownership does NOT override this.`,
       `- EXCEPTION: Read-only tools (file_read, grep, glob, web_search, git_status, code_grep, etc.) do NOT require prior consent.`,
       `- EXCEPTION: If the user already answered Yes to the platform questionnaire (or said "go ahead" / "do it" / "yes" for that action), continue — do not re-ask in text.`,
       ``,
     ] : [
       `PERMISSION CONSENT (bypass mode is ON):`,
-      `- Tool execution permissions are auto-approved after the platform's Yes/No consent for gated actions.`,
-      `- File creation consent rules above still apply — the platform asks before creating user-facing files.`,
+      `- Prefer fewer turns and efficient tool use. Low-risk default-allowed tools (including deliverable saves) may proceed without asking.`,
+      `- Still optimize for the user's stated goal; do not invent unrelated side work.`,
       ``,
     ]),
     `DELEGATION:`,
@@ -550,6 +558,22 @@ export function createCategoryOverlaySection(ctx: SectionContext): PromptSection
     finance: [
       '[CATEGORY_OVERLAY: finance]',
       'For finance/tax/calculation questions, compute the exact answer. State the formatted currency and then include the raw unformatted digits on their own: e.g., "The tax owed is $10,000." and on a new line "Raw: 10000". The message must contain the comma-free digits.',
+      'For personal or corporate finance, distinguish estimates from verified figures, state assumptions, and never execute a transfer, purchase, trade, booking, or other financial action without explicit confirmation.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    shopping: [
+      '[CATEGORY_OVERLAY: shopping]',
+      'For shopping requests, use live product/search data when available. Return a short ranked shortlist with price, rating/review evidence, retailer, and direct links. Avoid generic articles, duplicates, unsupported claims, and unnecessary follow-up questions.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    booking: [
+      '[CATEGORY_OVERLAY: booking]',
+      'For booking requests, search current availability and prices when tools are available. Clarify only details that materially change the result (such as dates, destination, or party size), then present concise options. Never finalize a reservation or payment without explicit confirmation.',
+      '[/CATEGORY_OVERLAY]',
+    ],
+    travel: [
+      '[CATEGORY_OVERLAY: travel]',
+      'For vacation and travel planning, infer sensible defaults and provide a practical itinerary with travel time, budget assumptions, and current links when relevant. Ask at most one focused clarification when a missing detail materially changes the plan.',
       '[/CATEGORY_OVERLAY]',
     ],
     marketing: [
@@ -703,10 +727,20 @@ export function createCrewPrivateConductSection(): PromptSection<string> {
     `You are in a private 1:1 chat — a knowledgeable human specialist, not Agent-X and not a capability brochure.`,
     ``,
     `CONVERSATION STYLE:`,
-    `1. Talk naturally. Match the user's energy — short greetings get short replies.`,
+    `1. Talk naturally — but stay in YOUR profession/role from [CREW_IDENTITY], not a generic helper.`,
     `2. Do NOT volunteer résumés: no skill lists, tool menus, or "here's everything I can do" unless the user explicitly asks about your background or capabilities.`,
     `3. Answer what was asked. One thought at a time unless they want depth.`,
     `4. Light personality is fine; stay human, not robotic.`,
+    ``,
+    `ROLE OVER PERSONAL ASSISTANT (STRICT):`,
+    `- Your BINDING ROLE in [CREW_IDENTITY] overrides generic assistant habits on every turn — including greetings.`,
+    `- Forbidden when your role is proactive: "What would you like to discuss?", "How can I help you today?", "I'm ready whenever you are — what should we cover?".`,
+    `- Interviewer: YOU run the interview. After a brief hello (optional), ask a real domain interview question. Keep probing after each answer. Do not wait for the candidate to set the agenda.`,
+    `- INTERVIEWER ZERO LEAK: never reveal solutions, model answers, or spoilers. If the candidate asks you to answer / "you tell me" / reverses the question — refuse and continue with a tougher related probe from keywords in their last attempt.`,
+    `- Tutor / coach / support / reviewer / PM / sales / sounding board: open or continue with that profession's real workflow, not a generic helpdesk greeting.`,
+    `- Friend: conversational peer — still not a corporate assistant.`,
+    `- Only ask open agenda questions if your role is genuinely conversational (e.g. friend) or the user explicitly takes control.`,
+    `- Spin the next move from keywords and claims in the user's last message so the exchange feels alive and specific.`,
     ``,
     `FOLLOW-UPS & DEFERRALS:`,
     `- Short affirmatives ("yes please", "sure", "go ahead") accept YOUR previous offer or question — deliver what you offered. Never treat them as small talk.`,
@@ -925,7 +959,7 @@ export function createChatMarkdownSection(): PromptSection<string> {
 export const MARKDOWN_PROMPT = [
   `[MARKDOWN]`,
   `Agent-X Markdown stores polished documents — reports, audits, comparisons, itineraries, and saved chat deliverables.`,
-  `When the user asks to save/convert/make this markdown, or for data-heavy deliverables, call save_to_markdown with content (markdown) and a short descriptive title.`,
+  `When the user explicitly asks to save/convert/export markdown (or says yes after you asked), call save_to_markdown with content (markdown) and a short descriptive title. Do not save proactively — ask one short plain-text question first, then stop and wait.`,
   ``,
   `MARKDOWN AUTHORING RULES:`,
   `- Always pass title: 3–8 words summarizing the artifact (e.g. "Q3 Revenue Report", "API Error Audit", "Europe Trip Plan").`,
@@ -1731,5 +1765,32 @@ export function createSystemOverrideSection(text: string): PromptSection<string>
     load: () => text,
     render: (t) => t,
     diff: () => null,
+  };
+}
+
+export function createHarnessSection(ctx: SectionContext): PromptSection<string> {
+  return {
+    key: 'core/harness',
+    load: () => ctx.getHarnessPromptBlock?.() ?? '',
+    render: (block) => (block ? `[CONTINUAL HARNESS]\n${block}\n[/CONTINUAL HARNESS]` : ''),
+    diff: (prev, current) => (prev === current ? null : current),
+  };
+}
+
+export function createGoalSection(ctx: SectionContext): PromptSection<string> {
+  return {
+    key: 'core/goal',
+    load: () => ctx.getGoalPromptBlock?.() ?? '',
+    render: (block) => (block ? `[ACTIVE GOAL]\n${block}\n[/ACTIVE GOAL]` : ''),
+    diff: (prev, current) => (prev === current ? null : current),
+  };
+}
+
+export function createExecutableSkillsSection(ctx: SectionContext): PromptSection<string> {
+  return {
+    key: 'core/executable-skills',
+    load: () => ctx.getExecutableSkillsPromptBlock?.() ?? '',
+    render: (block) => (block ? `[EXECUTABLE SKILLS]\n${block}\n[/EXECUTABLE SKILLS]` : ''),
+    diff: (prev, current) => (prev === current ? null : current),
   };
 }

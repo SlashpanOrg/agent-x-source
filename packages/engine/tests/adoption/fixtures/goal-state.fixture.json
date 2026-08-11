@@ -1,0 +1,10 @@
+{
+  "status": "active",
+  "objective": "Ship harness MVP",
+  "progress": {},
+  "budget": { "maxContinuations": 5 },
+  "continuationsUsed": 0,
+  "tokensUsed": 0,
+  "startedAt": "2026-01-01T00:00:00.000Z",
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+}

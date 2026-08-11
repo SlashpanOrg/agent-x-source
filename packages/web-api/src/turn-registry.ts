@@ -1,4 +1,8 @@
 import type { Message } from '@agentx/shared';
+import {
+  getDurableTurnStore,
+  getSessionGenerationManager,
+} from '@agentx/engine';
 
 export type TurnStatus = 'running' | 'complete' | 'error' | 'cancelled';
 
@@ -16,6 +20,7 @@ export interface TurnRecord {
 class TurnRegistry {
   private turns = new Map<string, TurnRecord>();
   private listeners = new Map<string, Set<(record: TurnRecord) => void>>();
+  private checkpointSeq = new Map<string, number>();
   private readonly maxAge = 30 * 60 * 1000;
 
   create(sessionId: string): TurnRecord {
@@ -28,7 +33,49 @@ class TurnRegistry {
       startedAt: Date.now(),
     };
     this.turns.set(turnId, record);
+    this.checkpointSeq.set(turnId, 0);
+    this.syncDurableCreate(sessionId, turnId);
     return record;
+  }
+
+  private syncDurableCreate(sessionId: string, turnId: string): void {
+    const durable = getDurableTurnStore();
+    if (!durable.isEnabled()) return;
+    void getSessionGenerationManager()
+      .getGeneration(sessionId)
+      .then((generation) => durable.create(sessionId, generation, turnId))
+      .then(() => durable.updateStatus(turnId, 'running'))
+      .catch(() => { /* best-effort */ });
+  }
+
+  private syncDurableStatus(
+    turnId: string,
+    status: 'complete' | 'error' | 'cancelled',
+    partial?: string,
+    error?: string,
+  ): void {
+    const durable = getDurableTurnStore();
+    if (!durable.isEnabled()) return;
+    const mapped = status === 'error' ? 'error' : status;
+    void durable.updateStatus(turnId, mapped, partial, error).catch(() => { /* best-effort */ });
+  }
+
+  checkpoint(turnId: string, parts: unknown[], partialContent?: string): void {
+    const durable = getDurableTurnStore();
+    if (!durable.isEnabled()) return;
+    const seq = (this.checkpointSeq.get(turnId) ?? 0) + 1;
+    this.checkpointSeq.set(turnId, seq);
+    void durable.checkpoint(turnId, seq, parts, partialContent).catch(() => { /* best-effort */ });
+  }
+
+  getActiveTurnId(sessionId: string): string | undefined {
+    let best: TurnRecord | undefined;
+    for (const record of this.turns.values()) {
+      if (record.sessionId !== sessionId) continue;
+      if (record.status !== 'running') continue;
+      if (!best || record.startedAt > best.startedAt) best = record;
+    }
+    return best?.turnId;
   }
 
   get(turnId: string): TurnRecord | undefined {
@@ -41,7 +88,6 @@ class TurnRegistry {
     for (const record of this.turns.values()) {
       if (record.sessionId !== sessionId) continue;
       if (!best) { best = record; continue; }
-      // Prefer a running turn; otherwise the most recently started.
       if (record.status === 'running' && best.status !== 'running') best = record;
       else if (record.status === best.status && record.startedAt > best.startedAt) best = record;
     }
@@ -79,6 +125,7 @@ class TurnRegistry {
     r.status = 'complete';
     r.message = message;
     r.completedAt = Date.now();
+    this.syncDurableStatus(turnId, 'complete', r.partialContent);
     this.notify(turnId);
   }
 
@@ -89,6 +136,7 @@ class TurnRegistry {
     r.error = error;
     r.partialContent = partialContent;
     r.completedAt = Date.now();
+    this.syncDurableStatus(turnId, 'error', partialContent, error);
     this.notify(turnId);
   }
 
@@ -97,6 +145,7 @@ class TurnRegistry {
     if (!r) return;
     r.status = 'cancelled';
     r.completedAt = Date.now();
+    this.syncDurableStatus(turnId, 'cancelled', r.partialContent);
     this.notify(turnId);
   }
 
@@ -105,10 +154,28 @@ class TurnRegistry {
     if (r) r.partialContent = partialContent;
   }
 
+  hasActiveTurns(): boolean {
+    for (const r of this.turns.values()) {
+      if (r.status === 'running') return true;
+    }
+    return false;
+  }
+
+  listActiveSessionIds(): string[] {
+    const ids = new Set<string>();
+    for (const r of this.turns.values()) {
+      if (r.status === 'running') ids.add(r.sessionId);
+    }
+    return [...ids];
+  }
+
   private prune(): void {
     const cutoff = Date.now() - this.maxAge;
     for (const [id, r] of this.turns) {
-      if ((r.completedAt ?? r.startedAt) < cutoff) this.turns.delete(id);
+      if ((r.completedAt ?? r.startedAt) < cutoff) {
+        this.turns.delete(id);
+        this.checkpointSeq.delete(id);
+      }
     }
   }
 }

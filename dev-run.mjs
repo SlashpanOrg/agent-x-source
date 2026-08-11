@@ -70,6 +70,8 @@ async function main() {
     AGENTX_UI_DIR: join(process.cwd(), 'packages', 'web-ui', 'dist'),
     PORT: '3333',
     NODE_ENV: 'production',
+    // Local dev: enable adoption flags via config.json; optional hint for assistants
+    AGENTX_DEV_ADOPTION_HINT: '1',
   };
   apiChild = spawn('node', ['packages/web-api/dist/index.js'], {
     cwd: process.cwd(),

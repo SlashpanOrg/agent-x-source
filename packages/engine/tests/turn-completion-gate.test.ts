@@ -66,6 +66,16 @@ describe('evaluateTurnCompletionGate', () => {
     expect(result.block).toBe(false);
   });
 
+  it('exempts goal continuation turns from todo gate', () => {
+    const result = evaluateTurnCompletionGate({
+      todos: todos([[1, 'Open task', 'in-progress']]),
+      userText: 'finish everything',
+      completionRound: 0,
+      exemptGoalContinuation: true,
+    });
+    expect(result.block).toBe(false);
+  });
+
   it('blocks planning gap when multi-task ask has empty checklist', () => {
     const result = evaluateTurnCompletionGate({
       todos: [],

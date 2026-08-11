@@ -463,7 +463,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
   // Placed early because subsequent effects depend on loadSessions/loadTodos.
   const titleGeneratedRef = useRef(false);
   const {
-    loadSessions, loadTodos, generateTitle, openChildSession,
+    loadSessions, loadTodos, openChildSession,
     handleShowSessions, handleSelectSession, handleNewSession, startNewSession, resetSessionViewState,
     handleArchiveSession, handleDeleteSessionContent, handleDeleteSession,
     handleConfirmDeleteSession,
@@ -486,6 +486,21 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     crewMissionSessionIdRef, tokenInputRef, tokenOutputRef, isAtBottomRef, messagesContainerRef,
     jumpSuppressScrollTopRef, turnActiveRef, activeTurnIdRef, messagesRef, resetScrollState,
   });
+
+  // Keep the chat header title in sync with the first user message (no LLM).
+  useEffect(() => {
+    if (!currentSessionId || isCrewPrivateSession) return;
+    if (currentSessionTitle && currentSessionTitle !== 'New Session' && currentSessionTitle !== 'Child Session') {
+      return;
+    }
+    const firstUser = messages.find((m) => m.role === 'user' && !!m.content?.trim());
+    if (!firstUser?.content) return;
+    const title = firstUser.content.split('\n')[0]?.slice(0, 80).trim();
+    if (!title) return;
+    titleGeneratedRef.current = true;
+    setCurrentSessionTitle(title);
+    void sessions.updateTitle(currentSessionId, title).then(() => loadSessions()).catch(() => {});
+  }, [messages, currentSessionId, currentSessionTitle, isCrewPrivateSession, loadSessions]);
 
   const filteredSessionList = useMemo(() => {
     return sessionList.filter((s) => {
@@ -1006,7 +1021,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     endTurnUi, beginTurnUi, ensureSession,
     executeSend, runCrewSuggestionGate,
     startNewSession, resetSessionViewState, resetCrewMissionState,
-    loadSessions, loadTodos, generateTitle,
+    loadSessions, loadTodos,
     fetchSessionPermissions,
   };
 }

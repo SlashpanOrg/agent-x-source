@@ -19,7 +19,7 @@ import {
   syncTextPartsWithCanonicalContent,
   type MessagePart,
 } from '@agentx/shared/browser';
-import { chat, todos, type TelemetryEvent, type Crew, type ConnectionState, type CrewSuggestionEvaluation, type IntegrationActionPreview, type TodoItem } from '../../api';
+import { chat, todos, adoption, type TelemetryEvent, type Crew, type ConnectionState, type CrewSuggestionEvaluation, type IntegrationActionPreview, type TodoItem } from '../../api';
 import type { UIMessage, PartEntry, ToolCall, SubAgent } from '../../chat/types';
 import { upsertDeepSearchPartEntry } from '../../chat/types';
 import { updateLastMessage, attachChildSessionToAssistant, isTimeoutWarning, replaceWarning, clearTimeoutWarnings } from './message-helpers';
@@ -577,9 +577,15 @@ const handleStreamChunk = (ev: TelemetryEvent, ctx: EventHandlerContext): void =
       if (tip?.role === 'assistant' && ctx.turnActiveRef.current) {
         const resolvedFull = rawFull || (rawDelta ? appendStreamText(tip.content || '', rawDelta) : '');
         if (!resolvedFull) return base;
+        // Late chunks after rich finalize must not reopen Markdown.
+        if (messageHasResponseDocument(tip)) return base;
         // Late duplicate of an already-finalized reply — ignore.
-        if (assistantTextsOverlap(tip.content, resolvedFull) && resolvedFull.length <= (tip.content?.length ?? 0) + 8) {
+        if (!tip.streaming && assistantTextsOverlap(tip.content, resolvedFull) && resolvedFull.length <= (tip.content?.length ?? 0) + 8) {
           return base;
+        }
+        // Do not reopen a finalized (non-streaming) bubble.
+        if (!tip.streaming && tip.content?.trim()) {
+          if (assistantTextsOverlap(tip.content, resolvedFull)) return base;
         }
         ctx.pendingUiSessionIdRef.current = ctx.viewSessionIdRef.current;
         ctx.streamChunkPendingRef.current = resolvedFull;
@@ -594,12 +600,16 @@ const handleStreamChunk = (ev: TelemetryEvent, ctx: EventHandlerContext): void =
               const ensured = ctx.ensureOutgoingTurnMessages(p);
               const l = ensured[ensured.length - 1];
               if (l?.role !== 'assistant') return ensured;
-              return updateLastMessage(ensured, applyFullContentToAssistant({ ...l, streaming: true }, fullContent));
+              if (messageHasResponseDocument(l) || !l.streaming) return ensured;
+              return updateLastMessage(ensured, applyFullContentToAssistant(l, fullContent));
             });
           }, STREAM_COALESCE_MS);
         }
         // Re-open tip immediately so the next chunks coalesce into the same bubble.
-        return updateLastMessage(base, { streaming: true });
+        if (!tip.streaming) {
+          return updateLastMessage(base, { streaming: true });
+        }
+        return base;
       }
       // Tip is a completed prior-turn assistant (turn not active for reopen) — do not
       // append a twin mid-stream; ensureOutgoing should have placed a fresh placeholder.
@@ -693,7 +703,15 @@ function takePendingStreamFullContent(ctx: EventHandlerContext): string | null {
   return pending && pending.length > 0 ? pending : null;
 }
 
+function messageHasResponseDocument(message: UIMessage): boolean {
+  return message.parts?.some((p) => p.type === 'response_document') === true;
+}
+
 function applyFullContentToAssistant(message: UIMessage, fullContent: string): UIMessage {
+  // Rich finalize already owns presentation — never re-open Markdown beside it.
+  if (messageHasResponseDocument(message)) {
+    return { ...message, streaming: false };
+  }
   const parts = (message.parts || []) as MessagePart[];
   const lastPart = parts[parts.length - 1];
   const prefixEnd = lastPart?.type === 'text' ? parts.length - 1 : parts.length;
@@ -729,7 +747,6 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
       }
     }
 
-    const isUpdate = (ev as { isUpdate?: boolean }).isUpdate === true;
     const msg = ev.message as {
       id?: string;
       content?: string;
@@ -750,7 +767,9 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
     const crewPickerPending = hasCrewPicker
       && msg?.parts?.some((p) => p.type === 'crew_roster_picker' && p.crewRosterPicker?.status === 'pending');
     const interactionPending = questionnairePending || crewPickerPending;
-    const turnContinues = isUpdate || interactionPending;
+    // Rich finalize uses isUpdate to patch the same message — that is NOT an
+    // interactive pause. Only questionnaires/pickers should freeze the queue.
+    const turnContinues = interactionPending;
 
     if (!turnContinues) {
       // Do NOT stop the turn indicator or set streaming=false here.
@@ -777,10 +796,13 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
       const idx = working.findIndex((m) => m.id === msgId);
       if (idx >= 0 && msg) {
         ctx.outgoingTurnRef.current = null;
-        const stillStreaming = isUpdate && !interactionPending;
-        if (stillStreaming) {
-          ctx.setStreaming(true);
-        } else if (interactionPending) {
+        // Only questionnaires/pickers freeze the turn-level streaming flag early.
+        // Rich finalize (isUpdate / response_document) must NOT flip session
+        // streaming off here — that switches ChatThreadView onto useDeferredValue
+        // and can leave the tip stuck on pre-rich Markdown until hard refresh.
+        // Message-level streaming:false below still collapses stream chrome;
+        // turn_state:done clears the session streaming flag.
+        if (interactionPending) {
           ctx.setStreaming(false);
         }
         const text = repairStreamTextGlitches(stripToolNoise(msg.content ?? ''));
@@ -798,7 +820,7 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
           ...working[idx]!,
           content: text || working[idx]!.content,
           parts: mergedParts,
-          streaming: stillStreaming,
+          streaming: false,
           ...(msg?.attachments ? { attachments: msg.attachments } : {}),
           ...(crew ? { crew } : {}),
         };
@@ -842,16 +864,19 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
           : !lastCrewId);
       // Merge when still streaming OR when the tip already holds this reply
       // (first finish set streaming:false; a second finalize / overlap must not append).
+      const incomingHasResponseDocument = msg.parts?.some((p) => p.type === 'response_document') === true;
       const shouldMerge = sameSpeaker && (
         tip.streaming
         || !tip.content?.trim()
         || assistantTextsOverlap(tip.content, text)
+        || incomingHasResponseDocument
       );
       if (shouldMerge) {
         ctx.outgoingTurnRef.current = null;
         const finalText = text || stripToolNoise(tip.content || '');
+        const liveParts = mergeIncomingMessageParts(tip.parts, msg.parts) ?? tip.parts ?? msg.parts;
         const synced = syncTextPartsWithCanonicalContent(
-          ((tip.parts && tip.parts.length > 0) ? tip.parts : msg.parts) as MessagePart[] | undefined,
+          liveParts as MessagePart[] | undefined,
           finalText,
         );
         const mergedParts = reconcileStreamingMessageParts(
@@ -875,10 +900,15 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
       if (withOutgoing.some((m) => m.id === newId)) return withOutgoing;
       // Safety: never append a second bubble that duplicates the trailing assistant.
       const trailing = withOutgoing[withOutgoing.length - 1];
-      if (trailing?.role === 'assistant' && assistantTextsOverlap(trailing.content, text)) {
+      const trailingOverlap = trailing?.role === 'assistant' && (
+        assistantTextsOverlap(trailing.content, text)
+        || (!!msg.parts?.some((p) => p.type === 'response_document') && trailing.role === 'assistant')
+      );
+      if (trailingOverlap && trailing?.role === 'assistant') {
         const finalText = text || stripToolNoise(trailing.content || '');
+        const liveParts = mergeIncomingMessageParts(trailing.parts, msg.parts) ?? trailing.parts ?? msg.parts;
         const synced = syncTextPartsWithCanonicalContent(
-          ((trailing.parts && trailing.parts.length > 0) ? trailing.parts : msg.parts) as MessagePart[] | undefined,
+          liveParts as MessagePart[] | undefined,
           finalText,
         );
         return updateLastMessage(withOutgoing, {
@@ -1359,7 +1389,74 @@ const handleTodoUpdate = (ev: TelemetryEvent, ctx: EventHandlerContext): void =>
   if (items.length > 0) ctx.setTasksExpanded(true);
 };
 
-/** Mark a background / fire-and-forget sub-agent card done when the task finishes. */
+/** Mark admitted / background sub-agent complete when parent receives completion event. */
+const handleSubagentAdmittedComplete = (ev: TelemetryEvent, ctx: EventHandlerContext): void => {
+  const childSessionId = String(ev.childSessionId ?? '').trim();
+  const taskId = String(ev.taskId ?? '').trim();
+  const success = ev.success !== false;
+  const summary = String(ev.summary ?? ev.result ?? '').trim();
+  if (!childSessionId && !taskId) return;
+  const matchId = (id: string) =>
+    (childSessionId && id === childSessionId) || (taskId && id === taskId);
+  ctx.setMessages((prev) => {
+    let targetIdx = -1;
+    for (let i = prev.length - 1; i >= 0; i--) {
+      const m = prev[i]!;
+      if (m.role !== 'assistant') continue;
+      if (m.subAgents?.some((a) => matchId(a.id))) {
+        targetIdx = i;
+        break;
+      }
+    }
+    if (targetIdx < 0) return prev;
+    const target = prev[targetIdx]!;
+    const subAgents = (target.subAgents ?? []).map((a) => {
+      if (!matchId(a.id)) return a;
+      return {
+        ...a,
+        status: (success ? 'done' : 'error') as 'done' | 'error',
+        currentStep: success ? 'Done' : 'Failed',
+        result: summary || a.result,
+        sessionBound: true,
+      };
+    });
+    const parts = (target.parts ?? []).map((p) => {
+      if (p.type !== 'subagent' || !p.agent || !matchId(p.agent.id)) return p;
+      return {
+        ...p,
+        agent: {
+          ...p.agent,
+          status: (success ? 'done' : 'error') as 'done' | 'error',
+          currentStep: success ? 'Done' : 'Failed',
+          result: summary || p.agent.result,
+          sessionBound: true,
+        },
+      };
+    });
+    const next = [...prev];
+    next[targetIdx] = { ...target, subAgents, parts };
+    return next;
+  });
+  if (summary) {
+    const toast = success ? `Sub-agent complete: ${summary.slice(0, 120)}` : `Sub-agent failed: ${summary.slice(0, 120)}`;
+    ctx.setWarnings((w) => replaceWarning(w, toast));
+  }
+};
+
+/** Attach admitted sub-agent handle when admission path spawns without waiting. */
+const handleSubagentAdmitted = (ev: TelemetryEvent, ctx: EventHandlerContext): void => {
+  const taskId = String(ev.taskId ?? '').trim();
+  if (!taskId) return;
+  ctx.setMessages((prev) =>
+    attachChildSessionToAssistant(
+      ensureAssistantBubble(prev, ctx.turnActiveRef.current),
+      taskId,
+      'Sub-Agent',
+      'sub_agent',
+      `Admitted (${taskId.slice(0, 8)})`,
+    ),
+  );
+};
 const handleBackgroundTaskComplete = (ev: TelemetryEvent, ctx: EventHandlerContext): void => {
   const childSessionId = String(ev.childSessionId ?? '').trim();
   const taskId = String(ev.taskId ?? '').trim();
@@ -1491,6 +1588,16 @@ const telemetryDispatch: Record<string, (ev: TelemetryEvent, ctx: EventHandlerCo
   // Agent & session
   child_session_started: handleChildSessionStarted,
   agent_spawned: handleAgentSpawned,
+
+  subagent_admitted: handleSubagentAdmitted,
+  subagent_admitted_complete: handleSubagentAdmittedComplete,
+  agent_message: noopHandler,
+  steer_message: (_ev, ctx) => {
+    const instruction = String(_ev.instruction ?? '').trim();
+    if (instruction) {
+      ctx.setCurrentStep(`Steered: ${instruction.slice(0, 80)}`);
+    }
+  },
 
   // Misc
   command_action: handleCommandAction,
@@ -1698,14 +1805,28 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
           const resultStr: string = typeof result === 'string' ? result
             : (result && typeof result === 'object' ? String((result as Record<string, unknown>).output || (result as Record<string, unknown>).message || JSON.stringify(result)) : '');
           if (toolName === 'delegate_to_subagent' && last.subAgents) {
-            // Fire-and-forget ack must NOT mark the chip done — child is still working.
+            // Fire-and-forget / admitted ack must NOT mark the chip done — child is still working.
             const startedBg = /started in background/i.test(resultStr);
-            if (startedBg) {
+            const admittedAck = /"admitted"\s*:\s*true/.test(resultStr);
+            if (startedBg || admittedAck) {
               const newSubAgents = last.subAgents.map((a: SubAgent) =>
-                a.id === callId || a.status === 'running'
-                  ? { ...a, status: 'running' as const }
-                  : a);
-              return updateLastMessage(prev, { subAgents: newSubAgents });
+                a.id === callId
+                  ? { ...a, status: (admittedAck ? 'admitted' : 'running') as SubAgent['status'], sessionBound: true }
+                  : a.status === 'running'
+                    ? a
+                    : a);
+              const newParts = (last.parts || []).map((p: PartEntry) =>
+                p.type === 'subagent' && p.agent?.id === callId
+                  ? {
+                      ...p,
+                      agent: {
+                        ...p.agent!,
+                        status: (admittedAck ? 'admitted' : 'running') as SubAgent['status'],
+                        sessionBound: true,
+                      },
+                    }
+                  : p);
+              return updateLastMessage(prev, { subAgents: newSubAgents, parts: newParts });
             }
             const newSubAgents = last.subAgents.map((a: SubAgent) =>
               a.status !== 'running' ? a : { ...a, status: 'done' as const, result: resultStr });
@@ -1899,6 +2020,15 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
     const handleEvent = (ev: TelemetryEvent) => {
       if (!eventBelongsToViewSession(ev, viewSessionIdRef.current)) return;
 
+      const sid = viewSessionIdRef.current;
+      const genEv = ev as unknown as { generation?: number; sequence?: number };
+      if (sid && typeof genEv.generation === 'number') {
+        sessionStorage.setItem(`gen:${sid}`, String(genEv.generation));
+        if (typeof genEv.sequence === 'number') {
+          sessionStorage.setItem(`seq:${sid}`, String(genEv.sequence));
+        }
+      }
+
       // While a permission/questionnaire prompt is active, hold all subsequent
       // events so the turn does not continue under the user's prompt. The queue
       // is flushed once the prompt is cleared.
@@ -1967,6 +2097,17 @@ export function useChatTelemetry(params: UseChatTelemetryParams): void {
                 const normalized = normalizeTodoItems(items);
                 setTodoItems(normalized);
                 if (normalized.length > 0) setTasksExpanded(true);
+              })
+              .catch(() => {});
+            const storedGen = Number(sessionStorage.getItem(`gen:${viewSessionId}`) ?? 0);
+            adoption.sessionSnapshot(viewSessionId)
+              .then((snap) => {
+                if (viewSessionIdRef.current !== viewSessionId) return;
+                const gen = Number(snap.generation ?? 0);
+                sessionStorage.setItem(`gen:${viewSessionId}`, String(gen));
+                if (storedGen > 0 && storedGen !== gen) {
+                  setWarnings((prev) => [...prev.filter((w) => !w.startsWith('Session re-synced')), 'Session re-synced from server snapshot (generation changed).']);
+                }
               })
               .catch(() => {});
           }

@@ -23,10 +23,12 @@ describe('buildCrewPrivateIdentityPrompt', () => {
     expect(prompt).toContain('Elias Vance');
     expect(prompt).toContain('Travel Specialist');
     expect(prompt).toContain('You are a travel expert');
+    expect(prompt).toContain('BINDING ROLE');
     expect(prompt).toContain('private 1:1 channel');
     expect(prompt).not.toContain('EXECUTE, not just describe');
     expect(prompt).toContain('not Agent-X');
     expect(prompt).toContain('INTERNAL REFERENCE');
+    expect(prompt).toContain('What would you like to discuss?');
     expect(prompt).not.toContain('use your full capabilities');
   });
 
@@ -54,14 +56,28 @@ describe('buildCrewPrivateFastReplyPrompt', () => {
     emotion: 'friendly',
   };
 
-  it('asks for short natural replies without skill dumps', () => {
+  it('keeps role binding on fast replies and forbids personal-assistant openers', () => {
     const prompt = buildCrewPrivateFastReplyPrompt(crew);
     expect(prompt).toContain('Elias Vance');
     expect(prompt).toContain('No tools');
     expect(prompt).toContain('No skill lists');
-    expect(prompt).toContain('service brochure');
+    expect(prompt).toContain('BINDING ROLE');
+    expect(prompt).toContain('You are a travel expert');
+    expect(prompt).toContain('personal assistant');
+    expect(prompt).toContain('What would you like to discuss?');
     expect(prompt).toContain('outside your lane');
     expect(prompt).toContain('hand off to Agent-X');
+  });
+
+  it('adds interviewer zero-leak guidance when the crew is an interviewer', () => {
+    const interviewer: Crew = {
+      ...crew,
+      title: 'Technical Interviewer',
+      systemPrompt: 'HARD CONSTRAINTS — ZERO ANSWER LEAK\nNever reveal the correct answer.',
+    };
+    const prompt = buildCrewPrivateFastReplyPrompt(interviewer);
+    expect(prompt).toMatch(/INTERVIEWER/i);
+    expect(prompt).toMatch(/never leak answers/i);
   });
 });
 
@@ -71,6 +87,9 @@ describe('createCrewPrivateConductSection', () => {
     const agentRules = createRulesSection().load();
     expect(conduct).toContain('CREW_PRIVATE_CONDUCT');
     expect(conduct).toContain('OUT OF YOUR EXPERTISE');
+    expect(conduct).toContain('ROLE OVER PERSONAL ASSISTANT');
+    expect(conduct).toContain('Interviewer: YOU run the interview');
+    expect(conduct).toContain('INTERVIEWER ZERO LEAK');
     expect(conduct).not.toContain('ACT IMMEDIATELY');
     expect(agentRules).toContain('ACT IMMEDIATELY');
   });

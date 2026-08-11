@@ -83,3 +83,7 @@ jobs:
       - name: Run tests
         run: pnpm run test
         timeout-minutes: 10
+
+      - name: Run adoption tests
+        run: pnpm run test:adoption
+        timeout-minutes: 10

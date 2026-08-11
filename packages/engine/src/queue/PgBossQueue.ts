@@ -21,7 +21,13 @@ export class PgBossQueue implements IJobQueue {
 
   constructor({ connectionString, pgBossOptions = {} }: PgBossQueueOptions) {
     this.connectionString = connectionString;
-    this.pgBossOptions = pgBossOptions;
+    this.pgBossOptions = {
+      retryLimit: 3,
+      retryDelay: 60,
+      retryBackoff: true,
+      expireInHours: 23,
+      ...pgBossOptions,
+    };
   }
 
   static async migrate(connectionString: string): Promise<void> {

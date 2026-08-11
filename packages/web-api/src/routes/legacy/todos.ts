@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { join } from 'node:path';
 import { readFile, mkdir } from 'node:fs/promises';
 import { getLogger } from '@agentx/shared';
-import { getSessionTodoManager } from '@agentx/engine';
+import { getSessionTodoManager, getGoalService } from '@agentx/engine';
 import { getSessionDir, pathExists, atomicWriteFileSync } from './shared.js';
 
 type UiTodoStatus = 'not-started' | 'in-progress' | 'completed';
@@ -62,10 +62,12 @@ export function createTodosRouter(): Router {
       const sessionId = (req.query['sessionId'] as string) || '';
       const mgr = sessionId ? getSessionTodoManager(sessionId) : undefined;
       if (mgr) {
-        res.json({ todos: mgr.getItems() });
+        const goal = sessionId ? getGoalService().getStatus(sessionId) : null;
+        res.json({ todos: mgr.getItems(), goalStatus: goal?.status ?? 'idle' });
         return;
       }
-      res.json({ todos: await readTodosFile(sessionId) });
+      const goal = sessionId ? getGoalService().getStatus(sessionId) : null;
+      res.json({ todos: await readTodosFile(sessionId), goalStatus: goal?.status ?? 'idle' });
     } catch (e: unknown) {
       getLogger().error('GET_API_TODOS', e instanceof Error ? e : String(e));
       res.status(500).json({ error: e instanceof Error ? e.message : 'list-failed' });

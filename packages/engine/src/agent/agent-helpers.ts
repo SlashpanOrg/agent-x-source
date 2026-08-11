@@ -2,7 +2,7 @@
  * Standalone helper functions extracted from Agent.ts (REFACTOR-2, Group 1).
  * These are pure module-scope utilities with no `this` dependencies.
  */
-import type { RemediationAction, EngineEvent, Message } from '@agentx/shared';
+import type { RemediationAction, EngineEvent, Message, CompactionFileSet } from '@agentx/shared';
 import { resolveSpaceError, ContextBudgetExceededError, getLogger, generateMessageId, getTokenThresholds, isTokenOverflow, estimateTokens, estimateMessagesTokens, resolveClientTimezone } from '@agentx/shared';
 import type { TaskType } from '../session/ModelRouter.js';
 import { buildProviderConnectivityProbeUrl } from '../providers/google/gemini-metadata.js';
@@ -10,6 +10,21 @@ import { estimateOutputTokens } from '../session/tokenCount.js';
 import { COMPACTION_PROMPT, COMPACTION_UPDATE_PROMPT } from './compaction-prompt.js';
 import { globalNarrativeStore } from '../context/SessionNarrativeStore.js';
 import { renderNarrativeText } from '../context/NarrativeBuilder.js';
+
+type MessageWithCompactionMeta = {
+  metadata?: { compactionArtifact?: { fileSet?: CompactionFileSet } };
+};
+
+/** Last persisted compaction file set from message metadata (hydration). */
+export function findLatestCompactionFileSet(
+  messages: MessageWithCompactionMeta[],
+): CompactionFileSet | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const fileSet = messages[i]?.metadata?.compactionArtifact?.fileSet;
+    if (fileSet && (fileSet.filesRead?.length || fileSet.filesModified?.length)) return fileSet;
+  }
+  return undefined;
+}
 
 export interface SimpleCompleteContext {
   provider: { complete(request: unknown): AsyncIterable<{ type: string; content?: string }> };
@@ -209,7 +224,7 @@ export interface CompactContext {
   getContextWindow(): number;
   tokenTracker: { tokensUsed: number; tokensTotal: number; addUsage(delta: number): void };
   compactionMarkerIndices: number[];
-  messages: Array<{ role: string; content: string | unknown }>;
+  messages: Array<{ role: string; content: string | unknown; metadata?: { compactionArtifact?: { fileSet: { filesRead: string[]; filesModified: string[] } } } }>;
   emit(event: EngineEvent): void;
   lastCompactionSummary: string | null;
   setLastCompactionSummary(s: string): void;
@@ -220,12 +235,21 @@ export interface CompactContext {
   setCompactionCount(n: number): void;
   sessionManager: { persistSessionFields?(sessionId: string, fields: Record<string, unknown>): void } | null;
   sessionId: string;
+  isRefineInFlight?: () => boolean;
+  getCompactionFileSet?: () => { filesRead: string[]; filesModified: string[] };
+  onCompactionComplete?: (fileSet: { filesRead: string[]; filesModified: string[] }) => void;
+  onCompactionArtifact?: (artifact: { summaryIndex: number; createdAt: string; fileSet: { filesRead: string[]; filesModified: string[] } }) => void;
+  setCompactionInFlight?: (v: boolean) => void;
 }
 
 /**
  * Compact the context window by summarizing older messages.
  */
 export async function compactContext(ctx: CompactContext, promptEstimate?: number): Promise<boolean> {
+  if (ctx.isRefineInFlight?.()) {
+    getLogger().info('COMPACTION', 'Skipped compaction — refinement in flight');
+    return false;
+  }
   const contextWindow = ctx.getContextWindow();
   const thresholds = getTokenThresholds(contextWindow);
   const usedTokens = Math.max(ctx.tokenTracker.tokensUsed, promptEstimate ?? 0);
@@ -240,16 +264,26 @@ export async function compactContext(ctx: CompactContext, promptEstimate?: numbe
     .join('\n\n');
   if (!recentMessages.trim()) return false;
 
+  const fileSet = ctx.getCompactionFileSet?.();
+  const fileContext =
+    fileSet && (fileSet.filesRead.length || fileSet.filesModified.length)
+      ? `\n\n[FILES TOUCHED]\nread: ${fileSet.filesRead.join(', ') || '(none)'}\nmodified: ${fileSet.filesModified.join(', ') || '(none)'}\n`
+      : '';
+
   ctx.emit({ type: 'compaction_start', currentTokens: usedTokens, threshold: contextWindow } as EngineEvent);
 
+  ctx.setCompactionInFlight?.(true);
   let summary = '';
   try {
     const prompt = ctx.lastCompactionSummary
-      ? COMPACTION_UPDATE_PROMPT.replace('{previousSummary}', ctx.lastCompactionSummary) + '\n\n' + recentMessages
-      : COMPACTION_PROMPT + '\n\n' + recentMessages;
+      ? COMPACTION_UPDATE_PROMPT.replace('{previousSummary}', ctx.lastCompactionSummary) + fileContext + '\n\n' + recentMessages
+      : COMPACTION_PROMPT + fileContext + '\n\n' + recentMessages;
     summary = await ctx.simpleComplete(prompt);
   } catch {
+    ctx.setCompactionInFlight?.(false);
     return false;
+  } finally {
+    ctx.setCompactionInFlight?.(false);
   }
   if (!summary.trim()) return false;
 
@@ -257,7 +291,14 @@ export async function compactContext(ctx: CompactContext, promptEstimate?: numbe
 
   const insertIdx = ctx.messages.length;
   const newMessages = [...ctx.messages];
-  newMessages.push({ role: 'system', content: `[COMPACTION SUMMARY — ${new Date().toISOString()}]\n${summary}` });
+  const compactionArtifact = fileSet
+    ? { summaryIndex: insertIdx, createdAt: new Date().toISOString(), fileSet }
+    : undefined;
+  newMessages.push({
+    role: 'system',
+    content: `[COMPACTION SUMMARY — ${new Date().toISOString()}]\n${summary}`,
+    ...(compactionArtifact ? { metadata: { compactionArtifact } } : {}),
+  });
   const newIndices = [...ctx.compactionMarkerIndices, insertIdx];
 
   const pruneStart = lastMarkerIdx + 1;
@@ -284,6 +325,14 @@ export async function compactContext(ctx: CompactContext, promptEstimate?: numbe
     getLogger().info('COMPACTION', `Compacted ${saved} messages (${estimateTokens(summary)} token summary, saved ~${netSavings} tokens, ${usedTokens} → ${ctx.tokenTracker.tokensUsed})`);
   }
   ctx.emit({ type: 'compaction_complete', saved, summary } as EngineEvent);
+  if (fileSet) {
+    ctx.onCompactionComplete?.(fileSet);
+    ctx.onCompactionArtifact?.({
+      summaryIndex: insertIdx,
+      createdAt: new Date().toISOString(),
+      fileSet,
+    });
+  }
   const newCount = ctx._compactionCount + 1;
   ctx.setCompactionCount(newCount);
   try {
@@ -710,7 +759,7 @@ export function buildIdentityBlock(ctx: IdentityContext): string {
 
   const lines: string[] = [
     `You are ${name}, an AI agent running on the user's own machine.`,
-    `You are NOT Google AI, NOT ChatGPT, NOT Claude, NOT any other AI service. You are exclusively ${name}. Never claim to be another AI or company.`,
+    `You are NOT any other AI product, cloud assistant, or company service. You are exclusively ${name}. Never claim to be another AI or company.`,
     '',
   ];
 

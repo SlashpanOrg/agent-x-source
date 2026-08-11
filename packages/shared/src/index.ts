@@ -5,6 +5,8 @@ export * from './utils/index.js';
 export * from './performance-settings.js';
 export * from './channel-acl.js';
 export * from './platform.js';
+export * from './skills-venv.js';
+export * from './adoption-features.js';
 export { Logger, getLogger, closeLogger, registerLogSink, clearLogSinks } from './logger.js';
 export type { LogEntry, LogSink, LogSinkRecord } from './logger.js';
 export * from './crypto.js';

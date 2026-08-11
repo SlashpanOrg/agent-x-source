@@ -43,6 +43,17 @@ const STRONG_RECENCY_RE = [
 /** Weak recency cue — usually needs web search, but check local/static context first. */
 const WEAK_RECENCY_RE = /\b(?:latest|recent(?:ly)?|currently|current|newest|upcoming)\b/i;
 
+// Consumer requests often omit the words "latest" or "search", but their
+// answer is inherently live: prices, availability, schedules, and rates.
+const LIVE_CONSUMER_RE = [
+  /\b(?:buy|shop|shopping|purchase|price|prices|deal|deals|discount|retailer|amazon|ebay|etsy)\b/i,
+  /\bproducts?\s+(?:to buy|to purchase|recommend(?:ed)?|worth buying)\b/i,
+  /\b(?:flight|flights|hotel|hotels|airbnb|train|rental car|travel tickets?|event tickets?)\b/i,
+  /\b(?:book|booking|reserve|reservation)\b.*\b(?:trip|travel|room|hotel|flight|train|car|ticket|table)\b/i,
+  /\b(?:vacation|holiday|trip|travel)\b.*\b(?:plan|planning|book|booking|itinerary|hotel|flight)\b/i,
+  /\b(?:stock|stocks|shares|market|exchange|mortgage|loan|interest rate|tax rate|currency|forex|investment|investing|funds?|crypto|yield|dividend)\b/i,
+] as const;
+
 /** "Latest" refers to repo/session/code — not the public web. */
 const STATIC_OR_LOCAL_RECENCY_RE = [
   /\b(?:latest|last|recent)\s+(?:commit|push|build|deploy|release|tag|merge|pr|pull\s+request)\b/i,
@@ -87,6 +98,10 @@ function hasWeakRecencySignal(text: string): boolean {
   return WEAK_RECENCY_RE.test(text);
 }
 
+function hasLiveConsumerSignal(text: string): boolean {
+  return LIVE_CONSUMER_RE.some((re) => re.test(text));
+}
+
 /** Fast heuristic — no LLM. */
 export function analyzeWebSearchIntentHeuristic(text: string): WebSearchIntentAnalysis {
   const trimmed = text.trim();
@@ -97,15 +112,6 @@ export function analyzeWebSearchIntentHeuristic(text: string): WebSearchIntentAn
     source: 'default',
   };
   if (!trimmed) return no;
-
-  if (detectPlacesSearchRequest(trimmed)) {
-    return {
-      shouldForceSearch: false,
-      confidence: 'high',
-      reason: 'Local places query — prefer Google Maps MCP over web search',
-      source: 'heuristic',
-    };
-  }
 
   if (isScheduledTaskRequest(trimmed)) {
     return {
@@ -130,6 +136,24 @@ export function analyzeWebSearchIntentHeuristic(text: string): WebSearchIntentAn
       shouldForceSearch: false,
       confidence: 'high',
       reason: 'Recency refers to local repo/session context, not the web',
+      source: 'heuristic',
+    };
+  }
+
+  if (hasLiveConsumerSignal(trimmed)) {
+    return {
+      shouldForceSearch: true,
+      confidence: 'high',
+      reason: 'Consumer request needs live product, booking, travel, or market data',
+      source: 'heuristic',
+    };
+  }
+
+  if (detectPlacesSearchRequest(trimmed)) {
+    return {
+      shouldForceSearch: false,
+      confidence: 'high',
+      reason: 'Local places query — prefer Google Maps MCP over web search',
       source: 'heuristic',
     };
   }

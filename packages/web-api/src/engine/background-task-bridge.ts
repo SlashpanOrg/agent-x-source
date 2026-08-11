@@ -45,6 +45,11 @@ const FORWARDABLE_EVENT_TYPES = new Set<string>([
   'agent_complete',
   'subagent_event',
   'task_backgrounded',
+  'subagent_admitted',
+  'subagent_admitted_complete',
+  'quality_gate_start',
+  'quality_gate_pass',
+  'quality_gate_fail',
 ]);
 
 /**

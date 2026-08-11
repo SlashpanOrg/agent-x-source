@@ -645,7 +645,7 @@ export const sessions = {
   checkpoints: (id: string) => request<{ checkpoints: Checkpoint[] }>(`/sessions/${id}/checkpoints`).then(r => r.checkpoints ?? []),
   restoreCheckpoint: (id: string, checkpointId: string) => request<{ ok: boolean; label: string; messageCount: number }>(`/sessions/${id}/checkpoint/${checkpointId}/restore`, { method: 'POST' }),
   deleteCheckpoint: (id: string, checkpointId: string) => request<{ ok: boolean }>(`/sessions/${id}/checkpoint/${checkpointId}`, { method: 'DELETE' }),
-  generateTitle: (id: string) => request<{ title: string }>(`/sessions/${id}/generate-title`, { method: 'POST' }),
+  updateTitle: (id: string, title: string) => request<{ ok: boolean; title?: string }>(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
   // Trigger a browser download of the full trajectory JSON
   exportTrajectory: (id: string): void => {
     const a = document.createElement('a');
@@ -1411,6 +1411,7 @@ export interface AgentXConfig {
     discord?: { enabled?: boolean; inbound?: boolean; outbound?: boolean; webhookUrl?: string; botToken?: string; channelId?: string };
   };
   voice?: VoiceConfig;
+  adoption?: Record<string, { enabled?: boolean } | undefined>;
 }
 
 export type TtsEngine = 'kokoro';
@@ -1741,7 +1742,7 @@ export interface ChatMessage {
   thinkingStartedAt?: number;
   thinkingDoneAt?: number;
   toolCalls?: Array<{ id: string; name: string; args?: string | Record<string, unknown>; result?: string; status: 'running' | 'done' | 'error'; elapsed?: number }>;
-  subAgents?: Array<{ id: string; name: string; task: string; status: 'running' | 'done' | 'error'; result?: string }>;
+  subAgents?: Array<{ id: string; name: string; task: string; status: 'running' | 'done' | 'error' | 'admitted'; result?: string }>;
   plan?: string[];
   turnTokens?: number;
   attachments?: Array<{ id: string; name: string; mimeType?: string }>;
@@ -2909,7 +2910,7 @@ export interface SubAgentTaskInfo {
   parentSessionId?: string;
   childSessionId?: string;
   instruction: string;
-  status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'queued' | 'admitted' | 'running' | 'completed' | 'failed' | 'cancelled';
   background?: boolean;
   startTime?: number;
   endTime?: number;
@@ -3031,6 +3032,64 @@ export const runtime = {
   metrics: () => request<SystemMetrics>('/system/metrics'),
   time: () => request<SystemTime>('/system/time'),
   weather: (lat: number, lon: number) => request<Weather>(`/weather?lat=${lat}&lon=${lon}`),
+};
+
+// ─── Prime Agent adoption ───
+export const adoption = {
+  features: () => request<Record<string, boolean>>('/adoption/features'),
+  harness: (sessionId: string, scope?: 'local' | 'global') =>
+    request<{ entries: Array<Record<string, unknown>> }>(
+      `/sessions/${sessionId}/harness${scope === 'global' ? '?scope=global' : ''}`,
+    ),
+  harnessGlobal: () => request<{ entries: Array<Record<string, unknown>> }>('/harness/global'),
+  refineHarness: (sessionId: string, body: { instructions?: string; scope?: 'local' | 'global' }) =>
+    request<{ ok: boolean; summary?: string; error?: string }>(`/sessions/${sessionId}/harness/refine`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  rollbackHarness: (sessionId: string, rollbackId: string, scope?: 'local' | 'global') =>
+    request<{ ok: boolean }>(`/sessions/${sessionId}/harness/rollback`, {
+      method: 'POST',
+      body: JSON.stringify({ rollbackId, scope }),
+    }),
+  harnessRefinements: (sessionId: string, scope?: 'local' | 'global') =>
+    request<{ refinements: Array<Record<string, unknown>> }>(
+      `/sessions/${sessionId}/harness/refinements${scope === 'global' ? '?scope=global' : ''}`,
+    ),
+  sessionSnapshot: (sessionId: string) =>
+    request<Record<string, unknown>>(`/sessions/${sessionId}/snapshot`),
+  sessionEvents: (sessionId: string, generation: number, afterSequence = 0) =>
+    request<{ generation: number; events: Array<Record<string, unknown>> }>(
+      `/sessions/${sessionId}/events?generation=${generation}&afterSequence=${afterSequence}`,
+    ),
+  sendAgentMessage: (sessionId: string, body: Record<string, unknown>) =>
+    request<{ ok: boolean; message: Record<string, unknown> }>(`/sessions/${sessionId}/agent-message`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  agentMessages: (sessionId: string) =>
+    request<{ messages: Array<Record<string, unknown>> }>(`/sessions/${sessionId}/agent-messages`),
+  goal: (sessionId: string) => request<Record<string, unknown>>(`/sessions/${sessionId}/goal`),
+  activateGoal: (sessionId: string, objective: string) =>
+    request<Record<string, unknown>>(`/sessions/${sessionId}/goal`, {
+      method: 'POST',
+      body: JSON.stringify({ objective }),
+    }),
+  goalAction: (sessionId: string, action: 'pause' | 'resume' | 'complete' | 'clear') =>
+    request<Record<string, unknown>>(`/sessions/${sessionId}/goal/${action}`, { method: 'POST', body: '{}' }),
+  residentSessions: () =>
+    request<{ sessions: Array<{ sessionId: string; status: string }>; enabled: boolean }>('/resident-sessions'),
+  attachResidentSession: (sessionId: string) =>
+    request<{ ok: boolean }>(`/resident-sessions/${sessionId}/attach`, { method: 'POST', body: '{}' }),
+  detachResidentSession: (sessionId: string) =>
+    request<{ ok: boolean }>(`/resident-sessions/${sessionId}/detach`, { method: 'POST', body: '{}' }),
+  executableSkills: () =>
+    request<{ skills: Array<Record<string, unknown>> }>('/executable-skills'),
+  installExecutableSkill: (path: string) =>
+    request<{ ok: boolean; installedTo: string }>('/executable-skills/install', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
 };
 
 // ─── Factory Reset ───

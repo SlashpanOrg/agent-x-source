@@ -11,7 +11,7 @@ import {
   type Session,
   type SessionResumeState,
 } from '@agentx/shared';
-import { setChannelInboundAgentResolver, getNotificationChannelStatus, type Agent } from '@agentx/engine';
+import { setChannelInboundAgentResolver, getNotificationChannelStatus, getSessionLeaseManager, type Agent } from '@agentx/engine';
 import { getTelegramInboundStatus, getTelegramRuntimeHints } from './channels-sync.js';
 import { ensureChannelAgent, getEngine, syncChannelSuperSessionContext } from './engine.js';
 
@@ -62,6 +62,9 @@ export function bindChannelToSession(
     boundAt: new Date().toISOString(),
   };
   eng.channelSessionBindings = { ...(eng.channelSessionBindings ?? {}), [channel]: binding };
+  try {
+    void getSessionLeaseManager(`channel:${channel}`).acquire(session.id).catch(() => {});
+  } catch { /* best-effort */ }
   try {
     (eng.sessionManager as { setActiveSession?: (id: string) => void }).setActiveSession?.(session.id);
   } catch { /* best-effort */ }
@@ -263,6 +266,7 @@ function parseStoredResumeState(row: Record<string, unknown> | null | undefined)
     delegateCrewIds: payload.delegateCrewIds as string[] | undefined,
     primaryCrewId: payload.primaryCrewId as string | undefined,
     crewIntakeFromPicker: payload.crewIntakeFromPicker as boolean | undefined,
+    generationCursor: typeof payload.generationCursor === 'number' ? payload.generationCursor : undefined,
     createdAt: String(row['created_at'] ?? row['createdAt'] ?? new Date().toISOString()),
   };
 }

@@ -40,6 +40,8 @@ of all tables — no `ALTER TABLE` corrections or rename migrations.
 - **V004__whatsapp** — WhatsApp channel tables
 - **V005__observability** — Observability schema (traces, spans, logs, metrics,
   OTLP, alerting, cost analytics)
+- **V006__prime_adoption** — Harness, goals, durable turns, session leases,
+  command journal, inter-agent messaging, resident sessions
 
 ## Adding a new migration
 

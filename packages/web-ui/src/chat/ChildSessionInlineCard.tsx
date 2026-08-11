@@ -8,7 +8,7 @@ export interface ChildSessionCardProps {
   childSessionId: string;
   label: string;
   kind: 'sub_agent' | 'crew_worker';
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'error' | 'admitted';
   task?: string;
   onExpand: () => void;
 }

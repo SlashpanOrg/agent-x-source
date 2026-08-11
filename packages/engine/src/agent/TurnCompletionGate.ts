@@ -82,7 +82,12 @@ export function evaluateTurnCompletionGate(opts: {
   /** Skip planning-gap after the model has had a chance to create a checklist. */
   maxPlanningGapRounds?: number;
   minTasksForPlanningGap?: number;
+  /** Goal-driven continuations bypass the todo completion gate when true. */
+  exemptGoalContinuation?: boolean;
 }): TurnCompletionGateResult {
+  if (opts.exemptGoalContinuation) {
+    return { block: false };
+  }
   const todos = opts.todos ?? [];
   const incomplete = getIncompleteTodos(todos);
   if (incomplete.length > 0) {
