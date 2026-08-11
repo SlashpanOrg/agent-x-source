@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { RunStateManager } from '../../src/agent/RunStateManager.js';
+import { RunStateManager } from '../src/agent/RunStateManager.js';
 
 describe('RunStateManager', () => {
   it('tracks a running session', async () => {

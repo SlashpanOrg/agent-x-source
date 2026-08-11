@@ -1,15 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import type { AgentXConfig } from '@agentx/shared';
-import { configureAdoptionFromConfig } from '@agentx/shared';
+import { configureAdoptionFromConfig, setAdoptionTurnOverrides } from '@agentx/shared';
 import { AgentBus } from '../../src/agent/AgentBus.js';
 
 describe('AgentBus.sendToSession', () => {
   afterEach(() => {
+    setAdoptionTurnOverrides(null);
     configureAdoptionFromConfig(null);
   });
 
   it('falls back to publish when inter-agent messaging disabled', async () => {
-    configureAdoptionFromConfig(null);
+    setAdoptionTurnOverrides({ interAgentMessaging: false });
     const bus = new AgentBus();
     let received = false;
     bus.subscribe('child', 'ping', () => {
@@ -22,6 +23,7 @@ describe('AgentBus.sendToSession', () => {
   });
 
   it('emits agent_message event when routing', async () => {
+    setAdoptionTurnOverrides({ interAgentMessaging: true });
     configureAdoptionFromConfig({
       adoption: { interAgentMessaging: { enabled: true } },
     } as AgentXConfig);

@@ -12,8 +12,13 @@ import type { ToolDefinition } from '@agentx/shared';
  * explicitly copying handlers across (via getHandlers()/registerHandler()),
  * every tool call the sub-agent makes fails with NO_HANDLER regardless of how
  * correctly the model calls the tool.
+ *
+ * Uses a low-risk non-deliverable tool id so proactive-consent policy does not
+ * mask the NO_HANDLER path under test.
  */
 describe('sub-agent child executor handler copying', () => {
+  const TOOL_ID = 'probe_tool';
+
   const makeDef = (id: string): ToolDefinition => ({
     id,
     name: id,
@@ -28,31 +33,31 @@ describe('sub-agent child executor handler copying', () => {
 
   it('copyExecutionPolicyFrom alone does NOT transfer handlers (documents the bug surface)', async () => {
     const parentRegistry = new ToolRegistry();
-    parentRegistry.register(makeDef('file_write'));
+    parentRegistry.register(makeDef(TOOL_ID));
     const parentExecutor = new EnhancedToolExecutor(parentRegistry, '/tmp/parent-scope');
-    parentExecutor.registerHandler('file_write', async () => ({ success: true, output: 'wrote file' }));
+    parentExecutor.registerHandler(TOOL_ID, async () => ({ success: true, output: 'wrote file' }));
 
     // Simulate SmartSubAgent building a scoped child registry + fresh executor.
     const childRegistry = new ToolRegistry();
-    childRegistry.register(parentRegistry.get('file_write')!);
+    childRegistry.register(parentRegistry.get(TOOL_ID)!);
     const childExecutor = new EnhancedToolExecutor(childRegistry, '/tmp/child-scope');
     childExecutor.copyExecutionPolicyFrom(parentExecutor);
 
     // Without copying handlers, the child executor has the tool *definition*
     // (so the LLM sees it in its schema) but no *handler* — this is the NO_HANDLER bug.
-    const result = await childExecutor.execute('file_write', { path: 'a.txt', content: 'x' }, 'sub-session');
+    const result = await childExecutor.execute(TOOL_ID, { path: 'a.txt', content: 'x' }, 'sub-session');
     expect(result.success).toBe(false);
     expect(result.error).toBe('NO_HANDLER');
   });
 
   it('copying handlers via getHandlers()/registerHandler() fixes sub-agent tool execution', async () => {
     const parentRegistry = new ToolRegistry();
-    parentRegistry.register(makeDef('file_write'));
+    parentRegistry.register(makeDef(TOOL_ID));
     const parentExecutor = new EnhancedToolExecutor(parentRegistry, '/tmp/parent-scope');
-    parentExecutor.registerHandler('file_write', async () => ({ success: true, output: 'wrote file' }));
+    parentExecutor.registerHandler(TOOL_ID, async () => ({ success: true, output: 'wrote file' }));
 
     const childRegistry = new ToolRegistry();
-    childRegistry.register(parentRegistry.get('file_write')!);
+    childRegistry.register(parentRegistry.get(TOOL_ID)!);
     const childExecutor = new EnhancedToolExecutor(childRegistry, '/tmp/child-scope');
     childExecutor.copyExecutionPolicyFrom(parentExecutor);
     // The fix applied in SmartSubAgent.ts:
@@ -60,7 +65,7 @@ describe('sub-agent child executor handler copying', () => {
       childExecutor.registerHandler(name, handler);
     }
 
-    const result = await childExecutor.execute('file_write', { path: 'a.txt', content: 'x' }, 'sub-session');
+    const result = await childExecutor.execute(TOOL_ID, { path: 'a.txt', content: 'x' }, 'sub-session');
     expect(result.success).toBe(true);
     expect(result.output).toBe('wrote file');
   });

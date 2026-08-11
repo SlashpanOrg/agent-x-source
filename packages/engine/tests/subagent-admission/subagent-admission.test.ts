@@ -1,15 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import type { AgentXConfig } from '@agentx/shared';
-import { configureAdoptionFromConfig } from '@agentx/shared';
+import { configureAdoptionFromConfig, setAdoptionTurnOverrides } from '@agentx/shared';
 import { SubAgentAdmissionManager } from '../../src/subagent-admission/SubAgentAdmissionManager.js';
 
 describe('SubAgentAdmissionManager', () => {
   afterEach(() => {
+    setAdoptionTurnOverrides(null);
     configureAdoptionFromConfig(null);
   });
 
   it('blocks when admission disabled', () => {
-    configureAdoptionFromConfig(null);
+    setAdoptionTurnOverrides({ subagentAdmission: false });
     const mgr = new SubAgentAdmissionManager();
     expect(mgr.isEnabled()).toBe(false);
     expect(mgr.reserveSlot()).toEqual({ ok: false, reason: 'Subagent admission is disabled.' });
