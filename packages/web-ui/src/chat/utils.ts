@@ -158,7 +158,19 @@ export function mergeIncomingMessageParts<T extends CrewRosterPickerPartLike>(
 ): T[] | undefined {
   if (!incomingParts?.length) return prevParts;
   if (!prevParts?.length) return incomingParts;
-  return incomingParts.map((incoming) => {
+  const incomingHasResponseDocument = incomingParts.some((part) => part.type === 'response_document');
+  const incomingIds = new Set(incomingParts.map((part) => part.id).filter(Boolean));
+  const base = incomingHasResponseDocument
+    ? [
+      ...prevParts.filter((part) => (
+        part.type !== 'text'
+        && part.type !== 'response_document'
+        && (!part.id || !incomingIds.has(part.id))
+      )),
+      ...incomingParts,
+    ]
+    : incomingParts;
+  return base.map((incoming) => {
     if (incoming.type !== 'crew_roster_picker' || !incoming.crewRosterPicker) return incoming;
     const prev = prevParts.find((p) => {
       if (p.type !== 'crew_roster_picker' || !p.crewRosterPicker) return false;
@@ -186,6 +198,21 @@ export function mergeIncomingMessageParts<T extends CrewRosterPickerPartLike>(
     }
     return incoming;
   });
+}
+
+/** Preserve a completed rich snapshot when restart telemetry reconstructs the same active reply. */
+export function mergeActiveTurnResponseParts<T extends CrewRosterPickerPartLike>(
+  storedParts: T[] | undefined,
+  liveParts: T[] | undefined,
+  sameReply: boolean,
+): T[] | undefined {
+  if (!liveParts?.length) return storedParts;
+  if (!sameReply || !storedParts?.length) return liveParts;
+  const liveIds = new Set(liveParts.map((part) => part.id).filter(Boolean));
+  const retainedRich = storedParts.filter((part) => (
+    part.type === 'response_document' && (!part.id || !liveIds.has(part.id))
+  ));
+  return retainedRich.length > 0 ? [...liveParts, ...retainedRich] : liveParts;
 }
 
 export function hasPendingCrewRosterPicker(messages: Array<{ parts?: Array<{ type?: string; crewRosterPicker?: { status?: string } }> }>): boolean {

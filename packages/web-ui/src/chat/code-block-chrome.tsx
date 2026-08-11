@@ -133,6 +133,8 @@ export function CodeBlockChrome({
         </Typography>
         <Box
           component="button"
+          type="button"
+          aria-label={copied ? 'Code copied' : 'Copy code'}
           onClick={() => {
             void copyToClipboard(copyText);
             setCopied(true);
@@ -154,6 +156,10 @@ export function CodeBlockChrome({
             display: 'inline-flex',
             alignItems: 'center',
             '&:hover': { borderColor: colors.border.strong, color: colors.text.secondary },
+            '&:focus-visible': {
+              outline: `1px solid ${colors.accent.blue}`,
+              outlineOffset: 2,
+            },
           }}
         >
           {copied ? 'Copied' : 'Copy'}

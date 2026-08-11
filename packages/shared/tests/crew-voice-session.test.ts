@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
+  crewCallAnchorId,
   crewVoiceSessionId,
+  isCrewCallAnchorId,
   isCrewVoiceSessionId,
   textSessionIdFromVoiceSessionId,
 } from '../src/utils/crew-voice-session.js';
@@ -15,6 +17,14 @@ describe('crew-voice-session utils', () => {
     expect(isCrewVoiceSessionId(voiceId)).toBe(true);
     expect(textSessionIdFromVoiceSessionId(voiceId)).toBe(textId);
     expect(crewVoiceSessionId(voiceId)).toBe(voiceId);
+  });
+
+  it('builds call-only anchors without requiring a text session row', () => {
+    const anchor = crewCallAnchorId('hub-austin');
+    expect(anchor).toBe('call:hub-austin');
+    expect(isCrewCallAnchorId(anchor)).toBe(true);
+    expect(crewVoiceSessionId(anchor)).toBe('voice:call:hub-austin');
+    expect(textSessionIdFromVoiceSessionId('voice:call:hub-austin')).toBe('call:hub-austin');
   });
 
   it('excludes voice sessions from user-facing session lists', () => {

@@ -41,6 +41,14 @@ export { ReflectionLoop } from './agent/ReflectionLoop.js';
 export type { ReflectionResult } from './agent/ReflectionLoop.js';
 export { Agent, AgentFacade } from './agent/Agent.js';
 export type { AgentOptions } from './agent/Agent.js';
+export {
+  getRichResponseMode,
+  disableRichResponseForSession,
+  enableRichResponseForSession,
+  isRichResponseDisabledForSession,
+  applyRichResponsePolicy,
+} from './agent/rich-response-policy.js';
+export type { RichResponseMode, RichResponseDecision } from './agent/rich-response-policy.js';
 export type { CheckpointAction, FailureRecord, TaskExecutorResult, TaskPlan, TaskStep } from './agent/TaskExecutor.js';
 export type { PartPersistFn } from './agent/AiSdkStreamHandler.js';
 export { createAiSdkModel } from './agent/AiSdkBridge.js';

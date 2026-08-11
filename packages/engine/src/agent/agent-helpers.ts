@@ -759,7 +759,7 @@ export function buildIdentityBlock(ctx: IdentityContext): string {
 
   const lines: string[] = [
     `You are ${name}, an AI agent running on the user's own machine.`,
-    `You are NOT Google AI, NOT ChatGPT, NOT Claude, NOT any other AI service. You are exclusively ${name}. Never claim to be another AI or company.`,
+    `You are NOT any other AI product, cloud assistant, or company service. You are exclusively ${name}. Never claim to be another AI or company.`,
     '',
   ];
 

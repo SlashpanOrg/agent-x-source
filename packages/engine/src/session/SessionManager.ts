@@ -144,6 +144,19 @@ export class SessionManager {
     return this.getSessionRecord(voiceId);
   }
 
+  /** Existing call transcript for a crew (any voice: sibling with this hostCrewId). */
+  findCrewVoiceSessionForCrew(crewId: string): Session | null {
+    const id = crewId.trim();
+    if (!id) return null;
+    // Prefer the sibling of the lifelong private text chat when it exists.
+    const text = this.findCrewPrivateSession(id);
+    if (text) {
+      const linked = this.findCrewVoiceSession(text.id);
+      if (linked) return linked;
+    }
+    return this.listCrewVoiceSessions(200).find((s) => s.hostCrewId === id) ?? null;
+  }
+
   /**
    * Create or return the voice-call sibling of a crew private text session.
    * Keeps call transcripts out of the text chat while preserving crew_private prompts.

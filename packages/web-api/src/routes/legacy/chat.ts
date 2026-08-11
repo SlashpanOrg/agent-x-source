@@ -7,7 +7,13 @@
 import { Router } from 'express';
 import { getLogger, normalizeClientSituation, sanitizeForJson } from '@agentx/shared';
 import type { TurnAttachment } from '@agentx/shared';
-import { getSessionGenerationManager } from '@agentx/engine';
+import {
+  disableRichResponseForSession,
+  enableRichResponseForSession,
+  getRichResponseMode,
+  getSessionGenerationManager,
+  isRichResponseDisabledForSession,
+} from '@agentx/engine';
 import {
   runAgentTurnAsync,
   cancelActiveSessionTurn,
@@ -42,6 +48,41 @@ function normalizeChatAttachments(
 
 export function createChatRouter(): Router {
   const r = Router();
+
+  // Operational emergency fallback. This intentionally has no end-user UI:
+  // operators can force one session back to canonical Markdown without restart.
+  r.get('/api/chat/rich-response', (_req, res) => {
+    const sessionId = getEngine().agent?.sessionId;
+    if (!sessionId) {
+      res.status(409).json({ error: 'no-active-session' });
+      return;
+    }
+    res.json({
+      sessionId,
+      mode: getRichResponseMode(sessionId),
+      disabledForSession: isRichResponseDisabledForSession(sessionId),
+    });
+  });
+
+  r.post('/api/chat/rich-response', (req, res) => {
+    const sessionId = getEngine().agent?.sessionId;
+    if (!sessionId) {
+      res.status(409).json({ error: 'no-active-session' });
+      return;
+    }
+    if (typeof req.body?.enabled !== 'boolean') {
+      res.status(400).json({ error: 'enabled-must-be-boolean' });
+      return;
+    }
+    if (req.body.enabled) enableRichResponseForSession(sessionId);
+    else disableRichResponseForSession(sessionId);
+    res.json({
+      ok: true,
+      sessionId,
+      mode: getRichResponseMode(sessionId),
+      disabledForSession: isRichResponseDisabledForSession(sessionId),
+    });
+  });
 
   r.post('/api/chat/message-stream', validate(chatMessageSchema), async (req, res) => {
     try {

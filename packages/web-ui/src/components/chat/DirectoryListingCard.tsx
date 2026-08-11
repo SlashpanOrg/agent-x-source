@@ -1,4 +1,4 @@
-// DirectoryListingCard.tsx — Devin-style card for folder_list / list_dir /
+// DirectoryListingCard.tsx — card for folder_list / list_dir /
 // folder_tree / folder_open / folder_create tool calls. Shows the directory
 // path in a header and the listing contents in a scrollable tree-like view.
 

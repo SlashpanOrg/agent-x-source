@@ -1278,7 +1278,7 @@ export function SetupWizard() {
                   <WizardStepHeader
                     codename="MODULE · PROFILE"
                     title={isLocal ? 'Name Your Local Profile' : isAzure ? 'Azure Profile' : isCustom ? 'Custom Provider' : 'Configure Profile'}
-                    subtitle={isLocal ? `Connecting to ${selectedProviderInfo?.name ?? 'local provider'}. No API key needed.` : isAzure ? 'Enter your Azure endpoint and API key' : isCustom ? 'Use your own AI service (OpenAI, Claude, or Gemini)' : `Set up your ${selectedProviderInfo?.name ?? ''} connection`}
+                    subtitle={isLocal ? `Connecting to ${selectedProviderInfo?.name ?? 'local provider'}. No API key needed.` : isAzure ? 'Enter your Azure endpoint and API key' : isCustom ? 'Use your own AI service or OpenAI-compatible endpoint' : `Set up your ${selectedProviderInfo?.name ?? ''} connection`}
                   />
 
                   <TextField label="Profile Name" value={profileName} onChange={e => setProfileName(e.target.value)} fullWidth

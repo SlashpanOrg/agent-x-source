@@ -22,6 +22,7 @@ import { CrewCard } from './crew/CrewCard';
 import { CrewScreenHeader } from './crew/CrewScreenHeader';
 import type { PrebuiltCategory, PrebuiltCrew } from './crew/hub-types';
 import { CrewProfileDialog } from './crew/CrewProfileDialog';
+import { CrewCreateWizardDialog, type CrewCreateFormState } from './crew/CrewCreateWizardDialog';
 import { crewTheme, getCrewAccent } from '../styles/crew-theme';
 import { ensureHubCategoryCrews, loadHubOpenState } from '../data/crew-hub/loadHubCatalog';
 import {
@@ -86,6 +87,7 @@ export function CrewsPanel() {
   const [crews, setCrews] = useState<Crew[]>([]);
   const [detailCrew, setDetailCrew] = useState<Crew | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [createWizardOpen, setCreateWizardOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [error, setError] = useState('');
@@ -193,7 +195,8 @@ export function CrewsPanel() {
   const openCreate = () => {
     setForm(EMPTY_FORM);
     setIsEditing(false);
-    setDialogOpen(true);
+    setError('');
+    setCreateWizardOpen(true);
     setExpertiseInput('');
     setTraitInput('');
   };
@@ -230,6 +233,61 @@ export function CrewsPanel() {
     }
   };
 
+  const handleWizardGenerateMetadata = async (wizardForm: CrewCreateFormState): Promise<CrewCreateFormState | null> => {
+    const hasInput = wizardForm.name.trim() && wizardForm.title.trim();
+    if (!hasInput) { setError('Name and title are required to auto-generate.'); return null; }
+    setGeneratingMeta(true);
+    setError('');
+    try {
+      const meta = await crewsApi.generateMetadata(
+        wizardForm.systemPrompt || undefined,
+        wizardForm.title || undefined,
+        wizardForm.name,
+        wizardForm.description,
+      );
+      return {
+        ...wizardForm,
+        expertise: meta.expertise,
+        traits: meta.traits,
+        systemPrompt: meta.revisedPrompt || wizardForm.systemPrompt,
+      };
+    } catch {
+      setError('Failed to generate skills. You can add them manually.');
+      return null;
+    } finally {
+      setGeneratingMeta(false);
+    }
+  };
+
+  const handleWizardSave = async (wizardForm: CrewCreateFormState) => {
+    if (!wizardForm.name.trim()) { setError('Name is required'); throw new Error('Name is required'); }
+    if (!wizardForm.systemPrompt.trim()) { setError('System prompt is required'); throw new Error('System prompt is required'); }
+    setBusy(true);
+    setError('');
+    try {
+      const callsign = wizardForm.callsign.trim() || toCallsign(wizardForm.name);
+      await crewsApi.create({
+        name: wizardForm.name.trim(),
+        title: wizardForm.title.trim() || undefined,
+        callsign,
+        systemPrompt: wizardForm.systemPrompt.trim(),
+        description: wizardForm.description.trim() || undefined,
+        tone: wizardForm.tone,
+        expertise: wizardForm.expertise,
+        traits: wizardForm.traits,
+        source: 'custom',
+      });
+      setCreateWizardOpen(false);
+      setForm(EMPTY_FORM);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Save failed');
+      throw e;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleRegenerateCrew = async (c: Crew, e?: React.MouseEvent) => {
     e?.stopPropagation();
     setRegenerating(c.id);
@@ -250,16 +308,13 @@ export function CrewsPanel() {
   const handleSave = async () => {
     if (!form.name.trim()) { setError('Name is required'); return; }
     if (!form.systemPrompt.trim()) { setError('System prompt is required'); return; }
+    if (!isEditing || !detailCrew?.id) { setError('Nothing to save'); return; }
     setBusy(true);
     setError('');
     try {
       const callsign = form.callsign.trim() || toCallsign(form.name);
       const payload: CrewInput = { name: form.name.trim(), title: form.title.trim() || undefined, callsign, systemPrompt: form.systemPrompt.trim(), description: form.description.trim() || undefined, tone: form.tone, expertise: form.expertise, traits: form.traits };
-      if (isEditing && detailCrew?.id) {
-        await crewsApi.update(detailCrew.id, payload);
-      } else {
-        await crewsApi.create(payload);
-      }
+      await crewsApi.update(detailCrew.id, payload);
       setDialogOpen(false);
       setForm(EMPTY_FORM);
       await load();
@@ -488,7 +543,18 @@ export function CrewsPanel() {
         callLoading={callActive}
       />
 
-      {/* Create / Edit Modal */}
+      {/* Create wizard — custom crews only (Hub import unchanged) */}
+      <CrewCreateWizardDialog
+        open={createWizardOpen}
+        busy={busy}
+        generatingMeta={generatingMeta}
+        error={error}
+        onClose={() => { setCreateWizardOpen(false); setError(''); }}
+        onSave={handleWizardSave}
+        onGenerateMetadata={handleWizardGenerateMetadata}
+      />
+
+      {/* Edit Modal — existing roster members */}
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)}
         PaperProps={{ sx: {
           bgcolor: crewTheme.bg.panel,
@@ -499,15 +565,18 @@ export function CrewsPanel() {
           fontFamily: "'JetBrains Mono', monospace", fontSize: '0.48rem',
           letterSpacing: '2px', textTransform: 'uppercase', color: crewTheme.text.dim, pb: 0, pt: 2,
         }}>
-          {isEditing ? 'Modify Personnel' : 'New Recruitment'}
+          Modify Personnel
         </DialogTitle>
         <DialogTitle sx={{
           fontFamily: "'JetBrains Mono', monospace", fontSize: '0.82rem',
           fontWeight: 700, letterSpacing: '1px', pt: 0.5, color: crewTheme.text.primary,
         }}>
-          {isEditing ? 'EDIT CREW' : 'CREATE CREW'}
+          EDIT CREW
         </DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, pt: '12px !important' }}>
+          {error ? (
+            <Typography sx={{ fontSize: '0.7rem', color: '#e57373' }}>{error}</Typography>
+          ) : null}
           <Box>
             <TextField size="small" label="Name" value={form.name}
               onChange={(e) => handleNameChange(e.target.value)}
@@ -634,7 +703,7 @@ export function CrewsPanel() {
           <Button onClick={handleSave} disabled={busy} variant="contained"
             sx={{ bgcolor: crewTheme.accent.tactical, color: crewTheme.bg.void, fontSize: '0.7rem', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", px: 2.5, '&:hover': { bgcolor: alphaColor(crewTheme.accent.tactical, 0.85) } }}>
             {busy ? <CircularProgress size={14} sx={{ mr: 1 }} /> : null}
-            {isEditing ? 'SAVE' : 'DEPLOY'}
+            SAVE
           </Button>
         </DialogActions>
       </Dialog>

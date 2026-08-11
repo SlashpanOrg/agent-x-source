@@ -9,27 +9,18 @@ export const VOICE_ACCIDENTAL_TAP_MS = 140;
 export const VOICE_MIN_RECORDING_MS = 220;
 /** Peak mic level (0–1) that counts as speech for short clips. */
 export const VOICE_MIN_SPEECH_LEVEL = 0.055;
-/**
- * While xAI duplex TTS is playing, only forward mic frames at/above this level.
- * Blocks soft speaker bleed from tripping server VAD barge-in; real talk is louder.
- */
-export const XAI_BARGE_IN_MIC_LEVEL = 0.05;
-/**
- * Client-side barge-in trigger: during xAI duplex playback, only sustained
- * mic energy at or above this level stops playback and switches to listening.
- * Set above the forward gate so only clear, deliberate user speech triggers it,
- * not residual echo, ambient noise, coughs, claps, notification sounds, or pen drops.
- */
-export const XAI_BARGE_IN_TRIGGER_LEVEL = 0.22;
-/**
- * Number of consecutive mic frames that must exceed XAI_BARGE_IN_TRIGGER_LEVEL
- * before a client-side barge-in is declared. At ~5ms per AudioWorklet frame,
- * 12 frames ≈ 60ms of sustained speech — filters cafe clatter while staying responsive.
- */
-export const XAI_BARGE_IN_TRIGGER_FRAMES = 12;
-/**
- * After the assistant starts speaking, ignore the mic for this long before
- * allowing barge-in. Suppresses speaker echo/AEC settle and cafe bleed on the
- * first words of each assistant turn.
- */
-export const XAI_BARGE_IN_PLAYBACK_GRACE_MS = 1_000;
+
+// Duplex / barge-in / first-chunk params are shared with the server and call sessions.
+export {
+  XAI_BARGE_IN_MIC_LEVEL,
+  XAI_BARGE_IN_TRIGGER_LEVEL,
+  XAI_BARGE_IN_TRIGGER_FRAMES,
+  XAI_WAKE_BARGE_IN_TRIGGER_LEVEL,
+  XAI_WAKE_BARGE_IN_TRIGGER_FRAMES,
+  XAI_BARGE_IN_PLAYBACK_GRACE_MS,
+  MIN_FIRST_PLAYBACK_SAMPLES,
+  FIRST_PLAYBACK_START_DELAY_SEC,
+  PLAYBACK_IDLE_NOTIFY_MS,
+  VOICE_INPUT_SAMPLE_RATE,
+  VOICE_OUTPUT_SAMPLE_RATE,
+} from '@agentx/shared/browser';

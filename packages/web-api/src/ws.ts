@@ -7,7 +7,7 @@ import { getCommandJournal, getSessionGenerationManager, MemoryFabric, startAppS
 import { validateWebSocketConnection } from './auth.js';
 import { registerWebSocketRoute } from './ws-upgrade-router.js';
 import { getSessionConnection } from './session-connection.js';
-import { getLogger, stripToolNoise, appendStreamText, repairStreamTextGlitches, type MessagePart, attachDeepSearchPartsFromTools, attachChartPartsFromTools, deepSearchBundleFromMetadata, upsertDeepSearchPart } from '@agentx/shared';
+import { getLogger, stripToolNoise, appendStreamText, repairStreamTextGlitches, type MessagePart, attachDeepSearchPartsFromTools, attachChartPartsFromTools, deepSearchBundleFromMetadata, upsertDeepSearchPart, dedupeResponseDocumentParts, dedupeToolParts } from '@agentx/shared';
 import type { DeepSearchProgress, EngineEvent, EventHandler, Message, MessageMetadata, NormalizedAttachment } from '@agentx/shared';
 import { metricsRegistry } from './metrics/MetricsRegistry.js';
 
@@ -968,10 +968,19 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
         // Reset first — new user turn must not inherit prior turn parts
         resetAccumulators();
         const rawMsg = event.message?.content;
-        if (isActiveSession && sess && typeof rawMsg === 'string' && sess.title === 'New Session') {
-          const firstLine = String(rawMsg).split('\n')[0] || '';
-          const title = firstLine.slice(0, 80).trim();
-          if (title.length > 0) eng.sessionManager.updateSession({ title });
+        if (sessionId && typeof rawMsg === 'string') {
+          const store = eng.sessionManager.getStorageAdapter?.();
+          const row = store?.getSession?.(sessionId)
+            ?? (isActiveSession ? sess : null)
+            ?? eng.sessionManager.getSessionById?.(sessionId);
+          if (row && (row.title === 'New Session' || !String(row.title ?? '').trim())) {
+            const firstLine = String(rawMsg).split('\n')[0] || '';
+            const title = firstLine.slice(0, 80).trim();
+            if (title.length > 0) {
+              store?.updateSession?.(sessionId, { title });
+              if (isActiveSession && sess) eng.sessionManager.updateSession({ title });
+            }
+          }
         }
         const msg: Message | undefined = event.message;
         const text = msg?.content ?? '';
@@ -998,17 +1007,34 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
             // Clarification/questionnaire messages carry their UI card on the
             // event itself and may have intentionally empty text.
             if (Array.isArray(msg?.parts) && msg.parts.length > 0) {
-              extra.parts = msg.parts as Array<Record<string, unknown>>;
+              const incomingParts = msg.parts as MessagePart[];
+              const incomingIds = new Set(incomingParts.map((part) => part.id));
+              const accumulated = Array.isArray(extra.parts) ? extra.parts as MessagePart[] : [];
+              const merged = [
+                ...accumulated.filter((part) => !incomingIds.has(part.id)),
+                ...incomingParts,
+              ];
+              extra.parts = dedupeResponseDocumentParts(dedupeToolParts(merged, true));
             }
             extra.attachments = msg?.attachments;
             if (typeof msg?.id === 'string') lastPersistedAssistantId = msg.id;
             if (isUpdate && msg?.id) {
               const store = eng.sessionManager.getStorageAdapter();
               const existing = store.getMessages?.(sessionId)?.find((m) => m.id === msg.id);
-              const existingParts = Array.isArray(existing?.parts) ? existing.parts : [];
-              const newParts = Array.isArray(extra.parts) ? extra.parts : [];
-              // Prefer the richer turn snapshot over naive concat (avoids duplicate tools/subagents).
-              const mergedParts = newParts.length > 0 ? newParts : existingParts;
+              const existingParts = Array.isArray(existing?.parts) ? existing.parts as MessagePart[] : [];
+              const newParts = Array.isArray(extra.parts) ? extra.parts as MessagePart[] : [];
+              // Keep chronology from the first finalize; overlay rich/response updates.
+              // When a response_document arrives, drop sibling text parts so DB matches live UI.
+              const incomingHasResponseDocument = newParts.some((part) => part.type === 'response_document');
+              const incomingIds = new Set(newParts.map((part) => part.id).filter(Boolean));
+              const mergedParts = dedupeResponseDocumentParts(dedupeToolParts([
+                ...existingParts.filter((part) => (
+                  part.type !== 'response_document'
+                  && !(incomingHasResponseDocument && part.type === 'text')
+                  && (!part.id || !incomingIds.has(part.id))
+                )),
+                ...newParts,
+              ], true));
               const prevMeta = typeof existing?.metadata === 'string'
                 ? (() => { try { return JSON.parse(existing.metadata as string) as Record<string, unknown>; } catch { return {}; } })()
                 : { ...(existing?.metadata as Record<string, unknown> | undefined) };

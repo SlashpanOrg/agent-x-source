@@ -650,7 +650,7 @@ export function ProvidersPanel() {
           </FormControl>
           <TextField size="small" label="Profile Name" value={newProfile.label}
             onChange={(e) => setNewProfile({ ...newProfile, label: e.target.value })}
-            placeholder="e.g. OpenAI Work, Claude Personal"
+            placeholder="e.g. Work, Personal"
             sx={settingsTextFieldSx} />
           {(() => {
             const sel = availableProviders.find(p => p.id === newProfile.providerId);

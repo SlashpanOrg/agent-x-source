@@ -5,10 +5,12 @@ import { rm } from 'node:fs/promises';
 import type { Crew, Session } from '@agentx/shared';
 import {
   buildDurationDividerMeta,
+  crewCallAnchorId,
   crewVoiceSessionId,
   encodeCallDividerContent,
   getDataDir,
   getLogger,
+  isCrewCallAnchorId,
   isCrewVoiceSessionId,
   textSessionIdFromVoiceSessionId,
 } from '@agentx/shared';
@@ -207,7 +209,8 @@ export async function postCrewChatSession(req: Request, res: Response): Promise<
 
 /**
  * POST /api/crew-chat/voice-sessions — create or return the voice-call sibling
- * (`voice:{textSessionId}`) so call transcripts stay out of the private text chat.
+ * (`voice:{textSessionId}` or `voice:call:{crewId}`) so call transcripts stay
+ * out of the private text chat. Does not create an empty private text session.
  */
 export async function postCrewChatVoiceSession(req: Request, res: Response): Promise<void> {
   try {
@@ -237,20 +240,25 @@ export async function postCrewChatVoiceSession(req: Request, res: Response): Pro
 
     let textSession: Session | null = null;
     if (textSessionId) {
-      textSession = eng.sessionManager.getSessionById(textSessionId);
-      if (!textSession || textSession.contextKind !== 'crew_private' || isCrewVoiceSessionId(textSession.id)) {
-        // Stale voice:… ids, dashboard __channel__:voice, or deleted text rows — do not
-        // fail the call when we can resolve the crew from roster/recruit.
-        if (body.crewId || body.recruit) {
-          getLogger().warn(
-            'POST_CREW_CHAT_VOICE_SESSION',
-            `Ignoring invalid or stale textSessionId ${textSessionId}`,
-          );
-          textSessionId = '';
-          textSession = null;
-        } else {
-          res.status(400).json({ error: 'invalid-text-session' });
-          return;
+      if (isCrewCallAnchorId(textSessionId)) {
+        // Synthetic call-only anchor (`call:{crewId}`) — not a text chat row.
+        textSession = null;
+      } else {
+        textSession = eng.sessionManager.getSessionById(textSessionId);
+        if (!textSession || textSession.contextKind !== 'crew_private' || isCrewVoiceSessionId(textSession.id)) {
+          // Stale voice:… ids, dashboard __channel__:voice, or deleted text rows — do not
+          // fail the call when we can resolve the crew from roster/recruit.
+          if (body.crewId || body.recruit) {
+            getLogger().warn(
+              'POST_CREW_CHAT_VOICE_SESSION',
+              `Ignoring invalid or stale textSessionId ${textSessionId}`,
+            );
+            textSessionId = '';
+            textSession = null;
+          } else {
+            res.status(400).json({ error: 'invalid-text-session' });
+            return;
+          }
         }
       }
     }
@@ -309,14 +317,25 @@ export async function postCrewChatVoiceSession(req: Request, res: Response): Pro
       ?? undefined;
     const host = hostInputFromCrew(crew, { categoryId: categoryId || undefined });
 
+    // Resolve the voice sibling anchor WITHOUT creating an empty private text chat.
+    // Private text sessions are only created when the user opens crew chat
+    // (POST /api/crew-chat/sessions).
     if (!textSessionId) {
-      const createdText = eng.sessionManager.createCrewPrivateSession(
-        cfg.provider.activeProvider,
-        cfg.provider.activeModel,
-        scopePath,
-        host,
-      );
-      textSessionId = createdText.id;
+      const existingText = findCrewPrivateSession(crew.id);
+      if (existingText) {
+        textSessionId = existingText.id;
+      } else {
+        const existingVoice = eng.sessionManager.findCrewVoiceSessionForCrew(crew.id);
+        if (existingVoice) {
+          textSessionId = textSessionIdFromVoiceSessionId(existingVoice.id)
+            ?? crewCallAnchorId(crew.id);
+        } else {
+          textSessionId = crewCallAnchorId(crew.id);
+        }
+      }
+    } else if (isCrewCallAnchorId(textSessionId)) {
+      // Already a call-only anchor — keep it; no text row to load.
+      textSession = null;
     }
 
     const voiceId = crewVoiceSessionId(textSessionId);

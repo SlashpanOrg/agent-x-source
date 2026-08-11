@@ -30,7 +30,7 @@ async function tryImport<T>(path: string, exportName: string): Promise<T | null>
   }
 }
 
-/** Alias for file_read — Cursor/Claude convention. */
+/** Alias for file_read — common agent tool naming. */
 export async function readFile(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
   return fs.fileRead({
     path: args['path'] ?? args['target_file'] ?? args['file'],
@@ -111,7 +111,7 @@ export async function searchFiles(args: Record<string, unknown>, context: ToolEx
   return code.codeSearch({ pattern, path: args['path'], glob: args['glob'] as string | undefined }, context);
 }
 
-/** Parse Cursor-style patch text or delegate edits to file_patch. */
+/** Parse unified/patch-style text or delegate edits to file_patch. */
 export async function applyPatch(args: Record<string, unknown>, context: ToolExecutionContext): Promise<ToolResult> {
   if (Array.isArray(args['edits'])) {
     return code.filePatch({ file: args['file'] ?? args['path'], edits: args['edits'] }, context);

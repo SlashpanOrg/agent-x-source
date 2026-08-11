@@ -1,4 +1,6 @@
-export const VOICE_SAMPLE_RATE = 16_000;
+import { VOICE_INPUT_SAMPLE_RATE } from '@agentx/shared/browser';
+
+export const VOICE_SAMPLE_RATE = VOICE_INPUT_SAMPLE_RATE;
 
 export function floatTo16BitPCM(input: Float32Array): Int16Array {
   const output = new Int16Array(input.length);

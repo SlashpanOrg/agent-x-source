@@ -1,7 +1,10 @@
+import {
+  FIRST_PLAYBACK_START_DELAY_SEC,
+  MIN_FIRST_PLAYBACK_SAMPLES,
+  PLAYBACK_IDLE_NOTIFY_MS,
+  VOICE_OUTPUT_SAMPLE_RATE,
+} from '@agentx/shared/browser';
 import { int16ToFloat32, mergeInt16Chunks } from './pcm.js';
-
-/** Buffer ~300ms of assistant audio before starting play — avoids first-word jitter. */
-const MIN_FIRST_PLAYBACK_SAMPLES = 7_200;
 
 export class StreamingPlayback {
   private context: AudioContext | null = null;
@@ -12,7 +15,7 @@ export class StreamingPlayback {
   private primingChunks: Int16Array[] = [];
   private primingSampleCount = 0;
 
-  constructor(defaultSampleRate = 24_000) {
+  constructor(defaultSampleRate = VOICE_OUTPUT_SAMPLE_RATE) {
     this.defaultSampleRate = defaultSampleRate;
   }
 
@@ -47,7 +50,7 @@ export class StreamingPlayback {
     source.buffer = buffer;
     source.connect(ctx.destination);
     const startAt = this.activeSources.length === 0
-      ? ctx.currentTime + 0.12
+      ? ctx.currentTime + FIRST_PLAYBACK_START_DELAY_SEC
       : Math.max(ctx.currentTime, this.nextStartTime);
     source.start(startAt);
     this.nextStartTime = startAt + buffer.duration;
@@ -68,15 +71,14 @@ export class StreamingPlayback {
   private scheduleIdleNotify(): void {
     if (!this.onIdle || this.activeSources.length > 0 || this.notifyIdleScheduled) return;
     this.notifyIdleScheduled = true;
-    // Wait 400ms after the final audio chunk before declaring playback idle.
-    // This prevents the UI from snapping to "listening" before the very end of
-    // the assistant's last word has been heard.
+    // Wait after the final audio chunk before declaring playback idle.
+    // This prevents the UI from snapping to "listening" before the last word.
     window.setTimeout(() => {
       this.notifyIdleScheduled = false;
       if (this.activeSources.length === 0) {
         this.onIdle?.();
       }
-    }, 400);
+    }, PLAYBACK_IDLE_NOTIFY_MS);
   }
 
   stop(): void {

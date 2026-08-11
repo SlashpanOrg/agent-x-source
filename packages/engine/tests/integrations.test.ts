@@ -76,7 +76,7 @@ describe('action-preview', () => {
 });
 
 describe('mcp import', () => {
-  it('parses Claude Desktop mcp.json shape', () => {
+  it('parses desktop client mcp.json shape', () => {
     const config = parseMcpImportConfig({
       mcpServers: {
         fetch: { command: 'npx', args: ['-y', '@pulsemcp/pulse-fetch'] },

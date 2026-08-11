@@ -570,7 +570,7 @@ export function DoomLoopWarning({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 7. ReasoningBlock — distinct expandable "thinking" UI like Claude
+// 7. ReasoningBlock — distinct expandable "thinking" UI
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function ReasoningBlock({ text, streaming, durationMs }: { text: string; streaming?: boolean; durationMs?: number }) {

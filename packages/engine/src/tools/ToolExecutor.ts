@@ -112,6 +112,9 @@ export class ToolExecutor implements ToolPermissionHost {
   private userConfigRules: PermissionRule[] = [];
   /** Per-turn set of tool IDs the user has consented to inline (bypass-mode enforcement). */
   private pendingToolConsent: Set<string> = new Set();
+  /** Session waiver for low-risk proactive deliverable confirmation. */
+  private skipLowRiskProactiveConsent = false;
+  private currentUserMessageProvider: (() => string) | null = null;
   private voiceTurnActive = false;
   private sessionContextKind?: SessionContextKind;
   private runtimeConfig: AgentXConfig | null = null;
@@ -308,6 +311,22 @@ export class ToolExecutor implements ToolPermissionHost {
 
   getPendingToolConsent(): Set<string> | null {
     return this.pendingToolConsent;
+  }
+
+  getSkipLowRiskProactiveConsent(): boolean {
+    return this.skipLowRiskProactiveConsent;
+  }
+
+  setSkipLowRiskProactiveConsent(enabled: boolean): void {
+    this.skipLowRiskProactiveConsent = enabled;
+  }
+
+  setCurrentUserMessageProvider(provider: (() => string) | null): void {
+    this.currentUserMessageProvider = provider;
+  }
+
+  getCurrentUserMessage(): string {
+    return this.currentUserMessageProvider?.() ?? '';
   }
 
   /** Grant inline consent for a tool this turn (called when the user says "yes/go ahead"). */

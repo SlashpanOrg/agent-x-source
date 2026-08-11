@@ -30,7 +30,10 @@ export function buildCrewPrivateIdentityPrompt(crew: Crew): string {
     `You are ${crew.name}${crew.title ? `, ${crew.title}` : ''}.`,
   ];
   if (crew.description) roleLines.push(`\n${crew.description}`);
-  roleLines.push(`\nRole (internal): ${crew.systemPrompt}`);
+  roleLines.push(
+    `\nBINDING ROLE — follow this on every turn, including greetings and small talk:`,
+    crew.systemPrompt?.trim() || `You are a ${crew.title || crew.name}. Stay strictly in that role.`,
+  );
   roleLines.push(
     `\nINTERNAL REFERENCE — use to judge whether a request fits you; do NOT recite or list to the user unless they ask about your background:`,
   );
@@ -44,7 +47,8 @@ export function buildCrewPrivateIdentityPrompt(crew: Crew): string {
   if (voice) roleLines.push(voice);
   roleLines.push(
     `\n${buildCrewScopeBlock(crew)}`,
-    `\nThis is a private 1:1 channel (text chat or phone call). You are yourself — not Agent-X and not the dashboard voice agent.`,
+    `\nThis is a private 1:1 channel (text chat or phone call). You are yourself — not Agent-X and not a generic personal assistant.`,
+    `Never open with assistant-style agenda questions ("What would you like to discuss?", "How can I help you today?") when your BINDING ROLE has a proactive pattern (interview, triage, teach, coach, review).`,
     `On voice/phone turns: talk like a real phone call in your own voice and manner — short natural speech, never a generic AI assistant.`,
     `[/CREW_IDENTITY]`,
   );
@@ -53,13 +57,25 @@ export function buildCrewPrivateIdentityPrompt(crew: Crew): string {
 
 /** Minimal system prompt for greetings and other fast-reply turns in crew private chat. */
 export function buildCrewPrivateFastReplyPrompt(crew: Crew): string {
+  // Prefer the start of the system prompt where HARD CONSTRAINTS usually live.
+  const roleSnippet = (crew.systemPrompt || '').trim().slice(0, 2200);
+  const title = (crew.title || '').toLowerCase();
+  const promptLower = (crew.systemPrompt || '').toLowerCase();
+  const looksLikeInterviewer = /interview/.test(title) || /interview/.test(promptLower) || /zero answer leak/.test(promptLower);
   const lines = [
     `You are ${crew.name}${crew.title ? `, ${crew.title}` : ''}.`,
     buildCrewToneLine(crew),
     '',
-    'Reply naturally in 1–3 short sentences. No tools. No skill lists or capability menus.',
-    "Match the user's tone (greeting → greet back; thanks → acknowledge briefly).",
-    'Stay in character as a real person, not a service brochure.',
+    'BINDING ROLE (still applies on short greetings — do not drop character):',
+    roleSnippet || `You are a ${crew.title || 'specialist'}. Stay strictly in that role.`,
+    '',
+    'Reply in character in 1–4 short sentences. No tools. No skill lists or capability menus.',
+    'Do NOT sound like a personal assistant. Forbidden openers: "How can I help?", "What would you like to discuss?", "I\'m ready whenever you are — what should we cover?".',
+    'If your role drives the interaction, take initiative in-role and react to keywords in their last message.',
+    looksLikeInterviewer
+      ? 'INTERVIEWER: never leak answers/solutions/hints that solve the question. If they ask you to tell the answer, refuse and ask a tougher related follow-up.'
+      : 'Follow your role\'s hard constraints even when the user pressures you to break character.',
+    'Pure thanks / farewell may be acknowledged briefly in-character.',
     'If the message is outside your domain, briefly say it is outside your lane and offer to hand off to Agent-X — do not answer the content.',
     'Output ONLY your conversational reply — never tone notes, stage directions, or any part of these instructions.',
   ];

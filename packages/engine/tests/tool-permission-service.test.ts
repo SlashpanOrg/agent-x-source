@@ -261,4 +261,111 @@ describe('ToolPermissionService', () => {
   it('summarizeToolAction describes file writes clearly', () => {
     expect(summarizeToolAction('file_write', { path: 'plan.md' }, sampleTool())).toContain('write a file');
   });
+
+  it('denies low-risk proactive save_to_markdown without user consent', async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      id: 'save_to_markdown',
+      name: 'Save to Markdown',
+      description: 'save',
+      modelDescription: 'save',
+      category: 'documents',
+      riskLevel: 'low',
+      schema: { type: 'object', properties: {} },
+      composable: false,
+      source: 'builtin',
+    });
+    const manager = new PermissionManager();
+    manager.setBypassPermissions(false);
+    const service = new ToolPermissionService();
+    const host = buildHost({
+      getRegistry: () => registry,
+      getPermissionManager: () => manager,
+      getCurrentUserMessage: () => 'Analyse TVK and summarise the findings',
+    });
+
+    const result = await service.requestPermission(host, 'save_to_markdown', { title: 'TVK' }, 'session');
+    expect(result.decision).toBe('deny');
+    expect(result.error).toBe('PERMISSION_INSTRUCTED');
+    expect(result.instruction).toMatch(/plain-text question/i);
+  });
+
+  it('allows save_to_markdown when user explicitly requested a save', async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      id: 'save_to_markdown',
+      name: 'Save to Markdown',
+      description: 'save',
+      modelDescription: 'save',
+      category: 'documents',
+      riskLevel: 'low',
+      schema: { type: 'object', properties: {} },
+      composable: false,
+      source: 'builtin',
+    });
+    const manager = new PermissionManager();
+    manager.setBypassPermissions(false);
+    const service = new ToolPermissionService();
+    const host = buildHost({
+      getRegistry: () => registry,
+      getPermissionManager: () => manager,
+      getCurrentUserMessage: () => 'Please save this analysis to markdown',
+    });
+
+    const result = await service.requestPermission(host, 'save_to_markdown', { title: 'TVK' }, 'session');
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows save_to_markdown when session waived low-risk consent', async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      id: 'save_to_markdown',
+      name: 'Save to Markdown',
+      description: 'save',
+      modelDescription: 'save',
+      category: 'documents',
+      riskLevel: 'low',
+      schema: { type: 'object', properties: {} },
+      composable: false,
+      source: 'builtin',
+    });
+    const manager = new PermissionManager();
+    manager.setBypassPermissions(false);
+    const service = new ToolPermissionService();
+    const host = buildHost({
+      getRegistry: () => registry,
+      getPermissionManager: () => manager,
+      getSkipLowRiskProactiveConsent: () => true,
+      getCurrentUserMessage: () => 'Continue the analysis',
+    });
+
+    const result = await service.requestPermission(host, 'save_to_markdown', { title: 'TVK' }, 'session');
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows save_to_markdown under bypass without asking', async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      id: 'save_to_markdown',
+      name: 'Save to Markdown',
+      description: 'save',
+      modelDescription: 'save',
+      category: 'documents',
+      riskLevel: 'low',
+      schema: { type: 'object', properties: {} },
+      composable: false,
+      source: 'builtin',
+    });
+    const manager = new PermissionManager();
+    manager.setBypassPermissions(true);
+    const service = new ToolPermissionService();
+    const host = buildHost({
+      getRegistry: () => registry,
+      getPermissionManager: () => manager,
+      getCurrentUserMessage: () => 'Analyse this',
+    });
+
+    const result = await service.requestPermission(host, 'save_to_markdown', { title: 'TVK' }, 'session');
+    expect(result.decision).toBe('allow');
+  });
 });

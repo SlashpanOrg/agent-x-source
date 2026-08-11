@@ -3,6 +3,11 @@ import { appendStreamText, repairStreamTextGlitches } from './stream-text.js';
 import { attachDeepSearchPartsFromTools } from './deep-search-parts.js';
 import { attachChartPartsFromTools } from './chart-parts.js';
 import type { StorableMessage } from '../types/storage.js';
+import {
+  parseResponseDocument,
+  responseDocumentToMarkdown,
+  type ResponseDocumentV1,
+} from './response-document.js';
 
 export interface PersistedToolCall {
   id: string;
@@ -20,7 +25,7 @@ import type { DeepSearchProgress, DeepSearchResultBundle } from '../types/deep-s
 import type { PermissionOutcomeRecord } from '../types/permission-outcome.js';
 
 export interface MessagePart extends Record<string, unknown> {
-  type: 'text' | 'tool' | 'subagent' | 'questionnaire' | 'crew_roster_picker' | 'deep_search' | 'chart' | 'thinking' | 'permission';
+  type: 'text' | 'tool' | 'subagent' | 'questionnaire' | 'crew_roster_picker' | 'deep_search' | 'chart' | 'thinking' | 'permission' | 'response_document';
   id: string;
   content?: string;
   questionnaire?: QuestionnaireRecord;
@@ -29,6 +34,10 @@ export interface MessagePart extends Record<string, unknown> {
   permission?: PermissionOutcomeRecord;
   /** Canonical ChartSpec JSON string for structured chart parts. */
   chartJson?: string;
+  /** Validated, renderer-safe rich final response document. */
+  responseDocument?: ResponseDocumentV1;
+  /** Canonical portable fallback used for invalid versions and export. */
+  fallbackMarkdown?: string;
   deepSearch?: {
     bundle?: DeepSearchResultBundle;
     progress?: DeepSearchProgress;
@@ -241,6 +250,31 @@ export function dedupeToolParts(parts: MessagePart[], finalize = false): Message
   return result;
 }
 
+/** Keep one response document per stable part id, preferring the latest snapshot. */
+export function dedupeResponseDocumentParts(parts: MessagePart[]): MessagePart[] {
+  const result: MessagePart[] = [];
+  const indexById = new Map<string, number>();
+  for (const part of parts) {
+    if (part.type !== 'response_document') {
+      result.push(part);
+      continue;
+    }
+    const existingIndex = indexById.get(part.id);
+    if (existingIndex == null) {
+      indexById.set(part.id, result.length);
+      result.push(part);
+    } else {
+      const existing = result[existingIndex];
+      const existingRevision = existing?.type === 'response_document'
+        ? (existing.responseDocument?.revision ?? 1)
+        : 1;
+      const incomingRevision = part.responseDocument?.revision ?? 1;
+      if (incomingRevision >= existingRevision) result[existingIndex] = part;
+    }
+  }
+  return result;
+}
+
 function mergeTextParts(parts: MessagePart[]): MessagePart[] {
   const merged: MessagePart[] = [];
   for (const p of parts) {
@@ -427,6 +461,11 @@ export function partsTextTruncatesContent(content: string, parts: MessagePart[])
   const partsText = stripToolNoise(textFromParts(parts), { trim: false });
   const cleanContent = stripToolNoise(content, { trim: false });
   if (!cleanContent) return false;
+  const hasValidResponseDocument = parts.some((part) => (
+    part.type === 'response_document'
+    && parseResponseDocument(part.responseDocument).ok
+  ));
+  if (!partsText && hasValidResponseDocument) return false;
   if (!partsText) return true;
   if (cleanContent.length <= partsText.length + 8) return false;
   // Classic coalesce race: UI kept a prefix of the finished assistant text.
@@ -484,6 +523,16 @@ export function syncTextPartsWithCanonicalContent(
 
   if (!parts?.length) {
     return [{ type: 'text', id: crypto.randomUUID(), content }];
+  }
+
+  // A validated rich document is the final presentation. Do not re-inject a
+  // duplicate Markdown text bubble beside it (live finalize race).
+  const hasValidResponseDocument = parts.some((part) => (
+    part.type === 'response_document'
+    && parseResponseDocument(part.responseDocument).ok
+  ));
+  if (hasValidResponseDocument) {
+    return parts.filter((part) => part.type !== 'text');
   }
 
   const textIdxs: number[] = [];
@@ -698,7 +747,7 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
 
   const storedParts = msg['parts'];
   if (Array.isArray(storedParts) && storedParts.length > 0) {
-    const mapped = dedupeToolParts((storedParts as MessagePart[]).map((p) => {
+    const mapped = dedupeResponseDocumentParts(dedupeToolParts((storedParts as MessagePart[]).map((p) => {
       if (p.type === 'text' && p.content) {
         return { ...p, content: repairStreamTextGlitches(stripToolNoise(p.content, { trim: false })) };
       }
@@ -721,8 +770,22 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
       if (p.type === 'crew_roster_picker' && p.crewRosterPicker) return p;
       if (p.type === 'deep_search' && p.deepSearch) return p;
       if (p.type === 'chart' && p.chartJson) return p;
+      if (p.type === 'response_document') {
+        const parsed = parseResponseDocument(p.responseDocument);
+        if (parsed.ok) {
+          return {
+            ...p,
+            responseDocument: parsed.document,
+            fallbackMarkdown: p.fallbackMarkdown?.trim()
+              || responseDocumentToMarkdown(parsed.document),
+          };
+        }
+        if (p.fallbackMarkdown?.trim()) {
+          return { type: 'text' as const, id: p.id, content: p.fallbackMarkdown };
+        }
+      }
       return p;
-    }), true);
+    }), true));
     // Prefer DB chronology when reasoning rows exist but stored parts lack thinking segments.
     const missingThinkingChronology = hasReasoningRows && !mapped.some((p) => p.type === 'thinking');
     if (!shouldRebuildStoredParts(content, mapped, toolCalls) && !missingThinkingChronology) {

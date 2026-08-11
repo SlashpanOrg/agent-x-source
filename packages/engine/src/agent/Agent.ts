@@ -170,6 +170,12 @@ import type { ThirdPartyTurnPolicy } from '../integrations/third-party-access.js
 import { buildGoogleAiSdkProviderOptions } from '../providers/google/gemini-metadata.js';
 import { createAiSdkStreamHandler, consumeStreamWithWatchdog, STREAM_IDLE_TIMEOUT_MS } from './AiSdkStreamHandler.js';
 import type { PartPersistFn } from './AiSdkStreamHandler.js';
+import { applyRichResponsePolicy } from './rich-response-policy.js';
+import {
+  detectsExplicitDeliverableRequest,
+  detectsSessionProactiveConsentWaiver,
+  PROACTIVE_DELIVERABLE_TOOLS,
+} from '../services/tool/proactive-deliverable-consent.js';
 import { streamText, stepCountIs, type ModelMessage } from 'ai';
 import {
   buildWebSearchTurnInstruction,
@@ -381,6 +387,7 @@ export class Agent {
   private currentCategory: CategoryResult | null = null;
   private currentUserMessage = '';
   private currentSpeaker: VoiceSessionSpeaker | null = null;
+  private currentVoiceTurn = false;
   private currentThinkingMode: ThinkingMode = 'medium';
   private currentOutputMode: OutputMode = 'moderate';
 
@@ -2005,6 +2012,8 @@ export class Agent {
     this.toolLedger.reset();
     this.codingTurnGuard?.resetForTurn();
     this.currentSpeaker = options?.speaker ?? null;
+    this.currentVoiceTurn = options?.voiceTurn === true;
+    this.toolExecutor?.setCurrentUserMessageProvider(() => this.currentUserMessage);
     this.partialTurnContent = '';
     this.stepCapExtra = 0;
     this.startTurnHeartbeat('receiving');
@@ -2047,6 +2056,11 @@ export class Agent {
       }
     } catch {
       // Fall through with original content if normalization fails
+    }
+
+    this.currentUserMessage = cleanContent;
+    if (detectsSessionProactiveConsentWaiver(cleanContent)) {
+      this.toolExecutor?.setSkipLowRiskProactiveConsent(true);
     }
 
     // ─── Attachments remain lightweight refs; heavy content is fetched on demand for the model prompt ───
@@ -2329,12 +2343,12 @@ export class Agent {
     // for permission. If so, grant consent for the tools mentioned so the agent can
     // proceed without triggering a permission modal.
     if (!this.bypassPermissions && this.toolExecutor) {
-      const affirmativePattern = /^(yes|yeah|yep|sure|ok|okay|go ahead|proceed|do it|go for it|please do|that's fine|looks good|approve|approved|confirm|confirmed)\b[!.?]*\s*$/i;
+      const affirmativePattern = /^(yes|yeah|yep|sure|ok|okay|go ahead|proceed|do it|go for it|please do|that's fine|looks good|approve|approved|confirm|confirmed|save it|save this|write it)\b[!.?]*\s*$/i;
       if (affirmativePattern.test(cleanContent.trim())) {
         const lastAssistant = [...this.messages].reverse().find((m) => m.role === 'assistant' && typeof m.content === 'string');
         if (lastAssistant && typeof lastAssistant.content === 'string') {
           // Check if the assistant asked for permission (mentions a tool or asks "should I")
-          const askedForPermission = /should i (go ahead|proceed|use|run|call|create|write|execute)|may i (proceed|use|run|call|create|write)|can i (proceed|use|run|call|create|write|go ahead)|want me to (proceed|use|run|call|create|write|go ahead)|i need to (use|run|call|create|write|execute|proceed)/i.test(lastAssistant.content);
+          const askedForPermission = /should i (go ahead|proceed|use|run|call|create|write|execute|save)|may i (proceed|use|run|call|create|write|save)|can i (proceed|use|run|call|create|write|go ahead|save)|want me to (proceed|use|run|call|create|write|go ahead|save)|i need to (use|run|call|create|write|execute|proceed|save)|save (?:this|it|that) (?:to|as)|(?:markdown|md|pdf|docx|file)\b/i.test(lastAssistant.content);
           if (askedForPermission) {
             // Grant consent for all registered tools that were mentioned in the assistant message.
             // This is intentionally broad — the user said "yes" to the agent's request.
@@ -2345,11 +2359,19 @@ export class Agent {
                 this.toolExecutor.grantToolConsent(toolName);
               }
             }
-            // Also grant consent for the most commonly permission-gated tools if the
-            // assistant asked generically (e.g. "Should I go ahead?").
-            const commonGatedTools = ['file_write', 'file_edit', 'shell_exec', 'web_fetch', 'web_scrape'];
-            for (const t of commonGatedTools) {
-              if (lastAssistant.content.toLowerCase().includes(t.replace(/_/g, ' ')) || lastAssistant.content.toLowerCase().includes(t)) {
+            // Also grant consent for commonly gated / deliverable tools when the
+            // assistant asked generically (e.g. "Should I save this?").
+            const commonGatedTools = [
+              'file_write', 'file_edit', 'shell_exec', 'web_fetch', 'web_scrape',
+              ...PROACTIVE_DELIVERABLE_TOOLS,
+            ];
+            const askedSave = /save|write|export|markdown|document|pdf|docx/i.test(lastAssistant.content);
+            for (const t of new Set(commonGatedTools)) {
+              if (
+                lastAssistant.content.toLowerCase().includes(t.replace(/_/g, ' '))
+                || lastAssistant.content.toLowerCase().includes(t)
+                || (askedSave && PROACTIVE_DELIVERABLE_TOOLS.has(t))
+              ) {
                 this.toolExecutor.grantToolConsent(t);
               }
             }
@@ -3451,8 +3473,9 @@ export class Agent {
         }
 
         // ─── Action transition phrase detection ───
-        // If the model says "writing now" or "saving it" but never called file_write,
-        // force a continuation to actually call the tool.
+        // If the model says "saving it" / "writing now" but never called a deliverable
+        // tool, do NOT force the write. Ask the user first (unless they already
+        // requested a save this turn, waived asks, or bypass is on).
         const actionPhrases = [
           'writing the full', 'writing the complete', 'writing your', 'writing the itinerary',
           'writing the plan', 'writing the surprise', 'writing the mission',
@@ -3462,53 +3485,69 @@ export class Agent {
         ];
         const hasActionTransition = actionPhrases.some(p => lowerContent.includes(p));
         const calledFileWrite = this.toolCallLogForReflection.some(t => t.name === 'file_write' || t.name === 'save_to_markdown');
+        const userAskedSave = detectsExplicitDeliverableRequest(this.currentUserMessage);
+        const skipAsk = this.toolExecutor?.getSkipLowRiskProactiveConsent() === true
+          || this.bypassPermissions
+          || userAskedSave;
         if (hasActionTransition && !calledFileWrite && !this.options.skipEmptyResponseRetry) {
-          getLogger().warn(
-            'AGENT',
-            `Action transition detected (${content.length} chars, no file_write) — forcing continuation to write the file`,
-          );
-          try {
-            const contMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
-              ...aiMessages,
-              { role: 'assistant', content: content || '(prior work)' },
-              {
-                role: 'user',
-                content: `[SYSTEM] You just said you would write or save something, but you did NOT call file_write or save_to_markdown. You MUST call file_write NOW with the full content. Do not search again. Do not output transition text. Call file_write with the complete itinerary/plan content.`,
-              },
-            ];
-            const contText = await withSpan('llm.action_retry', 'llm', async (span) => {
-              span.setAttribute('gen_ai.system', this.config.provider.activeProvider);
-              span.setAttribute('gen_ai.request.model', this.config.provider.activeModel);
-              span.setAttribute('gen_ai.usage.total_cost', 0);
-              span.setAttribute('llm.input_messages', JSON.stringify(contMessages));
-              const contPolicy = this.getToolPolicy();
-              const contResult = streamText({
-                model,
-                messages: contMessages as unknown as ModelMessage[],
-                tools: createAiSdkTools(
-                  this.toolRegistry!,
-                  this.toolExecutor!,
-                  this.sessionId,
-                  (e) => this.emit(e),
-                  async () => 'continue',
-                  (instruction, toolsList, timeout, background) =>
-                    this.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
-                  undefined,
-                  span,
-                  contPolicy.allowedIds,
-                  (toolId, args) => this.codingTurnGuard?.checkToolCall(toolId, args, this.currentCategory) ?? null,
-                ),
-                stopWhen: stepCountIs(Math.min(stepBudget, 40)),
-                toolChoice: contPolicy.choice,
-                ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+          if (skipAsk) {
+            getLogger().warn(
+              'AGENT',
+              `Action transition detected (${content.length} chars, no file_write) — forcing continuation to write the file`,
+            );
+            try {
+              const contMessages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
+                ...aiMessages,
+                { role: 'assistant', content: content || '(prior work)' },
+                {
+                  role: 'user',
+                  content: `[SYSTEM] You just said you would write or save something, but you did NOT call file_write or save_to_markdown. You MUST call file_write NOW with the full content. Do not search again. Do not output transition text. Call file_write with the complete itinerary/plan content.`,
+                },
+              ];
+              const contText = await withSpan('llm.action_retry', 'llm', async (span) => {
+                span.setAttribute('gen_ai.system', this.config.provider.activeProvider);
+                span.setAttribute('gen_ai.request.model', this.config.provider.activeModel);
+                span.setAttribute('gen_ai.usage.total_cost', 0);
+                span.setAttribute('llm.input_messages', JSON.stringify(contMessages));
+                const contPolicy = this.getToolPolicy();
+                const contResult = streamText({
+                  model,
+                  messages: contMessages as unknown as ModelMessage[],
+                  tools: createAiSdkTools(
+                    this.toolRegistry!,
+                    this.toolExecutor!,
+                    this.sessionId,
+                    (e) => this.emit(e),
+                    async () => 'continue',
+                    (instruction, toolsList, timeout, background) =>
+                      this.runDelegatedSubAgent(instruction, toolsList, timeout ?? 120_000, background),
+                    undefined,
+                    span,
+                    contPolicy.allowedIds,
+                    (toolId, args) => this.codingTurnGuard?.checkToolCall(toolId, args, this.currentCategory) ?? null,
+                  ),
+                  stopWhen: stepCountIs(Math.min(stepBudget, 40)),
+                  toolChoice: contPolicy.choice,
+                  ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+                });
+                await consumeStreamWithWatchdog(contResult.fullStream, (chunk) => streamHandler.handleEvent(chunk));
+                return (streamHandler.getState().accumulatedContent || '').trim();
               });
-              await consumeStreamWithWatchdog(contResult.fullStream, (chunk) => streamHandler.handleEvent(chunk));
-              return (streamHandler.getState().accumulatedContent || '').trim();
-            });
-            if (contText) content = contText;
-          } catch (contErr) {
-            if (contErr instanceof Error && contErr.name === 'AbortError') throw contErr;
-            getLogger().warn('AGENT', `Action transition continuation failed: ${contErr instanceof Error ? contErr.message : String(contErr)}`);
+              if (contText) content = contText;
+            } catch (contErr) {
+              if (contErr instanceof Error && contErr.name === 'AbortError') throw contErr;
+              getLogger().warn('AGENT', `Action transition continuation failed: ${contErr instanceof Error ? contErr.message : String(contErr)}`);
+            }
+          } else {
+            getLogger().info(
+              'AGENT',
+              'Action transition detected without deliverable tool — converting to user confirmation ask',
+            );
+            const askSuffix =
+              '\n\nWant me to save this to a Markdown file now? Reply yes to save, or no to leave it in chat only.';
+            if (!/want me to save this to a markdown file/i.test(content)) {
+              content = `${content.trim()}${askSuffix}`;
+            }
           }
         }
       }
@@ -3704,33 +3743,63 @@ export class Agent {
         }
       }
 
-      // Stream handler emits message_received on a normal finish. Empty / reasoning-only
-      // finishes defer that emit so empty-retry + promotion can fill `content` first.
-      if (!this._turnMessageEmitted || streamHandler.getState().deferredEmptyFinalize) {
-        if (!content.trim()) {
-          content = 'I apologize, I was unable to generate a response.';
+      if (!content.trim()) {
+        content = 'I apologize, I was unable to generate a response.';
+      }
+      const streamState = streamHandler.getState();
+      const outId = (streamState as { messageId?: string }).messageId
+        ?? this.pendingVoiceMerge?.messageId
+        ?? generateMessageId();
+      const finalTokenCount = usage
+        ? (usage.inputTokens || 0) + (usage.outputTokens || 0)
+        : Math.ceil(content.length / 4);
+      let finalMessage = this.tagCrewPrivateAssistant({
+        id: outId,
+        sessionId: this.sessionId,
+        role: 'assistant' as const,
+        content,
+        toolCalls: null,
+        createdAt: new Date().toISOString(),
+        tokenCount: finalTokenCount,
+      });
+      let richPartAttached = false;
+      try {
+        const rich = applyRichResponsePolicy(this.sessionId, finalMessage, {
+          category: this.currentCategory?.primary,
+          outputMode: this.currentOutputMode,
+          voiceTurn: this.currentVoiceTurn,
+        });
+        finalMessage = rich.message;
+        richPartAttached = rich.decision.attached;
+        if (rich.decision.mode !== 'off') {
+          const parity = rich.decision.parity == null ? '' : ` parity=${rich.decision.parity.toFixed(3)}`;
+          getLogger().debug(
+            'RICH_RESPONSE',
+            `mode=${rich.decision.mode} selected=${rich.decision.selected} attached=${rich.decision.attached}`
+              + ` reason=${rich.decision.reason} elapsedMs=${rich.decision.elapsedMs}${parity}`,
+          );
         }
-        const streamState = streamHandler.getState();
-        const outId = (streamState as { messageId?: string }).messageId
-          ?? this.pendingVoiceMerge?.messageId
-          ?? generateMessageId();
-        const emitTokens = usage
-          ? (usage.inputTokens || 0) + (usage.outputTokens || 0)
-          : Math.ceil(content.length / 4);
+      } catch (richError) {
+        // Presentation enrichment is optional and must never fail the turn.
+        getLogger().warn(
+          'RICH_RESPONSE',
+          `compiler-bypassed error=${richError instanceof Error ? richError.message : String(richError)}`,
+        );
+      }
+
+      // The stream handler may have emitted before completion-gate healing. Re-emit
+      // a stable-ID update when final content changed or a rich snapshot was attached.
+      const contentChangedAfterStream = content.trim() !== streamState.accumulatedContent.trim();
+      const mustEmitFinal = !this._turnMessageEmitted
+        || streamState.deferredEmptyFinalize
+        || contentChangedAfterStream
+        || richPartAttached;
+      if (mustEmitFinal) {
         this.emit({ type: 'stream_chunk', content: '', fullContent: content });
         this.emit({
           type: 'message_received',
-          message: this.tagCrewPrivateAssistant({
-            id: outId,
-            sessionId: this.sessionId,
-            role: 'assistant',
-            content,
-            toolCalls: null,
-            createdAt: new Date().toISOString(),
-            tokenCount: emitTokens,
-          }),
+          message: finalMessage,
           elapsed: Date.now() - startTime,
-          // Allow replace if a premature finalize somehow landed first.
           ...(this._turnMessageEmitted ? { isUpdate: true } : {}),
         }, this._turnMessageEmitted);
       }
@@ -3741,19 +3810,7 @@ export class Agent {
       await this.compactContext();
       await this.reinforceMemoryContext();
 
-      const finalTokenCount = usage
-        ? (usage.inputTokens || 0) + (usage.outputTokens || 0)
-        : Math.ceil(content.length / 4);
-
-      return this.tagCrewPrivateAssistant({
-        id: this.pendingVoiceMerge?.messageId ?? generateMessageId(),
-        sessionId: this.sessionId,
-        role: 'assistant' as const,
-        content,
-        toolCalls: null,
-        createdAt: new Date().toISOString(),
-        tokenCount: finalTokenCount,
-      });
+      return finalMessage;
     } catch (error) {
       if (error instanceof Error && error.message === 'STEP_CAP_STOP') {
         const capMessage: Message = {

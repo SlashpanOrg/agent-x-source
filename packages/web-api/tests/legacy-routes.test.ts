@@ -100,7 +100,7 @@ vi.mock('../src/validation.js', () => ({
   permissionRespondBatchSchema: {},
   createSessionSchema: {},
   createCheckpointSchema: {},
-  generateTitleSchema: {},
+  updateSessionSchema: {},
   crewSuggestionEvaluateSchema: {},
   crewSuggestionResolveSchema: {},
   crewChatSessionSchema: {},

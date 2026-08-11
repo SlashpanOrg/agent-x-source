@@ -5,6 +5,9 @@ import {
   XAI_BARGE_IN_PLAYBACK_GRACE_MS,
   XAI_BARGE_IN_TRIGGER_FRAMES,
   XAI_BARGE_IN_TRIGGER_LEVEL,
+  XAI_WAKE_BARGE_IN_TRIGGER_FRAMES,
+  XAI_WAKE_BARGE_IN_TRIGGER_LEVEL,
+  VOICE_OUTPUT_SAMPLE_RATE,
 } from './constants.js';
 import { VOICE_SAMPLE_RATE, mergeInt16Chunks } from './pcm.js';
 import { StreamingPlayback } from './playback.js';
@@ -182,11 +185,16 @@ export class VoiceSessionClient {
   }
 
   private setState(state: VoiceClientState): void {
+    const prev = this.state;
     this.state = state;
     if (state === 'speaking') {
-      this.duplexBargeInTriggered = false;
-      this.duplexSpeechFramesAboveTrigger = 0;
-      this.playbackStartAt = Date.now();
+      // Only arm barge-in grace when entering speaking — re-entrant
+      // speaking updates must not reset the timer (that blocked call barge-in).
+      if (prev !== 'speaking') {
+        this.duplexBargeInTriggered = false;
+        this.duplexSpeechFramesAboveTrigger = 0;
+        this.playbackStartAt = Date.now();
+      }
     } else {
       this.playbackStartAt = 0;
     }
@@ -376,8 +384,8 @@ export class VoiceSessionClient {
         // Wake mode keeps the mic open continuously; require higher energy for longer
         // before declaring a barge-in, so speaker echo and brief ambient sounds don’t
         // cut off the assistant mid-sentence. Manual duplex keeps the fast defaults.
-        const bargeInTriggerLevel = this.wakeWord ? 0.28 : XAI_BARGE_IN_TRIGGER_LEVEL;
-        const bargeInTriggerFrames = this.wakeWord ? 16 : XAI_BARGE_IN_TRIGGER_FRAMES;
+        const bargeInTriggerLevel = this.wakeWord ? XAI_WAKE_BARGE_IN_TRIGGER_LEVEL : XAI_BARGE_IN_TRIGGER_LEVEL;
+        const bargeInTriggerFrames = this.wakeWord ? XAI_WAKE_BARGE_IN_TRIGGER_FRAMES : XAI_BARGE_IN_TRIGGER_FRAMES;
         if (level >= bargeInTriggerLevel) {
           this.duplexSpeechFramesAboveTrigger += 1;
         } else {
@@ -716,7 +724,7 @@ export class VoiceSessionClient {
         break;
       }
       case 'audio_chunk_meta':
-        this.pendingChunkMeta = { sampleRate: Number(msg.sampleRate ?? 24_000) };
+        this.pendingChunkMeta = { sampleRate: Number(msg.sampleRate ?? VOICE_OUTPUT_SAMPLE_RATE) };
         break;
       case 'playback_stop':
         this.stopPlayback();
@@ -818,7 +826,7 @@ export class VoiceSessionClient {
     }
     if (this.skipPlayback || !isVoiceOutputUnlocked()) return;
     markVoiceOutputUnlocked();
-    const sampleRate = this.pendingChunkMeta?.sampleRate ?? 24_000;
+    const sampleRate = this.pendingChunkMeta?.sampleRate ?? VOICE_OUTPUT_SAMPLE_RATE;
     await this.playback.enqueuePcm(pcm, sampleRate);
     if (this.state !== 'listening') this.setState('speaking');
   }

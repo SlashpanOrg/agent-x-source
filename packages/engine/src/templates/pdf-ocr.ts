@@ -1,5 +1,5 @@
 /**
- * Shell-based PDF OCR pipeline — mirrors the approach Devin uses:
+ * Shell-based PDF OCR pipeline:
  *   pdftoppm (poppler) → PNG pages → tesseract → text
  *
  * This is more reliable than the pdfjs-dist + @napi-rs/canvas approach in

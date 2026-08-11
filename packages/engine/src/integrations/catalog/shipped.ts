@@ -603,7 +603,7 @@ export const SHIPPED_PROVIDERS: IntegrationProvider[] = [
   },
   // ─── Zomato MCP ───────────────────────────────────────────────────────────
   // Remote HTTP MCP. Zomato uses ONE shared OAuth client for all DCR registrations —
-  // redirect URIs are enforced against a fixed allowlist (Claude, ChatGPT, VS Code, etc.).
+  // redirect URIs are enforced against a fixed third-party client allowlist.
   // http://localhost is NOT on that list; OAuth returns invalid_redirect_uri until Zomato
   // whitelists Agent-X's callback URL (request via their developer form).
   {

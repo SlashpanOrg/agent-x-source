@@ -10,7 +10,7 @@ import Typography from '@mui/material/Typography';
 import TextFieldsIcon from '@mui/icons-material/TextFields';
 import { colors, alphaColor } from '../theme';
 import { AttachmentModal } from './AttachmentModal';
-import { normalizeMessageForUi, orderPartsForChatRender } from '@agentx/shared/browser';
+import { normalizeMessageForUi, orderPartsForChatRender, parseResponseDocument } from '@agentx/shared/browser';
 import type { UIMessage, PartEntry, ToolCall } from './types';
 import { displayContent, stripToolNoise, stripVoiceChannelBlock, extractVoiceChannelBlock } from './utils';
 import { CrewAwareMarkdown, getWebCrewColor, StreamingMarkdown } from './ChatMarkdown';
@@ -38,6 +38,7 @@ import { FileReadCard, isFileReadTool } from '../components/chat/FileReadCard';
 import { DirectoryListingCard, isDirectoryListTool } from '../components/chat/DirectoryListingCard';
 import { PlanRoadmapCard } from '../components/chat/PlanRoadmapCard';
 import { TodoChecklistCard } from '../components/chat/TodoChecklistCard';
+import { ResponseUnit } from './response-unit/ResponseUnit';
 
 // Loaded only when the user opens a turn's workflow — chunk stays out of the
 // chat path and the modal DOM is destroyed on close.
@@ -254,6 +255,7 @@ function renderParts(
     if (p.type === 'questionnaire') return !!p.questionnaire;
     if (p.type === 'permission') return !!p.permission;
     if (p.type === 'crew_roster_picker') return !!p.crewRosterPicker;
+    if (p.type === 'response_document') return parseResponseDocument(p.responseDocument).ok;
     return false;
   });
 
@@ -262,7 +264,15 @@ function renderParts(
   // fallback card so users see a research summary without opening the workflow.
   const orderedAll = orderPartsForChatRender(filtered);
   const webSources = collectWebSourceUrls(orderedAll);
-  const ordered = orderedAll;
+  const hasValidResponseDocument = orderedAll.some((part) => (
+    part.type === 'response_document'
+    && parseResponseDocument(part.responseDocument).ok
+  ));
+  // A completed rich document is the final presentation for the canonical
+  // answer — suppress Markdown text whether or not streaming has flipped off yet.
+  const ordered = hasValidResponseDocument
+    ? orderedAll.filter((part) => part.type !== 'text')
+    : orderedAll;
 
   // A thinking block is "live" (expanded) only when it is the very last element
   // in the ordered list AND we are streaming. As soon as any other element
@@ -362,6 +372,15 @@ function renderParts(
       case 'chart':
         if (!part.chartJson) return null;
         return <ChartBlock key={part.id} code={part.chartJson} language="chart" />;
+      case 'response_document':
+        if (!part.responseDocument) return null;
+        return (
+          <ResponseUnit
+            key={part.id}
+            document={part.responseDocument}
+            fallbackMarkdown={part.fallbackMarkdown}
+          />
+        );
       case 'subagent':
         if (!part.agent) return null;
         if (part.agent.kind === 'crew_worker') return null;
@@ -831,7 +850,8 @@ function propsEqual(prev: { message: UIMessage; loadingSteps?: Array<{ id: strin
   if (pm.voiceTimings?.totalMs !== nm.voiceTimings?.totalMs) return false;
   const isRenderedPart = (p: NonNullable<UIMessage['parts']>[number]) =>
     p.type === 'text' || p.type === 'thinking' || p.type === 'chart' || p.type === 'questionnaire'
-    || p.type === 'crew_roster_picker' || p.type === 'subagent' || p.type === 'tool' || p.type === 'permission';
+    || p.type === 'crew_roster_picker' || p.type === 'subagent' || p.type === 'tool' || p.type === 'permission'
+    || p.type === 'response_document';
   const prevParts = (pm.parts ?? []).filter(isRenderedPart);
   const nextParts = (nm.parts ?? []).filter(isRenderedPart);
   if (pm.parts !== nm.parts) {
@@ -845,6 +865,10 @@ function propsEqual(prev: { message: UIMessage; loadingSteps?: Array<{ id: strin
       if (pp.type === 'chart' && pp.chartJson !== np.chartJson) return false;
       if (pp.type === 'questionnaire' && pp.questionnaire?.status !== np.questionnaire?.status) return false;
       if (pp.type === 'permission' && pp.permission?.decision !== np.permission?.decision) return false;
+      if (pp.type === 'response_document') {
+        if (pp.fallbackMarkdown !== np.fallbackMarkdown) return false;
+        if (pp.responseDocument !== np.responseDocument) return false;
+      }
       if (pp.type === 'subagent' && (pp.agent?.status !== np.agent?.status || pp.agent?.result !== np.agent?.result)) return false;
       if (pp.type === 'tool' && (pp.tool?.status !== np.tool?.status || pp.tool?.result !== np.tool?.result)) return false;
       if (pp.type === 'crew_roster_picker') {

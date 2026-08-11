@@ -13,6 +13,7 @@ import {
   isUserFacingSession,
   isAutomationSessionId,
   isChannelSessionId,
+  isCrewVoiceSessionId,
   isMemoryFabricSuperSession,
   resolveMemoryFabricSearchSessionFilter,
 } from '@agentx/shared';
@@ -35,6 +36,7 @@ import {
   turnFeedbackSchema,
   createCheckpointSchema,
   sessionMessagesQuerySchema,
+  updateSessionSchema,
 } from '../../validation.js';
 import { ensureSubscribed } from '../../ws.js';
 import { handleClarificationRespond } from '../../clarification-resume.js';
@@ -46,6 +48,37 @@ import {
 } from '../../host-crew-session.js';
 import { getSessionDir, pathExists, ensureSessionDir, atomicWriteFileSync } from './shared.js';
 import { turnRegistry } from '../../turn-registry.js';
+
+/** Discard empty scaffolding sessions left behind without user messages. */
+function pruneEmptyNewGroupSessions(eng: ReturnType<typeof getEngine>): void {
+  try {
+    const store = eng.sessionManager.getStorageAdapter?.();
+    if (!store?.getMessages || !store.deleteSession) return;
+    const roots = eng.sessionManager.listRootSessions(200);
+    for (const s of roots) {
+      const kind = s.contextKind ?? 'agent_x';
+      if (kind === 'agent_x') {
+        if ((s.title ?? 'New Session') !== 'New Session') continue;
+      } else if (kind === 'crew_private') {
+        // Only remove empty private text rows that were created as call scaffolding
+        // (a voice sibling exists). Leave intentionally opened private chats alone.
+        if (isCrewVoiceSessionId(s.id)) continue;
+        const linkedVoice = eng.sessionManager.findCrewVoiceSession(s.id);
+        const callOnlyVoice = s.hostCrewId
+          ? eng.sessionManager.findCrewVoiceSession(`call:${s.hostCrewId}`)
+          : null;
+        if (!linkedVoice && !callOnlyVoice) continue;
+      } else {
+        continue;
+      }
+      const msgs = store.getMessages(s.id) as Array<{ role?: string }>;
+      if (msgs.some((m) => m.role === 'user' || m.role === 'assistant')) continue;
+      try {
+        store.deleteSession(s.id);
+      } catch { /* best-effort */ }
+    }
+  } catch { /* best-effort */ }
+}
 
 export function createSessionsRouter(): Router {
   const r = Router();
@@ -264,58 +297,6 @@ export function createSessionsRouter(): Router {
     }
   });
 
-  r.post('/api/sessions/:id/generate-title', async (req, res) => {
-    try {
-      const sessionId = req.params['id']!;
-      const eng = getEngine();
-      const cfg = eng.configManager.load();
-      const providerId = cfg.provider.activeProvider;
-      if (!providerId) { res.json({ title: '' }); return; }
-      const providerCfg = cfg.provider.providers[providerId];
-      const apiKey = providerCfg?.apiKey || providerCfg?.profiles?.[providerCfg?.activeProfile ?? '']?.apiKey;
-      if (!apiKey) { res.json({ title: '' }); return; }
-
-      const store = eng.sessionManager.getStorageAdapter?.();
-      if (!store?.getMessages) { res.json({ title: '' }); return; }
-      const messages = store.getMessages(sessionId) as Array<{ role: string; content: string }>;
-      const firstUser = messages.find((m) => m.role === 'user');
-      if (!firstUser) { res.json({ title: '' }); return; }
-
-      const { ProviderFactory } = await import('@agentx/engine');
-      const provider = ProviderFactory.create(providerId, apiKey, providerCfg?.baseUrl);
-      const modelId = cfg.provider.activeModel || 'gpt-4o-mini';
-
-      const titlePrompt = `Generate a brief, natural title for this conversation based on the user's first message. Rules:
-  - ≤60 characters
-  - Grammatically correct, no word salad
-  - Focus on the main topic or question
-  - Use the same language as the user
-  - No tool names, no "analyzing" or "generating" prefixes
-  - Output ONLY the title, nothing else
-
-  User message: "${firstUser.content.slice(0, 500)}"`;
-
-      const chunks: string[] = [];
-      for await (const chunk of provider.complete({
-        messages: [{ role: 'user', content: titlePrompt }],
-        model: modelId,
-        stream: true,
-        maxTokens: 50,
-        temperature: 0.5,
-      })) {
-        if (chunk.type === 'text_delta' && chunk.content) chunks.push(chunk.content);
-      }
-      const title = chunks.join('').trim().replace(/^["']|["']$/g, '').slice(0, 60);
-
-      if (title) {
-        store.updateSession(sessionId, { title });
-      }
-      res.json({ title });
-    } catch {
-      res.json({ title: '' });
-    }
-  });
-
   r.get('/api/sessions/search', (req, res) => {
     try {
       const q = String(req.query['q'] ?? '').trim();
@@ -436,6 +417,8 @@ export function createSessionsRouter(): Router {
     try {
       destroyAgent();
       const eng = getEngine();
+      // Drop unused group sessions that never received a user message.
+      pruneEmptyNewGroupSessions(eng);
       const cfg = eng.configManager.load();
       // All sessions share the global Agent-X Workspace (body.scopePath ignored).
       const scopePath = getActiveWorkspacePath(cfg);
@@ -449,6 +432,39 @@ export function createSessionsRouter(): Router {
       res.json({ sessionId: session.id });
     } catch (e: unknown) {
       getLogger().error('POST_API_SESSIONS', e instanceof Error ? e : String(e));    res.status(500).json({ error: e instanceof Error ? e.message : 'create-failed' });
+    }
+  });
+
+  r.patch('/api/sessions/:id', validate(updateSessionSchema), (req, res) => {
+    try {
+      const sessionId = req.params['id']!;
+      const eng = getEngine();
+      const store = eng.sessionManager.getStorageAdapter?.();
+      const existing = eng.sessionManager.getSessionById(sessionId) ?? store?.getSession?.(sessionId);
+      if (!existing) { res.status(404).json({ error: 'not-found' }); return; }
+      if (existing.contextKind === 'agent_x_core') {
+        res.status(403).json({ error: 'core-session-protected' });
+        return;
+      }
+      const body = req.body as { title?: string };
+      const updates: { title?: string } = {};
+      if (typeof body.title === 'string') {
+        const title = body.title.trim().slice(0, 80);
+        if (title) updates.title = title;
+      }
+      if (Object.keys(updates).length === 0) {
+        res.status(400).json({ error: 'no-updates' });
+        return;
+      }
+      store?.updateSession?.(sessionId, updates);
+      const active = eng.sessionManager.getActiveSession();
+      if (active?.id === sessionId) {
+        eng.sessionManager.updateSession(updates);
+      }
+      res.json({ ok: true, ...updates });
+    } catch (e: unknown) {
+      getLogger().error('PATCH_API_SESSIONS_ID', e instanceof Error ? e : String(e));
+      res.status(500).json({ error: e instanceof Error ? e.message : 'update-failed' });
     }
   });
 

@@ -58,10 +58,23 @@ export function mapCallHistoryMessages(
     const speakerName = typeof (m.metadata as Record<string, unknown> | undefined)?.speakerName === 'string'
       ? (m.metadata as Record<string, unknown>).speakerName as string
       : null;
+    const display = cleaned.length > maxLen ? `${cleaned.slice(0, maxLen)}…` : cleaned;
+    // Collapse consecutive identical operator lines from double-persisted ASR finals.
+    const last = lines[lines.length - 1];
+    if (
+      role === 'operator'
+      && last
+      && last.role === 'operator'
+      && !last.divider
+      && last.text === display
+      && (last.speakerName ?? null) === (speakerName ?? null)
+    ) {
+      continue;
+    }
     lines.push({
       id,
       role,
-      text: cleaned.length > maxLen ? `${cleaned.slice(0, maxLen)}…` : cleaned,
+      text: display,
       at,
       speakerName,
     });

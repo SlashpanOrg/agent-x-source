@@ -1,4 +1,4 @@
-// FileEditCard.tsx — Devin-style card for file_write / file_edit / file_patch
+// FileEditCard.tsx — card for file_write / file_edit / file_patch
 // tool calls. Shows the filename in a header and the content being written or
 // the diff being applied in a scrollable code view.
 

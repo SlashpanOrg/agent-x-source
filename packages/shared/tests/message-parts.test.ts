@@ -4,6 +4,7 @@ import {
   assignPartsToAssistantMessage,
   appendThinkingDeltaToParts,
   buildPartsFromDbRows,
+  dedupeResponseDocumentParts,
   normalizeMessageForUi,
   partsCorruptedByCrossTurn,
   partsTextTruncatesContent,
@@ -160,6 +161,122 @@ describe('message-parts', () => {
     expect(result.parts?.some((p) => p.type === 'questionnaire')).toBe(true);
   });
 
+  it('preserves a valid response document when canonical text is stored separately', () => {
+    const result = normalizeMessageForUi({
+      role: 'assistant',
+      content: 'Canonical textual answer',
+      parts: [{
+        type: 'response_document',
+        id: 'rich-1',
+        responseDocument: {
+          version: 1,
+          title: 'Analysis',
+          blocks: [{
+            type: 'callout',
+            tone: 'success',
+            title: 'Verdict',
+            content: 'The upgrade is feasible.',
+          }],
+        },
+      }],
+    });
+    const rich = result.parts?.find((p) => p.type === 'response_document');
+    expect(rich?.responseDocument?.title).toBe('Analysis');
+    expect(rich?.fallbackMarkdown).toContain('# Analysis');
+    expect(result.content).toBe('Canonical textual answer');
+  });
+
+  it('falls back to canonical text for an invalid response document', () => {
+    const result = normalizeMessageForUi({
+      role: 'assistant',
+      content: 'Canonical textual answer',
+      parts: [{
+        type: 'response_document',
+        id: 'rich-invalid',
+        responseDocument: {
+          version: 1,
+          blocks: [{ type: 'iframe', src: 'https://example.com' }],
+        },
+      }],
+    });
+    expect(result.parts?.some((p) => p.type === 'response_document')).toBe(false);
+    expect(result.parts?.some((p) => p.type === 'text' && p.content === 'Canonical textual answer')).toBe(true);
+  });
+
+  it('keeps the latest response document for a stable part id', () => {
+    const base = {
+      version: 1 as const,
+      blocks: [{ type: 'text' as const, content: 'First' }],
+    };
+    const parts = dedupeResponseDocumentParts([
+      { type: 'response_document', id: 'rich-1', responseDocument: base },
+      { type: 'thinking', id: 'thought-1', content: 'Done.' },
+      {
+        type: 'response_document',
+        id: 'rich-1',
+        responseDocument: {
+          ...base,
+          blocks: [{ type: 'text', content: 'Latest' }],
+        },
+      },
+    ]);
+    expect(parts.filter((p) => p.type === 'response_document')).toHaveLength(1);
+    expect(parts.find((p) => p.type === 'response_document')?.responseDocument?.blocks[0]).toMatchObject({
+      content: 'Latest',
+    });
+  });
+
+  it('ignores a stale response document snapshot revision', () => {
+    const parts = dedupeResponseDocumentParts([
+      {
+        type: 'response_document',
+        id: 'rich-1',
+        responseDocument: {
+          version: 1,
+          revision: 4,
+          blocks: [{ type: 'text', content: 'Current' }],
+        },
+      },
+      {
+        type: 'response_document',
+        id: 'rich-1',
+        responseDocument: {
+          version: 1,
+          revision: 3,
+          blocks: [{ type: 'text', content: 'Stale' }],
+        },
+      },
+    ]);
+    expect(parts).toHaveLength(1);
+    expect(parts[0]?.responseDocument?.revision).toBe(4);
+    expect(parts[0]?.responseDocument?.blocks[0]).toMatchObject({ content: 'Current' });
+  });
+
+  it('restores a rich document after a serialized process boundary', () => {
+    const stored = JSON.parse(JSON.stringify({
+      id: 'assistant-restart-1',
+      sessionId: 'session-1',
+      role: 'assistant',
+      content: '# Restored report\n\nCanonical answer.',
+      parts: [{
+        type: 'response_document',
+        id: 'response-assistant-restart-1',
+        fallbackMarkdown: '# Restored report\n\nCanonical answer.',
+        responseDocument: {
+          version: 1,
+          revision: 2,
+          density: 'compact',
+          title: 'Restored report',
+          blocks: [{ type: 'text', content: 'Canonical answer.' }],
+        },
+      }],
+    })) as Parameters<typeof normalizeMessageForUi>[0];
+    const restored = normalizeMessageForUi(stored);
+    const rich = restored.parts?.find((part) => part.type === 'response_document');
+    expect(rich?.responseDocument?.revision).toBe(2);
+    expect(rich?.fallbackMarkdown).toContain('Canonical answer');
+  });
+
   it('restores thinking from metadata and reasoning-delta rows', () => {
     const fromMeta = normalizeMessageForUi({
       role: 'assistant',
@@ -297,6 +414,24 @@ describe('message-parts', () => {
     parts = appendThinkingDeltaToParts([], paragraph);
     parts = sealTrailingThinkingPart(parts);
     expect(parts[0]?.['sealed']).toBe(true);
+  });
+
+  it('syncTextPartsWithCanonicalContent strips text when a valid response_document exists', () => {
+    const parts = [
+      { type: 'text' as const, id: 't1', content: 'Raw markdown draft' },
+      {
+        type: 'response_document' as const,
+        id: 'rich-1',
+        responseDocument: {
+          version: 1 as const,
+          title: 'Analysis',
+          blocks: [{ type: 'text' as const, content: 'Clean rich answer' }],
+        },
+      },
+    ];
+    const synced = syncTextPartsWithCanonicalContent(parts, 'Raw markdown draft');
+    expect(synced.some((p) => p.type === 'text')).toBe(false);
+    expect(synced.filter((p) => p.type === 'response_document')).toHaveLength(1);
   });
 
   it('syncTextPartsWithCanonicalContent appends truncated stream suffix', () => {

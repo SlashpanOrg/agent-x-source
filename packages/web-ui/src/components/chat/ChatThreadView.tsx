@@ -131,7 +131,32 @@ function ChatThreadViewComponent(props: ChatThreadViewProps) {
   }, [messages]);
 
   const deferredVisibleMessagesWithFlags = useDeferredValue(visibleMessagesWithFlags);
-  const threadMessagesWithFlags = streaming ? visibleMessagesWithFlags : deferredVisibleMessagesWithFlags;
+  // When the turn ends, React may keep showing the deferred (pre-rich) snapshot
+  // for a long time under load — the user sees Markdown until a hard refresh
+  // loads the persisted response_document. Prefer live messages until deferred
+  // has caught up to the rich final document.
+  const liveTipHasRichDoc = useMemo(() => {
+    for (let i = visibleMessagesWithFlags.length - 1; i >= 0; i--) {
+      const m = visibleMessagesWithFlags[i]!.msg;
+      if (m.role !== 'assistant') continue;
+      return m.parts?.some((p) => p.type === 'response_document') === true;
+    }
+    return false;
+  }, [visibleMessagesWithFlags]);
+  const deferredTipHasRichDoc = useMemo(() => {
+    for (let i = deferredVisibleMessagesWithFlags.length - 1; i >= 0; i--) {
+      const m = deferredVisibleMessagesWithFlags[i]!.msg;
+      if (m.role !== 'assistant') continue;
+      return m.parts?.some((p) => p.type === 'response_document') === true;
+    }
+    return false;
+  }, [deferredVisibleMessagesWithFlags]);
+  const threadMessagesWithFlags = (
+    streaming
+    || (liveTipHasRichDoc && !deferredTipHasRichDoc)
+  )
+    ? visibleMessagesWithFlags
+    : deferredVisibleMessagesWithFlags;
   const visibleMessages = useMemo(() => threadMessagesWithFlags.map(item => item.msg), [threadMessagesWithFlags]);
   const turnStreaming = streaming;
 

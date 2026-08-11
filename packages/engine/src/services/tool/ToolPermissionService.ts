@@ -14,6 +14,11 @@ import { buildIntegrationActionPreview } from '../../integrations/action-preview
 import type { ToolRegistry } from '../../tools/ToolRegistry.js';
 import type { PermissionPromptHook, PermissionRequestHandler } from '../../tools/ToolExecutor.js';
 import { getAttachmentService } from '../../attachments/index.js';
+import {
+  detectsExplicitDeliverableRequest,
+  isProactiveDeliverableTool,
+  proactiveDeliverableConsentInstruction,
+} from './proactive-deliverable-consent.js';
 
 const PATH_KEYS = ['path', 'filePath', 'file', 'target', 'from', 'to', 'cwd', 'output', 'source', 'archive', 'file1', 'file2', 'database'];
 
@@ -100,6 +105,10 @@ export interface ToolPermissionHost {
   /** Tools the user verbally consented to this turn (questionnaire / affirmative). */
   getPendingToolConsent?(): Set<string> | null;
   grantToolConsent?(toolId: string): void;
+  /** Session waiver: user said don't ask / just carry on for low-risk proactive actions. */
+  getSkipLowRiskProactiveConsent?(): boolean;
+  /** Latest user turn text for detecting an explicit save/create request. */
+  getCurrentUserMessage?(): string;
   /**
    * Clarify-first: ask "Shall I …?" via questionnaire before the permission modal.
    */
@@ -123,6 +132,16 @@ export function summarizeToolAction(toolId: string, args: Record<string, unknown
       : undefined;
   if (toolId === 'file_write' || toolId === 'write_file') {
     return path ? `write a file at ${path}` : 'write a file';
+  }
+  if (toolId === 'save_to_markdown') {
+    const title = typeof args['title'] === 'string' ? args['title'].trim() : '';
+    return title ? `save "${title}" to Markdown` : 'save this analysis to Markdown';
+  }
+  if (toolId === 'gen_markdown' || toolId === 'gen_html') {
+    return path ? `create ${name} at ${path}` : `create a ${name} document`;
+  }
+  if (toolId === 'pdf_create' || toolId === 'docx_create' || toolId === 'xlsx_create' || toolId === 'pptx_create' || toolId === 'csv_create') {
+    return path ? `create ${name} at ${path}` : `create a ${name} document`;
   }
   if (toolId === 'file_edit' || toolId === 'edit_file' || toolId === 'apply_patch') {
     return path ? `edit ${path}` : 'edit a file';
@@ -208,6 +227,25 @@ export class ToolPermissionService {
 
     const shouldPrompt = host.getAlwaysPromptPermissions() || definition.riskLevel !== 'low';
     if (!shouldPrompt) {
+      const bypassOn = permissionManager.getBypassPermissions();
+      // Bypass: agent may proceed freely for low-risk tools.
+      if (bypassOn) {
+        return { decision: 'allow' };
+      }
+      // Low-risk proactive deliverables still need a plain-text confirmation unless
+      // the user already asked for it this turn or waived asks for the session.
+      if (isProactiveDeliverableTool(toolId)) {
+        const waived = host.getSkipLowRiskProactiveConsent?.() === true;
+        const explicit = detectsExplicitDeliverableRequest(host.getCurrentUserMessage?.() ?? '');
+        const hadConsent = Boolean(host.getPendingToolConsent?.()?.has(toolId));
+        if (!waived && !explicit && !hadConsent) {
+          return {
+            decision: 'deny',
+            error: 'PERMISSION_INSTRUCTED',
+            instruction: proactiveDeliverableConsentInstruction(toolId),
+          };
+        }
+      }
       return { decision: 'allow' };
     }
 

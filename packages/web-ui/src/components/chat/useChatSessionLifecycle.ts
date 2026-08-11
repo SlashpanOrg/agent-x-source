@@ -1,5 +1,5 @@
 // useChatSessionLifecycle.ts — extracted from useChatSessionState.tsx
-// Owns session list loading, title generation, session CRUD handlers,
+// Owns session list loading, first-message titles, session CRUD handlers,
 // the session-restore effect (mount/URL change), and handleSelectSession.
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
@@ -11,6 +11,15 @@ import { CHAT_INITIAL_MESSAGES_PER_ROLE, CORE_SESSION_MESSAGES_PER_ROLE, mapHist
 import { hydrateCrewDeliverables } from '../../chat/restoreCrewHydration';
 import { normalizeTodoItems } from '../../chat/todoItems';
 import { MESSAGE_PAGE_SIZE } from '../../chat/messageWindow';
+import { assistantTextsOverlap, mergeActiveTurnResponseParts } from '../../chat/utils';
+
+function titleFromFirstUserMessage(content: string): string {
+  return String(content).split('\n')[0]?.slice(0, 80).trim() ?? '';
+}
+
+function needsDefaultSessionTitle(title: string | null | undefined): boolean {
+  return !title || title === 'New Session' || title === 'Child Session';
+}
 
 export interface UseChatSessionLifecycleInputs {
   navigate: (path: string, opts?: { replace?: boolean }) => void;
@@ -161,20 +170,37 @@ export function useChatSessionLifecycle({
     });
   }, [setChildSessionDrawer]);
 
-  // ─── generateTitle ───
-  const generateTitle = useCallback(async (sid: string, msgs: any[]) => {
+  // ─── applyTitleFromFirstUserMessage ───
+  const applyTitleFromFirstUserMessage = useCallback(async (sid: string, msgs: UIMessage[]) => {
     if (titleGeneratedRef.current) return;
-    const firstUser = msgs.find((m: any) => m.role === 'user');
-    if (!firstUser) return;
+    const firstUser = msgs.find((m) => m.role === 'user' && typeof m.content === 'string' && m.content.trim());
+    if (!firstUser?.content) return;
+    const title = titleFromFirstUserMessage(firstUser.content);
+    if (!title) return;
     titleGeneratedRef.current = true;
+    setCurrentSessionTitle(title);
     try {
-      const { title } = await sessions.generateTitle(sid);
-      if (title) {
-        setCurrentSessionTitle(title);
-        loadSessions();
-      }
+      await sessions.updateTitle(sid, title);
+      loadSessions();
     } catch { /* best-effort */ }
   }, [titleGeneratedRef, setCurrentSessionTitle, loadSessions]);
+
+  /** Discard a group session that was opened but never received a user message. */
+  const discardEmptyGroupSession = useCallback(async (sid: string | null | undefined) => {
+    if (!sid) return;
+    if (coreSessionRef.current) return;
+    if (isCrewPrivateSessionRef.current) return;
+    if (sessionRestoringRef.current) return;
+    const hasUser = messagesRef.current.some((m) => m.role === 'user' && !!m.content?.trim());
+    if (hasUser) return;
+    const listed = sessionListRef.current.find((s) => s.id === sid);
+    if (listed?.title && listed.title !== 'New Session') return;
+    try {
+      const page = await sessions.getMessagesPage(sid, { limit: 5 });
+      if (page.messages.some((m) => m.role === 'user' && !!String(m.content ?? '').trim())) return;
+      await sessions.delete(sid);
+    } catch { /* best-effort */ }
+  }, [messagesRef, sessionRestoringRef, sessionListRef]);
 
   // ─── loadTodos ───
   const loadTodos = useCallback((sessionId?: string | null) => {
@@ -302,13 +328,15 @@ export function useChatSessionLifecycle({
         backgroundTasks,
       });
       if (lastMapped?.role === 'assistant') {
+        const sameReply = assistantTextsOverlap(lastMapped.content, live.content);
+        const restoredParts = mergeActiveTurnResponseParts(lastMapped.parts, live.parts, sameReply);
         // Merge live tools/subagents onto the existing assistant row (streaming or not).
         setMessages([...windowed.slice(0, -1), {
           ...lastMapped,
           ...live,
           id: lastMapped.id,
           content: live.content || lastMapped.content,
-          parts: live.parts?.length ? live.parts : lastMapped.parts,
+          parts: restoredParts,
           toolCalls: live.toolCalls?.length ? live.toolCalls : lastMapped.toolCalls,
           subAgents: live.subAgents?.length ? live.subAgents : lastMapped.subAgents,
           streaming: true,
@@ -321,8 +349,8 @@ export function useChatSessionLifecycle({
     } else {
       isInitialLoadRef.current = false;
     }
-    if (!session.title || session.title === 'New Session' || session.title === 'Child Session') {
-      generateTitle(sid, visible);
+    if (needsDefaultSessionTitle(session.title)) {
+      void applyTitleFromFirstUserMessage(sid, visible);
     }
 
     if (!shell.crewPrivate && !coreSessionRef.current) {
@@ -375,7 +403,7 @@ export function useChatSessionLifecycle({
         } catch { /* best-effort */ }
       })();
     }
-  }, [currentSessionIdRef, navigate, setMessages, setHasOlderMessages, setIsCrewPrivateSession, setCrewPrivateHost, setPrivateHostCrewId, setCurrentSessionTitle, setParentSessionId, setCurrentSessionId, setShowJumpPill, jumpSuppressScrollTopRef, setTokenTotal, setTokenUsed, setCompactionCount, setTokenInput, setTokenOutput, tokenInputRef, tokenOutputRef, loadTodos, generateTitle, setCrewList, setCrewWorkers, crewMissionSessionIdRef, isAtBottomRef, messagesContainerRef, setSessionRestoring, sessionRestoringRef, isInitialLoadRef, setChildSessionDrawer, coreSessionRef, locationRef, crewListRef, setStreaming, setTurnActivity, setCurrentStep, turnActiveRef, activeTurnIdRef]);
+  }, [currentSessionIdRef, navigate, setMessages, setHasOlderMessages, setIsCrewPrivateSession, setCrewPrivateHost, setPrivateHostCrewId, setCurrentSessionTitle, setParentSessionId, setCurrentSessionId, setShowJumpPill, jumpSuppressScrollTopRef, setTokenTotal, setTokenUsed, setCompactionCount, setTokenInput, setTokenOutput, tokenInputRef, tokenOutputRef, loadTodos, applyTitleFromFirstUserMessage, setCrewList, setCrewWorkers, crewMissionSessionIdRef, isAtBottomRef, messagesContainerRef, setSessionRestoring, sessionRestoringRef, isInitialLoadRef, setChildSessionDrawer, coreSessionRef, locationRef, crewListRef, setStreaming, setTurnActivity, setCurrentStep, turnActiveRef, activeTurnIdRef]);
 
   // ─── Session-restore effect (mount/URL change) ───
   useEffect(() => {
@@ -455,6 +483,10 @@ export function useChatSessionLifecycle({
       navigate(`/console/chat/${s.id}`);
       return;
     }
+    const previousId = currentSessionIdRef.current;
+    if (previousId && previousId !== s.id) {
+      await discardEmptyGroupSession(previousId);
+    }
     setWarnings([]);
     rateLimitSeenRef.current = false;
     setStreaming(false);
@@ -481,14 +513,22 @@ export function useChatSessionLifecycle({
       isInitialLoadRef.current = false;
       setWarnings([`Failed to restore session: ${e instanceof Error ? e.message : 'Unknown error'}`]);
     }
-  }, [setWarnings, rateLimitSeenRef, setStreaming, resetScrollState, setSessionRestoring, sessionRestoringRef, isInitialLoadRef, setPendingFeedbackMessageId, lastTurnFeedbackCandidateRef, setMessages, setIsCrewPrivateSession, setCrewPrivateHost, setPrivateHostCrewId, setCurrentSessionTitle, chatReturnToRef, restoreSessionData, navigate, messagesRef, turnActiveRef, currentSessionIdRef, skipRestoreRef, setView]);
+  }, [setWarnings, rateLimitSeenRef, setStreaming, resetScrollState, setSessionRestoring, sessionRestoringRef, isInitialLoadRef, setPendingFeedbackMessageId, lastTurnFeedbackCandidateRef, setMessages, setIsCrewPrivateSession, setCrewPrivateHost, setPrivateHostCrewId, setCurrentSessionTitle, chatReturnToRef, restoreSessionData, navigate, messagesRef, turnActiveRef, currentSessionIdRef, skipRestoreRef, setView, discardEmptyGroupSession, setBypassPermissionsState]);
 
   // ─── handleShowSessions ───
   const handleShowSessions = useCallback(() => {
     // Keep turnActive streaming state — only hide the chat view. Killing
     // streaming here made mid-turn bubbles look idle after returning.
     if (!turnActiveRef.current) setStreaming(false);
-    loadSessions();
+    const leavingId = currentSessionIdRef.current;
+    void discardEmptyGroupSession(leavingId).then(() => {
+      if (currentSessionIdRef.current === leavingId) {
+        setCurrentSessionId(null);
+        currentSessionIdRef.current = null;
+        setCurrentSessionTitle(null);
+      }
+      loadSessions();
+    });
     const returnTo = chatReturnToRef.current;
     chatReturnToRef.current = null;
     if (returnTo === '/console/crews') {
@@ -498,7 +538,7 @@ export function useChatSessionLifecycle({
     } else {
       navigate('/console/chat');
     }
-  }, [setStreaming, loadSessions, chatReturnToRef, navigate, isCrewPrivateSessionRef, turnActiveRef]);
+  }, [setStreaming, loadSessions, chatReturnToRef, navigate, isCrewPrivateSessionRef, turnActiveRef, currentSessionIdRef, discardEmptyGroupSession, setCurrentSessionId, setCurrentSessionTitle]);
 
   // ─── Clear session modal state ───
   const [clearSessionModalOpen, setClearSessionModalOpen] = useState(false);
@@ -557,10 +597,13 @@ export function useChatSessionLifecycle({
 
   // ─── startNewSession (defined before handleNewSession which depends on it) ───
   const startNewSession = useCallback(async () => {
+    const previousId = currentSessionIdRef.current;
+    await discardEmptyGroupSession(previousId);
     setWarnings([]);
     setStreaming(false);
     setMessages([]);
     setCurrentSessionTitle(null);
+    titleGeneratedRef.current = false;
     setTokenUsed(0);
     setTokenInput(0);
     setTokenOutput(0);
@@ -579,7 +622,7 @@ export function useChatSessionLifecycle({
       currentSessionIdRef.current = null;
       setWarnings([`Failed to start session: ${e instanceof Error ? e.message : 'Unknown error.'}`]);
     }
-  }, [setWarnings, setStreaming, setMessages, setCurrentSessionTitle, setTokenUsed, setTokenInput, setTokenOutput, setCompactionCount, setTodoItems, setShowJumpPill, setCurrentSessionId, currentSessionIdRef, skipRestoreRef, setView, navigate]);
+  }, [setWarnings, setStreaming, setMessages, setCurrentSessionTitle, setTokenUsed, setTokenInput, setTokenOutput, setCompactionCount, setTodoItems, setShowJumpPill, setCurrentSessionId, currentSessionIdRef, skipRestoreRef, setView, navigate, discardEmptyGroupSession, titleGeneratedRef]);
 
   // ─── handleNewSession ───
   const handleNewSession = useCallback(async () => {
@@ -634,7 +677,6 @@ export function useChatSessionLifecycle({
     // Utilities
     loadSessions,
     loadTodos,
-    generateTitle,
     openChildSession,
     // Session CRUD
     handleShowSessions,

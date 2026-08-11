@@ -577,9 +577,15 @@ const handleStreamChunk = (ev: TelemetryEvent, ctx: EventHandlerContext): void =
       if (tip?.role === 'assistant' && ctx.turnActiveRef.current) {
         const resolvedFull = rawFull || (rawDelta ? appendStreamText(tip.content || '', rawDelta) : '');
         if (!resolvedFull) return base;
+        // Late chunks after rich finalize must not reopen Markdown.
+        if (messageHasResponseDocument(tip)) return base;
         // Late duplicate of an already-finalized reply — ignore.
-        if (assistantTextsOverlap(tip.content, resolvedFull) && resolvedFull.length <= (tip.content?.length ?? 0) + 8) {
+        if (!tip.streaming && assistantTextsOverlap(tip.content, resolvedFull) && resolvedFull.length <= (tip.content?.length ?? 0) + 8) {
           return base;
+        }
+        // Do not reopen a finalized (non-streaming) bubble.
+        if (!tip.streaming && tip.content?.trim()) {
+          if (assistantTextsOverlap(tip.content, resolvedFull)) return base;
         }
         ctx.pendingUiSessionIdRef.current = ctx.viewSessionIdRef.current;
         ctx.streamChunkPendingRef.current = resolvedFull;
@@ -594,12 +600,16 @@ const handleStreamChunk = (ev: TelemetryEvent, ctx: EventHandlerContext): void =
               const ensured = ctx.ensureOutgoingTurnMessages(p);
               const l = ensured[ensured.length - 1];
               if (l?.role !== 'assistant') return ensured;
-              return updateLastMessage(ensured, applyFullContentToAssistant({ ...l, streaming: true }, fullContent));
+              if (messageHasResponseDocument(l) || !l.streaming) return ensured;
+              return updateLastMessage(ensured, applyFullContentToAssistant(l, fullContent));
             });
           }, STREAM_COALESCE_MS);
         }
         // Re-open tip immediately so the next chunks coalesce into the same bubble.
-        return updateLastMessage(base, { streaming: true });
+        if (!tip.streaming) {
+          return updateLastMessage(base, { streaming: true });
+        }
+        return base;
       }
       // Tip is a completed prior-turn assistant (turn not active for reopen) — do not
       // append a twin mid-stream; ensureOutgoing should have placed a fresh placeholder.
@@ -693,7 +703,15 @@ function takePendingStreamFullContent(ctx: EventHandlerContext): string | null {
   return pending && pending.length > 0 ? pending : null;
 }
 
+function messageHasResponseDocument(message: UIMessage): boolean {
+  return message.parts?.some((p) => p.type === 'response_document') === true;
+}
+
 function applyFullContentToAssistant(message: UIMessage, fullContent: string): UIMessage {
+  // Rich finalize already owns presentation — never re-open Markdown beside it.
+  if (messageHasResponseDocument(message)) {
+    return { ...message, streaming: false };
+  }
   const parts = (message.parts || []) as MessagePart[];
   const lastPart = parts[parts.length - 1];
   const prefixEnd = lastPart?.type === 'text' ? parts.length - 1 : parts.length;
@@ -729,7 +747,6 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
       }
     }
 
-    const isUpdate = (ev as { isUpdate?: boolean }).isUpdate === true;
     const msg = ev.message as {
       id?: string;
       content?: string;
@@ -750,7 +767,9 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
     const crewPickerPending = hasCrewPicker
       && msg?.parts?.some((p) => p.type === 'crew_roster_picker' && p.crewRosterPicker?.status === 'pending');
     const interactionPending = questionnairePending || crewPickerPending;
-    const turnContinues = isUpdate || interactionPending;
+    // Rich finalize uses isUpdate to patch the same message — that is NOT an
+    // interactive pause. Only questionnaires/pickers should freeze the queue.
+    const turnContinues = interactionPending;
 
     if (!turnContinues) {
       // Do NOT stop the turn indicator or set streaming=false here.
@@ -777,10 +796,13 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
       const idx = working.findIndex((m) => m.id === msgId);
       if (idx >= 0 && msg) {
         ctx.outgoingTurnRef.current = null;
-        const stillStreaming = isUpdate && !interactionPending;
-        if (stillStreaming) {
-          ctx.setStreaming(true);
-        } else if (interactionPending) {
+        // Only questionnaires/pickers freeze the turn-level streaming flag early.
+        // Rich finalize (isUpdate / response_document) must NOT flip session
+        // streaming off here — that switches ChatThreadView onto useDeferredValue
+        // and can leave the tip stuck on pre-rich Markdown until hard refresh.
+        // Message-level streaming:false below still collapses stream chrome;
+        // turn_state:done clears the session streaming flag.
+        if (interactionPending) {
           ctx.setStreaming(false);
         }
         const text = repairStreamTextGlitches(stripToolNoise(msg.content ?? ''));
@@ -798,7 +820,7 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
           ...working[idx]!,
           content: text || working[idx]!.content,
           parts: mergedParts,
-          streaming: stillStreaming,
+          streaming: false,
           ...(msg?.attachments ? { attachments: msg.attachments } : {}),
           ...(crew ? { crew } : {}),
         };
@@ -842,16 +864,19 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
           : !lastCrewId);
       // Merge when still streaming OR when the tip already holds this reply
       // (first finish set streaming:false; a second finalize / overlap must not append).
+      const incomingHasResponseDocument = msg.parts?.some((p) => p.type === 'response_document') === true;
       const shouldMerge = sameSpeaker && (
         tip.streaming
         || !tip.content?.trim()
         || assistantTextsOverlap(tip.content, text)
+        || incomingHasResponseDocument
       );
       if (shouldMerge) {
         ctx.outgoingTurnRef.current = null;
         const finalText = text || stripToolNoise(tip.content || '');
+        const liveParts = mergeIncomingMessageParts(tip.parts, msg.parts) ?? tip.parts ?? msg.parts;
         const synced = syncTextPartsWithCanonicalContent(
-          ((tip.parts && tip.parts.length > 0) ? tip.parts : msg.parts) as MessagePart[] | undefined,
+          liveParts as MessagePart[] | undefined,
           finalText,
         );
         const mergedParts = reconcileStreamingMessageParts(
@@ -875,10 +900,15 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
       if (withOutgoing.some((m) => m.id === newId)) return withOutgoing;
       // Safety: never append a second bubble that duplicates the trailing assistant.
       const trailing = withOutgoing[withOutgoing.length - 1];
-      if (trailing?.role === 'assistant' && assistantTextsOverlap(trailing.content, text)) {
+      const trailingOverlap = trailing?.role === 'assistant' && (
+        assistantTextsOverlap(trailing.content, text)
+        || (!!msg.parts?.some((p) => p.type === 'response_document') && trailing.role === 'assistant')
+      );
+      if (trailingOverlap && trailing?.role === 'assistant') {
         const finalText = text || stripToolNoise(trailing.content || '');
+        const liveParts = mergeIncomingMessageParts(trailing.parts, msg.parts) ?? trailing.parts ?? msg.parts;
         const synced = syncTextPartsWithCanonicalContent(
-          ((trailing.parts && trailing.parts.length > 0) ? trailing.parts : msg.parts) as MessagePart[] | undefined,
+          liveParts as MessagePart[] | undefined,
           finalText,
         );
         return updateLastMessage(withOutgoing, {

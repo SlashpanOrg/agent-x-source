@@ -119,7 +119,7 @@ function detectSystemTheme(): 'dark' | 'light' | 'unknown' {
     if (termBg === 'light' || termBg === 'white') return 'light';
     if (termBg === 'dark' || termBg === 'black') return 'dark';
 
-    // VS Code terminal theme
+    // Integrated terminal theme hint
     const vscodeTheme = process.env['VSCODE_THEME'] || '';
     if (/light/i.test(vscodeTheme)) return 'light';
     if (/dark/i.test(vscodeTheme)) return 'dark';
