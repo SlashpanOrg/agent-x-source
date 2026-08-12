@@ -22,6 +22,7 @@ import {
 } from '../../config-redaction.js';
 import { mergeVoiceConfig, getBackgroundTaskPool, applyWebSearchConfigFromAgentConfig, mergeWebSearchToolsConfig, getLogCollector } from '@agentx/engine';
 import { applyChannelsConfig } from '../../channels-sync.js';
+import { applyHostConfig } from '../../host/apply-host-config.js';
 import { validateProviderConfig, AVAILABLE_PROVIDERS } from './providers.js';
 import { validateConfig, DATA_DIR, pathExists } from './shared.js';
 import { reconcileVoiceKitState } from '../../voice/setup.js';
@@ -245,6 +246,9 @@ export function createSystemRouter(): Router {
       applyWebSearchConfigFromAgentConfig(merged);
       void applyChannelsConfig(merged).catch((e: unknown) => {
         getLogger().warn('CHANNELS', `Failed to apply channel config: ${e instanceof Error ? e.message : String(e)}`);
+      });
+      void applyHostConfig(merged).catch((e: unknown) => {
+        getLogger().warn('HOST', `Failed to apply host config: ${e instanceof Error ? e.message : String(e)}`);
       });
       res.json({ ok: true });
       } catch (err) {

@@ -8,7 +8,7 @@ import { getLogger, getDataDir, VERSION } from '@agentx/shared';
 import { getEngine, awaitEngineStorageReady, setAgentMetricsApi } from './engine.js';
 import { getObservabilityHandle } from '@agentx/engine';
 import { ensureLoginShellPath, configureHttpKeepAlive, startAppSpan } from '@agentx/engine';
-import { authMiddleware, createAuthRouter } from './auth.js';
+import { authMiddleware, createAuthRouter, isTelephonyWebhookPath } from './auth.js';
 import { errorHandler } from './middleware/error.js';
 import { requestIdMiddleware } from './middleware/request-id.js';
 import { requestLogger } from './middleware/request-logger.js';
@@ -21,6 +21,21 @@ import { setupVoiceWebSocket } from './voice-ws.js';
 import { setupWebSocket, shutdownWebSocket } from './ws.js';
 import { attachWebSocketUpgradeRouter } from './ws-upgrade-router.js';
 import { applyChannelsConfig } from './channels-sync.js';
+import {
+  createHostRouter,
+  ensureHostAndTelephonyBootstrapped,
+  applyHostConfig,
+  publicEdgeGuard,
+  csrfOriginGuard,
+  loginRateLimit,
+  publicApiRateLimit,
+  accountRateLimit,
+  webhookRateLimit,
+  writeHostCleanShutdownMarker,
+} from './host/index.js';
+import { createTelephonyRouter } from './telephony/index.js';
+import { setupTelephonyMediaWebSocket } from './telephony/media-bridge.js';
+import { startVoiceCallRetentionScheduler, stopVoiceCallRetentionScheduler } from './telephony/retention.js';
 import { registerEmbeddedPostgresController } from './pg-lifecycle-bridge.js';
 import { registerAutomationRoutes, bootstrapAutomationFromEngine, shutdownAutomation } from './automation/index.js';
 import { registerMarkdownRoutes } from './markdown-api.js';
@@ -156,6 +171,26 @@ app.use((_req, res, next) => {
 // Request ID
 app.use(requestIdMiddleware);
 
+// Public-edge hardening (Phase H3): deny-by-default allowlist for tunnel/public
+// traffic + baseline hardening headers (Referrer-Policy, Permissions-Policy,
+// HSTS when appropriate). Runs as early as possible so disallowed paths never
+// reach observability, auth, or route handlers.
+app.use(publicEdgeGuard);
+
+// Per-IP request budget for all API traffic. Placed before auth so it also
+// protects unauthenticated endpoints (login/setup) from floods. Webhook paths
+// get their own, separate per-IP budget instead of the general API one.
+app.use('/api', (req, res, next) => {
+  if (isTelephonyWebhookPath(req.path)) {
+    webhookRateLimit.middleware(req, res, next);
+    return;
+  }
+  publicApiRateLimit.middleware(req, res, next);
+});
+
+// Login attempts get a tighter, longer-window budget with a lockout-style message.
+app.use('/api/auth/login', loginRateLimit.middleware);
+
 // HTTP request observability (metrics + spans). This is placed BEFORE auth so
 // auth spans (middleware, session_validate, login, status, ...) become children of
 // the HTTP root span instead of creating separate root traces that flood the list.
@@ -163,6 +198,13 @@ app.use(requestObservabilityMiddleware);
 
 // Auth middleware (runs after HTTP observability is active; sets req.agentxSession).
 app.use(authMiddleware);
+
+// Per-account request budget, once a session is attached by authMiddleware.
+app.use('/api', accountRateLimit.middleware);
+
+// CSRF/Origin guard for cookie-authenticated, state-changing public-edge
+// requests. Runs after auth so cookie/session context is available.
+app.use(csrfOriginGuard);
 
 // Structured request logging (after auth so the session is available for logs).
 app.use(requestLogger);
@@ -187,6 +229,8 @@ app.use('/api', localModelRouter);
 app.use('/api', modelBenchmarkRouter);
 app.use('/api', voiceRouter);
 app.use('/api', integrationsRouter);
+app.use('/api', createHostRouter());
+app.use('/api', createTelephonyRouter());
 registerAutomationRoutes(app);
 registerMarkdownRoutes(app);
 
@@ -261,6 +305,7 @@ app.use(errorHandler);
 const server = createServer(app);
 setupWebSocket(server);
 setupVoiceWebSocket(server);
+setupTelephonyMediaWebSocket();
 attachWebSocketUpgradeRouter(server);
 
 export { app, server, registerEmbeddedPostgresController };
@@ -296,6 +341,9 @@ export function startServer(port = PORT): ReturnType<typeof server.listen> {
     const log = getLogger();
     log.info('SHUTDOWN', `Received ${signal}. Starting graceful shutdown...`);
     markEngineShuttingDown();
+    // Mark this as a clean shutdown so the next startup's fail-closed check
+    // trusts a persisted `publicAccess: true` again (see host/apply-host-config.ts).
+    writeHostCleanShutdownMarker();
 
     void drainForShutdown(30_000).finally(() => {
       server.close(() => {
@@ -308,6 +356,7 @@ export function startServer(port = PORT): ReturnType<typeof server.listen> {
             log.warn('SHUTDOWN', `Durable flush failed: ${e instanceof Error ? e.message : e}`);
           }
           shutdownWebSocket();
+          stopVoiceCallRetentionScheduler();
           void shutdownAutomation();
           void shutdownAgentXOverviewBridge();
           try { void getEngine().serviceContext?.channelService?.stop(); } catch { /* ignore */ }
@@ -319,6 +368,9 @@ export function startServer(port = PORT): ReturnType<typeof server.listen> {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+
+  ensureHostAndTelephonyBootstrapped({ bindHost: HOST, bindPort: port });
+  startVoiceCallRetentionScheduler();
 
   return server.listen(port, HOST, async () => {
     // Each bootstrap step is independent so a failure in one (e.g. channels
@@ -334,6 +386,11 @@ export function startServer(port = PORT): ReturnType<typeof server.listen> {
       await applyChannelsConfig();
     } catch (e) {
       getLogger().warn('STARTUP', `Channels config apply failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    try {
+      await applyHostConfig(api.getConfigManager().load());
+    } catch (e) {
+      getLogger().warn('STARTUP', `Host config apply failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     try {
       await bootstrapAutomationFromEngine();

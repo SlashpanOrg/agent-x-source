@@ -22,7 +22,7 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
 import PauseCircleIcon from '@mui/icons-material/PauseCircle';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import type { NotificationChannelsConfig } from '@agentx/shared/browser';
+import type { HostConfig, NotificationChannelsConfig } from '@agentx/shared/browser';
 import { channels as channelsApi, bridges } from '../../api';
 import type { WhatsAppSessionStatusResponse } from '../../api';
 import {
@@ -38,12 +38,15 @@ import {
   settingsCardSx,
 } from '../../styles/settings-theme';
 import { SettingsSectionHeader } from './SettingsSectionHeader';
+import { VoipChannelsPanel } from './VoipChannelsPanel';
 import { brands } from '../../styles/brands';
 import { colors, alphaColor } from '../../theme';
 
 export interface ChannelsTabProps {
   value: NotificationChannelsConfig;
   onChange: (next: NotificationChannelsConfig) => void;
+  hostConfig?: HostConfig;
+  onHostChange?: (next: HostConfig) => void;
 }
 
 interface ChannelMeta {
@@ -701,7 +704,7 @@ function ChannelCard({
 
   return (
     <Box sx={settingsCardSx(meta.accent, enabled)}>
-      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.75 }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: enabled ? 1.75 : 0 }}>
         {/* Header — always visible */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, justifyContent: 'space-between' }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, minWidth: 0 }}>
@@ -973,7 +976,7 @@ export function mergeChannelsConfig(raw?: NotificationChannelsConfig | null): No
   };
 }
 
-export function ChannelsTab({ value, onChange }: ChannelsTabProps) {
+export function ChannelsTab({ value, onChange, hostConfig, onHostChange }: ChannelsTabProps) {
   const cfg = mergeChannelsConfig(value);
 
   return (
@@ -981,17 +984,33 @@ export function ChannelsTab({ value, onChange }: ChannelsTabProps) {
       <SettingsSectionHeader
         icon={<NotificationsIcon sx={{ fontSize: 16 }} />}
         title="Channels"
-        subtitle="Secure channels for Agent-X inbound and outbound traffic"
+        subtitle="Messaging and phone — how Agent-X talks to the outside world"
       />
+
+      <Typography sx={{ ...settingsOverlineSx, mt: 0.5 }}>Messaging</Typography>
+      <Typography sx={{ ...settingsHelperSx, mb: 0.5 }}>
+        Chat and alert surfaces (Telegram, Slack, Discord, Email, WhatsApp).
+      </Typography>
 
       {CHANNELS.map((meta) => (
         <ChannelCard key={String(meta.id)} meta={meta} value={cfg} onChange={onChange} />
       ))}
 
-      <Typography sx={{ ...settingsHelperSx, mt: 0.5 }}>
+      <Typography sx={{ ...settingsHelperSx, mt: 0.5, mb: 1 }}>
         Enable a channel to configure credentials. Telegram verifies and saves automatically on success.
         Other changes save automatically.
       </Typography>
+
+      <Typography sx={{ ...settingsOverlineSx, mt: 1 }}>Phone / VOIP</Typography>
+      <Typography sx={{ ...settingsHelperSx, mb: 0.5 }}>
+        Carrier phone calls via Twilio. Public webhook reachability is configured under Host.
+      </Typography>
+
+      {hostConfig && onHostChange ? (
+        <VoipChannelsPanel hostConfig={hostConfig} onHostChange={onHostChange} />
+      ) : (
+        <Typography sx={settingsHelperSx}>Host config unavailable — reload Settings.</Typography>
+      )}
     </Box>
   );
 }

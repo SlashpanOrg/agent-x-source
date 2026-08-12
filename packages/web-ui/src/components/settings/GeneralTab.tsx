@@ -12,6 +12,7 @@ import type { AgentXConfig } from '../../api';
 import { WorkspaceCard } from './WorkspaceCard';
 import { SettingsCard } from './SettingsCard';
 import { SettingsSectionHeader } from './SettingsSectionHeader';
+import { DocumentParsersSection } from './KnowledgeTab';
 import {
   settingsHelperSx,
   settingsTextFieldSx,
@@ -20,7 +21,7 @@ import {
 } from '../../styles/settings-theme';
 
 const MODES = ['dark', 'light', 'system'] as const;
-type ThemeMode = typeof MODES[number];
+type ThemeMode = (typeof MODES)[number];
 
 interface Props {
   cfg: AgentXConfig;
@@ -36,7 +37,7 @@ export function GeneralTab({ cfg, onChange }: Props) {
       <SettingsSectionHeader
         icon={<TuneIcon sx={{ fontSize: 16 }} />}
         title="General"
-        subtitle="Workspace, profile, and appearance"
+        subtitle="Workspace, profile, appearance, and optional parsers"
       />
 
       <WorkspaceCard embedded />
@@ -57,7 +58,9 @@ export function GeneralTab({ cfg, onChange }: Props) {
         <ToggleButtonGroup
           exclusive
           value={current}
-          onChange={(_, v: ThemeMode | null) => { if (v) setMode(v); }}
+          onChange={(_, v: ThemeMode | null) => {
+            if (v) setMode(v);
+          }}
           sx={{ ...settingsToggleGroupSx, mb: 0.75 }}
         >
           <ToggleButton value="dark">
@@ -77,6 +80,8 @@ export function GeneralTab({ cfg, onChange }: Props) {
           Active: {current === 'system' ? 'system → auto' : current}
         </Typography>
       </SettingsCard>
+
+      <DocumentParsersSection />
     </Box>
   );
 }

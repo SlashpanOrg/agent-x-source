@@ -27,6 +27,8 @@ export * from './integrations.js';
 export * from './automation.js';
 export * from './channels.js';
 export * from './voice.js';
+export * from './host.js';
+export * from './telephony.js';
 export * from './client-situation.js';
 export * from './markdown-document.js';
 export * from './channel-render.js';

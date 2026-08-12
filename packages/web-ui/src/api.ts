@@ -1411,6 +1411,8 @@ export interface AgentXConfig {
     discord?: { enabled?: boolean; inbound?: boolean; outbound?: boolean; webhookUrl?: string; botToken?: string; channelId?: string };
   };
   voice?: VoiceConfig;
+  /** Host / public edge / VOIP configuration (Settings → Host). */
+  host?: import('@agentx/shared/browser').HostConfig;
   adoption?: Record<string, { enabled?: boolean } | undefined>;
 }
 
@@ -2309,6 +2311,7 @@ export const modelBenchmark = {
     apiKey?: string;
     baseUrl?: string;
     modelCapabilities?: string[];
+    reasoningEffort?: string;
     force?: boolean;
   }) => request<{
     runId: string;
@@ -3025,6 +3028,235 @@ export interface PerformanceShowcaseResponse {
 
 export const performance = {
   status: () => request<PerformanceShowcaseResponse>('/performance/status'),
+};
+
+// ─── Host / Public Edge / VOIP ───
+export type HostExposureState =
+  | 'LOCAL_ONLY'
+  | 'LAN_REACHABLE'
+  | 'PUBLIC_DIRECT_UNSAFE'
+  | 'PUBLIC_TUNNEL_SECURED'
+  | 'DEGRADED'
+  | 'DISABLED'
+  | 'UNKNOWN';
+
+export interface HostStatusResponse {
+  exposureState: HostExposureState;
+  network: {
+    bindHost: string;
+    bindPort: number;
+    loopbackUrl: string;
+    lanUrls: string[];
+    publicIp?: string | null;
+    natUncertainty: boolean;
+  };
+  tunnel: {
+    providerId: string | null;
+    state: string;
+    publicUrl?: string | null;
+    lastError?: string | null;
+    verifiedUpstream?: boolean;
+  };
+  security: {
+    checks: Array<{ id: string; label: string; pass: boolean; severity: string; remediation?: string }>;
+    passCount: number;
+    failCount: number;
+    readyForPublicAccess: boolean;
+  };
+  updatedAt: string;
+}
+
+export interface TunnelProviderCatalogEntry {
+  id: string;
+  name: string;
+  tagline: string;
+  accent?: string;
+  setupSteps: string[];
+  credentialFields: Array<{
+    key: string;
+    label: string;
+    secret?: boolean;
+    placeholder?: string;
+    helperText?: string;
+    required?: boolean;
+  }>;
+  supportsRegion?: boolean;
+  testingOnly?: boolean;
+}
+
+export interface TelephonyProviderCatalogEntry {
+  id: string;
+  name: string;
+  tagline: string;
+  accent?: string;
+  setupSteps: string[];
+  credentialFields: Array<{
+    key: string;
+    label: string;
+    secret?: boolean;
+    placeholder?: string;
+    helperText?: string;
+    required?: boolean;
+  }>;
+  capabilities: Record<string, unknown>;
+  highlightedCountries?: string[];
+  adapterRegistered?: boolean;
+  testingOnly?: boolean;
+}
+
+export interface HostAuditEvent {
+  id: string;
+  timestamp: string;
+  category: 'tunnel' | 'security' | 'startup' | 'shutdown' | 'auth' | 'system';
+  code: string;
+  message: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface HostDiagnosticBundle {
+  generatedAt: string;
+  host: {
+    exposureState: HostExposureState;
+    security: HostStatusResponse['security'];
+    network: {
+      bindHost: string;
+      bindPort: number;
+      addressCount: number;
+      lanUrlCount: number;
+      publicIpConfidence: string;
+      natUncertainty: boolean;
+    };
+    tunnel: {
+      providerId: string | null;
+      state: string;
+      protocol: string | null;
+      hasPublicUrl: boolean;
+    };
+  };
+  telephony: {
+    activeProviderId: string | null;
+    inboundEnabled: boolean;
+  };
+  recentEvents: HostAuditEvent[];
+}
+
+export const hostApi = {
+  status: () => request<HostStatusResponse>('/host/status'),
+  securityPosture: () => request<HostStatusResponse['security']>('/host/security-posture'),
+  providers: () => request<{ tunnel: TunnelProviderCatalogEntry[] }>('/host/providers'),
+  tunnelStatus: () => request<HostStatusResponse['tunnel']>('/host/tunnel/status'),
+  startTunnel: (providerId?: string, credentials?: Record<string, string>) =>
+    request<HostStatusResponse['tunnel']>('/host/tunnel/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(providerId ? { providerId } : {}),
+        ...(credentials && Object.keys(credentials).length ? { credentials } : {}),
+      }),
+    }),
+  stopTunnel: () =>
+    request<HostStatusResponse['tunnel']>('/host/tunnel/stop', { method: 'POST', body: '{}' }),
+  restartTunnel: () =>
+    request<HostStatusResponse['tunnel']>('/host/tunnel/restart', { method: 'POST', body: '{}' }),
+  testTunnelCredentials: (providerId: string, credentials?: Record<string, string>) =>
+    request<{ ok: boolean; message?: string }>('/host/tunnel/credentials/test', {
+      method: 'POST',
+      body: JSON.stringify({ providerId, credentials }),
+    }),
+  revokeTunnelCredentials: (providerId: string) =>
+    request<{ ok: boolean; tunnel: HostStatusResponse['tunnel'] }>('/host/tunnel/credentials/revoke', {
+      method: 'POST',
+      body: JSON.stringify({ providerId }),
+    }),
+  emergencyStop: () =>
+    request<{ ok: boolean }>('/host/emergency-stop', { method: 'POST', body: '{}' }),
+  events: (limit = 100) => request<{ events: HostAuditEvent[] }>(`/host/events?limit=${limit}`),
+  diagnostics: () => request<HostDiagnosticBundle>('/host/diagnostics'),
+};
+
+export interface TelephonyNumberBinding {
+  id: string;
+  providerId: string;
+  providerNumberId?: string | null;
+  e164Redacted?: string | null;
+  label?: string | null;
+  inboundEnabled: boolean;
+  outboundEnabled: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface TelephonyWebhookTestResult {
+  ok: boolean;
+  inboundPath: string;
+  statusPath: string;
+  mediaPath: string;
+  signatureRequired?: boolean;
+  error?: string;
+}
+
+export interface VoiceCallSummary {
+  id: string;
+  direction: 'inbound' | 'outbound';
+  state: string;
+  providerId: string;
+  from?: string | null;
+  to?: string | null;
+  outcome?: string | null;
+  outcomeSummary?: string | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
+}
+
+export interface VoiceCallMissionInput {
+  direction: 'inbound' | 'outbound';
+  providerId: string;
+  phoneNumberId: string;
+  recipientE164?: string;
+  purpose: string;
+  maxDurationSeconds?: number;
+  recording?: string;
+  aiDisclosure?: string;
+  escalation?: { transferNumber?: string; smsFallback?: boolean; onLowConfidence?: string };
+  status?: string;
+}
+
+export const telephonyApi = {
+  providers: () =>
+    request<{ providers: TelephonyProviderCatalogEntry[]; activeProviderId: string | null }>(
+      '/telephony/providers',
+    ),
+  capabilities: (providerId: string) =>
+    request<Record<string, unknown>>(`/telephony/providers/${providerId}/capabilities`),
+  testCredentials: (providerId: string, credentials?: Record<string, string>) =>
+    request<{ ok: boolean; message?: string; accountLabel?: string }>(
+      `/telephony/providers/${providerId}/credentials/test`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ credentials }),
+      },
+    ),
+  listNumbers: (providerId: string) =>
+    request<{ numbers: TelephonyNumberBinding[] }>(`/telephony/providers/${providerId}/numbers`),
+  verifyNumber: (
+    providerId: string,
+    body: { e164: string; label?: string; inboundEnabled?: boolean; outboundEnabled?: boolean; providerNumberId?: string },
+  ) =>
+    request<{ ok: boolean; binding: TelephonyNumberBinding }>(
+      `/telephony/providers/${providerId}/numbers/verify`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  testWebhook: (providerId: string) =>
+    request<TelephonyWebhookTestResult>(`/telephony/providers/${providerId}/webhook/test`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  listCalls: (direction?: 'inbound' | 'outbound') =>
+    request<{ calls: VoiceCallSummary[] }>(`/voice/calls${direction ? `?direction=${direction}` : ''}`),
+  createMission: (body: VoiceCallMissionInput) =>
+    request<{ id: string } & Record<string, unknown>>('/voice/missions', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 /** System clocks / weather / metrics (not the Performance settings profile). */

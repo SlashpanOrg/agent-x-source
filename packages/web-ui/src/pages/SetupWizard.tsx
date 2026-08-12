@@ -355,11 +355,11 @@ export function SetupWizard() {
           if (saved.selectedModel) {
             const model = m.find((entry) => entry.id === saved.selectedModel);
             const levels = model?.reasoning?.effortLevels ?? [];
+            const savedEffort = saved.selectedReasoningEffort ?? '';
             setSelectedReasoningEffort(
-              saved.selectedReasoningEffort
-                || model?.reasoning?.defaultEffort
-                || levels[0]
-                || '',
+              savedEffort && levels.includes(savedEffort as typeof levels[number])
+                ? savedEffort
+                : (model?.reasoning?.defaultEffort ?? levels[0] ?? ''),
             );
           }
           setModelsLoading(false);
@@ -1487,6 +1487,7 @@ export function SetupWizard() {
                     modelName={selectedModelInfo?.name}
                     profileId={profileName.trim()}
                     modelCapabilities={selectedModelInfo?.capabilities}
+                    reasoningEffort={selectedReasoningEffort || undefined}
                     onComplete={setBenchmarkResult}
                     onRunningChange={setBenchmarkRunning}
                   />

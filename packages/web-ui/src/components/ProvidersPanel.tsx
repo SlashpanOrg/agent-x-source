@@ -934,6 +934,7 @@ export function ProvidersPanel() {
                   modelName={selectedPickerModel?.name}
                   profileId={pickingProfile.id}
                   modelCapabilities={selectedPickerModel?.capabilities}
+                  reasoningEffort={pickerReasoningEffort || undefined}
                   onComplete={setBenchmarkResult}
                   onRunningChange={setBenchmarkRunning}
                 />

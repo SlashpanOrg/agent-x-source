@@ -568,6 +568,80 @@ export { TelegramBridgeAdapter } from './services/channel/adapters/TelegramBridg
 export { WhatsAppBridgeAdapter } from './services/channel/adapters/WhatsAppBridgeAdapter.js';
 export type { WhatsAppBridgeAdapterConfig } from './services/channel/adapters/WhatsAppBridgeAdapter.js';
 
+// Host / telephony (provider-neutral VOIP)
+export {
+  TelephonyRegistry,
+  getTelephonyRegistry,
+  setTelephonyRegistry,
+  SHIPPED_TELEPHONY_CATALOG,
+  TelephonyService,
+  getTelephonyService,
+  setTelephonyService,
+  bootstrapTelephonyAdapters,
+  FakeTelephonyAdapter,
+  TwilioAdapter,
+} from './services/telephony/index.js';
+export type {
+  TelephonyProviderAdapter,
+  CredentialValidation,
+  ProviderCredentialInput,
+  OutboundCallRequest,
+  ProviderCall,
+  WebhookVerificationInput,
+  WebhookVerificationResult,
+  ProviderWebhookInput,
+  InboundCallInstructions,
+  TelephonyServiceOptions,
+} from './services/telephony/index.js';
+
+// Host / telephony — voice call domain (missions, sessions, dialing, policy)
+export {
+  redactE164,
+  hashE164,
+  normalizeE164,
+  validateVoiceCallMission,
+  assertValidVoiceCallMission,
+  createDefaultInboundMission,
+  MIN_MISSION_DURATION_SECONDS,
+  MAX_MISSION_DURATION_SECONDS,
+  CallSessionStateMachine,
+  IllegalCallSessionTransitionError,
+  TERMINAL_CALL_SESSION_STATES,
+  transitionCallSessionState,
+  VoiceCallStore,
+  getVoiceCallStore,
+  setVoiceCallStore,
+  TelephonyDialService,
+  TelephonyDialError,
+  getTelephonyDialService,
+  setTelephonyDialService,
+  CallerPolicy,
+} from './services/telephony/index.js';
+export type {
+  MissionValidationIssue,
+  MissionValidationResult,
+  CallSessionState,
+  VoiceCallSession,
+  VoiceCallEvent,
+  VoiceCallConsent,
+  VoiceCallProviderBinding,
+  HostSecurityEvent,
+  VoiceCallStoreOptions,
+  ListMissionsFilter,
+  ListSessionsFilter,
+  AppendEventInput,
+  AppendEventResult,
+  SaveConsentInput,
+  AppendSecurityEventInput,
+  DialInput,
+  DialResult,
+  TelephonyDialServiceOptions,
+  TelephonyDialErrorCode,
+  CallerPolicyDecision,
+  CallerPolicyResult,
+  CallerPolicyOptions,
+} from './services/telephony/index.js';
+
 // WhatsApp session lifecycle + event bus
 export { WhatsAppSessionService } from './whatsapp/WhatsAppSessionService.js';
 export type { WhatsAppSessionServiceOptions, WhatsAppSessionStatus, WatchdogConfig } from './whatsapp/WhatsAppSessionService.js';

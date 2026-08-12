@@ -47,6 +47,8 @@ export interface BenchmarkRunConfig {
   baseUrl?: string;
   profileId?: string;
   modelCapabilities?: ModelCapability[];
+  /** Provider-specific reasoning effort selected in UI (saved as active default after clearance). */
+  reasoningEffort?: string;
 }
 
 export interface BenchmarkRunResult {

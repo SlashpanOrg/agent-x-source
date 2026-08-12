@@ -96,6 +96,45 @@ export type {
   TelegramDiscoveredChat,
 } from './types/channels.js';
 
+export type {
+  HostConfig,
+  HostExposureState,
+  HostExposureScope,
+  HostNetworkSnapshot,
+  HostStatusSnapshot,
+  TunnelStatus,
+  TunnelLifecycleState,
+  TunnelProviderId,
+  TunnelProviderCatalogEntry,
+  TunnelProviderCredentials,
+  SecurityPosture,
+  SecurityPostureCheck,
+} from './types/host.js';
+export { defaultHostConfig, mergeHostConfig } from './types/host.js';
+
+export type {
+  TelephonyConfig,
+  TelephonyProviderId,
+  TelephonyCapabilities,
+  TelephonyProviderCatalogEntry,
+  TelephonyProviderCredentials,
+  TelephonyProviderConfig,
+  TelephonyCredentialField,
+  TelephonyNumberBindingConfig,
+  TelephonyDefaultInboundMissionDraft,
+  TelephonyRecordingPolicy,
+  TelephonyAiDisclosure,
+  VoiceCallMission,
+  VoiceCallMissionEscalation,
+  NormalizedTelephonyEvent,
+  NormalizedTelephonyEventType,
+} from './types/telephony.js';
+export {
+  defaultTelephonyConfig,
+  mergeTelephonyConfig,
+  DEFAULT_TELEPHONY_CAPABILITIES,
+} from './types/telephony.js';
+
 export {
   MAX_QUESTIONNAIRE_CHOICES,
   QUESTIONNAIRE_CUSTOM_SUFFIX,

@@ -3,8 +3,11 @@ import type { RAGConfig } from './rag.js';
 import type { PermissionRule } from './permission.js';
 import type { NotificationChannelsConfig } from './channels.js';
 import type { VoiceConfig } from './voice.js';
+import type { HostConfig } from './host.js';
 
 export type { NotificationChannelsConfig, NotificationChannelId, NotificationChannelStatus } from './channels.js';
+export type { HostConfig } from './host.js';
+export type { TelephonyConfig, TelephonyProviderId } from './telephony.js';
 
 export interface UserConfig {
   callsign: string;
@@ -88,6 +91,11 @@ export interface AgentXConfig extends Record<string, unknown> {
   channels?: NotificationChannelsConfig;
   /** Optional strictly-local voice subsystem. Disabled unless configured. */
   voice?: VoiceConfig;
+  /**
+   * Host / public edge / VOIP. Disabled by default; public access is opt-in.
+   * Tunnel + telephony secrets live here (encrypted at rest).
+   */
+  host?: HostConfig;
   localModel?: LocalModelConfig;
   featureRouting?: FeatureRoutingConfig;
   maxSubAgents?: number; // Maximum number of concurrent sub-agents (default: 5, max: 20)

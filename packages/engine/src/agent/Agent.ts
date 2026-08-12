@@ -168,6 +168,7 @@ import { withSpan } from '../observability/tracer.js';
 import { reconcileIntegrationHintWithActiveTools } from '../integrations/integration-tool-availability.js';
 import type { ThirdPartyTurnPolicy } from '../integrations/third-party-access.js';
 import { buildGoogleAiSdkProviderOptions } from '../providers/google/gemini-metadata.js';
+import { buildCommandCodeAiSdkProviderOptions } from '../providers/commandcode/commandcode-metadata.js';
 import { createAiSdkStreamHandler, consumeStreamWithWatchdog, STREAM_IDLE_TIMEOUT_MS } from './AiSdkStreamHandler.js';
 import type { PartPersistFn } from './AiSdkStreamHandler.js';
 import { applyRichResponsePolicy } from './rich-response-policy.js';
@@ -3075,6 +3076,10 @@ export class Agent {
           effectiveReasoningEffort,
         )
         : undefined;
+      const commandCodeProviderOptions = this.config.provider.activeProvider === 'commandcode'
+        ? buildCommandCodeAiSdkProviderOptions(effectiveReasoningEffort)
+        : undefined;
+      const aiSdkProviderOptions = googleProviderOptions ?? commandCodeProviderOptions;
       const sdkMessages = await this.buildSdkMessages(aiMessages);
       span.setAttribute('llm.input_messages', JSON.stringify(sdkMessages.slice(-20)));
       span.setAttribute('gen_ai.system', this.config.provider.activeProvider);
@@ -3088,7 +3093,7 @@ export class Agent {
         maxOutputTokens: turnMaxOutputTokens,
         stopWhen: ({ steps }) => steps.length >= Math.min(stepLimit(), toolPolicy.stepCap),
         toolChoice: toolPolicy.choice,
-        ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+        ...(aiSdkProviderOptions ? { providerOptions: aiSdkProviderOptions } : {}),
         prepareStep: async ({ stepNumber, messages }) => {
           this.turnState.setStage('execution', stepNumber);
           const stepMessages = messages.map((m) => ({
@@ -3404,7 +3409,7 @@ export class Agent {
                 maxOutputTokens: turnMaxOutputTokens,
                 stopWhen: stepCountIs(Math.min(stepBudget, 40)),
                 toolChoice: contPolicy.choice,
-                ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+                ...(aiSdkProviderOptions ? { providerOptions: aiSdkProviderOptions } : {}),
               });
               await consumeStreamWithWatchdog(contResult.fullStream, (chunk) => streamHandler.handleEvent(chunk));
               return (streamHandler.getState().accumulatedContent || '').trim();
@@ -3528,7 +3533,7 @@ export class Agent {
                   ),
                   stopWhen: stepCountIs(Math.min(stepBudget, 40)),
                   toolChoice: contPolicy.choice,
-                  ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+                  ...(aiSdkProviderOptions ? { providerOptions: aiSdkProviderOptions } : {}),
                 });
                 await consumeStreamWithWatchdog(contResult.fullStream, (chunk) => streamHandler.handleEvent(chunk));
                 return (streamHandler.getState().accumulatedContent || '').trim();
@@ -3690,7 +3695,7 @@ export class Agent {
                 maxOutputTokens: turnMaxOutputTokens,
                 stopWhen: stepCountIs(Math.min(stepBudget, 40)),
                 toolChoice: contPolicy.choice,
-                ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+                ...(aiSdkProviderOptions ? { providerOptions: aiSdkProviderOptions } : {}),
                 prepareStep: async ({ stepNumber, messages }) => {
                   if (stepNumber === 0) return {};
                   const todosRev = this.todoManager.getRevision();

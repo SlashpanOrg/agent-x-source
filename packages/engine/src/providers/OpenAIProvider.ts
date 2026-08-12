@@ -98,8 +98,9 @@ export class OpenAIProvider implements ProviderInterface {
     if (request.maxTokens !== undefined) {
       body['max_tokens'] = request.maxTokens;
     }
-    if (request.reasoningEffort) {
-      body['reasoning_effort'] = request.reasoningEffort;
+    const reasoningEffort = this.mapReasoningEffort(request.reasoningEffort, request.model);
+    if (reasoningEffort) {
+      body['reasoning_effort'] = reasoningEffort;
     }
 
     const headers: Record<string, string> = {
@@ -218,5 +219,16 @@ export class OpenAIProvider implements ProviderInterface {
 
   protected getCapabilities(_modelId: string): ModelInfo['capabilities'] {
     return ['text', 'streaming', 'function_calling', 'json_mode'];
+  }
+
+  /**
+   * Provider-specific wire mapping for `reasoning_effort`.
+   * Return `undefined` to omit the field (e.g. unsupported / off).
+   */
+  protected mapReasoningEffort(
+    effort: CompletionRequest['reasoningEffort'],
+    _modelId: string,
+  ): string | undefined {
+    return effort || undefined;
   }
 }

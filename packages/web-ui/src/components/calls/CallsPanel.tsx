@@ -22,11 +22,13 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import PhoneInTalkIcon from '@mui/icons-material/PhoneInTalk';
 import CallIcon from '@mui/icons-material/Call';
+import CallReceivedIcon from '@mui/icons-material/CallReceived';
+import CallMadeIcon from '@mui/icons-material/CallMade';
 import AddIcCallIcon from '@mui/icons-material/AddIcCall';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
-import { crewChat, sessions, type CrewVoiceSessionInfo } from '../../api';
+import { crewChat, sessions, telephonyApi, type VoiceCallSummary } from '../../api';
 import { getCrewAccent } from '../../styles/crew-theme';
 import { colors, alphaColor, PANEL_SIDE_LIST_WIDTH } from '../../theme';
 import {
@@ -36,7 +38,13 @@ import {
   type CrewCallTranscriptLine,
 } from '../crew-call';
 import { CallTranscriptDivider } from '../crew-call/CallTranscriptDivider';
-import { groupCallSessionsByDay, sortCallsLatestFirst } from './call-list-groups';
+import {
+  crewRowFromSession,
+  voipRowFromCall,
+  groupCallSessionsByDay,
+  sortCallsLatestFirst,
+  type UnifiedCallRow,
+} from './call-list-groups';
 import { CrewCallPhonebookModal } from './CrewCallPhonebookModal';
 
 const MONO = "'JetBrains Mono', monospace";
@@ -80,19 +88,54 @@ function relativeTime(iso?: string): string {
   return new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+function KindTag({ label, accent }: { label: string; accent: string }) {
+  return (
+    <Typography
+      component="span"
+      sx={{
+        fontFamily: MONO,
+        fontSize: '0.4rem',
+        fontWeight: 700,
+        letterSpacing: '0.07em',
+        textTransform: 'uppercase',
+        color: accent,
+        border: `1px solid ${alphaColor(accent, 0.4)}`,
+        borderRadius: '3px',
+        px: 0.4,
+        py: 0.05,
+        lineHeight: 1.4,
+        flexShrink: 0,
+      }}
+    >
+      {label}
+    </Typography>
+  );
+}
+
 const CallRow = memo(function CallRow({
   row,
   selected,
   onSelect,
   onRequestDelete,
 }: {
-  row: CrewVoiceSessionInfo;
+  row: UnifiedCallRow;
   selected: boolean;
   onSelect: (id: string) => void;
   onRequestDelete: (id: string) => void;
 }) {
-  const accent = getCrewAccent(row.hostCrewColor ?? undefined, row.hostCrewCallsign ?? undefined);
-  const callsign = (row.hostCrewCallsign ?? '??').slice(0, 2).toUpperCase();
+  const isVoip = row.kind === 'voip';
+  const accent = isVoip
+    ? colors.accent.cyan
+    : getCrewAccent(row.crew.hostCrewColor ?? undefined, row.crew.hostCrewCallsign ?? undefined);
+  const callsign = isVoip ? '' : (row.crew.hostCrewCallsign ?? '??').slice(0, 2).toUpperCase();
+
+  const title = isVoip
+    ? (row.voip.from && row.voip.to ? `${row.voip.from} → ${row.voip.to}` : row.voip.providerId)
+    : (row.crew.hostCrewName ?? row.crew.title ?? 'Unknown');
+
+  const timeLabel = isVoip
+    ? relativeTime(row.voip.startedAt ?? row.voip.endedAt ?? undefined)
+    : relativeTime(row.crew.updatedAt ?? row.crew.createdAt);
 
   return (
     <Box
@@ -140,21 +183,28 @@ const CallRow = memo(function CallRow({
           border: `1px solid ${alphaColor(accent, 0.35)}`,
         }}
       >
-        {callsign}
+        {isVoip ? (
+          row.voip.direction === 'inbound'
+            ? <CallReceivedIcon sx={{ fontSize: 15 }} />
+            : <CallMadeIcon sx={{ fontSize: 15 }} />
+        ) : callsign}
       </Box>
       <Box sx={{ minWidth: 0, flex: 1 }}>
-        <Typography
-          noWrap
-          sx={{
-            fontFamily: MONO,
-            fontSize: '0.72rem',
-            fontWeight: 600,
-            color: colors.text.primary,
-            lineHeight: 1.2,
-          }}
-        >
-          {row.hostCrewName ?? row.title ?? 'Unknown'}
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <Typography
+            noWrap
+            sx={{
+              fontFamily: MONO,
+              fontSize: '0.72rem',
+              fontWeight: 600,
+              color: colors.text.primary,
+              lineHeight: 1.2,
+            }}
+          >
+            {title}
+          </Typography>
+          {!isVoip && <KindTag label="Crew" accent={accent} />}
+        </Box>
         <Typography
           noWrap
           sx={{
@@ -165,38 +215,43 @@ const CallRow = memo(function CallRow({
             mt: 0.15,
           }}
         >
-          @{row.hostCrewCallsign ?? 'crew'}
-          {row.hostCrewTitle ? ` · ${row.hostCrewTitle}` : ''}
+          {isVoip
+            ? `VOIP · ${row.voip.direction} · ${row.voip.state}`
+            : `@${row.crew.hostCrewCallsign ?? 'crew'}${row.crew.hostCrewTitle ? ` · ${row.crew.hostCrewTitle}` : ''}`}
         </Typography>
       </Box>
       <Box sx={{ textAlign: 'right', flexShrink: 0 }}>
         <Typography sx={{ fontFamily: MONO, fontSize: '0.5rem', color: colors.text.dim }}>
-          {relativeTime(row.updatedAt ?? row.createdAt)}
+          {timeLabel}
         </Typography>
-        <Typography sx={{ fontFamily: MONO, fontSize: '0.48rem', color: alphaColor(accent, 0.85), mt: 0.2 }}>
-          {row.messageCount ?? 0} lines
-        </Typography>
+        {!isVoip && (
+          <Typography sx={{ fontFamily: MONO, fontSize: '0.48rem', color: alphaColor(accent, 0.85), mt: 0.2 }}>
+            {row.crew.messageCount ?? 0} lines
+          </Typography>
+        )}
       </Box>
-      <Tooltip title="Delete call" arrow>
-        <IconButton
-          className="call-row-delete"
-          size="small"
-          aria-label="Delete call"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRequestDelete(row.id);
-          }}
-          sx={{
-            p: 0.35,
-            opacity: selected ? 0.85 : 0,
-            color: colors.text.dim,
-            transition: 'opacity 120ms ease, color 120ms ease',
-            '&:hover': { color: colors.accent.red, bgcolor: alphaColor(colors.accent.red, 0.12) },
-          }}
-        >
-          <DeleteOutlineIcon sx={{ fontSize: 14 }} />
-        </IconButton>
-      </Tooltip>
+      {!isVoip && (
+        <Tooltip title="Delete call" arrow>
+          <IconButton
+            className="call-row-delete"
+            size="small"
+            aria-label="Delete call"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRequestDelete(row.id);
+            }}
+            sx={{
+              p: 0.35,
+              opacity: selected ? 0.85 : 0,
+              color: colors.text.dim,
+              transition: 'opacity 120ms ease, color 120ms ease',
+              '&:hover': { color: colors.accent.red, bgcolor: alphaColor(colors.accent.red, 0.12) },
+            }}
+          >
+            <DeleteOutlineIcon sx={{ fontSize: 14 }} />
+          </IconButton>
+        </Tooltip>
+      )}
     </Box>
   );
 });
@@ -286,9 +341,63 @@ function TranscriptBody({
   );
 }
 
+function DetailStat({ label, value, accent }: { label: string; value?: string | null; accent: string }) {
+  return (
+    <Box
+      sx={{
+        px: 1,
+        py: 0.5,
+        borderRadius: '4px',
+        border: `1px solid ${alphaColor(accent, 0.3)}`,
+        bgcolor: alphaColor(accent, 0.08),
+      }}
+    >
+      <Typography sx={{ fontFamily: MONO, fontSize: '0.44rem', letterSpacing: '0.06em', color: colors.text.dim, textTransform: 'uppercase' }}>
+        {label}
+      </Typography>
+      <Typography sx={{ fontFamily: MONO, fontSize: '0.62rem', color: accent, fontWeight: 700 }}>
+        {value || '—'}
+      </Typography>
+    </Box>
+  );
+}
+
+function VoipDetailBody({ call, accent }: { call: VoiceCallSummary; accent: string }) {
+  const summary = call.outcomeSummary?.trim() || call.outcome?.trim() || 'No outcome summary available yet.';
+  return (
+    <Box
+      className="ax-scroll-y"
+      sx={{
+        flex: 1,
+        minHeight: 0,
+        px: 2,
+        py: 2,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 1.5,
+        bgcolor: colors.bg.secondary,
+      }}
+    >
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+        <DetailStat label="Provider" value={call.providerId} accent={accent} />
+        <DetailStat label="Direction" value={call.direction} accent={accent} />
+        <DetailStat label="State" value={call.state} accent={accent} />
+      </Box>
+      <Box>
+        <Typography sx={{ fontFamily: MONO, fontSize: '0.48rem', letterSpacing: '0.08em', color: colors.text.dim, mb: 0.4, textTransform: 'uppercase' }}>
+          Outcome
+        </Typography>
+        <Typography sx={{ fontFamily: MONO, fontSize: '0.72rem', color: colors.text.secondary, lineHeight: 1.5 }}>
+          {summary}
+        </Typography>
+      </Box>
+    </Box>
+  );
+}
+
 export function CallsPanel() {
   const { startCall, isActive } = useCrewCall();
-  const [rows, setRows] = useState<CrewVoiceSessionInfo[]>([]);
+  const [rows, setRows] = useState<UnifiedCallRow[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -309,8 +418,13 @@ export function CallsPanel() {
     setListLoading(true);
     setListError(null);
     try {
-      const res = await crewChat.listVoiceSessions();
-      const next = sortCallsLatestFirst(res.sessions ?? []);
+      const [sessionsRes, callsRes] = await Promise.all([
+        crewChat.listVoiceSessions(),
+        telephonyApi.listCalls().catch(() => null),
+      ]);
+      const crewRows = (sessionsRes.sessions ?? []).map(crewRowFromSession);
+      const voipRows = (callsRes?.calls ?? []).map(voipRowFromCall);
+      const next = sortCallsLatestFirst([...crewRows, ...voipRows]);
       setRows(next);
       setSelectedId((prev) => {
         if (prev && next.some((r) => r.id === prev)) return prev;
@@ -338,18 +452,25 @@ export function CallsPanel() {
     [rows, selectedId],
   );
 
-  const selectedAccent = useMemo(
-    () => (selected
-      ? getCrewAccent(selected.hostCrewColor ?? undefined, selected.hostCrewCallsign ?? undefined)
-      : colors.accent.green),
-    [selected],
-  );
+  const selectedAccent = useMemo(() => {
+    if (!selected) return colors.accent.green;
+    if (selected.kind === 'crew') {
+      return getCrewAccent(selected.crew.hostCrewColor ?? undefined, selected.crew.hostCrewCallsign ?? undefined);
+    }
+    return colors.accent.cyan;
+  }, [selected]);
 
   const filtered = useMemo(() => {
     const q = deferredQuery.trim().toLowerCase();
     const base = q
       ? rows.filter((r) => {
-          const hay = `${r.hostCrewName ?? ''} ${r.hostCrewCallsign ?? ''} ${r.hostCrewTitle ?? ''} ${r.title ?? ''}`.toLowerCase();
+          if (r.kind === 'crew') {
+            const c = r.crew;
+            const hay = `${c.hostCrewName ?? ''} ${c.hostCrewCallsign ?? ''} ${c.hostCrewTitle ?? ''} ${c.title ?? ''}`.toLowerCase();
+            return hay.includes(q);
+          }
+          const v = r.voip;
+          const hay = `${v.from ?? ''} ${v.to ?? ''} ${v.providerId ?? ''} ${v.direction ?? ''}`.toLowerCase();
           return hay.includes(q);
         })
       : rows;
@@ -384,7 +505,7 @@ export function CallsPanel() {
   }, []);
 
   useEffect(() => {
-    if (!selectedId) {
+    if (!selected || selected.kind !== 'crew') {
       setTranscript([]);
       setHasMore(false);
       oldestIdRef.current = null;
@@ -392,16 +513,16 @@ export function CallsPanel() {
     }
     oldestIdRef.current = null;
     setTranscript([]);
-    void loadTranscript(selectedId);
-  }, [selectedId, loadTranscript]);
+    void loadTranscript(selected.crew.id);
+  }, [selected, loadTranscript]);
 
   const onSelect = useCallback((id: string) => {
     startTransition(() => setSelectedId(id));
   }, [startTransition]);
 
   const onCallAgain = useCallback(() => {
-    if (!selected) return;
-    const target = crewCallTargetFromVoiceSession(selected);
+    if (!selected || selected.kind !== 'crew') return;
+    const target = crewCallTargetFromVoiceSession(selected.crew);
     if (!target) return;
     startCall(target);
   }, [selected, startCall]);
@@ -413,10 +534,15 @@ export function CallsPanel() {
 
   const onConfirmDelete = useCallback(async () => {
     if (!deleteId) return;
+    const target = rows.find((r) => r.id === deleteId);
+    if (!target || target.kind !== 'crew') {
+      setDeleteId(null);
+      return;
+    }
     setDeleteBusy(true);
     setDeleteError(null);
     try {
-      await crewChat.deleteVoiceSession(deleteId);
+      await crewChat.deleteVoiceSession(target.crew.id);
       const removedId = deleteId;
       setDeleteId(null);
       setRows((prev) => {
@@ -437,7 +563,7 @@ export function CallsPanel() {
     } finally {
       setDeleteBusy(false);
     }
-  }, [deleteId, selectedId]);
+  }, [deleteId, selectedId, rows]);
 
   const pendingDelete = useMemo(
     () => (deleteId ? rows.find((r) => r.id === deleteId) ?? null : null),
@@ -641,92 +767,114 @@ export function CallsPanel() {
                     noWrap
                     sx={{ fontFamily: MONO, fontSize: '0.8rem', fontWeight: 700, color: colors.text.primary }}
                   >
-                    {selected.hostCrewName ?? selected.title}
+                    {selected.kind === 'crew'
+                      ? (selected.crew.hostCrewName ?? selected.crew.title ?? 'Unknown')
+                      : (selected.voip.from && selected.voip.to ? `${selected.voip.from} → ${selected.voip.to}` : selected.voip.providerId)}
                   </Typography>
                   <Typography sx={{ fontFamily: MONO, fontSize: '0.52rem', color: colors.text.dim }}>
-                    @{selected.hostCrewCallsign ?? 'crew'}
-                    {selected.hostCrewTitle ? ` · ${selected.hostCrewTitle}` : ''}
-                    {' · '}
-                    {relativeTime(selected.updatedAt ?? selected.createdAt)}
+                    {selected.kind === 'crew' ? (
+                      <>
+                        @{selected.crew.hostCrewCallsign ?? 'crew'}
+                        {selected.crew.hostCrewTitle ? ` · ${selected.crew.hostCrewTitle}` : ''}
+                        {' · '}
+                        {relativeTime(selected.crew.updatedAt ?? selected.crew.createdAt)}
+                      </>
+                    ) : (
+                      <>
+                        VOIP · {selected.voip.direction} · {selected.voip.state}
+                        {' · '}
+                        {relativeTime(selected.voip.startedAt ?? selected.voip.endedAt ?? undefined)}
+                      </>
+                    )}
                   </Typography>
                 </Box>
-                <Tooltip title="Delete call & transcript" arrow>
-                  <span>
-                    <IconButton
-                      size="small"
-                      aria-label="Delete call"
-                      onClick={() => onRequestDelete(selected.id)}
-                      disabled={deleteBusy}
-                      sx={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: '4px',
-                        color: colors.text.dim,
-                        border: `1px solid ${colors.border.default}`,
-                        '&:hover': {
-                          color: colors.accent.red,
-                          borderColor: alphaColor(colors.accent.red, 0.5),
-                          bgcolor: alphaColor(colors.accent.red, 0.1),
-                        },
-                      }}
-                    >
-                      <DeleteOutlineIcon sx={{ fontSize: 15 }} />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-                <Button
-                  size="small"
-                  startIcon={<CallIcon sx={{ fontSize: 14 }} />}
-                  onClick={onCallAgain}
-                  disabled={isActive}
-                  sx={{
-                    height: 32,
-                    px: 1.35,
-                    fontFamily: MONO,
-                    fontSize: '0.58rem',
-                    letterSpacing: '0.08em',
-                    fontWeight: 700,
-                    color: selectedAccent,
-                    bgcolor: alphaColor(selectedAccent, 0.12),
-                    border: `1px solid ${alphaColor(selectedAccent, 0.4)}`,
-                    borderRadius: '4px',
-                    '&:hover': { bgcolor: alphaColor(selectedAccent, 0.2) },
-                    '&.Mui-disabled': { opacity: 0.4 },
-                  }}
-                >
-                  CALL AGAIN
-                </Button>
-              </Box>
-
-              {hasMore && (
-                <Box sx={{ px: 2, py: 0.6, borderBottom: `1px solid ${colors.border.default}`, flexShrink: 0 }}>
+                {selected.kind === 'crew' && (
+                  <Tooltip title="Delete call & transcript" arrow>
+                    <span>
+                      <IconButton
+                        size="small"
+                        aria-label="Delete call"
+                        onClick={() => onRequestDelete(selected.id)}
+                        disabled={deleteBusy}
+                        sx={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: '4px',
+                          color: colors.text.dim,
+                          border: `1px solid ${colors.border.default}`,
+                          '&:hover': {
+                            color: colors.accent.red,
+                            borderColor: alphaColor(colors.accent.red, 0.5),
+                            bgcolor: alphaColor(colors.accent.red, 0.1),
+                          },
+                        }}
+                      >
+                        <DeleteOutlineIcon sx={{ fontSize: 15 }} />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                )}
+                {selected.kind === 'crew' && (
                   <Button
                     size="small"
-                    disabled={transcriptLoading || !oldestIdRef.current}
-                    onClick={() => {
-                      if (!selectedId || !oldestIdRef.current) return;
-                      void loadTranscript(selectedId, oldestIdRef.current);
-                    }}
+                    startIcon={<CallIcon sx={{ fontSize: 14 }} />}
+                    onClick={onCallAgain}
+                    disabled={isActive}
                     sx={{
+                      height: 32,
+                      px: 1.35,
                       fontFamily: MONO,
-                      fontSize: '0.5rem',
+                      fontSize: '0.58rem',
                       letterSpacing: '0.08em',
+                      fontWeight: 700,
                       color: selectedAccent,
-                      minWidth: 0,
-                      py: 0.15,
+                      bgcolor: alphaColor(selectedAccent, 0.12),
+                      border: `1px solid ${alphaColor(selectedAccent, 0.4)}`,
+                      borderRadius: '4px',
+                      '&:hover': { bgcolor: alphaColor(selectedAccent, 0.2) },
+                      '&.Mui-disabled': { opacity: 0.4 },
                     }}
                   >
-                    {transcriptLoading ? 'LOADING…' : 'EARLIER'}
+                    CALL AGAIN
                   </Button>
-                </Box>
-              )}
+                )}
+              </Box>
 
-              <TranscriptBody
-                lines={transcript}
-                speakerName={selected.hostCrewName?.trim() || selected.hostCrewCallsign || 'Crew'}
-                accent={selectedAccent}
-                loading={transcriptLoading}
-              />
+              {selected.kind === 'crew' ? (
+                <>
+                  {hasMore && (
+                    <Box sx={{ px: 2, py: 0.6, borderBottom: `1px solid ${colors.border.default}`, flexShrink: 0 }}>
+                      <Button
+                        size="small"
+                        disabled={transcriptLoading || !oldestIdRef.current}
+                        onClick={() => {
+                          if (selected.kind !== 'crew' || !oldestIdRef.current) return;
+                          void loadTranscript(selected.crew.id, oldestIdRef.current);
+                        }}
+                        sx={{
+                          fontFamily: MONO,
+                          fontSize: '0.5rem',
+                          letterSpacing: '0.08em',
+                          color: selectedAccent,
+                          minWidth: 0,
+                          py: 0.15,
+                        }}
+                      >
+                        {transcriptLoading ? 'LOADING…' : 'EARLIER'}
+                      </Button>
+                    </Box>
+                  )}
+
+                  <TranscriptBody
+                    lines={transcript}
+                    speakerName={selected.crew.hostCrewName?.trim() || selected.crew.hostCrewCallsign || 'Crew'}
+                    accent={selectedAccent}
+                    loading={transcriptLoading}
+                  />
+                </>
+              ) : (
+                <VoipDetailBody call={selected.voip} accent={selectedAccent} />
+              )}
             </>
           ) : (
             <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1, px: 3 }}>
@@ -768,7 +916,9 @@ export function CallsPanel() {
             Permanently remove
             {' '}
             <Box component="span" sx={{ color: colors.text.primary, fontWeight: 600 }}>
-              {pendingDelete?.hostCrewName ?? pendingDelete?.title ?? 'this call'}
+              {pendingDelete?.kind === 'crew'
+                ? (pendingDelete.crew.hostCrewName ?? pendingDelete.crew.title ?? 'this call')
+                : 'this call'}
             </Box>
             {' '}
             from history, including its full transcript. This cannot be undone.

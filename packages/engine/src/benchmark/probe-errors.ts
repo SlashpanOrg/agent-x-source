@@ -82,6 +82,13 @@ export function humanizeProbeError(channel: string, error: unknown): string {
 export function humanizeHttpError(status: number, body: string): Error {
   const channel = 'API';
   const message = humanizeProbeError(channel, `${status}: ${body}`);
+  if (status === 400) {
+    return new Error(
+      message.includes('probe failed')
+        ? 'Provider rejected the request (bad request) — check model settings and credentials'
+        : message,
+    );
+  }
   if (status === 401 || status === 403) {
     return new Error(message.includes('authentication') ? message : 'API authentication failed — check provider credentials');
   }
@@ -94,19 +101,31 @@ export function humanizeHttpError(status: number, body: string): Error {
   return new Error(message);
 }
 
-/** HTTP statuses that mean the provider/API is unreachable, unauthorized, or unavailable — not a capability miss. */
-const ACCESS_OR_NETWORK_STATUS = new Set([401, 403, 404, 408, 429, 500, 502, 503, 504]);
+/**
+ * HTTP statuses that mean the provider rejected the call or is unreachable —
+ * continuing the benchmark cannot produce a meaningful clearance score.
+ * Includes 400 (invalid params / unsupported options) so a bad first call stops the run.
+ */
+const ABORT_STATUS = new Set([400, 401, 403, 404, 408, 429, 500, 502, 503, 504]);
 
 /**
- * True when a thrown provider error is transport/auth/availability — the benchmark
- * should abort rather than continue scoring remaining tests. Capability misses and
- * bad model answers are not included (those usually return passed:false without throw).
+ * True when a thrown provider error should abort the entire benchmark.
+ * Capability misses and wrong model answers are not included (those usually
+ * return passed:false without throw). Auth, network, and bad-request (400 /
+ * invalid_request) failures abort so we don't burn the rest of the suite.
  */
 export function isProviderAccessOrNetworkError(error: unknown): boolean {
   const raw = error instanceof Error ? error.message : String(error);
   const lower = raw.toLowerCase();
 
-  // Capability / unsupported-feature failures must not abort the suite.
+  // Hard HTTP failures always abort — including 400 bad request on the first call.
+  const statusMatch = raw.match(/\b([45]\d{2})\b/);
+  if (statusMatch) {
+    const status = Number(statusMatch[1]);
+    if (ABORT_STATUS.has(status)) return true;
+  }
+
+  // Capability / unsupported-feature failures (without abort status) must not stop the suite.
   if (
     lower.includes('does not support')
     || lower.includes('unsupported')
@@ -116,14 +135,10 @@ export function isProviderAccessOrNetworkError(error: unknown): boolean {
     return false;
   }
 
-  const statusMatch = raw.match(/\b([45]\d{2})\b/);
-  if (statusMatch) {
-    const status = Number(statusMatch[1]);
-    if (ACCESS_OR_NETWORK_STATUS.has(status)) return true;
-  }
-
   return (
-    lower.includes('unauthorized')
+    lower.includes('invalid_request')
+    || lower.includes('bad request')
+    || lower.includes('unauthorized')
     || lower.includes('forbidden')
     || lower.includes('invalid api key')
     || lower.includes('authentication')
