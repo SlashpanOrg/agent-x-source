@@ -139,7 +139,7 @@ describe('publicEdgeGuard', () => {
 });
 
 describe('isPublicEdgePathAllowed', () => {
-  it('denies internals and allows the web UI surface by default', () => {
+  it('denies internals and allows the app surface when the tunnel is up', () => {
     expect(isPublicEdgePathAllowed('/api/observability/traces')).toBe(false);
     expect(isPublicEdgePathAllowed('/metrics')).toBe(false);
     expect(isPublicEdgePathAllowed('/api/jobs')).toBe(false);
@@ -147,15 +147,16 @@ describe('isPublicEdgePathAllowed', () => {
     expect(isPublicEdgePathAllowed('/api/chat/stream')).toBe(true);
     expect(isPublicEdgePathAllowed('/api/agent/persona')).toBe(true);
     expect(isPublicEdgePathAllowed('/api/setup/status')).toBe(true);
+    expect(isPublicEdgePathAllowed('/api/voice/session')).toBe(true);
+    expect(isPublicEdgePathAllowed('/api/telephony/twilio/inbound')).toBe(true);
   });
 
-  it('narrows to telephony/host when web exposure is off', () => {
-    const off = { web: false, voice: false, telephonyWebhooks: true };
-    expect(isPublicEdgePathAllowed('/api/chat/stream', off)).toBe(false);
-    expect(isPublicEdgePathAllowed('/api/agent/persona', off)).toBe(false);
-    expect(isPublicEdgePathAllowed('/api/telephony/twilio/inbound', off)).toBe(true);
-    expect(isPublicEdgePathAllowed('/api/host/status', off)).toBe(true);
-    expect(isPublicEdgePathAllowed('/api/observability/traces', off)).toBe(false);
+  it('ignores legacy per-surface exposure flags — denylist only', () => {
+    const legacyOff = { web: false, voice: false, telephonyWebhooks: false };
+    expect(isPublicEdgePathAllowed('/api/chat/stream', legacyOff)).toBe(true);
+    expect(isPublicEdgePathAllowed('/api/voice/session', legacyOff)).toBe(true);
+    expect(isPublicEdgePathAllowed('/api/telephony/twilio/inbound', legacyOff)).toBe(true);
+    expect(isPublicEdgePathAllowed('/api/observability/traces', legacyOff)).toBe(false);
   });
 });
 

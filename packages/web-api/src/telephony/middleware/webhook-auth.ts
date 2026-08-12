@@ -1,7 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { getLogger } from '@agentx/shared';
 import { getTelephonyService, type TelephonyProviderAdapter } from '@agentx/engine';
-import { tryGetHostGateway } from '../../host/HostGateway.js';
 
 const REPLAY_WINDOW_MS = 5 * 60 * 1000;
 const seenEventIds = new Map<string, number>();
@@ -42,12 +41,8 @@ export function telephonyWebhookAuth(
     return;
   }
 
-  const host = tryGetHostGateway();
-  const exposure = host?.getConfig().exposure;
-  if (host && !exposure?.telephonyWebhooks) {
-    res.status(403).json({ error: 'telephony_webhooks_disabled' });
-    return;
-  }
+  // Telephony webhooks are always allowed when the tunnel/host edge is up;
+  // signature verification below remains the access control.
 
   const credentials = service.getCredentials(providerId);
   const rawBody = captureRawBody(req);

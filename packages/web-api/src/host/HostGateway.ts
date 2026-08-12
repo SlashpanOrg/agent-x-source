@@ -281,18 +281,6 @@ export class HostGateway {
       severity: 'warn',
       remediation: 'Only enable public access when you need it.',
     });
-    checks.push({
-      id: 'voice_exposure_default_off',
-      label: 'Voice exposure off until enabled',
-      pass: !this.config.exposure?.voice,
-      severity: 'info',
-    });
-    checks.push({
-      id: 'telephony_webhooks_default_off',
-      label: 'Telephony webhooks off until configured',
-      pass: !this.config.exposure?.telephonyWebhooks,
-      severity: 'info',
-    });
     const tunnelCreds = this.config.provider
       ? this.getTunnelCredentials(this.config.provider)
       : {};

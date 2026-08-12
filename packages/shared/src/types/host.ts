@@ -26,7 +26,7 @@ export type TunnelLifecycleState =
   | 'error';
 
 /** Stable tunnel provider ids. New edge vendors plug in via the registry. */
-export type TunnelProviderId = 'ngrok' | 'cloudflare' | 'fake' | (string & {});
+export type TunnelProviderId = 'ngrok' | 'fake' | (string & {});
 
 export interface HostExposureScope {
   web: boolean;
@@ -161,9 +161,11 @@ export function defaultHostConfig(): HostConfig {
     publicAccess: false,
     provider: null,
     exposure: {
+      // When the tunnel is enabled, all three surfaces are reachable.
+      // Per-surface toggles were removed from Host UI; keep fields for config compat.
       web: true,
-      voice: false,
-      telephonyWebhooks: false,
+      voice: true,
+      telephonyWebhooks: true,
     },
     sessionPolicy: {
       idleTimeoutMinutes: 30,

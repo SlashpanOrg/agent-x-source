@@ -6,10 +6,9 @@ import { tryGetHostGateway } from '../HostGateway.js';
 /**
  * Public-edge route policy.
  *
- * Deny-by-default for sensitive surfaces (observability, jobs, metrics, dev).
- * When Host → “Expose web UI” is on, the authenticated app SPA + `/api/*`
- * (minus denylist) are reachable through the tunnel. When web is off, only a
- * narrow telephony/voice/host surface remains.
+ * When the tunnel is up, the authenticated app (Web UI & API, browser voice,
+ * telephony webhooks) is reachable. Sensitive internals stay on the denylist.
+ * Per-surface exposure toggles were removed — tunnel on means full app surface.
  */
 
 /** Always denied on the public edge — never exposed via tunnel. */
@@ -23,7 +22,7 @@ export const PUBLIC_EDGE_DENYLIST: RegExp[] = [
 
 /**
  * Minimal surface always allowed when the tunnel is up (health probes, auth
- * bootstrap, host controls). Used when web exposure is off.
+ * bootstrap, host controls). Kept for callers/tests that reference the base set.
  */
 export const PUBLIC_EDGE_BASE_ALLOWLIST: RegExp[] = [
   /^\/$/,
@@ -36,7 +35,7 @@ export const PUBLIC_EDGE_BASE_ALLOWLIST: RegExp[] = [
   /^\/api\/config$/,
 ];
 
-/** @deprecated Prefer isPublicEdgePathAllowed(path, exposure). Kept for callers/tests. */
+/** @deprecated Prefer isPublicEdgePathAllowed(path). Kept for callers/tests. */
 export const PUBLIC_EDGE_ALLOWLIST: RegExp[] = [
   ...PUBLIC_EDGE_BASE_ALLOWLIST,
   /^\/api\/telephony\//,
@@ -48,37 +47,16 @@ export const PUBLIC_EDGE_ALLOWLIST: RegExp[] = [
 
 export function isPublicEdgePathAllowed(
   pathname: string,
-  exposure?: HostExposureScope | null,
+  _exposure?: HostExposureScope | null,
 ): boolean {
   if (PUBLIC_EDGE_DENYLIST.some((re) => re.test(pathname))) return false;
-
-  const webOn = exposure?.web !== false; // default: web UI exposed when tunnel is on
-  const voiceOn = Boolean(exposure?.voice);
-  const telOn = Boolean(exposure?.telephonyWebhooks);
-
-  if (PUBLIC_EDGE_BASE_ALLOWLIST.some((re) => re.test(pathname))) return true;
-
-  if (webOn) {
-    // Authenticated web UI over the tunnel: SPA routes + APIs except denylist.
-    return true;
-  }
-
-  // Web off — narrow surface for telephony / browser-voice only.
-  if (telOn && /^\/api\/telephony\//.test(pathname)) return true;
-  if (
-    voiceOn &&
-    (/^\/api\/voice\//.test(pathname) || /^\/voice-ws/.test(pathname) || /^\/ws/.test(pathname))
-  ) {
-    return true;
-  }
-  if (/^\/api\/sessions/.test(pathname)) return true;
-
-  return false;
+  // Tunnel traffic: full app surface (auth still required). Denylist only.
+  return true;
 }
 
 /**
  * True when the request likely arrived through a public tunnel
- * (presence of ngrok/cf forwarded headers or HostGateway active).
+ * (presence of ngrok / generic forwarded headers).
  */
 export function looksLikePublicEdgeRequest(headers: Record<string, unknown>): boolean {
   const markers = [
@@ -86,7 +64,6 @@ export function looksLikePublicEdgeRequest(headers: Record<string, unknown>): bo
     'x-forwarded-proto',
     'x-forwarded-host',
     'ngrok-agent-ips',
-    'cf-connecting-ip',
   ];
   return markers.some((h) => headers[h] != null || headers[h.toLowerCase()] != null);
 }
@@ -109,7 +86,7 @@ function isTunnelActive(): { active: boolean; https: boolean } {
  * Global guard applied early in the middleware chain.
  *
  * Path allowlist/denylist applies ONLY to traffic that actually arrived through
- * a public tunnel (forwarding headers from ngrok/cloudflare/etc.). Local
+ * a public tunnel (forwarding headers from ngrok). Local
  * Electron / loopback clients must keep full API access even while a tunnel is
  * running — previously `tunnelActive` incorrectly forced the allowlist on every
  * request and broke the desktop app with `{"error":"not_found"}`.

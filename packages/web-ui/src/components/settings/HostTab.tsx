@@ -3,7 +3,6 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
 import TextField from '@mui/material/TextField';
-import Switch from '@mui/material/Switch';
 import CircularProgress from '@mui/material/CircularProgress';
 import Alert from '@mui/material/Alert';
 import useMediaQuery from '@mui/material/useMediaQuery';
@@ -50,36 +49,6 @@ const EXPOSURE_LABEL: Record<string, { label: string; color: string }> = {
   DISABLED: { label: 'Disabled', color: settingsTheme.accent.alert },
   UNKNOWN: { label: 'Unknown', color: settingsTheme.text.dim },
 };
-
-const EXPOSURE_SURFACES: Array<{
-  key: 'web' | 'voice' | 'telephonyWebhooks';
-  title: string;
-  why: string;
-  defaultOn: boolean;
-  risk: string;
-}> = [
-  {
-    key: 'web',
-    title: 'Web UI & API',
-    why: 'Lets you open Agent-X from the public tunnel URL (still requires your login).',
-    defaultOn: true,
-    risk: 'Lowest risk when auth is on. Turn off if the tunnel is only for phone webhooks.',
-  },
-  {
-    key: 'voice',
-    title: 'Browser voice',
-    why: 'Exposes the realtime voice WebSocket used by the in-app mic — not phone/VOIP.',
-    defaultOn: false,
-    risk: 'Off by default. Enable only when you need voice from outside this machine.',
-  },
-  {
-    key: 'telephonyWebhooks',
-    title: 'Telephony webhooks',
-    why: 'Allows Twilio to POST signed call events to this install through the tunnel.',
-    defaultOn: false,
-    risk: 'Needed for inbound phone calls. Signature verification still applies.',
-  },
-];
 
 export function mergeHostSettingsConfig(value?: HostConfig | null): HostConfig {
   return mergeHostConfig(defaultHostConfig(), value ?? undefined);
@@ -161,18 +130,12 @@ export function HostTab({ value, onChange }: HostTabProps) {
     }
   };
 
-  const exposureChecked = (key: 'web' | 'voice' | 'telephonyWebhooks') => {
-    if (key === 'web') return cfg.exposure?.web !== false;
-    if (key === 'voice') return Boolean(cfg.exposure?.voice);
-    return Boolean(cfg.exposure?.telephonyWebhooks);
-  };
-
   return (
     <Box>
       <SettingsSectionHeader
         icon={<PublicIcon sx={{ fontSize: 16 }} />}
         title="Host"
-        subtitle="Public tunnel & what this install exposes — phone/VOIP lives under Channels"
+        subtitle="Public tunnel for this install — phone/VOIP lives under Channels"
       />
 
       {/* Status core */}
@@ -244,71 +207,11 @@ export function HostTab({ value, onChange }: HostTabProps) {
         </Alert>
       )}
 
-      {/* What to expose */}
-      <Typography sx={{ ...settingsOverlineSx, mb: 1 }}>What the tunnel may expose</Typography>
-      <Typography sx={{ ...settingsHelperSx, mb: 1.25 }}>
-        The tunnel opens a door; these switches choose which surfaces are reachable through it.
-        Keep unused surfaces off.
-      </Typography>
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr 1fr' },
-          gap: 1,
-          mb: 2.5,
-        }}
-      >
-        {EXPOSURE_SURFACES.map((surface) => {
-          const on = exposureChecked(surface.key);
-          return (
-            <Box
-              key={surface.key}
-              sx={{
-                ...settingsCardSx(on ? settingsTheme.accent.hud : undefined, on),
-                mb: 0,
-                p: 1.5,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 0.75,
-                minHeight: '100%',
-              }}
-            >
-              <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1 }}>
-                <Typography sx={{ fontSize: '0.78rem', fontWeight: 700, lineHeight: 1.3 }}>
-                  {surface.title}
-                </Typography>
-                <Switch
-                  size="small"
-                  checked={on}
-                  onChange={(_, checked) =>
-                    patch({ exposure: { ...cfg.exposure!, [surface.key]: checked } })
-                  }
-                  inputProps={{ 'aria-label': `Expose ${surface.title}` }}
-                  sx={{ mt: -0.5, mr: -0.75 }}
-                />
-              </Box>
-              <Typography sx={{ ...settingsHelperSx, flex: 1 }}>{surface.why}</Typography>
-              <Typography
-                sx={{
-                  ...settingsHelperSx,
-                  fontSize: '0.65rem',
-                  color: settingsTheme.text.dim,
-                  borderTop: `1px solid ${settingsTheme.border.subtle}`,
-                  pt: 0.75,
-                }}
-              >
-                {surface.risk}
-              </Typography>
-            </Box>
-          );
-        })}
-      </Box>
-
       {/* Tunnel */}
       <Typography sx={{ ...settingsOverlineSx, mb: 1 }}>Secure tunnel</Typography>
       <Typography sx={{ ...settingsHelperSx, mb: 1.25 }}>
-        Without a tunnel, Agent-X stays on this machine / LAN. A tunnel gives providers (and you) a
-        public HTTPS URL without opening router ports.
+        Without a tunnel, Agent-X stays on this machine / LAN. When the tunnel is on, Web UI &amp; API,
+        browser voice, and telephony webhooks are reachable through it (auth and webhook signatures still apply).
       </Typography>
 
       {tunnelCatalog
