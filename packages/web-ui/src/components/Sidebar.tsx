@@ -99,7 +99,14 @@ export function Sidebar({ active, onNavigate, highlightCrews, unreadNotification
       {navItems.map((item) => (
         <Tooltip key={item.id} title={item.label} placement="right">
           <IconButton
+            aria-label={item.label}
             onClick={() => onNavigate(item.id)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onNavigate(item.id);
+              }
+            }}
             sx={{
               mb: 0.25, width: 32, height: 32, borderRadius: 1,
               color: (active === item.id || (highlightCrews && item.id === 'crews')) ? colors.text.primary : colors.text.dim,

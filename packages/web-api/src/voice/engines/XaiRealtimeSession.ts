@@ -16,8 +16,6 @@ import {
   isCrewVoiceSessionId,
   buildListDayDivider,
   takeCallDividerForPersist,
-  VOICE_PERMISSION_TIMEOUT_MS,
-  VOICE_PERMISSION_TIMEOUT_INSTRUCTION,
   VOICE_INPUT_SAMPLE_RATE,
   VOICE_OUTPUT_SAMPLE_RATE,
   XAI_BARGE_IN_PLAYBACK_GRACE_MS,
@@ -25,6 +23,7 @@ import {
   XAI_WAKE_SERVER_VAD,
   VOICE_USER_TRANSCRIPT_DEDUP_MS,
 } from '@agentx/shared';
+import { VoicePermissionGate } from '../../voice-permission-gate.js';
 import { WebSocketVoiceTransport, ToolService, summarizePermissionArgs, buildCrewPrivateIdentityPrompt, getPersonaStore } from '@agentx/engine';
 import type { VoiceEngineSession, VoiceEngineState } from './types.js';
 import type { VoiceSessionSpeaker } from '@agentx/engine';
@@ -75,11 +74,6 @@ interface ToolCallItem {
   result?: ToolResult;
 }
 
-interface PendingPermission {
-  resolve: (_value: PermissionHandlerResult) => void;
-  call_id: string;
-}
-
 export class XaiRealtimeSession implements VoiceEngineSession {
   readonly sessionId: string;
   chatSessionId?: string;
@@ -92,8 +86,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   private config: AgentXConfig;
   private voiceConfig: VoiceConfig;
   private toolService: ToolService;
-
-  private pendingPermissions = new Map<string, PendingPermission>();
+  private permissionGate = new VoicePermissionGate({
+    speak: (line) => this.speakSystemLine(line),
+    agentName: () => this.getPersona()?.name?.trim() || 'Agent-X',
+  });
   private toolCalls: ToolCallItem[] = [];
   private pendingToolCallIndex = 0;
   private toolCallProcessing = false;
@@ -112,7 +108,6 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   private lastEmittedUserTranscriptAt = 0;
   private transcriptCompletedChain: Promise<void> = Promise.resolve();
   private searchWeb = true;
-  private bypassChip = false;
   /** Connected MCP / integration provider names last synced into this voice toolkit. */
   private connectedIntegrationNames: string[] = [];
   /** Greeting kickoff queued before xAI session.updated, or requested by client. */
@@ -372,10 +367,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     this.closed = true;
     this.toolService.getToolExecutor().setVoiceTurnActive(false);
     this.setState('idle');
-    for (const { resolve } of this.pendingPermissions.values()) {
-      resolve('deny');
-    }
-    this.pendingPermissions.clear();
+    this.permissionGate.dispose();
     this.disconnectXai();
     void this.transport.close().catch(() => { /* ignore */ });
   }
@@ -839,31 +831,56 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   private setupPermissionHandler(): void {
     const executor = this.toolService.getToolExecutor();
     executor.setPermissionRequestHandler(async (toolId, _path, riskLevel, context) => {
-      if (this.bypassChip) return 'allow_once';
       const requestId = randomUUID();
       const { argsSummary, commandPreview } = summarizePermissionArgs(
         (context?.args as Record<string, unknown> | undefined) ?? undefined,
       );
       return new Promise<PermissionHandlerResult>((resolve) => {
-        this.pendingPermissions.set(requestId, { resolve, call_id: '' });
-        this.transport.sendControl({
-          type: 'permission_prompt',
-          sessionId: this.sessionId,
-          requestId,
-          tool: toolId,
-          riskLevel,
-          argsSummary: argsSummary ?? '',
-          ...(commandPreview ? { commandPreview } : {}),
-        });
-        // Auto-cancel if the user does not respond — tool result must not look like success.
-        setTimeout(() => {
-          if (this.pendingPermissions.has(requestId)) {
-            this.pendingPermissions.delete(requestId);
-            resolve({ type: 'instruct', instruction: VOICE_PERMISSION_TIMEOUT_INSTRUCTION });
-          }
-        }, VOICE_PERMISSION_TIMEOUT_MS);
+        this.permissionGate.add(
+          {
+            requestId,
+            tool: toolId,
+            riskLevel,
+            argsSummary: argsSummary || commandPreview,
+          },
+          resolve,
+        );
       });
     });
+  }
+
+  private async speakSystemLine(line: string): Promise<void> {
+    if (!line.trim() || this.closed) return;
+    try {
+      if (this.currentResponseId) {
+        this.sendXai({ type: 'response.cancel', response_id: this.currentResponseId });
+        this.currentResponseId = undefined;
+      }
+      await this.transport.stopPlayback();
+    } catch { /* ignore */ }
+    try {
+      const stream = await getVoiceService().synthesizeStreamText(line, { requestId: randomUUID() });
+      this.setState('speaking');
+      this.transport.sendControl({
+        type: 'agent_status',
+        sessionId: this.sessionId,
+        status: 'speaking',
+        text: line,
+      });
+      for await (const chunk of stream.chunks) {
+        if (this.closed) break;
+        await this.transport.playAudio(Buffer.from(chunk.pcmBase64, 'base64'), chunk.sampleRate);
+      }
+    } catch { /* best-effort TTS */ } finally {
+      if (!this.closed) {
+        this.setState(this.mode === 'duplex' ? 'listening' : 'idle');
+        this.transport.sendControl({
+          type: 'agent_status',
+          sessionId: this.sessionId,
+          status: this.mode === 'duplex' ? 'listening' : 'complete',
+        });
+      }
+    }
   }
 
   private async handleXaiEvent(event: Record<string, unknown>): Promise<void> {
@@ -1248,6 +1265,16 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     this.lastEmittedUserTranscriptAt = now;
 
     this.transport.sendControl({ type: 'transcript_final', sessionId: this.sessionId, text, empty: false, ...speakerPayload });
+
+    if (this.permissionGate.pending) {
+      if (this.currentResponseId) {
+        this.sendXai({ type: 'response.cancel', response_id: this.currentResponseId });
+        this.currentResponseId = undefined;
+      }
+      await this.permissionGate.handleUtterance(text);
+      return;
+    }
+
     this.persistUserMessage(text);
     // xAI only auto-responds when create_response is true. In wake-word mode we
     // trigger the response after a valid (accepted or idle-continued) turn.
@@ -1376,18 +1403,40 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       getLogger().warn('XAI_VOICE', `Failed to parse function arguments for ${name}`);
     }
     this.toolCalls.push({ call_id, name, args });
-    void this.processToolCalls();
+    if (this.responseDoneReceived) void this.processToolCalls();
   }
 
   private async processToolCalls(): Promise<void> {
     if (this.toolCallProcessing) return;
+    if (!this.responseDoneReceived) return;
     this.toolCallProcessing = true;
-    while (this.pendingToolCallIndex < this.toolCalls.length) {
-      const item = this.toolCalls[this.pendingToolCallIndex];
-      if (!item) break;
-      this.pendingToolCallIndex += 1;
+    const start = this.pendingToolCallIndex;
+    const batch = this.toolCalls.slice(start);
+    const sessionId = this.chatSessionId ?? this.sessionId;
+    const permResults = await Promise.all(batch.map(async (item) => {
       try {
-        item.result = await this.toolService.execute(item.name, item.args, this.chatSessionId ?? this.sessionId);
+        return await this.toolService.requestPermission(item.name, item.args, sessionId);
+      } catch {
+        return { decision: 'deny' as const };
+      }
+    }));
+    for (let i = 0; i < batch.length; i++) {
+      const item = batch[i];
+      if (!item) continue;
+      this.pendingToolCallIndex = start + i + 1;
+      const perm = permResults[i];
+      if (!perm || perm.decision === 'deny') {
+        item.result = {
+          success: false,
+          output: perm && 'instruction' in perm && perm.instruction
+            ? perm.instruction
+            : 'Permission denied. Action was NOT performed.',
+          error: perm?.error ?? 'PERMISSION_DENIED',
+        };
+        continue;
+      }
+      try {
+        item.result = await this.toolService.execute(item.name, item.args, sessionId);
       } catch (err) {
         item.result = {
           success: false,
@@ -1411,9 +1460,18 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     const status = responseObj?.status ?? event.status;
     if (status === 'cancelled' || status === 'incomplete') {
       this.assistantText = '';
+      // Cancelling a spurious turn (e.g. the user said "yes" to a permission
+      // prompt) must not wipe in-flight tool calls waiting on confirmation.
+      if (this.toolCallProcessing || this.permissionGate.pending) {
+        return;
+      }
       this.toolCalls = [];
       this.pendingToolCallIndex = 0;
       this.finishResponseTurn();
+      return;
+    }
+    if (this.toolCalls.length > 0) {
+      void this.processToolCalls();
       return;
     }
     this.maybeContinueAfterToolCalls();
@@ -1421,7 +1479,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
 
   private maybeContinueAfterToolCalls(): void {
     if (this.toolCallProcessing) return;
-    if (this.pendingToolCallIndex < this.toolCalls.length) return;
+    if (this.pendingToolCallIndex < this.toolCalls.length) {
+      void this.processToolCalls();
+      return;
+    }
     if (this.toolCalls.length > 0) {
       // Only send tool outputs once the response has finished streaming.
       if (this.responseDoneReceived) {
@@ -1662,6 +1723,15 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     // input buffer so xAI can transcribe/answer it. In PTT mode, the user is
     // manually aborting an in-progress playback and has not started a new turn,
     // so it is safe to discard any buffered user audio.
+    if (this.permissionGate.pending) {
+      // Barge-in is how the user answers the spoken permission prompt.
+      await this.transport.stopPlayback();
+      if (this.mode === 'duplex') {
+        this.setState('listening');
+        this.transport.sendControl({ type: 'agent_status', sessionId: this.sessionId, status: 'listening' });
+      }
+      return;
+    }
     if (this.mode === 'duplex') {
       const cancelledResponseId = this.currentResponseId;
       this.currentResponseId = undefined;
@@ -1680,10 +1750,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     this.assistantText = '';
     this.toolCalls = [];
     this.pendingToolCallIndex = 0;
-    for (const { resolve } of this.pendingPermissions.values()) {
-      resolve('deny');
-    }
-    this.pendingPermissions.clear();
+    this.permissionGate.cancelAll('deny');
     if (this.mode === 'duplex') {
       this.setState('listening');
       this.transport.sendControl({ type: 'agent_status', sessionId: this.sessionId, status: 'listening' });
@@ -1692,28 +1759,8 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     }
   }
 
-  private handlePermissionResponse(msg: Record<string, unknown>): void {
-    const requestId = String(msg.requestId ?? '');
-    const choice = String(msg.choice ?? '');
-    const timedOut = msg.reason === 'timeout';
-    // Prefer explicit requestId; fall back to the only pending prompt (single in-flight).
-    let pending = requestId ? this.pendingPermissions.get(requestId) : undefined;
-    if (!pending && this.pendingPermissions.size === 1) {
-      pending = this.pendingPermissions.values().next().value;
-    }
-    if (!pending) return;
-    let result: PermissionHandlerResult = 'deny';
-    if (timedOut && choice === 'deny') {
-      result = { type: 'instruct', instruction: VOICE_PERMISSION_TIMEOUT_INSTRUCTION };
-    } else if (choice === 'allow_once' || choice === 'approve_all') {
-      result = 'allow_once';
-    } else if (choice === 'allow_always') {
-      result = 'allow_always';
-    }
-    pending.resolve(result);
-    for (const [id, entry] of this.pendingPermissions) {
-      if (entry === pending) this.pendingPermissions.delete(id);
-    }
+  private handlePermissionResponse(_msg: Record<string, unknown>): void {
+    // Voice sessions are spoken-confirmation only — ignore UI/tap decisions.
   }
 
   private handleVoiceToggle(msg: Record<string, unknown>): void {
@@ -1722,12 +1769,6 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       if (this.searchWeb !== msg.searchWeb) {
         this.searchWeb = msg.searchWeb;
         needsUpdate = true;
-      }
-    }
-    if (typeof msg.bypassChip === 'boolean') {
-      this.bypassChip = msg.bypassChip;
-      if (this.bypassChip) {
-        try { this.toolService.getToolExecutor().getPermissionManager().allowAll(); } catch { /* ignore */ }
       }
     }
     if (typeof msg.voiceprintEnabled === 'boolean' && this.voiceprintEnabled !== msg.voiceprintEnabled) {

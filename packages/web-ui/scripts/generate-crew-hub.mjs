@@ -1,4 +1,15 @@
 #!/usr/bin/env node
+/**
+ * Crew Hub generator.
+ *
+ * Default: sync UI artifacts from the canonical Crew Enhancement catalog
+ * (`packages/engine/data/crew-catalog.manifest.json`). That snapshot is the
+ * product catalog (1,994 crews / 197 fields).
+ *
+ * `--force-synthesize` rebuilds from pack generators and overwrites the
+ * canonical catalog — do not use unless you intend to replace Crew Enhancement.
+ */
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -931,6 +942,17 @@ const sharedTechTraits = ['analytical', 'pragmatic', 'systems-minded', 'reliable
 const sharedOpsTraits = ['calm', 'automation-focused', 'incident-ready', 'risk-aware', 'thorough', 'resilient', 'proactive', 'disciplined'];
 const sharedCreativeTraits = ['empathetic', 'creative', 'insightful', 'user-focused', 'organized', 'iterative', 'curious', 'communicative'];
 const sharedBusinessTraits = ['strategic', 'persuasive', 'data-driven', 'customer-focused', 'organized', 'decisive', 'collaborative', 'results-oriented'];
+
+if (!process.argv.includes('--force-synthesize')) {
+  if (process.argv.includes('--synthesize')) {
+    console.error('The Crew Hub catalog is frozen at the Crew Enhancement snapshot (1,994 crews / 197 fields).');
+    console.error('Default: node scripts/generate-crew-hub.mjs  (syncs UI artifacts from the engine manifest)');
+    console.error('To rebuild from pack generators and overwrite that catalog, pass --force-synthesize.');
+    process.exit(1);
+  }
+  const result = spawnSync(process.execPath, [join(__dirname, 'sync-crew-hub-from-manifest.mjs')], { stdio: 'inherit' });
+  process.exit(result.status ?? 1);
+}
 
 const categoryDefinitions = [
   {

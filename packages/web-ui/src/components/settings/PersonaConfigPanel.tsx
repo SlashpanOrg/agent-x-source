@@ -147,7 +147,17 @@ export function PersonaConfigPanel({ value, onChange }: Props) {
             return (
               <Box
                 key={preset.name}
+                role="button"
+                tabIndex={0}
+                aria-pressed={isActive}
+                aria-label={`${preset.name} persona preset`}
                 onClick={() => onChange({ ...preset })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onChange({ ...preset });
+                  }
+                }}
                 sx={{
                   cursor: 'pointer',
                   p: 1.5,

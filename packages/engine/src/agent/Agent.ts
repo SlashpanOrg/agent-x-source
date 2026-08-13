@@ -1273,8 +1273,8 @@ export class Agent {
         this.toolExecutor.getPermissionManager().resetForNewSession(this.sessionId);
       }
       this.toolExecutor.setSessionContextKind(this.options.contextKind);
-      // Messaging channels always prompt; dashboard voice (__channel__:voice) uses
-      // normal risk rules + the bypass chip so PTT turns aren't stuck on every tool.
+      // Messaging channels always prompt. Voice uses normal risk rules and
+      // spoken confirmation only — never a bypass chip or UI modal.
       if (this.options.channelSession && this.options.promptProfile !== 'voice') {
         this.toolExecutor.setAlwaysPromptPermissions(true);
       }
@@ -1293,7 +1293,7 @@ export class Agent {
     }
 
     // Wire permission requests to event bus (skipped for ephemeral automation workers and messaging channel sessions).
-    // Voice-only sessions still need the interactive permission modal, so keep binding for promptProfile === 'voice'.
+    // Voice-only sessions bind the handler so the voice engine can collect spoken confirmation.
     if (this.toolExecutor && !this.options.automationRun && (!this.options.channelSession || this.options.promptProfile === 'voice')) {
       this.bindPermissionHandler();
 
@@ -2801,15 +2801,31 @@ export class Agent {
       // Log failed turn outcome
       this.logTurnOutcome(startTime, false, content);
 
+      // User stop must win over provider/anomaly classification — cancel can surface
+      // non-AbortError teardown errors from the SDK or in-flight tool work.
+      if (this.userCancelledTurn) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw error;
+        }
+        const cancelledMessage: Message = {
+          id: generateMessageId(),
+          sessionId: this.sessionId,
+          role: 'assistant',
+          content: '⏹ Cancelled.',
+          toolCalls: null,
+          createdAt: new Date().toISOString(),
+          tokenCount: 0,
+        };
+        this.emit({ type: 'message_received', message: cancelledMessage, elapsed: Date.now() - startTime });
+        return cancelledMessage;
+      }
+
       // ─── UNIFIED: Classify error via ErrorClassifier ───
       const classified = this.errorClassifier.classify(error);
       this.telemetry.markError(`turn-${startTime}`, classified.reason, classified.providerMessage ?? '');
 
-      // If cancelled by user, propagate abort so the turn registry/UI finalize as cancelled.
+      // If aborted without an explicit user stop, surface a friendly cancelled line.
       if (error instanceof Error && error.name === 'AbortError') {
-        if (this.userCancelledTurn) {
-          throw error;
-        }
         const cancelledMessage: Message = {
           id: generateMessageId(),
           sessionId: this.sessionId,
@@ -3758,14 +3774,61 @@ export class Agent {
       const finalTokenCount = usage
         ? (usage.inputTokens || 0) + (usage.outputTokens || 0)
         : Math.ceil(content.length / 4);
+      // Stream handler toolExecutions can lag behind ToolLedger (ground truth from execute callback).
+      const ledgerToolExecs = this.toolLedger.getEntries().map((e) => ({
+        tool: e.name,
+        success: e.success,
+        output: e.output,
+        elapsed: e.elapsed,
+      }));
+      const reflectionToolExecs = this.toolCallLogForReflection.map((t) => ({
+        tool: t.name,
+        success: t.success,
+        output: t.output,
+        elapsed: t.elapsed,
+      }));
+      const finalStreamToolExecs = (streamState.toolExecutions?.length
+        ? streamState.toolExecutions
+        : ledgerToolExecs.length
+          ? ledgerToolExecs
+          : reflectionToolExecs);
+      const toolParts = finalStreamToolExecs.map((e, i) => {
+        const id = `ledger_${i}_${e.tool}`;
+        return {
+          type: 'tool' as const,
+          id,
+          tool: {
+            id,
+            name: e.tool,
+            args: {},
+            status: e.success ? 'done' : 'error',
+            result: e.output,
+            elapsed: e.elapsed,
+          },
+        };
+      });
+      const textPart = content.trim()
+        ? [{ type: 'text' as const, id: `text_${outId}`, content }]
+        : [];
+      const toolCalls = finalStreamToolExecs.length > 0
+        ? finalStreamToolExecs.map((e, i) => ({
+            id: `ledger_${i}_${e.tool}`,
+            name: e.tool,
+            arguments: '{}',
+            result: e.output,
+          }))
+        : null;
       let finalMessage = this.tagCrewPrivateAssistant({
         id: outId,
         sessionId: this.sessionId,
         role: 'assistant' as const,
         content,
-        toolCalls: null,
+        toolCalls,
         createdAt: new Date().toISOString(),
         tokenCount: finalTokenCount,
+        ...(toolParts.length || textPart.length
+          ? { parts: [...toolParts, ...textPart] }
+          : {}),
       });
       let richPartAttached = false;
       try {
@@ -4042,6 +4105,7 @@ export class Agent {
       linkedContextBlock: () => this.buildLinkedContextPromptBlock(),
       contextKind: this.options.contextKind,
       sessionId: this.sessionId,
+      promptProfile: this.options.promptProfile,
       getTodos: () => this.todoManager.getItems(),
       areTodosDeferredThisTurn: () => this.todoDispositionThisTurn === 'defer',
       bypassPermissions: this.bypassPermissions,

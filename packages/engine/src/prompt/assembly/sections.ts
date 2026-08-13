@@ -39,6 +39,8 @@ export interface SectionContext {
   linkedContextBlock?: () => string | null;
   contextKind?: SessionContextKind;
   sessionId?: string;
+  /** Prompt profile for this agent (e.g. crew_private). */
+  promptProfile?: 'default' | 'crew_worker' | 'crew_private' | 'voice';
   /** Live TASKS checklist for planning (not just UI). */
   getTodos?: () => Array<{ id: number; title: string; status: string }>;
   /** Continual harness supplemental block (when enabled). */
@@ -735,6 +737,8 @@ export function createCrewPrivateConductSection(): PromptSection<string> {
     `ROLE OVER PERSONAL ASSISTANT (STRICT):`,
     `- Your BINDING ROLE in [CREW_IDENTITY] overrides generic assistant habits on every turn — including greetings.`,
     `- Forbidden when your role is proactive: "What would you like to discuss?", "How can I help you today?", "I'm ready whenever you are — what should we cover?".`,
+    `- HOST DEFERENCE BAN: Do not open or pad replies with butler/valet/host-assistant deference (e.g. "Sir,", "Madam,", "Right away, Sir") unless your [CREW_IDENTITY] role is explicitly a butler, valet, or personal assistant. Speak as your profession would.`,
+    `- You are NOT Agent-X, JARVIS, FRIDAY, or the host persona. Never claim those names or their mannerisms.`,
     `- Interviewer: YOU run the interview. After a brief hello (optional), ask a real domain interview question. Keep probing after each answer. Do not wait for the candidate to set the agenda.`,
     `- INTERVIEWER ZERO LEAK: never reveal solutions, model answers, or spoilers. If the candidate asks you to answer / "you tell me" / reverses the question — refuse and continue with a tougher related probe from keywords in their last attempt.`,
     `- Tutor / coach / support / reviewer / PM / sales / sounding board: open or continue with that profession's real workflow, not a generic helpdesk greeting.`,
@@ -1463,11 +1467,25 @@ export function createUserSection(ctx: SectionContext): PromptSection<string | n
     load: () => ctx.userCallsign ?? null,
     render: (callsign) => {
       if (!callsign) return '';
+      const crewPrivate = ctx.contextKind === 'crew_private' || ctx.promptProfile === 'crew_private';
+      if (crewPrivate) {
+        return [
+          `[USER]`,
+          `The person's name/callsign is "${callsign}". Use it only when natural for YOUR specialist role in [CREW_IDENTITY].`,
+          `Do NOT adopt butler/valet/host-assistant deference (e.g. opening every reply with "${callsign},") unless your role is explicitly a butler, valet, or personal assistant.`,
+          `You are NOT Agent-X / JARVIS / FRIDAY / the host persona — stay in [CREW_IDENTITY].`,
+          `[/USER]`,
+        ].join('\n');
+      }
       return `[USER]\nThe user's name/callsign is "${callsign}". Address them by this name when appropriate.\n[/USER]`;
     },
     diff: (prev, current) => {
       if (prev === current) return null;
       if (!current) return `[USER — REMOVED]\n[/USER]`;
+      const crewPrivate = ctx.contextKind === 'crew_private' || ctx.promptProfile === 'crew_private';
+      if (crewPrivate) {
+        return `[USER — UPDATED]\nThe person's name/callsign is now "${current}". Use it only when natural for YOUR role — no host-butler deference unless that is your role.\n[/USER]`;
+      }
       return `[USER — UPDATED]\nThe user's name/callsign is now "${current}". Address them by this name.\n[/USER]`;
     },
   };

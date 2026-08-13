@@ -165,6 +165,9 @@ export type { PermissionHandlerResult, PermissionInstructResult } from './utils/
 export {
   VOICE_PERMISSION_TIMEOUT_MS,
   VOICE_PERMISSION_TIMEOUT_INSTRUCTION,
+  VOICE_PERMISSION_COLLECT_MS,
+  VOICE_PERMISSION_MAX_CLARIFY,
+  VOICE_PERMISSION_CLARIFY_LINE,
 } from './utils/voice-permission.js';
 
 export {

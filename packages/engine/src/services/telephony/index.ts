@@ -58,9 +58,11 @@ export type { CallSessionState } from './CallSessionStateMachine.js';
 export { VoiceCallStore, getVoiceCallStore, setVoiceCallStore } from './VoiceCallStore.js';
 export type {
   VoiceCallSession,
+  VoiceCallSessionWrite,
   VoiceCallEvent,
   VoiceCallConsent,
   VoiceCallProviderBinding,
+  VoiceCallProviderBindingWrite,
   HostSecurityEvent,
   VoiceCallStoreOptions,
   ListMissionsFilter,

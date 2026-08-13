@@ -37,6 +37,12 @@ export interface VoiceCallSession {
   updatedAt: string;
 }
 
+/** Insert/update payload — store fills createdAt/updatedAt when omitted. */
+export type VoiceCallSessionWrite = Omit<VoiceCallSession, 'createdAt' | 'updatedAt'> & {
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export interface VoiceCallEvent {
   id: string;
   callSessionId: string;
@@ -71,6 +77,12 @@ export interface VoiceCallProviderBinding {
   createdAt: string;
   updatedAt: string;
 }
+
+/** Insert/update payload — store fills createdAt/updatedAt when omitted. */
+export type VoiceCallProviderBindingWrite = Omit<VoiceCallProviderBinding, 'createdAt' | 'updatedAt'> & {
+  createdAt?: string;
+  updatedAt?: string;
+};
 
 export interface HostSecurityEvent {
   id: string;
@@ -239,7 +251,7 @@ export class VoiceCallStore {
 
   // ----------------------------------------------------------------- sessions
 
-  async saveSession(session: VoiceCallSession): Promise<VoiceCallSession> {
+  async saveSession(session: VoiceCallSessionWrite): Promise<VoiceCallSession> {
     const now = new Date().toISOString();
     const record: VoiceCallSession = { ...session, createdAt: session.createdAt ?? now, updatedAt: now };
 
@@ -463,7 +475,7 @@ export class VoiceCallStore {
 
   // ---------------------------------------------------------------- bindings
 
-  async saveBinding(binding: VoiceCallProviderBinding): Promise<VoiceCallProviderBinding> {
+  async saveBinding(binding: VoiceCallProviderBindingWrite): Promise<VoiceCallProviderBinding> {
     const now = new Date().toISOString();
     const record: VoiceCallProviderBinding = { ...binding, createdAt: binding.createdAt ?? now, updatedAt: now };
 

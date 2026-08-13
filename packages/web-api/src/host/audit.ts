@@ -8,7 +8,7 @@ import { getLogger } from '@agentx/shared';
  * `GET /api/host/events` for operators without dev-mode/observability enabled.
  */
 
-export type HostEventCategory = 'tunnel' | 'security' | 'startup' | 'shutdown' | 'auth' | 'system';
+export type HostEventCategory = 'tunnel' | 'security' | 'startup' | 'shutdown' | 'auth' | 'system' | 'telephony';
 
 export interface HostAuditEvent {
   id: string;

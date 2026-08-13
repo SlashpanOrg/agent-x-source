@@ -16,7 +16,6 @@ import { sanitizeVoiceDisplayText } from '../../voice/sanitize-display-text';
 import { CrewCallModal } from './CrewCallModal';
 import { mapCallHistoryMessages } from './map-call-transcript';
 import { resolveCallParticlePhase } from './resolve-call-particle-phase';
-import { VoiceToolPermissionModal } from '../voice/VoiceToolPermissionModal';
 import type { ParticlePhase } from '../voice/VoiceParticleField';
 import type { CrewCallPhase, CrewCallTarget, CrewCallTranscriptLine } from './types';
 
@@ -571,17 +570,6 @@ export function CrewCallProvider({ children }: { children: ReactNode }) {
         onResume={resumeCall}
         onMinimize={minimizeCall}
         onRetry={target ? () => { void startCall(target); } : undefined}
-      />
-      {/* Crew calls use a separate voice WebSocket from the dashboard — must host
-          their own permission modal (including while the call UI is minimized). */}
-      <VoiceToolPermissionModal
-        open={Boolean(comms.session.permissionPrompt)}
-        prompt={comms.session.permissionPrompt}
-        onRespond={comms.session.respondToPermission}
-        onSwitchToBypass={() => {
-          comms.session.setToggles({ bypassChip: true });
-          comms.session.respondToPermission('approve_all');
-        }}
       />
     </CrewCallContext.Provider>
   );

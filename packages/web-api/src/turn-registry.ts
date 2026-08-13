@@ -121,7 +121,7 @@ class TurnRegistry {
 
   complete(turnId: string, message: Message): void {
     const r = this.turns.get(turnId);
-    if (!r) return;
+    if (!r || r.status === 'cancelled') return;
     r.status = 'complete';
     r.message = message;
     r.completedAt = Date.now();
@@ -131,7 +131,7 @@ class TurnRegistry {
 
   fail(turnId: string, error: string, partialContent?: string): void {
     const r = this.turns.get(turnId);
-    if (!r) return;
+    if (!r || r.status === 'cancelled') return;
     r.status = 'error';
     r.error = error;
     r.partialContent = partialContent;

@@ -15,7 +15,7 @@ import { useVoiceOptional } from '../components/voice/VoiceProvider';
 import { useClientSituationOptional } from '../context/ClientSituationProvider';
 import { useGeoLocation } from '../hooks/useGeoLocation';
 import { usePageVisible } from '../hooks/usePageVisible';
-import { webuiActive, crewCatalog, crews, clientSituation as clientSituationApi, type CatalogSeedStatusResponse, type Crew } from '../api';
+import { webuiActive, crewCatalog, crews, clientSituation as clientSituationApi, tools, providers, type CatalogSeedStatusResponse, type Crew } from '../api';
 import type { HealthStatus } from '../api';
 
 function computeTotalCrewCatalogCount(
@@ -34,6 +34,7 @@ function buildTerminalLines(
   catalogSeed: CatalogSeedStatusResponse | null,
   roster: Crew[],
   readyToLaunch: boolean,
+  capabilities: { toolCount: number; providerCount: number } | null,
 ): Array<{ type: 'banner' | 'blank' | 'info' | 'success' | 'dim' | 'heading'; text: string }> {
   const v = h?.version || '';
   const provider = h?.config?.provider || '—';
@@ -66,7 +67,9 @@ function buildTerminalLines(
     { type: 'success', text: `  \u2713 Crew         ${crewLine}` },
     { type: 'blank', text: '' },
     { type: 'heading', text: '  CAPABILITIES' },
-    { type: 'dim', text: '  292 tools \u00B7 18 providers' },
+    { type: 'dim', text: capabilities
+      ? `  ${capabilities.toolCount} tools \u00B7 ${capabilities.providerCount} providers`
+      : '  Loading capabilities…' },
     { type: 'dim', text: '  5 channels \u00B7 Multi-agent mesh \u00B7 Persistent memory' },
     { type: 'dim', text: '  AES-256-GCM encrypted storage \u00B7 Self-destruct tamper protection' },
     { type: 'blank', text: '' },
@@ -88,6 +91,7 @@ export function DockingStation() {
   const [lines, setLines] = useState<ReturnType<typeof buildTerminalLines>>([]);
   const [catalogSeed, setCatalogSeed] = useState<CatalogSeedStatusResponse | null>(null);
   const [rosterCrews, setRosterCrews] = useState<Crew[]>([]);
+  const [capabilities, setCapabilities] = useState<{ toolCount: number; providerCount: number } | null>(null);
   const introStartedRef = useRef(false);
   const introPlayedRef = useRef(false);
   const lastSentClientSituationRef = useRef<string | null>(null);
@@ -129,6 +133,24 @@ export function DockingStation() {
     crews.list()
       .then((list) => { if (!cancelled) setRosterCrews(list); })
       .catch(() => { if (!cancelled) setRosterCrews([]); });
+    return () => { cancelled = true; };
+  }, [serverOnline]);
+
+  useEffect(() => {
+    if (!serverOnline) {
+      setCapabilities(null);
+      return;
+    }
+    let cancelled = false;
+    Promise.all([tools.list(), providers.configured()])
+      .then(([toolList, providerList]) => {
+        if (!cancelled) {
+          setCapabilities({ toolCount: toolList.length, providerCount: providerList.length });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCapabilities(null);
+      });
     return () => { cancelled = true; };
   }, [serverOnline]);
 
@@ -186,7 +208,7 @@ export function DockingStation() {
   const preparing = serverOnline && !canLaunch;
 
   useEffect(() => {
-    const built = buildTerminalLines(healthData, catalogSeed, rosterCrews, canLaunch);
+    const built = buildTerminalLines(healthData, catalogSeed, rosterCrews, canLaunch, capabilities);
     setLines(built);
     if (introPlayedRef.current) {
       setVisibleLines(built.length);
@@ -194,7 +216,7 @@ export function DockingStation() {
       introStartedRef.current = true;
       setVisibleLines(0);
     }
-  }, [healthData, catalogSeed, rosterCrews, canLaunch]);
+  }, [healthData, catalogSeed, rosterCrews, canLaunch, capabilities]);
 
   const handleLaunch = useCallback(() => {
     navigate('/console/dashboard');
@@ -383,7 +405,7 @@ export function DockingStation() {
           ) : (
             <Box>
               <Typography sx={{ color: colors.accent.red, mb: 1.5, fontFamily: "'JetBrains Mono', monospace", fontSize: '0.6rem', textAlign: 'center' }}>
-                Daemon not detected
+                API unreachable — is Agent-X running?
               </Typography>
               <Button
                 fullWidth

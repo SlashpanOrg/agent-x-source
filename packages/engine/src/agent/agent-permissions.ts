@@ -12,6 +12,7 @@ export interface PermissionContext {
   toolExecutor: {
     setPermissionRequestHandler(handler: (toolId: string, path: string, riskLevel: string, context?: { args?: unknown; integrationPreview?: string }) => Promise<PermissionHandlerResult>): void;
     isTurnAborted(): boolean;
+    getVoiceTurnActive?(): boolean;
     getPermissionManager(): {
       check(toolId: string, path?: string): PermissionDecision | undefined;
       grant(toolId: string, decision: PermissionDecision, path?: string): void;
@@ -126,11 +127,35 @@ export function bindPermissionHandler(ctx: PermissionContext): void {
   ctx.toolExecutor.setPermissionRequestHandler(async (toolId, path, riskLevel, context) => {
     if (isPermissionExemptTool(toolId)) return 'allow_once';
     if (ctx.userCancelledTurn || ctx.toolExecutor?.isTurnAborted()) return 'deny';
-    if (ctx.toolExecutor?.getPermissionManager().isAllAllowed()) return 'allow_once';
-    if (ctx.isDelegatedWorker || ctx.turnApprovedAll) return 'allow_once';
-    if (ctx.userCancelledTurn) return 'deny';
+    const voiceTurn = ctx.toolExecutor?.getVoiceTurnActive?.() === true;
+    if (!voiceTurn) {
+      if (ctx.toolExecutor?.getPermissionManager().isAllAllowed()) return 'allow_once';
+      if (ctx.isDelegatedWorker || ctx.turnApprovedAll) return 'allow_once';
+    }
 
     return new Promise<PermissionHandlerResult>((resolve) => {
+      if (voiceTurn) {
+        const requestId = randomUUID();
+        ctx.pendingPermissions.set(requestId, {
+          resolve,
+          toolName: toolId,
+          path,
+          riskLevel,
+        });
+        const { commandPreview, argsSummary } = summarizePermissionArgs(context?.args as Record<string, unknown> | undefined);
+        ctx.emit({
+          type: 'permission_required',
+          requestId,
+          tool: toolId,
+          path,
+          riskLevel,
+          voice: true,
+          integrationPreview: context?.integrationPreview,
+          ...(commandPreview ? { commandPreview } : {}),
+          ...(argsSummary ? { argsSummary } : {}),
+        } as EngineEvent);
+        return;
+      }
       queue.push({ toolId, path, riskLevel, context, resolve });
       if (!active) processQueue();
     });
@@ -167,16 +192,21 @@ export function grantAutomationNotifyTools(ctx: PermissionContext, toolIds: stri
 export function resolvePermissionRequest(ctx: PermissionContext, requestId: string, result: PermissionHandlerResult): void {
   const entry = ctx.pendingPermissions.get(requestId);
   if (!entry) return;
-  if (typeof result === 'string' && result === 'allow_always') {
-    ctx.toolExecutor?.getPermissionManager().grant(entry.toolName, 'allow_always');
-    ctx.persistPermissionGrant(entry.toolName, 'allow_always');
+  const voiceTurn = ctx.toolExecutor?.getVoiceTurnActive?.() === true;
+  if (!voiceTurn) {
+    if (typeof result === 'string' && result === 'allow_always') {
+      ctx.toolExecutor?.getPermissionManager().grant(entry.toolName, 'allow_always');
+      ctx.persistPermissionGrant(entry.toolName, 'allow_always');
+    } else if (typeof result === 'string' && result === 'allow_once') {
+      // Persist the one-time grant so the same tool is not re-prompted repeatedly in one turn/session.
+      ctx.toolExecutor?.getPermissionManager().grant(entry.toolName, 'allow_once');
+    } else if (typeof result === 'string' && result === 'deny') {
+      // Persist the deny decision so the tool is not re-prompted in future turns.
+      ctx.toolExecutor?.getPermissionManager().deny(entry.toolName, entry.path);
+      ctx.persistPermissionGrant(entry.toolName, 'deny');
+    }
   } else if (typeof result === 'string' && result === 'allow_once') {
-    // Persist the one-time grant so the same tool is not re-prompted repeatedly in one turn/session.
     ctx.toolExecutor?.getPermissionManager().grant(entry.toolName, 'allow_once');
-  } else if (typeof result === 'string' && result === 'deny') {
-    // Persist the deny decision so the tool is not re-prompted in future turns.
-    ctx.toolExecutor?.getPermissionManager().deny(entry.toolName, entry.path);
-    ctx.persistPermissionGrant(entry.toolName, 'deny');
   }
   entry.resolve(result);
   ctx.pendingPermissions.delete(requestId);

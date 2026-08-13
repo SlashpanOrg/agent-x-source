@@ -368,4 +368,118 @@ describe('ToolPermissionService', () => {
     const result = await service.requestPermission(host, 'save_to_markdown', { title: 'TVK' }, 'session');
     expect(result.decision).toBe('allow');
   });
+
+  it('voice turn ignores persisted allow_always and still prompts', async () => {
+    const registry = new ToolRegistry();
+    registry.register(sampleTool());
+    const manager = new PermissionManager();
+    manager.grant('write_file', 'allow_always', '/project/file.txt');
+    const service = new ToolPermissionService();
+    let prompted = 0;
+    const host = buildHost({
+      getRegistry: () => registry,
+      getPermissionManager: () => manager,
+      getVoiceTurnActive: () => true,
+      getPermissionRequestHandler: () => async () => {
+        prompted += 1;
+        return 'allow_once';
+      },
+      grantToolConsent: () => {},
+    });
+
+    const result = await service.requestPermission(host, 'write_file', {}, 'session', '/project/file.txt');
+    expect(prompted).toBe(1);
+    expect(result.decision).toBe('allow_once');
+  });
+
+  it('voice turn honors this-turn consent without prompting again', async () => {
+    const registry = new ToolRegistry();
+    registry.register(sampleTool());
+    const service = new ToolPermissionService();
+    let prompted = 0;
+    const host = buildHost({
+      getRegistry: () => registry,
+      getVoiceTurnActive: () => true,
+      getPendingToolConsent: () => new Set(['write_file']),
+      getPermissionRequestHandler: () => async () => {
+        prompted += 1;
+        return 'allow_once';
+      },
+    });
+
+    const result = await service.requestPermission(host, 'write_file', {}, 'session', '/project/file.txt');
+    expect(prompted).toBe(0);
+    expect(result.decision).toBe('allow');
+  });
+
+  it('voice turn allows concurrent permission asks', async () => {
+    const registry = new ToolRegistry();
+    registry.register(sampleTool());
+    registry.register({ ...sampleTool(), id: 'shell_exec', name: 'shell_exec' });
+    const service = new ToolPermissionService();
+    let release!: (v: PermissionHandlerResult) => void;
+    const gate = new Promise<PermissionHandlerResult>((resolve) => {
+      release = resolve;
+    });
+    let prompted = 0;
+    const host = buildHost({
+      getRegistry: () => registry,
+      getVoiceTurnActive: () => true,
+      getPermissionRequestHandler: () => async () => {
+        prompted += 1;
+        return gate;
+      },
+      grantToolConsent: () => {},
+    });
+
+    const first = service.requestPermission(host, 'write_file', { path: 'a.txt' }, 'session', 'a.txt');
+    const second = service.requestPermission(host, 'shell_exec', { command: 'ls' }, 'session', '*');
+    await vi.waitFor(() => expect(prompted).toBe(2));
+
+    release('allow_once');
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.decision).toBe('allow_once');
+    expect(b.decision).toBe('allow_once');
+  });
+
+  it('voice turn ignores bypass and never uses the channel UI handler', async () => {
+    const registry = new ToolRegistry();
+    registry.register(sampleTool());
+    const manager = new PermissionManager();
+    manager.setBypassPermissions(true);
+    const service = new ToolPermissionService();
+    let voiceHandler = 0;
+    let channelHandler = 0;
+    let consentCalls = 0;
+    const host = buildHost({
+      getRegistry: () => registry,
+      getPermissionManager: () => manager,
+      getVoiceTurnActive: () => true,
+      getPermissionRequestHandler: () => async () => {
+        voiceHandler += 1;
+        return 'allow_once';
+      },
+      getChannelPermissionRequestHandler: () => async () => {
+        channelHandler += 1;
+        return 'deny';
+      },
+      requestActionConsent: async () => {
+        consentCalls += 1;
+        return { proceed: true };
+      },
+      grantToolConsent: () => {},
+    });
+
+    const result = await service.requestPermission(
+      host,
+      'write_file',
+      {},
+      '__channel__:voice',
+      '/project/file.txt',
+    );
+    expect(result.decision).toBe('allow_once');
+    expect(voiceHandler).toBe(1);
+    expect(channelHandler).toBe(0);
+    expect(consentCalls).toBe(0);
+  });
 });

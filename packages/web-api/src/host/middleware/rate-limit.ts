@@ -115,18 +115,18 @@ function accountKey(req: Request): string | null {
   return username ? `acct:${username}` : null;
 }
 
-/** General API traffic — 120 requests / minute / IP. */
+/** General API traffic — 600 requests / minute / IP (agent turn polling is chatty). */
 export const publicApiRateLimit = createRateLimiter({
   windowMs: 60_000,
-  max: 120,
+  max: 600,
   name: 'public_api',
   keyFn: (req) => `ip:${clientIp(req)}`,
 });
 
-/** Login attempts — 10 / 15 minutes / IP, with a lockout-style message. */
+/** Login attempts — 30 / 15 minutes / IP (automation + UI must coexist on localhost). */
 export const loginRateLimit = createRateLimiter({
   windowMs: 15 * 60_000,
-  max: 10,
+  max: 30,
   name: 'login',
   keyFn: (req) => `ip:${clientIp(req)}`,
   message: 'Too many login attempts. This IP is temporarily locked out — try again later.',

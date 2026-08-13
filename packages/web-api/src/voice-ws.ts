@@ -33,13 +33,11 @@ import { metricsRegistry } from './metrics/MetricsRegistry.js';
 import { getEngine, createAgent, destroyAgent, setCurrentClientSituation, hydrateAgentRecentHistory } from './engine.js';
 import { runAgentTurnAsync, VOICE_TURN_TIMEOUT_MS, VOICE_TURN_MAX_MS, isCrewPrivateSessionRecord } from './chat-helpers.js';
 import { getVoiceService, resetVoiceService } from './voice-runtime.js';
-import { parseVoicePermissionIntent, type VoicePermissionIntent } from './voice-permission-intent.js';
+import { VoicePermissionGate } from './voice-permission-gate.js';
 import {
   normalizeClientSituation,
   getAgentFilesDir,
   getLogger,
-  VOICE_PERMISSION_TIMEOUT_MS,
-  VOICE_PERMISSION_TIMEOUT_INSTRUCTION,
   buildNewConversationDividerMeta,
   encodeCallDividerContent,
   resetCallDividerClock,
@@ -73,13 +71,6 @@ const DUPLEX_ERROR_COOLDOWN_MS = 8_000;
 /** PTT shorter than this is treated as accidental (mis-click). */
 const MIN_PTT_RECORDING_MS = 220;
 
-interface PendingVoicePermission {
-  requestId: string;
-  tool: string;
-  riskLevel: string;
-  timeoutTimer: ReturnType<typeof setTimeout>;
-}
-
 let voiceWss: WebSocketServer | undefined;
 
 interface VoiceWsSession {
@@ -111,13 +102,11 @@ interface VoiceWsSession {
   transport: WebSocketVoiceTransport;
   progress?: ReturnType<VoiceService['createProgressSession']>;
   unsub?: () => void;
-  /** Active voice-native permission prompt awaiting a spoken/tapped decision. */
-  pendingPermission?: PendingVoicePermission;
+  /** Spoken tool-permission confirmation (no UI). */
+  permissionGate?: VoicePermissionGate;
   clientSituation?: ClientSituation;
   /** Toggle: force web search for this voice turn. */
   searchWeb: boolean;
-  /** Toggle: auto-approve tool permissions (bypass chip). */
-  bypassChip: boolean;
   /** Toggle: enable speaker voiceprint recognition for this voice session. */
   voiceprintEnabled: boolean;
   /** Duplex: pending timer waiting for client playback-finished signal before re-enabling mic. */
@@ -239,19 +228,56 @@ async function speakWakeAck(session: VoiceWsSession, callsign?: string): Promise
   }
 }
 
-function buildPermissionSpokenPrompt(tool: string, riskLevel: string, argsSummary?: string): string {
-  const action = argsSummary
-    ? argsSummary
-    : `use the ${tool.replace(/_/g, ' ')} tool`;
-  const riskNote = riskLevel === 'critical' || riskLevel === 'high'
-    ? ' This is a higher-risk action.'
-    : '';
-  let agentName = 'Agent-X';
-  try {
-    const persona = getPersonaStore().get();
-    if (persona?.name) agentName = persona.name;
-  } catch { /* ignore */ }
-  return `${agentName} wants to ${action}.${riskNote} Say allow, always, or deny.`;
+function ensurePermissionGate(_ws: WebSocket, session: VoiceWsSession): VoicePermissionGate {
+  if (!session.permissionGate) {
+    session.permissionGate = new VoicePermissionGate({
+      speak: (line) => speakSystemLine(session, line),
+      agentName: () => {
+        try {
+          return getPersonaStore().get()?.name?.trim() || 'Agent-X';
+        } catch {
+          return 'Agent-X';
+        }
+      },
+      onOpenMic: async () => {
+        if (session.mode === 'duplex') await resetDuplexListening(session);
+      },
+    });
+  }
+  return session.permissionGate;
+}
+
+function settleVoicePermission(
+  requestId: string,
+  result: import('@agentx/shared').PermissionHandlerResult,
+): void {
+  const agent = getEngine().agent;
+  if (!agent) return;
+  if (typeof result === 'object' && result && 'instruction' in result) {
+    agent.respondToPermissionInstruction(requestId, result.instruction);
+    return;
+  }
+  agent.respondToPermission(requestId, result === 'allow_once' || result === 'allow_always' ? 'allow_once' : 'deny');
+}
+
+/** A tool needs approval mid-turn — prompt the operator by voice only (no UI). */
+async function handleVoicePermissionRequired(
+  _ws: WebSocket,
+  session: VoiceWsSession,
+  req: { requestId: string; tool: string; riskLevel: string; argsSummary?: string; commandPreview?: string },
+): Promise<void> {
+  await cancelActiveSynth(session);
+  session.speaking = false;
+  const gate = ensurePermissionGate(_ws, session);
+  gate.add(
+    {
+      requestId: req.requestId,
+      tool: req.tool,
+      riskLevel: req.riskLevel,
+      argsSummary: req.argsSummary || req.commandPreview,
+    },
+    (result) => settleVoicePermission(req.requestId, result),
+  );
 }
 
 /** Format a choice questionnaire as a spoken prompt for voice interaction. */
@@ -294,111 +320,6 @@ async function handleVoiceClarificationRequired(
 ): Promise<void> {
   const line = formatQuestionnaireForVoice(questionnaire);
   await speakSystemLine(session, line);
-  // Re-open the mic so the operator can answer hands-free.
-  if (session.mode === 'duplex') {
-    await resetDuplexListening(session);
-  }
-}
-
-/** Clear any pending permission prompt (on resolve, timeout, or session teardown). */
-function clearPendingPermission(session: VoiceWsSession): void {
-  if (session.pendingPermission) {
-    clearTimeout(session.pendingPermission.timeoutTimer);
-    session.pendingPermission = undefined;
-  }
-}
-
-/**
- * Apply a voice permission decision to the agent and notify the client.
- * Returns true if a pending prompt existed and was resolved.
- */
-async function resolveVoicePermission(
-  ws: WebSocket,
-  session: VoiceWsSession,
-  intent: VoicePermissionIntent,
-  reason?: 'timeout' | 'user',
-): Promise<boolean> {
-  const pending = session.pendingPermission;
-  if (!pending) return false;
-
-  const eng = getEngine();
-  const agent = eng.agent;
-  const choice = intent === 'approve_all' ? 'allow_once' : intent;
-  const timedOut = intent === 'deny' && reason === 'timeout';
-
-  try {
-    if (timedOut) {
-      // Instructed denial — tool result tells the agent the action did not run.
-      agent?.respondToPermissionInstruction(pending.requestId, VOICE_PERMISSION_TIMEOUT_INSTRUCTION);
-    } else if (intent === 'approve_all') {
-      agent?.respondToPermissionBatch('allow_once');
-    } else {
-      agent?.respondToPermission(pending.requestId, choice);
-    }
-  } catch { /* best-effort */ }
-
-  clearPendingPermission(session);
-  ws.send(JSON.stringify({
-    type: 'permission_resolved',
-    requestId: pending.requestId,
-    choice: intent,
-    ...(timedOut ? { reason: 'timeout' } : {}),
-  }));
-
-  const spoken = timedOut
-    ? 'No response — that action was cancelled.'
-    : intent === 'deny'
-      ? 'Denied. I will skip that step.'
-      : intent === 'allow_always'
-        ? 'Always allowed.'
-        : intent === 'approve_all'
-          ? 'Approved everything.'
-          : 'Allowed.';
-  await speakSystemLine(session, spoken);
-  return true;
-}
-
-/** A tool needs approval mid-turn — prompt the operator by voice and open a decision window. */
-async function handleVoicePermissionRequired(
-  ws: WebSocket,
-  session: VoiceWsSession,
-  req: { requestId: string; tool: string; riskLevel: string; argsSummary?: string; commandPreview?: string },
-): Promise<void> {
-  // Only one prompt at a time; ignore duplicates for the same request.
-  if (session.pendingPermission?.requestId === req.requestId) return;
-  clearPendingPermission(session);
-
-  // Stop any in-flight agent speech so the prompt is heard clearly.
-  await cancelActiveSynth(session);
-  session.speaking = false;
-
-  // Server-side backstop (client modal also auto-denies at the same deadline).
-  const timeoutTimer = setTimeout(() => {
-    void (async () => {
-      const pending = session.pendingPermission;
-      if (!pending || pending.requestId !== req.requestId) return;
-      await resolveVoicePermission(ws, session, 'deny', 'timeout');
-    })();
-  }, VOICE_PERMISSION_TIMEOUT_MS);
-
-  session.pendingPermission = {
-    requestId: req.requestId,
-    tool: req.tool,
-    riskLevel: req.riskLevel,
-    timeoutTimer,
-  };
-
-  ws.send(JSON.stringify({
-    type: 'permission_prompt',
-    requestId: req.requestId,
-    tool: req.tool,
-    riskLevel: req.riskLevel,
-    argsSummary: req.argsSummary,
-    commandPreview: req.commandPreview,
-  }));
-
-  await speakSystemLine(session, buildPermissionSpokenPrompt(req.tool, req.riskLevel, req.argsSummary));
-
   // Re-open the mic so the operator can answer hands-free.
   if (session.mode === 'duplex') {
     await resetDuplexListening(session);
@@ -628,15 +549,7 @@ async function handleVoiceMessage(ws: WebSocket, data: WebSocket.RawData, isBina
       }
       break;
     case 'permission_response':
-      if (session && session.pendingPermission) {
-        const choice = String(msg.choice ?? '');
-        const intent: VoicePermissionIntent | null =
-          choice === 'allow_once' || choice === 'allow_always' || choice === 'deny' || choice === 'approve_all'
-            ? choice
-            : null;
-        const reason = msg.reason === 'timeout' ? 'timeout' as const : 'user' as const;
-        if (intent) await resolveVoicePermission(ws, session, intent, reason);
-      }
+      // Voice sessions are spoken-confirmation only — ignore UI/tap decisions.
       break;
     case 'client_situation':
       if (session) {
@@ -650,13 +563,8 @@ async function handleVoiceMessage(ws: WebSocket, data: WebSocket.RawData, isBina
     case 'voice_toggle':
       if (session) {
         if (typeof msg.searchWeb === 'boolean') session.searchWeb = msg.searchWeb;
-        if (typeof msg.bypassChip === 'boolean') {
-          session.bypassChip = msg.bypassChip;
-          // Apply bypass immediately to the active agent so it takes effect on the next turn.
-          const eng = getEngine();
-          eng.agent?.setBypassPermissions?.(msg.bypassChip);
-        }
         if (typeof msg.voiceprintEnabled === 'boolean') session.voiceprintEnabled = msg.voiceprintEnabled;
+        // bypassChip is ignored — voice sessions always require spoken confirmation.
       }
       break;
     case 'session_end':
@@ -903,7 +811,6 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
     pttLastPartial: '',
     transport,
     searchWeb: true,
-    bypassChip: false,
     voiceprintEnabled: false,
     ...(clientSituation ? { clientSituation } : {}),
     conversationMode,
@@ -1306,15 +1213,9 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
     }));
     session.turnFinishing = false;
 
-    // If a tool is awaiting approval, treat this utterance as the permission decision
-    // instead of starting a brand-new agent turn.
-    if (session.pendingPermission) {
-      const intent = parseVoicePermissionIntent(text);
-      if (intent) {
-        await resolveVoicePermission(ws, session, intent);
-      } else {
-        await speakSystemLine(session, 'Sorry, I didn\'t catch that. Say allow, always, or deny.');
-      }
+    // Spoken tool confirmation — never start a new turn while a permission ask is open.
+    if (session.permissionGate?.pending) {
+      await session.permissionGate.handleUtterance(text);
       if (session.mode === 'duplex') {
         await resetDuplexListening(session);
       } else {
@@ -1400,8 +1301,8 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
       return;
     }
 
-    // Apply the dashboard bypass chip to this agent so tools don't prompt when the user enabled it.
-    agent.setBypassPermissions(session.bypassChip);
+    // Voice sessions always require spoken confirmation — never inherit chat bypass.
+    agent.setBypassPermissions(false);
     refreshAgentPersona(agent);
     if (session.clientSituation) {
       agent.setClientSituation(session.clientSituation);
@@ -1888,11 +1789,8 @@ function cleanupSession(ws: WebSocket): void {
   }
   const session = activeSessions.get(ws);
   if (!session) return;
-  if (session.pendingPermission) {
-    // Deny any dangling prompt so the agent turn isn't left hanging.
-    try { getEngine().agent?.respondToPermission(session.pendingPermission.requestId, 'deny'); } catch { /* ignore */ }
-    clearPendingPermission(session);
-  }
+  session.permissionGate?.dispose();
+  session.permissionGate = undefined;
   session.unsub?.();
   if (session.duplexPlaybackResetTimer) clearTimeout(session.duplexPlaybackResetTimer);
   void session.transport.close();

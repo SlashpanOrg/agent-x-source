@@ -3107,7 +3107,7 @@ export interface TelephonyProviderCatalogEntry {
 export interface HostAuditEvent {
   id: string;
   timestamp: string;
-  category: 'tunnel' | 'security' | 'startup' | 'shutdown' | 'auth' | 'system';
+  category: 'tunnel' | 'security' | 'startup' | 'shutdown' | 'auth' | 'system' | 'telephony';
   code: string;
   message: string;
   metadata?: Record<string, unknown>;

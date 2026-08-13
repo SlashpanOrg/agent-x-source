@@ -54,6 +54,7 @@ export interface PromptRegistrationContext {
   options: {
     promptProfile?: string;
     channelSession?: boolean;
+    crewPrivateHost?: { name?: string; callsign?: string } | null;
   };
   personaName?: string;
   usesCompactContext(): boolean;
@@ -98,10 +99,11 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
 
   if (ctx.options.promptProfile === 'crew_private') {
     const secCtx = ctx.createSectionContext();
+    const crewName = ctx.options.crewPrivateHost?.name?.trim() || ctx.personaName || 'Specialist';
     if (ctx.usesCompactContext()) {
       ctx.promptAssembly
         .register(createCrewPrivateConductSection())
-        .register(createLocalPersonaGuardSection(ctx.personaName))
+        .register(createLocalPersonaGuardSection(crewName))
         .register(createWorkingDirectorySection(secCtx))
         .register(createUserSection(secCtx))
         .register(createSessionNarrativeSection(secCtx))

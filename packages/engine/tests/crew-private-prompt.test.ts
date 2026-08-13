@@ -88,6 +88,7 @@ describe('createCrewPrivateConductSection', () => {
     expect(conduct).toContain('CREW_PRIVATE_CONDUCT');
     expect(conduct).toContain('OUT OF YOUR EXPERTISE');
     expect(conduct).toContain('ROLE OVER PERSONAL ASSISTANT');
+    expect(conduct).toContain('HOST DEFERENCE BAN');
     expect(conduct).toContain('Interviewer: YOU run the interview');
     expect(conduct).toContain('INTERVIEWER ZERO LEAK');
     expect(conduct).not.toContain('ACT IMMEDIATELY');

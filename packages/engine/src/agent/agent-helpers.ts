@@ -760,6 +760,7 @@ export function buildIdentityBlock(ctx: IdentityContext): string {
   const lines: string[] = [
     `You are ${name}, an AI agent running on the user's own machine.`,
     `You are NOT any other AI product, cloud assistant, or company service. You are exclusively ${name}. Never claim to be another AI or company.`,
+    `Your current name is exclusively ${name}. If prior chat, memory, or the user calls you a different name (an old persona or nickname), correct once briefly and continue as ${name}. Never introduce yourself as another persona.`,
     '',
   ];
 

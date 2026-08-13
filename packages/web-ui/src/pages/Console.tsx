@@ -1,4 +1,4 @@
-import { Component, type ReactNode, lazy, Suspense, useState, useCallback, useRef, useEffect } from 'react';
+import { Component, type ReactNode, lazy, Suspense, useState, useCallback, useRef, useEffect, useTransition } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -18,6 +18,22 @@ function ChatPanelFallback() {
   return (
     <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <CircularProgress size={24} sx={{ color: colors.text.dim }} />
+    </Box>
+  );
+}
+
+function PanelLoadingFallback() {
+  return (
+    <Box sx={{ height: '100%', p: 2, display: 'flex', flexDirection: 'column', gap: 1.5, overflow: 'hidden' }}>
+      <Box sx={{ height: 12, width: '32%', borderRadius: 0.5, bgcolor: alphaColor(colors.text.primary, '08') }} />
+      <Box sx={{ height: 10, width: '22%', borderRadius: 0.5, bgcolor: alphaColor(colors.text.primary, '05') }} />
+      <Box sx={{
+        flex: 1, borderRadius: 1, border: `1px solid ${colors.border.default}`,
+        bgcolor: alphaColor(colors.bg.primary, '50'),
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <CircularProgress size={22} sx={{ color: colors.text.dim }} />
+      </Box>
     </Box>
   );
 }
@@ -91,10 +107,30 @@ const BOTTOM_PANEL_DEFAULT_HEIGHT = 200;
 const RIGHT_PANEL_MIN_WIDTH = 200;
 const RIGHT_PANEL_DEFAULT_WIDTH = 350;
 
+function PanelSwitch({ activePanel }: { activePanel: PanelId }) {
+  switch (activePanel) {
+    case 'dashboard': return <BentoDashboardPanel />;
+    case 'calls': return <CallsPanel />;
+    case 'agent-x': return <AgentXCoreChat />;
+    case 'tools': return <ToolsPanel />;
+    case 'plugins': return <PluginsPanel />;
+    case 'settings': return <SettingsPanel />;
+    case 'automation': return <AutomationPanel />;
+    case 'orchestrator': return <OrchestratorPanel />;
+    case 'crews': return <CrewsPanel />;
+    case 'mcp-store': return <McpStorePage />;
+    case 'notifications': return <NotificationsPanel />;
+    case 'markdown': return <MarkdownPanel />;
+    case 'knowledge-base': return <KnowledgeBasePanel />;
+    default: return null;
+  }
+}
+
 export function Console() {
   const { panel, sessionId } = useParams<{ panel?: string; sessionId?: string }>();
   const navigate = useNavigate();
   const { unreadNotificationCount } = useAppLive();
+  const [isPanelPending, startPanelTransition] = useTransition();
   const activePanel = (sessionId ? 'chat' : (panel || 'dashboard')) as PanelId;
   // Keep the last chat session mounted (hidden) so an active turn's streaming
   // bubble / tools / sub-agent cards survive navigating to other Console panels.
@@ -129,7 +165,9 @@ export function Console() {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const handleNavigate = (p: PanelId) => {
-    navigate(`/console/${p}`);
+    startPanelTransition(() => {
+      navigate(`/console/${p}`);
+    });
   };
 
   useEffect(() => {
@@ -213,13 +251,23 @@ export function Console() {
       <Box sx={{ flex: 1, display: 'flex', minHeight: 0, minWidth: 0 }}>
         <Sidebar active={activePanel} onNavigate={handleNavigate} highlightCrews={false} unreadNotificationCount={unreadNotificationCount} />
         <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden', flexDirection: isVertical ? 'row' : 'column', minWidth: 0 }}>
-          <Box sx={{ flex: 1, overflow: 'hidden', minWidth: 0 }}>
+          <Box sx={{ flex: 1, overflow: 'hidden', minWidth: 0, position: 'relative' }}>
+            {!showChat && isPanelPending && (
+              <Box sx={{
+                position: 'absolute', inset: 0, zIndex: 2,
+                bgcolor: colors.bg.primary,
+                borderLeft: `1px solid ${colors.border.default}`,
+              }}>
+                <PanelLoadingFallback />
+              </Box>
+            )}
             <PanelErrorBoundary>
-              <Suspense fallback={<ChatPanelFallback />}>
-                {/* Chat stays mounted (hidden) across panel switches so mid-turn UI is preserved. */}
-                {mountChat && (
-                  <Box
-                    sx={{
+              {mountChat && (
+                <Suspense fallback={<ChatPanelFallback />}>
+                  <div
+                    aria-hidden={showChat ? undefined : true}
+                    {...(!showChat ? { inert: '' } : {})}
+                    style={{
                       height: '100%',
                       display: showChat ? 'flex' : 'none',
                       flexDirection: 'column',
@@ -227,26 +275,14 @@ export function Console() {
                     }}
                   >
                     <ChatPanel sessionId={panelSessionId} />
-                  </Box>
-                )}
-                {!showChat && (
-                  <>
-                    {activePanel === 'dashboard' && <BentoDashboardPanel />}
-                    {activePanel === 'calls' && <CallsPanel />}
-                    {activePanel === 'agent-x' && <AgentXCoreChat />}
-                    {activePanel === 'tools' && <ToolsPanel />}
-                    {activePanel === 'plugins' && <PluginsPanel />}
-                    {activePanel === 'settings' && <SettingsPanel />}
-                    {activePanel === 'automation' && <AutomationPanel />}
-                    {activePanel === 'orchestrator' && <OrchestratorPanel />}
-                    {activePanel === 'crews' && <CrewsPanel />}
-                    {activePanel === 'mcp-store' && <McpStorePage />}
-                    {activePanel === 'notifications' && <NotificationsPanel />}
-                    {activePanel === 'markdown' && <MarkdownPanel />}
-                    {activePanel === 'knowledge-base' && <KnowledgeBasePanel />}
-                  </>
-                )}
-              </Suspense>
+                  </div>
+                </Suspense>
+              )}
+              {!showChat && (
+                <Suspense key={activePanel} fallback={<PanelLoadingFallback />}>
+                  <PanelSwitch activePanel={activePanel} />
+                </Suspense>
+              )}
             </PanelErrorBoundary>
           </Box>
           {isVertical && logsContent}

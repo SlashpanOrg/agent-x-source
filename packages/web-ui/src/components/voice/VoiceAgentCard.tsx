@@ -9,7 +9,6 @@ import DialogContent from '@mui/material/DialogContent';
 import MicIcon from '@mui/icons-material/Mic';
 import MicOffIcon from '@mui/icons-material/MicOff';
 import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
-import ShieldIcon from '@mui/icons-material/Shield';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 import FiberNewIcon from '@mui/icons-material/FiberNew';
 import { colors, alphaColor, MONO, getActiveScheme } from '../../theme';
@@ -46,12 +45,10 @@ type ButtonPhase = 'disabled' | 'connecting' | 'idle' | 'recording' | 'thinking'
 export function VoiceAgentCard({
   onActiveChange,
   onPhaseChange,
-  bypassChip,
   voiceprintEnabled,
 }: {
   onActiveChange?: (active: boolean) => void;
   onPhaseChange?: (phase: ParticlePhase) => void;
-  bypassChip: boolean;
   voiceprintEnabled?: boolean;
 }) {
   const voiceCtx = useVoiceOptional();
@@ -93,9 +90,9 @@ export function VoiceAgentCard({
   // Push toggle state to backend whenever wake or manual voice is active.
   useEffect(() => {
     if (sessionActive && sessionReady && comms) {
-      comms.session.setToggles({ bypassChip, voiceprintEnabled });
+      comms.session.setToggles({ voiceprintEnabled });
     }
-  }, [sessionActive, sessionReady, bypassChip, voiceprintEnabled, comms]);
+  }, [sessionActive, sessionReady, voiceprintEnabled, comms]);
 
   // Derive button phase — connecting stays blue; thinking is orange only after a turn.
   const phase: ButtonPhase = useMemo(() => {
@@ -492,14 +489,10 @@ export function VoiceToggleChip({
 
 /** Exported so BentoDashboard can render toggles in the card header (right-aligned). */
 export function VoiceAgentHeaderToggles({
-  bypassChip,
   voiceprintEnabled,
-  onBypassChipChange,
   onVoiceprintEnabledChange,
 }: {
-  bypassChip: boolean;
   voiceprintEnabled: boolean;
-  onBypassChipChange: (v: boolean) => void;
   onVoiceprintEnabledChange: (v: boolean) => void;
 }) {
   return (
@@ -510,13 +503,6 @@ export function VoiceAgentHeaderToggles({
         activeColor={colors.accent.blue}
         onClick={() => onVoiceprintEnabledChange(!voiceprintEnabled)}
         title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'}
-      />
-      <VoiceToggleChip
-        icon={<ShieldIcon sx={{ fontSize: 13 }} />}
-        active={bypassChip}
-        activeColor={colors.accent.orange}
-        onClick={() => onBypassChipChange(!bypassChip)}
-        title={bypassChip ? 'Bypass enabled — auto-approve tools' : 'Enable bypass — auto-approve tools'}
       />
     </Box>
   );
@@ -530,14 +516,10 @@ export function VoiceAgentHeaderToggles({
  * provider/model selectors are also shown.
  */
 export function VoiceAgentHeaderControls({
-  bypassChip,
   voiceprintEnabled,
-  onBypassChipChange,
   onVoiceprintEnabledChange,
 }: {
-  bypassChip: boolean;
   voiceprintEnabled: boolean;
-  onBypassChipChange: (v: boolean) => void;
   onVoiceprintEnabledChange: (v: boolean) => void;
 }) {
   const [configuredProviders, setConfiguredProviders] = useState<ConfiguredProvider[]>([]);
@@ -716,13 +698,6 @@ export function VoiceAgentHeaderControls({
         activeColor={colors.accent.blue}
         onClick={() => onVoiceprintEnabledChange(!voiceprintEnabled)}
         title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'}
-      />
-      <VoiceToggleChip
-        icon={<ShieldIcon sx={{ fontSize: 13 }} />}
-        active={bypassChip}
-        activeColor={colors.accent.orange}
-        onClick={() => onBypassChipChange(!bypassChip)}
-        title={bypassChip ? 'Bypass enabled — auto-approve tools' : 'Enable bypass — auto-approve tools'}
       />
       <VoiceToggleChip
         icon={<MicIcon sx={{ fontSize: 13 }} />}

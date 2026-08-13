@@ -638,7 +638,7 @@ export class VoiceSessionClient {
     }
   }
 
-  /** Update voice-only session toggles (web search, bypass chip, voiceprint). */
+  /** Update voice-only session toggles (web search, voiceprint). */
   setToggles(toggles: { searchWeb?: boolean; bypassChip?: boolean; voiceprintEnabled?: boolean }): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'voice_toggle', ...toggles }));

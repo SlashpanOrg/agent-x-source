@@ -109,6 +109,8 @@ export interface ToolPermissionHost {
   getSkipLowRiskProactiveConsent?(): boolean;
   /** Latest user turn text for detecting an explicit save/create request. */
   getCurrentUserMessage?(): string;
+  /** Voice sessions collect concurrent permission asks into one spoken confirmation. */
+  getVoiceTurnActive?(): boolean;
   /**
    * Clarify-first: ask "Shall I …?" via questionnaire before the permission modal.
    */
@@ -188,11 +190,15 @@ export class ToolPermissionService {
     }
 
     const permissionManager = host.getPermissionManager();
+    const voiceTurn = host.getVoiceTurnActive?.() === true;
     const existingGrant = permissionManager.check(toolId, scopePath ?? undefined);
-    if (existingGrant === 'allow_always' || existingGrant === 'allow_once') {
+    if (!voiceTurn && (existingGrant === 'allow_always' || existingGrant === 'allow_once')) {
       return { decision: 'allow' };
     }
-    if (existingGrant === 'deny') {
+    if (voiceTurn && host.getPendingToolConsent?.()?.has(toolId)) {
+      return { decision: 'allow' };
+    }
+    if (!voiceTurn && existingGrant === 'deny') {
       return { decision: 'deny', error: 'PERMISSION_DENIED' };
     }
 
@@ -227,7 +233,7 @@ export class ToolPermissionService {
 
     const shouldPrompt = host.getAlwaysPromptPermissions() || definition.riskLevel !== 'low';
     if (!shouldPrompt) {
-      const bypassOn = permissionManager.getBypassPermissions();
+      const bypassOn = voiceTurn ? false : permissionManager.getBypassPermissions();
       // Bypass: agent may proceed freely for low-risk tools.
       if (bypassOn) {
         return { decision: 'allow' };
@@ -249,7 +255,7 @@ export class ToolPermissionService {
       return { decision: 'allow' };
     }
 
-    if (this.flowBusy) {
+    if (this.flowBusy && !voiceTurn) {
       return {
         decision: 'deny',
         error: 'PERMISSION_INSTRUCTED',
@@ -259,7 +265,7 @@ export class ToolPermissionService {
       };
     }
 
-    this.flowBusy = true;
+    if (!voiceTurn) this.flowBusy = true;
     try {
       return await this.requestPermissionInteractive(
         host,
@@ -271,7 +277,7 @@ export class ToolPermissionService {
         permissionManager,
       );
     } finally {
-      this.flowBusy = false;
+      if (!voiceTurn) this.flowBusy = false;
     }
   }
 
@@ -285,7 +291,8 @@ export class ToolPermissionService {
     permissionManager: PermissionManager,
   ): Promise<PermissionResult> {
     const path = scopePath ?? '*';
-    const bypassOn = permissionManager.getBypassPermissions();
+    const voiceTurn = host.getVoiceTurnActive?.() === true;
+    const bypassOn = voiceTurn ? false : permissionManager.getBypassPermissions();
     const isChannelSession = isChannelSessionId(sessionId) || host.getMessagingPermissionMode();
     const actionSummary = summarizeToolAction(toolId, args, definition);
     const pathArg = typeof args['path'] === 'string' ? args['path']
@@ -295,8 +302,9 @@ export class ToolPermissionService {
     let hadConsent = Boolean(host.getPendingToolConsent?.()?.has(toolId));
 
     // Clarify-first (desktop): questionnaire "Shall I …?" before the permission modal.
+    // Voice sessions are spoken-confirmation only — never a UI questionnaire.
     // When the host does not wire requestActionConsent (tests / automation), fall through to the modal.
-    if (!isChannelSession && !hadConsent && host.requestActionConsent) {
+    if (!voiceTurn && !isChannelSession && !hadConsent && host.requestActionConsent) {
       const consent = await host.requestActionConsent(toolId, args, definition);
       if (!consent.proceed) {
         host.emitPermissionOutcome?.({
@@ -348,7 +356,7 @@ export class ToolPermissionService {
       return { decision: 'allow' };
     }
 
-    const permissionHandler = this.resolvePermissionRequestHandler(host, sessionId);
+    const permissionHandler = this.resolvePermissionRequestHandler(host, sessionId, voiceTurn);
     if (!permissionHandler) {
       return { decision: 'deny', error: 'PERMISSION_DENIED' };
     }
@@ -357,12 +365,14 @@ export class ToolPermissionService {
       ? (buildIntegrationActionPreview(toolId, args, definition) ?? undefined)
       : undefined;
 
-    host.getPermissionPromptHook()?.({
-      toolId,
-      path,
-      riskLevel: definition.riskLevel,
-      integrationPreview,
-    });
+    if (!voiceTurn) {
+      host.getPermissionPromptHook()?.({
+        toolId,
+        path,
+        riskLevel: definition.riskLevel,
+        integrationPreview,
+      });
+    }
 
     const response = await permissionHandler(toolId, path, definition.riskLevel, {
       args,
@@ -391,6 +401,7 @@ export class ToolPermissionService {
 
     if (decision === 'allow_always') {
       host.getPermissionManager().grant(toolId, 'allow_always' as PermissionDecision, scopePath ?? undefined);
+      host.grantToolConsent?.(toolId);
       host.emitPermissionOutcome?.({
         toolId,
         toolName: definition.name,
@@ -403,6 +414,7 @@ export class ToolPermissionService {
       return { decision: 'allow_always' };
     }
 
+    host.grantToolConsent?.(toolId);
     host.emitPermissionOutcome?.({
       toolId,
       toolName: definition.name,
@@ -418,7 +430,10 @@ export class ToolPermissionService {
   private resolvePermissionRequestHandler(
     host: ToolPermissionHost,
     sessionId: string,
+    voiceTurn = false,
   ): PermissionRequestHandler | undefined {
+    // Voice confirmation must use the voice handler, never Telegram/Slack/Discord UI.
+    if (voiceTurn) return host.getPermissionRequestHandler();
     const channelHandler = host.getChannelPermissionRequestHandler();
     if (channelHandler && (isChannelSessionId(sessionId) || host.getMessagingPermissionMode())) {
       return channelHandler;
