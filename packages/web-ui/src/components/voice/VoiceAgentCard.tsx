@@ -41,7 +41,7 @@ const VOICE_SESSION_ID = '__channel__:voice';
  *  - Toggle chips + provider/model dropdowns in the card header
  */
 
-type ButtonPhase = 'disabled' | 'connecting' | 'idle' | 'recording' | 'thinking' | 'speaking';
+type ButtonPhase = 'disabled' | 'connecting' | 'idle' | 'recording' | 'thinking' | 'speaking' | 'muted';
 
 export function VoiceAgentCard({
   onActiveChange,
@@ -97,15 +97,17 @@ export function VoiceAgentCard({
   }, [sessionActive, sessionReady, voiceprintEnabled, comms, localEngine]);
 
   // Derive button phase — connecting stays blue; thinking is orange only after a turn.
+  // Mic mute overrides listening/idle (green) to orange "Muted"; speaking/thinking stay.
   const phase: ButtonPhase = useMemo(() => {
     if (!sessionActive || !sessionReady || !comms) return 'disabled';
     if (comms.commsPhase === 'boot' || comms.commsPhase === 'link') return 'connecting';
     if (comms.session.state === 'connecting') return 'connecting';
-    if (comms.commsPhase === 'operator_record') return 'recording';
     if (comms.commsPhase === 'agent_tx') return 'speaking';
     if (comms.commsPhase === 'operator_stt' || comms.commsPhase === 'relay_process' || comms.commsPhase === 'agent_prep') return 'thinking';
+    if (comms.session.muted) return 'muted';
+    if (comms.commsPhase === 'operator_record') return 'recording';
     return 'idle';
-  }, [sessionActive, sessionReady, comms]);
+  }, [sessionActive, sessionReady, comms, comms?.session.muted, comms?.commsPhase, comms?.session.state]);
 
   const particlePhase: ParticlePhase = phase;
 
@@ -160,6 +162,7 @@ export function VoiceAgentCard({
     if (!sessionReady) return 'Voice kit required';
     if (phase === 'disabled') return 'Click to activate';
     if (phase === 'connecting') return comms?.statusLabel || 'Connecting…';
+    if (phase === 'muted') return 'Muted';
     if (phase === 'recording') return comms?.isDuplex ? 'Listening…' : 'Listening… release Space';
     if (phase === 'thinking') return comms?.statusLabel || 'Thinking…';
     if (phase === 'speaking') return 'Agent speaking';
@@ -281,6 +284,8 @@ export function VoiceAgentCard({
                 <ThinkingOrb state='working' size={64} theme={getActiveScheme() === 'dark' ? 'dark' : 'light'} style={{ width: 26, height: 26 }} />
               ) : phase === 'disabled' ? (
                 <MicOffIcon sx={{ fontSize: 24, color: colors.text.dim, opacity: 0.5 }} />
+              ) : phase === 'muted' ? (
+                <MicOffIcon sx={{ fontSize: 24, color: colors.accent.orange }} />
               ) : phase === 'recording' ? (
                 <MicIcon sx={{ fontSize: 24, color: colors.accent.green }} />
               ) : phase === 'speaking' ? (
@@ -313,7 +318,7 @@ export function VoiceAgentCard({
                 ? colors.accent.green
                 : phase === 'speaking'
                   ? colors.accent.purple
-                  : phase === 'thinking'
+                  : phase === 'thinking' || phase === 'muted'
                     ? colors.accent.orange
                     : phase === 'connecting'
                       ? colors.accent.blue
@@ -956,7 +961,8 @@ function phaseColor(phase: ButtonPhase, border: boolean): string {
     case 'connecting':
     case 'idle': return border ? alphaColor(colors.accent.blue, '66') : colors.accent.blue;
     case 'recording': return border ? alphaColor(colors.accent.green, '66') : colors.accent.green;
-    case 'thinking': return border ? alphaColor(colors.accent.orange, '66') : colors.accent.orange;
+    case 'thinking':
+    case 'muted': return border ? alphaColor(colors.accent.orange, '66') : colors.accent.orange;
     case 'speaking': return border ? alphaColor(colors.accent.purple, '66') : colors.accent.purple;
   }
 }

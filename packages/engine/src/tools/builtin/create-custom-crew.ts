@@ -1,4 +1,5 @@
 import type { ToolExecutionContext, ToolResult } from '@agentx/shared';
+import { isCrewVoiceSessionId } from '@agentx/shared';
 import type { Agent } from '../../agent/Agent.js';
 import {
   buildPersonaDraftKit,
@@ -18,9 +19,20 @@ export function getCustomCrewCreateAgent(): Agent | null {
   return agentInstance;
 }
 
-function stringArg(args: Record<string, unknown>, key: string): string | undefined {
-  const value = args[key];
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+function stringArg(args: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+const VOICE_SESSION_ID = '__channel__:voice';
+
+function isVoiceSurface(context: ToolExecutionContext): boolean {
+  return Boolean(context.voiceTurn)
+    || context.sessionId === VOICE_SESSION_ID
+    || isCrewVoiceSessionId(context.sessionId);
 }
 
 function stringList(args: Record<string, unknown>, key: string): string[] | undefined {
@@ -38,7 +50,7 @@ function stringList(args: Record<string, unknown>, key: string): string[] | unde
 
 export async function createCustomCrew(
   args: Record<string, unknown>,
-  _context: ToolExecutionContext,
+  context: ToolExecutionContext,
 ): Promise<ToolResult> {
   const brief = stringArg(args, 'brief');
   if (!brief) {
@@ -64,7 +76,7 @@ export async function createCustomCrew(
     title: stringArg(args, 'title'),
     callsign: stringArg(args, 'callsign'),
     description: stringArg(args, 'description'),
-    systemPrompt: stringArg(args, 'systemPrompt'),
+    systemPrompt: stringArg(args, 'systemPrompt', 'system_prompt', 'prompt'),
     emotion: stringArg(args, 'emotion'),
     expertise: stringList(args, 'expertise'),
     traits: stringList(args, 'traits'),
@@ -76,13 +88,19 @@ export async function createCustomCrew(
     const mgr = agentInstance.crew;
     const taken = mgr.list().map((c) => c.callsign);
     if (!isAdequateSystemPrompt(draft.systemPrompt)) {
-      const kit = buildPersonaDraftKit(draft, taken);
-      return {
-        success: false,
-        output: formatPromptRequiredOutput(kit),
-        error: 'PROMPT_REQUIRED',
-        metadata: { code: 'PROMPT_REQUIRED', kit },
-      };
+      // Voice function-calls often drop or truncate the long systemPrompt JSON
+      // field. Fill from the template contract instead of failing the create.
+      if (isVoiceSurface(context)) {
+        draft.systemPrompt = undefined;
+      } else {
+        const kit = buildPersonaDraftKit(draft, taken);
+        return {
+          success: false,
+          output: formatPromptRequiredOutput(kit),
+          error: 'PROMPT_REQUIRED',
+          metadata: { code: 'PROMPT_REQUIRED', kit },
+        };
+      }
     }
     const prepared = prepareCustomCrew(draft, taken);
     const { profile, ...input } = prepared;

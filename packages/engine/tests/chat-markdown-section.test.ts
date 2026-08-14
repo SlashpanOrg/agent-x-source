@@ -20,6 +20,7 @@ describe('createChatMarkdownSection', () => {
     expect(loaded).toContain('[VISUAL_STAGE]');
     expect(loaded).toContain('present_visual');
     expect(loaded).toContain('visual stage modal');
+    expect(loaded).toContain('Web photos/videos');
     expect(loaded).toContain('default browser');
   });
 

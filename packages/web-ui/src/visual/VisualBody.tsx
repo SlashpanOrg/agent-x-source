@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import Box from '@mui/material/Box';
 import CircularProgress from '@mui/material/CircularProgress';
 import Typography from '@mui/material/Typography';
@@ -21,6 +22,9 @@ export function VisualBody({
   const url = 'url' in item.source ? item.source.url : undefined;
   const { blobUrl, bytes, mimeType, error, loading } = useAttachmentBlob(storageId, item.mimeType);
   const mime = mimeType || item.mimeType;
+  const imageSrc = blobUrl || (item.kind === 'image' ? url : undefined);
+  const videoSrc = blobUrl || (item.kind === 'video' ? url : undefined);
+  const [mediaFailed, setMediaFailed] = useState(false);
 
   if (item.kind === 'url' && url) {
     return embedUrl
@@ -28,7 +32,7 @@ export function VisualBody({
       : <VisualUrlCard title={item.title} caption={item.caption} url={url} compact={compact} />;
   }
 
-  if (loading) {
+  if (loading && !url) {
     return (
       <Box sx={{ p: compact ? 2 : 4, textAlign: 'center' }}>
         <CircularProgress size={22} sx={{ color: colors.accent.cyan }} />
@@ -36,7 +40,7 @@ export function VisualBody({
     );
   }
 
-  if (error) {
+  if (error && !url) {
     return (
       <Typography sx={{ fontFamily: MONO, fontSize: '0.75rem', color: colors.accent.red, p: 2 }}>
         {error}
@@ -44,7 +48,7 @@ export function VisualBody({
     );
   }
 
-  if (item.kind === 'image' && blobUrl) {
+  if (item.kind === 'image' && imageSrc && !mediaFailed) {
     return (
       <Box
         sx={{
@@ -61,8 +65,9 @@ export function VisualBody({
         }}
       >
         <img
-          src={blobUrl}
+          src={imageSrc}
           alt={item.title}
+          onError={() => setMediaFailed(true)}
           style={{
             maxWidth: '100%',
             maxHeight: compact ? 'min(46vh, 400px)' : 'min(70vh, 760px)',
@@ -73,7 +78,7 @@ export function VisualBody({
     );
   }
 
-  if (item.kind === 'video' && blobUrl) {
+  if (item.kind === 'video' && videoSrc && !mediaFailed) {
     return (
       <Box
         sx={{
@@ -84,9 +89,10 @@ export function VisualBody({
         }}
       >
         <video
-          src={blobUrl}
+          src={videoSrc}
           controls
           playsInline
+          onError={() => setMediaFailed(true)}
           style={{ width: '100%', maxHeight: compact ? 'min(48vh, 420px)' : 'min(70vh, 760px)', background: '#000' }}
         />
       </Box>
@@ -118,6 +124,12 @@ export function VisualBody({
         )}
       </Box>
     );
+  }
+
+  if ((item.kind === 'image' || item.kind === 'video' || item.kind === 'document') && url) {
+    return embedUrl
+      ? <VisualUrlFrame title={item.title} url={url} />
+      : <VisualUrlCard title={item.title} caption={item.caption} url={url} compact={compact} />;
   }
 
   return (

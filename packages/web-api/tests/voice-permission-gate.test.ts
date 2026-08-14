@@ -10,6 +10,7 @@ import {
   VoicePermissionGate,
   buildVoicePermissionSpokenPrompt,
 } from '../src/voice-permission-gate.js';
+import { summarizePermissionArgs } from '../../engine/src/agent/agent-helpers.js';
 
 describe('buildVoicePermissionSpokenPrompt', () => {
   it('asks about a single tool', () => {
@@ -28,6 +29,30 @@ describe('buildVoicePermissionSpokenPrompt', () => {
     expect(line).toContain('run a command');
     expect(line).toContain('higher-risk');
     expect(line).toContain('all of them');
+  });
+});
+
+describe('summarizePermissionArgs spoken URLs', () => {
+  it('speaks domain and title instead of the full URL', () => {
+    const { argsSummary, commandPreview } = summarizePermissionArgs({
+      url: 'https://images.pexels.com/photos/123456/pexels-photo-123456.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940',
+      title: 'BMW M3',
+      kind: 'image',
+    });
+    expect(commandPreview).toContain('pexels.com');
+    expect(argsSummary).toBe('open BMW M3 from pexels.com');
+    expect(argsSummary).not.toContain('https://');
+    expect(argsSummary).not.toContain('123456');
+  });
+
+  it('falls back to the root domain when there is no title', () => {
+    const { argsSummary } = summarizePermissionArgs({
+      url: 'https://images.pexels.com/photos/123456/pexels-photo-123456.jpeg?auto=compress',
+      kind: 'image',
+    });
+    expect(argsSummary).toBe('open an image from pexels.com');
+    expect(argsSummary).not.toMatch(/https?:\/\//);
+    expect(argsSummary).not.toContain('123456');
   });
 });
 

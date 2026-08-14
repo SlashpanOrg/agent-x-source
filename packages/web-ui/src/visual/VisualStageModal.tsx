@@ -21,7 +21,8 @@ export function VisualStageModal({
   onClose: () => void;
 }) {
   if (!item) return null;
-  const pageUrl = item.kind === 'url' && 'url' in item.source ? item.source.url : undefined;
+  const remoteUrl = 'url' in item.source ? item.source.url : undefined;
+  const pageUrl = item.kind === 'url' ? remoteUrl : undefined;
   return (
     <Dialog
       open={open}
@@ -85,10 +86,10 @@ export function VisualStageModal({
             </Typography>
           )}
         </Box>
-        {pageUrl && (
+        {(pageUrl || remoteUrl) && (
           <IconButton
             size="small"
-            onClick={() => openExternalUrl(pageUrl)}
+            onClick={() => openExternalUrl(pageUrl || remoteUrl!)}
             aria-label="Open in browser"
             title="Open in browser"
             sx={{ color: colors.text.dim, '&:hover': { color: colors.accent.blue } }}

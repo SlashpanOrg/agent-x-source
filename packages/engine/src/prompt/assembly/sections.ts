@@ -981,6 +981,7 @@ export function createVisualStageSection(): PromptSection<string> {
     `When the user needs to SEE something (photo, video, PDF, or a website card), call present_visual.`,
     `- Chat: renders inline in the turn. Prefer this over "I saved a file".`,
     `- Voice / crew call: opens the visual stage modal. Do not dump the file into the transcript.`,
+    `- Web photos/videos: kind=image (or video) plus the http(s) url. Bare hosts like images.pexels.com/photo.jpg work. Do not spell the URL aloud.`,
     `- kind=url: chat shows a link that opens in the default browser. Voice / crew call loads the page in the visual stage modal.`,
     `- WhatsApp inbound media is shown automatically after the owner says yes / show me / read that. You still read the caption or text aloud.`,
     `[/VISUAL_STAGE]`,

@@ -226,6 +226,13 @@ export function isVoiceSummaryOnlyMessage(content: string): boolean {
   return chat.length < 80;
 }
 
+/** Compact xAI realtime rules — the chat prompt assembler is not injected into grok-voice. */
+export const XAI_VOICE_STAGE_AND_CREW_RULES = [
+  'VISUAL STAGE: When the user should SEE a photo, video, PDF, or webpage, call present_visual with kind=image|video|document|url, a short title, and the http(s) url (bare hosts like images.pexels.com/photo.jpg are fine). That opens the dashboard visual modal. Do not use browser_open unless they explicitly ask to open a browser window. Do not dump the file into the transcript.',
+  'CUSTOM CREW: When they ask to create a crew, call crew_create_custom with brief (plus name and template if known). On voice you may omit systemPrompt — the template fills it. Then tell them the @callsign. Do not send them to the Crews UI.',
+  'URLS: Never read a full web URL aloud. Say the site name and what the file is, e.g. "a BMW M3 photo from Pexels".',
+].join('\n');
+
 /** Owner asked to see or hear the pending WhatsApp brief (ask-first visual). */
 export function userWantsWhatsAppVisual(text: string): boolean {
   const t = text.toLowerCase().trim();

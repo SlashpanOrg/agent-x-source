@@ -12,6 +12,7 @@ describe('permission-exempt web tools', () => {
     expect(isPermissionExemptTool('deep_web_search')).toBe(true);
     expect(isPermissionExemptTool('web_fetch')).toBe(true);
     expect(isPermissionExemptTool('web_scrape')).toBe(true);
+    expect(isPermissionExemptTool('present_visual')).toBe(true);
     expect(isPermissionExemptTool('shell_exec')).toBe(false);
   });
 

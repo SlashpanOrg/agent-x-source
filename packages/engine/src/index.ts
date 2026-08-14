@@ -57,7 +57,7 @@ export {
   isUnsupportedToolChoiceError,
   toolChoiceModelKey,
 } from './providers/tool-choice-policy.js';
-export { summarizePermissionArgs } from './agent/agent-helpers.js';
+export { summarizePermissionArgs, speakableWebTarget } from './agent/agent-helpers.js';
 export { ResponseFormatter } from './agent/ResponseFormatter.js';
 export type { FormattedSegment } from './agent/ResponseFormatter.js';
 export { SubAgentManager } from './agent/SubAgentManager.js';
@@ -655,6 +655,7 @@ export type {
 
 // WhatsApp session lifecycle + event bus
 export { setVisualPresentHook, notifyVisualPresent } from './visual/present-hook.js';
+export { setCustomCrewCreateAgent } from './tools/builtin/create-custom-crew.js';
 
 export { WhatsAppSessionService } from './whatsapp/WhatsAppSessionService.js';
 export type { WhatsAppSessionServiceOptions, WhatsAppSessionStatus, WatchdogConfig } from './whatsapp/WhatsAppSessionService.js';

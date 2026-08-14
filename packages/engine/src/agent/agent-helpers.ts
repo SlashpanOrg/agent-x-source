@@ -490,9 +490,14 @@ export function summarizePermissionArgs(
     return { commandPreview: trimmed, argsSummary: `run the command ${trimmed.slice(0, 160)}` };
   }
 
-  const url = str(args['url']);
+  const url = str(args['url'] ?? args['href'] ?? args['uri'] ?? args['link']);
   if (url) {
-    return { commandPreview: url, argsSummary: `access ${url.slice(0, 160)}` };
+    const title = str(args['title'] ?? args['caption'] ?? args['query']);
+    const kind = str(args['kind']);
+    return {
+      commandPreview: url,
+      argsSummary: speakableWebTarget(url, { title, kind }),
+    };
   }
 
   const path = str(args['path'] ?? args['file'] ?? args['filePath'] ?? args['target'] ?? args['to']);
@@ -506,6 +511,44 @@ export function summarizePermissionArgs(
   }
 
   return {};
+}
+
+/** Spoken permission line for a URL: root domain + short file/title context, never the full path. */
+export function speakableWebTarget(
+  raw: string,
+  extra?: { title?: string; kind?: string },
+): string {
+  const trimmed = raw.trim();
+  let host = '';
+  let fileHint = '';
+  try {
+    const withProto = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    const parsed = new URL(withProto);
+    host = parsed.hostname.replace(/^www\./i, '').replace(/^(images|cdn|static|media|assets|img)\./i, '');
+    const last = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() ?? '');
+    const withoutExt = last.replace(/\.[a-z0-9]{2,5}$/i, '').replace(/[-_]+/g, ' ').trim();
+    const looksLikeId = /^[a-f0-9]{8,}$/i.test(withoutExt) || /\d{5,}/.test(withoutExt);
+    if (withoutExt && withoutExt.length <= 48 && !looksLikeId) {
+      fileHint = withoutExt;
+    }
+  } catch {
+    host = trimmed.slice(0, 40);
+  }
+
+  const title = extra?.title?.trim();
+  const kind = extra?.kind?.trim().toLowerCase();
+  const kindLabel = kind && ['image', 'video', 'document', 'url', 'page'].includes(kind)
+    ? (kind === 'url' ? 'page' : kind)
+    : '';
+
+  if (title && host) return `open ${title} from ${host}`;
+  if (fileHint && host) return `open ${fileHint} from ${host}`;
+  if (kindLabel && host) {
+    const article = /^[aeiou]/i.test(kindLabel) ? 'an' : 'a';
+    return `open ${article} ${kindLabel} from ${host}`;
+  }
+  if (host) return `open a page on ${host}`;
+  return 'open a web page';
 }
 
 export function generateDiff(oldText: string, newText: string): string {

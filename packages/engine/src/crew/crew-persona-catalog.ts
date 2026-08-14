@@ -227,7 +227,7 @@ export const CREW_PERSONA_TEMPLATES: CrewPersonaTemplate[] = [
 ];
 
 const TEMPLATE_BEFORE = /(?:use|with|as)\s+(?:the\s+)?(?:crew\s+)?(?:persona\s+)?([a-z][a-z0-9_ ]+?)\s+(?:template|profile)\b/i;
-const TEMPLATE_AFTER = /(?:template|profile|behaviour|behavior)\s*[:\-]\s*["']?([a-z][a-z0-9_ ]+)["']?/i;
+const TEMPLATE_AFTER = /(?:template|profile|behaviour|behavior)\s*[:-]\s*["']?([a-z][a-z0-9_ ]+)["']?/i;
 const REJECT_TEMPLATE = /\b(no template|without (a )?template|don'?t use (a )?template|skip (the )?template|from scratch|blank slate)\b/i;
 const WANTS_TEMPLATE = /\b(use|with|need|want|require|using)\b[\s\S]{0,48}\b(template|profile)\b/i;
 

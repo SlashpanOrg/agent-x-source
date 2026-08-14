@@ -76,7 +76,7 @@ export function toCallsign(value: string): string {
 
 export function uniqueCallsign(base: string, taken: Iterable<string>): string {
   const used = new Set([...taken].map((c) => c.toLowerCase()));
-  let candidate = toCallsign(base);
+  const candidate = toCallsign(base);
   if (!used.has(candidate)) return candidate;
   for (let i = 2; i < 50; i++) {
     const next = `${candidate}_${i}`.slice(0, 36);

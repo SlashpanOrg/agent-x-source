@@ -35,7 +35,11 @@ describe('visual item helpers', () => {
     expect(buildVisualItem({ kind: 'url', title: 'Docs', url: 'https://example.com' })?.source).toEqual({
       url: 'https://example.com',
     });
-    expect(buildVisualItem({ kind: 'image', title: 'Nope', url: 'https://example.com' })).toBeNull();
+    expect(buildVisualItem({ kind: 'image', title: 'Nope', url: 'https://example.com/pic.jpg' })?.source).toEqual({
+      url: 'https://example.com/pic.jpg',
+    });
+    expect(buildVisualItem({ kind: 'image', title: 'Pexels', url: 'images.pexels.com/photos/1.jpeg' })?.kind).toBe('image');
+    expect(buildVisualItem({ kind: 'url', title: 'Photo', url: 'https://images.pexels.com/photos/1.jpeg' })?.kind).toBe('image');
   });
 
   it('maps mime types to visual kinds', () => {

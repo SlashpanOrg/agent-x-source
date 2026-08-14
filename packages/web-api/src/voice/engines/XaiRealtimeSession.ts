@@ -24,7 +24,7 @@ import {
   VOICE_USER_TRANSCRIPT_DEDUP_MS,
 } from '@agentx/shared';
 import { VoicePermissionGate } from '../../voice-permission-gate.js';
-import { WebSocketVoiceTransport, ToolService, summarizePermissionArgs, buildCrewPrivateIdentityPrompt, getPersonaStore } from '@agentx/engine';
+import { WebSocketVoiceTransport, ToolService, summarizePermissionArgs, buildCrewPrivateIdentityPrompt, getPersonaStore, setCustomCrewCreateAgent } from '@agentx/engine';
 import type { VoiceEngineSession, VoiceEngineState } from './types.js';
 import type { VoiceSessionSpeaker } from '@agentx/engine';
 import { getVoiceService } from '../../voice-runtime.js';
@@ -34,6 +34,7 @@ import { buildAgentInstruction, isCrewPrivateSessionRecord } from '../../chat-he
 import { resolveCrewPrivateHostForAgent } from '../../host-crew-session.js';
 import {
   buildCrewCallRealtimeOpenerInstruction,
+  XAI_VOICE_STAGE_AND_CREW_RULES,
 } from '../../voice-speakable.js';
 import { restorePrimaryToolkitBridge, syncIntegrationToolsIntoToolkit } from '../sync-integration-tools.js';
 import {
@@ -186,6 +187,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     const scopePath = getAgentFilesDir();
     this.toolService = ToolService.createDefault(scopePath);
     this.toolService.getToolExecutor().setVoiceTurnActive(true);
+    this.bindLiveCrewAgent();
     const callsign = this.config.user?.callsign?.trim() || 'Root';
     this.defaultRootSpeaker = {
       id: null,
@@ -640,6 +642,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
         'Use them when the conversation needs current facts, research, or live information — ' +
         'then answer briefly in character.',
       );
+      parts.push(XAI_VOICE_STAGE_AND_CREW_RULES);
       if (this.connectedIntegrationNames.length > 0) {
         parts.push(
           `CONNECTED INTEGRATIONS (MCP): ${this.connectedIntegrationNames.join(', ')}. ` +
@@ -658,12 +661,14 @@ export class XaiRealtimeSession implements VoiceEngineSession {
         if (persona.traits?.length) parts.push(`Traits: ${persona.traits.join(', ')}`);
       }
       parts.push(buildAgentInstruction());
+      parts.push(XAI_VOICE_STAGE_AND_CREW_RULES);
       parts.push(
         'VOICE MODE RULES: Keep responses short and crisp — ideally 1-3 sentences. ' +
         'Answer the question directly, then stop. Do not elaborate, summarize, or ' +
         'repeat unless the user explicitly asks for more detail. ' +
         'Ask crisp follow-up questions only when needed to move the conversation forward. ' +
-        'Never read back what the user just said. Never preface answers with "Sure", "Great", etc.',
+        'Never read back what the user just said. Never preface answers with "Sure", "Great", etc. ' +
+        'Never spell a full web URL — say the site name and what the file is.',
       );
       parts.push(
         'CLARIFICATION RULES: When you need more information, ask the question directly ' +
@@ -823,6 +828,16 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       return getPersonaStore().get();
     } catch {
       return null;
+    }
+  }
+
+  /** Voice uses its own ToolService; crew_create_custom still writes through the live Agent roster. */
+  private bindLiveCrewAgent(): void {
+    try {
+      const agent = getEngine().agent;
+      if (agent) setCustomCrewCreateAgent(agent);
+    } catch {
+      /* engine may still be booting */
     }
   }
 
@@ -1347,9 +1362,32 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     this.markVoiceActive();
   }
 
-  private handleResponseCreated(event: Record<string, unknown>): void {
+  private eventResponseId(event: Record<string, unknown>): string | undefined {
+    const fromEvent = event.response_id;
+    if (typeof fromEvent === 'string' && fromEvent) return fromEvent;
     const responseObj = event.response as { id?: string } | undefined;
-    this.currentResponseId = (event.response_id as string | undefined) ?? responseObj?.id;
+    if (typeof responseObj?.id === 'string' && responseObj.id) return responseObj.id;
+    return undefined;
+  }
+
+  /**
+   * Persist the current assistant transcript as its own DB row without ending
+   * the duplex turn. Consecutive xAI responses (thought → speech, tool ack →
+   * answer) must not overwrite the previous utterance.
+   */
+  private persistCurrentAssistantUtterance(): boolean {
+    const text = this.assistantText.trim();
+    if (!text) return false;
+    this.persistAssistantMessage(text);
+    this.assistantText = '';
+    return true;
+  }
+
+  private handleResponseCreated(event: Record<string, unknown>): void {
+    // A new response.created can arrive before the previous response.done.
+    // Flush the prior transcript first so it is not wiped.
+    this.persistCurrentAssistantUtterance();
+    this.currentResponseId = this.eventResponseId(event);
     this.assistantText = '';
     this.toolCalls = [];
     this.pendingToolCallIndex = 0;
@@ -1434,6 +1472,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     const start = this.pendingToolCallIndex;
     const batch = this.toolCalls.slice(start);
     const sessionId = this.chatSessionId ?? this.sessionId;
+    this.bindLiveCrewAgent();
     const permResults = await Promise.all(batch.map(async (item) => {
       try {
         return await this.toolService.requestPermission(item.name, item.args, sessionId);
@@ -1475,14 +1514,30 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       clearTimeout(this.responseDoneFallbackTimer);
       this.responseDoneFallbackTimer = undefined;
     }
+    const doneId = this.eventResponseId(event);
+    // Stale done for a previous response — already flushed when the next
+    // response.created arrived. Do not end the in-flight response.
+    if (doneId && this.currentResponseId && doneId !== this.currentResponseId) {
+      return;
+    }
     this.responseDoneReceived = true;
-    // A cancelled response should not be persisted or continued.
     const responseObj = event.response as { status?: string } | undefined;
     const status = responseObj?.status ?? event.status;
-    if (status === 'cancelled' || status === 'incomplete') {
+    if (status === 'cancelled') {
+      // Barge-in / cancelled: drop the partial. Incomplete thought/speech still
+      // persists below via finishResponseTurn.
       this.assistantText = '';
       // Cancelling a spurious turn (e.g. the user said "yes" to a permission
       // prompt) must not wipe in-flight tool calls waiting on confirmation.
+      if (this.toolCallProcessing || this.permissionGate.pending) {
+        return;
+      }
+      this.toolCalls = [];
+      this.pendingToolCallIndex = 0;
+      this.finishResponseTurn();
+      return;
+    }
+    if (status === 'incomplete') {
       if (this.toolCallProcessing || this.permissionGate.pending) {
         return;
       }
@@ -1561,7 +1616,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     this.pendingToolCallIndex = 0;
     this.responseAudioDone = false;
     this.playbackFinished = false;
-    this.assistantText = '';
+    this.persistCurrentAssistantUtterance();
     this.responseFinished = false;
     this.sendXai({ type: 'response.create' });
   }
@@ -1572,8 +1627,8 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     const wasGreeting = this.greetingInFlight;
     this.greetingInFlight = false;
     const text = this.assistantText.trim();
+    this.persistCurrentAssistantUtterance();
     if (text) {
-      this.persistAssistantMessage(text);
       this.transport.sendControl({
         type: 'agent_status',
         sessionId: this.sessionId,

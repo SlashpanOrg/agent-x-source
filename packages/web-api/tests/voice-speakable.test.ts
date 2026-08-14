@@ -14,6 +14,7 @@ import {
   buildCrewCallTurnInstruction,
   buildCrewCallOpenerInstruction,
   crewCallSessionHasSpokenHistory,
+  XAI_VOICE_STAGE_AND_CREW_RULES,
 } from '../src/voice-speakable.js';
 
 describe('holdBackVoiceCloseSuffix', () => {
@@ -191,5 +192,15 @@ describe('crew call voice instructions', () => {
     expect(instr).toContain('Luxury Travel Concierge');
     expect(instr).toMatch(/never say "crew"/i);
     expect(instr).toMatch(/under 45 words/i);
+  });
+});
+
+describe('xAI realtime visual and crew rules', () => {
+  it('tells grok-voice to open the visual modal and create crews without a long prompt', () => {
+    expect(XAI_VOICE_STAGE_AND_CREW_RULES).toContain('present_visual');
+    expect(XAI_VOICE_STAGE_AND_CREW_RULES).toContain('visual modal');
+    expect(XAI_VOICE_STAGE_AND_CREW_RULES).toContain('crew_create_custom');
+    expect(XAI_VOICE_STAGE_AND_CREW_RULES).toContain('omit systemPrompt');
+    expect(XAI_VOICE_STAGE_AND_CREW_RULES).toMatch(/never read a full web URL/i);
   });
 });

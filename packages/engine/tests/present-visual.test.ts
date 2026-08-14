@@ -37,10 +37,46 @@ describe('present_visual', () => {
     expect(presented).toHaveLength(0);
   });
 
-  it('requires storageId for image/video/document', async () => {
+  it('requires storageId or url for image/video/document', async () => {
     const result = await presentVisual({ kind: 'image', title: 'Photo' }, ctx('chat-1'));
     expect(result.success).toBe(false);
     expect(result.error).toBe('MISSING_INPUT');
+  });
+
+  it('shows a web image URL on the voice stage without storageId', async () => {
+    const result = await presentVisual(
+      { kind: 'image', title: 'BMW M3', url: 'images.pexels.com/photos/123.jpeg' },
+      ctx('__channel__:voice'),
+    );
+    expect(result.success).toBe(true);
+    expect(result.metadata?.visualItem).toMatchObject({
+      kind: 'image',
+      title: 'BMW M3',
+      source: { url: 'https://images.pexels.com/photos/123.jpeg' },
+    });
+    expect(presented).toHaveLength(1);
+  });
+
+  it('opens the voice stage on a voiceTurn even when sessionId is not the voice channel', async () => {
+    const result = await presentVisual(
+      { kind: 'url', title: 'Docs', url: 'https://example.com' },
+      { ...ctx('some-ws-id'), voiceTurn: true },
+    );
+    expect(result.success).toBe(true);
+    expect(presented).toHaveLength(1);
+  });
+
+  it('accepts href / image_url aliases for a web photo', async () => {
+    const result = await presentVisual(
+      { kind: 'image', title: 'M3', image_url: 'https://images.pexels.com/photos/1.jpeg' },
+      ctx('__channel__:voice'),
+    );
+    expect(result.success).toBe(true);
+    expect(result.metadata?.visualItem).toMatchObject({
+      kind: 'image',
+      source: { url: 'https://images.pexels.com/photos/1.jpeg' },
+    });
+    expect(presented).toHaveLength(1);
   });
 
   it('returns visual metadata in chat without opening the voice stage', async () => {

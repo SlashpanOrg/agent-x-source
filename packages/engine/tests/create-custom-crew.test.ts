@@ -209,6 +209,87 @@ describe('createCustomCrew tool', () => {
     expect(result.output).toContain('coach');
     expect(created).toHaveLength(0);
   });
+
+  it('accepts system_prompt alias', async () => {
+    const created: Crew[] = [];
+    setCustomCrewCreateAgent({
+      crew: {
+        list: () => created,
+        create: (input: CrewCreateInput) => {
+          const crew = { ...input, createdAt: 't', updatedAt: 't' } as Crew;
+          created.push(crew);
+          return crew;
+        },
+        flushPersist: vi.fn(async () => {}),
+      },
+      addCrewMember: vi.fn(),
+      setCrewEnabled: vi.fn(),
+    } as unknown as Agent);
+
+    const result = await createCustomCrew({
+      brief: 'Create a medical writing interviewer',
+      system_prompt: AGENT_PROMPT,
+    }, ctx());
+    expect(result.success).toBe(true);
+    expect(created).toHaveLength(1);
+  });
+
+  it('fills the prompt from the template on a voice session', async () => {
+    const created: Crew[] = [];
+    setCustomCrewCreateAgent({
+      crew: {
+        list: () => created,
+        create: (input: CrewCreateInput) => {
+          const crew = { ...input, createdAt: 't', updatedAt: 't' } as Crew;
+          created.push(crew);
+          return crew;
+        },
+        flushPersist: vi.fn(async () => {}),
+      },
+      addCrewMember: vi.fn(),
+      setCrewEnabled: vi.fn(),
+    } as unknown as Agent);
+
+    const result = await createCustomCrew({
+      brief: 'Create a crew member who is an interviewer for medical writing in pharmaceutical industries',
+      template: 'interviewer',
+      name: 'MedWrite',
+    }, { sessionId: '__channel__:voice', contextKind: 'group' as const, voiceTurn: true });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('@medwrite');
+    expect(created).toHaveLength(1);
+    expect(created[0]?.systemPrompt).toContain('BINDING ROLE');
+    expect(created[0]?.systemPrompt).toContain('HARD CONSTRAINT');
+  });
+
+  it('replaces a weak prompt from the template on voice', async () => {
+    const created: Crew[] = [];
+    setCustomCrewCreateAgent({
+      crew: {
+        list: () => created,
+        create: (input: CrewCreateInput) => {
+          const crew = { ...input, createdAt: 't', updatedAt: 't' } as Crew;
+          created.push(crew);
+          return crew;
+        },
+        flushPersist: vi.fn(async () => {}),
+      },
+      addCrewMember: vi.fn(),
+      setCrewEnabled: vi.fn(),
+    } as unknown as Agent);
+
+    const result = await createCustomCrew({
+      brief: 'Create an interviewer for medical writing in pharma',
+      template: 'interviewer',
+      name: 'MedWrite',
+      systemPrompt: 'You are a helpful assistant.',
+    }, { sessionId: 'ws-voice-1', contextKind: 'group' as const, voiceTurn: true });
+
+    expect(result.success).toBe(true);
+    expect(created[0]?.systemPrompt).toContain('BINDING ROLE');
+    expect(created[0]?.systemPrompt).not.toContain('helpful assistant');
+  });
 });
 
 describe('crew awareness tools', () => {

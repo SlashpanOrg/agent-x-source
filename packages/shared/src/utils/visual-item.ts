@@ -22,6 +22,35 @@ export function isHttpUrl(value: string): boolean {
   }
 }
 
+/** Accept https URLs, or a bare host/path like images.pexels.com/photo.jpg. */
+export function normalizeHttpUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (isHttpUrl(trimmed)) return trimmed;
+  if (/^\/\//.test(trimmed) && isHttpUrl(`https:${trimmed}`)) return `https:${trimmed}`;
+  if (/^[\w.-]+\.[a-z]{2,}([/:?#].*)?$/i.test(trimmed)) {
+    const withProto = `https://${trimmed}`;
+    if (isHttpUrl(withProto)) return withProto;
+  }
+  return null;
+}
+
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif)(\?|#|$)/i;
+const VIDEO_EXT = /\.(mp4|webm|mov|m4v)(\?|#|$)/i;
+const DOC_EXT = /\.(pdf)(\?|#|$)/i;
+
+export function inferVisualKindFromUrl(url: string, fallback: VisualKind = 'url'): VisualKind {
+  try {
+    const path = new URL(url).pathname;
+    if (IMAGE_EXT.test(path)) return 'image';
+    if (VIDEO_EXT.test(path)) return 'video';
+    if (DOC_EXT.test(path)) return 'document';
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
+
 export function visualKindFromMime(mime: string | undefined, fallback: VisualKind = 'document'): VisualKind {
   const m = (mime ?? '').toLowerCase();
   if (m.startsWith('image/')) return 'image';
@@ -34,9 +63,10 @@ export function parseVisualSource(raw: unknown): VisualSource | null {
   if (!raw || typeof raw !== 'object') return null;
   const rec = raw as Record<string, unknown>;
   const storageId = typeof rec.storageId === 'string' ? rec.storageId.trim() : '';
-  const url = typeof rec.url === 'string' ? rec.url.trim() : '';
+  const urlRaw = typeof rec.url === 'string' ? rec.url.trim() : '';
+  const url = urlRaw ? normalizeHttpUrl(urlRaw) : null;
   if (storageId) return { storageId };
-  if (url && isHttpUrl(url)) return { url };
+  if (url) return { url };
   return null;
 }
 
@@ -46,19 +76,19 @@ export function parseVisualItem(raw: unknown): VisualItem | null {
   if (!isVisualKind(rec.kind)) return null;
   const title = typeof rec.title === 'string' ? rec.title.trim() : '';
   if (!title) return null;
-  const source = parseVisualSource(rec.source)
-    ?? (typeof rec.storageId === 'string' && rec.storageId.trim()
-      ? { storageId: rec.storageId.trim() }
-      : typeof rec.url === 'string' && isHttpUrl(rec.url)
-        ? { url: rec.url.trim() }
-        : null);
+  const source = parseVisualSource(rec.source) ?? parseVisualSource(rec);
   if (!source) return null;
-  if (rec.kind === 'url' && !('url' in source)) return null;
-  if (rec.kind !== 'url' && !('storageId' in source)) return null;
+  const sourceUrl = 'url' in source ? source.url : undefined;
+  if (rec.kind === 'url' && !sourceUrl) return null;
+  if (rec.kind !== 'url' && !('storageId' in source) && !sourceUrl) return null;
+  const kind = rec.kind === 'url' && sourceUrl
+    ? inferVisualKindFromUrl(sourceUrl, 'url')
+    : rec.kind;
+  if (kind === 'url' && !sourceUrl) return null;
   const id = typeof rec.id === 'string' && rec.id.trim() ? rec.id.trim() : newVisualId();
   return {
     id,
-    kind: rec.kind,
+    kind,
     title,
     source,
     ...(typeof rec.caption === 'string' && rec.caption.trim() ? { caption: rec.caption.trim() } : {}),

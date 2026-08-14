@@ -86,7 +86,7 @@ export function whatsappLineForTool(tool: string, description?: string): string 
   if (/test/i.test(id)) return 'Running tests.';
 
   const desc = description?.replace(/\s+/g, ' ').trim();
-  if (desc && desc.length <= 80 && !/[{\[]/.test(desc)) {
+  if (desc && desc.length <= 80 && !desc.includes('{') && !desc.includes('[')) {
     const punct = /[.!?]$/.test(desc) ? '' : '.';
     return desc.charAt(0).toUpperCase() + desc.slice(1) + punct;
   }
