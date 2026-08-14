@@ -181,10 +181,10 @@ export function createSystemRouter(): Router {
       const merged = mergeConfigPreservingSecrets(existing, { ...existing, ...req.body });
       if (req.body.user && typeof req.body.user === 'object') {
         const incoming = req.body.user as { callsign?: string; name?: string; names?: string[]; prefix?: string; gender?: string; email?: string };
-        merged.user = mergeUserConfig(undefined, {
+        merged.user = mergeUserConfig(existing.user, {
           callsign: (incoming.callsign || existing.user?.callsign || '').trim(),
-          names: incoming.names,
-          name: incoming.name,
+          ...(Array.isArray(incoming.names) ? { names: incoming.names } : {}),
+          ...(typeof incoming.name === 'string' ? { name: incoming.name } : {}),
           prefix: incoming.prefix,
           gender: isUserGender(incoming.gender) ? incoming.gender : undefined,
           email: incoming.email,

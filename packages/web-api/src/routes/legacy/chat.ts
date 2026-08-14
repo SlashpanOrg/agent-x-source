@@ -638,9 +638,14 @@ export function createChatRouter(): Router {
     };
 
     const sessionId = eng.agent?.sessionId;
-    const generation = sessionId
-      ? await getSessionGenerationManager().getGeneration(sessionId)
-      : 0;
+    let generation = 0;
+    try {
+      generation = sessionId
+        ? await getSessionGenerationManager().getGeneration(sessionId)
+        : 0;
+    } catch {
+      generation = 0;
+    }
     sendEvent('connected', { timestamp: new Date().toISOString(), generation, sessionId });
 
     // Subscribe to telemetry bus ONLY — agent events are already bridged to telemetry

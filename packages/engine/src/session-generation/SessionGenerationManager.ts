@@ -12,6 +12,11 @@ export interface SessionEventEnvelope {
 
 let instance: SessionGenerationManager | null = null;
 
+function isMissingSessionFk(err: unknown): boolean {
+  const e = err as { code?: string; constraint?: string };
+  return e.code === '23503';
+}
+
 export function getSessionGenerationManager(): SessionGenerationManager {
   if (!instance) instance = new SessionGenerationManager();
   return instance;
@@ -42,37 +47,56 @@ export class SessionGenerationManager {
   async bumpGeneration(sessionId: string, reason?: string): Promise<number> {
     incrementAdoptionMetric('ws_generation_bumps_total');
     this.sequences.set(sessionId, 0);
-    if (!this.isEnabled()) return 0;
+    if (!sessionId || !this.isEnabled()) return 0;
     const pool = this.pool();
     if (!pool) return 0;
-    const res = await pool.query(
-      `INSERT INTO session_generations (session_id, generation, updated_at)
-       VALUES ($1, 1, NOW())
-       ON CONFLICT (session_id) DO UPDATE SET
-         generation = session_generations.generation + 1,
-         updated_at = NOW()
-       RETURNING generation`,
-      [sessionId],
-    );
-    const generation = Number((res.rows[0] as { generation?: number })?.generation ?? 1);
-    if (reason) {
-      void this.nextEnvelope(sessionId, { type: 'generation_bump', reason });
+    try {
+      // Only persist when the session row exists — hard refresh / SSE connect
+      // often races ahead of session hydrate and used to trip session_id_fkey.
+      const res = await pool.query(
+        `INSERT INTO session_generations (session_id, generation, updated_at)
+         SELECT $1, 1, NOW()
+         FROM sessions
+         WHERE id = $1
+         ON CONFLICT (session_id) DO UPDATE SET
+           generation = session_generations.generation + 1,
+           updated_at = NOW()
+         RETURNING generation`,
+        [sessionId],
+      );
+      const generation = Number((res.rows[0] as { generation?: number })?.generation ?? 0);
+      if (reason && generation > 0) {
+        void this.nextEnvelope(sessionId, { type: 'generation_bump', reason });
+      }
+      return generation;
+    } catch (err) {
+      if (isMissingSessionFk(err)) return 0;
+      throw err;
     }
-    return generation;
   }
 
   async getGeneration(sessionId: string): Promise<number> {
     const pool = this.pool();
-    if (!pool || !this.isEnabled()) return 0;
-    const res = await pool.query(`SELECT generation FROM session_generations WHERE session_id = $1`, [sessionId]);
-    if (!res.rows.length) {
-      await pool.query(
-        `INSERT INTO session_generations (session_id, generation, updated_at) VALUES ($1, 0, NOW()) ON CONFLICT DO NOTHING`,
+    if (!pool || !this.isEnabled() || !sessionId) return 0;
+    try {
+      const res = await pool.query(`SELECT generation FROM session_generations WHERE session_id = $1`, [sessionId]);
+      if (res.rows.length) {
+        return Number((res.rows[0] as { generation?: number })?.generation ?? 0);
+      }
+      const inserted = await pool.query(
+        `INSERT INTO session_generations (session_id, generation, updated_at)
+         SELECT $1, 0, NOW()
+         FROM sessions
+         WHERE id = $1
+         ON CONFLICT (session_id) DO NOTHING
+         RETURNING generation`,
         [sessionId],
       );
-      return 0;
+      return Number((inserted.rows[0] as { generation?: number })?.generation ?? 0);
+    } catch (err) {
+      if (isMissingSessionFk(err)) return 0;
+      throw err;
     }
-    return Number((res.rows[0] as { generation?: number })?.generation ?? 0);
   }
 
   wrap(sessionId: string, payload: Record<string, unknown>): Promise<SessionEventEnvelope> {

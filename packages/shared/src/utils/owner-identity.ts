@@ -78,11 +78,14 @@ function optTrim(value: string | undefined | null): string | undefined {
 export function mergeUserConfig(existing: UserConfig | undefined, patch: Partial<UserConfig>): UserConfig {
   const callsign = (patch.callsign !== undefined ? patch.callsign : existing?.callsign ?? '').trim();
   const next: UserConfig = { callsign };
+  // `names` replaces the list. A lone `name` must not wipe extra nicknames —
+  // Settings always syncs `name` to `names[0]`, and PUT used to pass both.
   const names = Array.isArray(patch.names)
     ? normalizeOwnerNames({ names: patch.names })
-    : patch.name !== undefined
-      ? normalizeOwnerNames({ name: patch.name })
-      : normalizeOwnerNames(existing);
+    : normalizeOwnerNames({
+        names: existing?.names,
+        name: patch.name !== undefined ? patch.name : existing?.name,
+      });
   if (names.length) {
     next.names = names;
     next.name = names[0];

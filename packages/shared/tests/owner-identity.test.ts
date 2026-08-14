@@ -72,6 +72,16 @@ describe('owner identity', () => {
     expect(merged.name).toBe('Siva');
   });
 
+  it('keeps extra nicknames when a patch only repeats the first name', () => {
+    const merged = mergeUserConfig(
+      { callsign: 'Mitra', names: ['Siva', 'Siv'], name: 'Siva', prefix: 'Mr.' },
+      { callsign: 'Mitra', name: 'Siva', gender: 'male' },
+    );
+    expect(merged.names).toEqual(['Siva', 'Siv']);
+    expect(merged.name).toBe('Siva');
+    expect(merged.gender).toBe('male');
+  });
+
   it('tells the model callsign is for the owner and public names are for everyone else', () => {
     const block = renderOwnerIdentityPrompt({
       callsign: 'Mitra',
