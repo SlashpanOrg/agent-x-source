@@ -143,6 +143,8 @@ interface ModelBenchmarkRunnerProps {
   modelName?: string;
   profileId?: string;
   modelCapabilities?: string[];
+  /** Provider-specific reasoning effort (CommandCode: low|medium|high|xhigh|max). */
+  reasoningEffort?: string;
   autoStart?: boolean;
   embedded?: boolean;
   /** Restore a previously completed run when revisiting the step. */
@@ -157,6 +159,7 @@ export function ModelBenchmarkRunner({
   modelName,
   profileId,
   modelCapabilities,
+  reasoningEffort,
   autoStart = false,
   embedded = false,
   initialResult = null,
@@ -253,6 +256,7 @@ export function ModelBenchmarkRunner({
         modelId,
         profileId,
         modelCapabilities,
+        reasoningEffort: reasoningEffort || undefined,
         force,
       });
       if (startRes.cached) {
@@ -266,7 +270,7 @@ export function ModelBenchmarkRunner({
       setRunning(false);
       onRunningChange?.(false);
     }
-  }, [providerId, modelId, profileId, modelCapabilities, handleEvent, onRunningChange, reset]);
+  }, [providerId, modelId, profileId, modelCapabilities, reasoningEffort, handleEvent, onRunningChange, reset]);
 
   const downloadLog = useCallback(async () => {
     try {

@@ -44,6 +44,17 @@ export {
 export type { DeepSearchPartPayload } from './utils/deep-search-parts.js';
 
 export { attachChartPartsFromTools } from './utils/chart-parts.js';
+export { attachVisualPartsFromTools, visualItemFromPart } from './utils/visual-parts.js';
+export {
+  isVisualKind,
+  isHttpUrl,
+  visualKindFromMime,
+  parseVisualSource,
+  parseVisualItem,
+  buildVisualItem,
+} from './utils/visual-item.js';
+export type { VisualItem, VisualKind, VisualSource } from './types/visual.js';
+export { VISUAL_KINDS } from './types/visual.js';
 export {
   MEDICAL_INFORMATIONAL_DISCLAIMER,
   MEDICAL_HUB_CATEGORY_IDS,
@@ -96,6 +107,45 @@ export type {
   TelegramDiscoveredChat,
 } from './types/channels.js';
 
+export type {
+  HostConfig,
+  HostExposureState,
+  HostExposureScope,
+  HostNetworkSnapshot,
+  HostStatusSnapshot,
+  TunnelStatus,
+  TunnelLifecycleState,
+  TunnelProviderId,
+  TunnelProviderCatalogEntry,
+  TunnelProviderCredentials,
+  SecurityPosture,
+  SecurityPostureCheck,
+} from './types/host.js';
+export { defaultHostConfig, mergeHostConfig } from './types/host.js';
+
+export type {
+  TelephonyConfig,
+  TelephonyProviderId,
+  TelephonyCapabilities,
+  TelephonyProviderCatalogEntry,
+  TelephonyProviderCredentials,
+  TelephonyProviderConfig,
+  TelephonyCredentialField,
+  TelephonyNumberBindingConfig,
+  TelephonyDefaultInboundMissionDraft,
+  TelephonyRecordingPolicy,
+  TelephonyAiDisclosure,
+  VoiceCallMission,
+  VoiceCallMissionEscalation,
+  NormalizedTelephonyEvent,
+  NormalizedTelephonyEventType,
+} from './types/telephony.js';
+export {
+  defaultTelephonyConfig,
+  mergeTelephonyConfig,
+  DEFAULT_TELEPHONY_CAPABILITIES,
+} from './types/telephony.js';
+
 export {
   MAX_QUESTIONNAIRE_CHOICES,
   QUESTIONNAIRE_CUSTOM_SUFFIX,
@@ -126,6 +176,9 @@ export type { PermissionHandlerResult, PermissionInstructResult } from './utils/
 export {
   VOICE_PERMISSION_TIMEOUT_MS,
   VOICE_PERMISSION_TIMEOUT_INSTRUCTION,
+  VOICE_PERMISSION_COLLECT_MS,
+  VOICE_PERMISSION_MAX_CLARIFY,
+  VOICE_PERMISSION_CLARIFY_LINE,
 } from './utils/voice-permission.js';
 
 export {
@@ -350,6 +403,17 @@ export {
   clientLocationCityLabel,
   formatClientSituationBlock,
 } from './utils/client-situation.js';
+
+export {
+  formatOwnerPublicName,
+  formatOwnerReferralExample,
+  mergeUserConfig,
+  normalizeOwnerNames,
+  isOwnerEmailValid,
+  ownerPronouns,
+} from './utils/owner-identity.js';
+export type { UserConfig, UserGender, UserHonorificPrefix } from './types/config.js';
+export { USER_HONORIFIC_PREFIXES, USER_GENDERS, USER_GENDER_LABELS } from './types/config.js';
 
 export type {
   DeepSearchContentType,

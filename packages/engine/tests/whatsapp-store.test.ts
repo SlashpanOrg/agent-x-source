@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { initAuthCreds } from '@whiskeysockets/baileys';
-import { WhatsAppCredsStore, WhatsAppSignalKeyStore } from '../src/whatsapp/WhatsAppStore.js';
+import { WhatsAppCredsStore, WhatsAppSignalKeyStore, hasRegisteredWhatsAppCreds } from '../src/whatsapp/WhatsAppStore.js';
 
 /**
  * Minimal in-memory stand-in for `pg.Pool` that understands exactly the SQL
@@ -198,5 +198,32 @@ describe('WhatsAppSignalKeyStore', () => {
 
     expect(await store.get('pre-key', ['1'])).toEqual({});
     expect(await store.get('session', ['x'])).toEqual({});
+  });
+});
+
+describe('hasRegisteredWhatsAppCreds', () => {
+  it('is false when no creds exist', async () => {
+    const pool = new FakePgPool();
+    await expect(hasRegisteredWhatsAppCreds(pool as never, makeDek())).resolves.toBe(false);
+  });
+
+  it('is false for unregistered (incomplete QR) creds', async () => {
+    const pool = new FakePgPool();
+    const dek = makeDek();
+    const store = new WhatsAppCredsStore(pool as never, dek);
+    const creds = initAuthCreds();
+    creds.registered = false;
+    await store.save(creds);
+    await expect(hasRegisteredWhatsAppCreds(pool as never, dek)).resolves.toBe(false);
+  });
+
+  it('is true after a completed multi-device link', async () => {
+    const pool = new FakePgPool();
+    const dek = makeDek();
+    const store = new WhatsAppCredsStore(pool as never, dek);
+    const creds = initAuthCreds();
+    creds.registered = true;
+    await store.save(creds);
+    await expect(hasRegisteredWhatsAppCreds(pool as never, dek)).resolves.toBe(true);
   });
 });

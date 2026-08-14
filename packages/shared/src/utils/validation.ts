@@ -307,7 +307,15 @@ export const agentXConfigSchema = z.preprocess(migrateConfigPerformanceKey, z.ob
   telemetry: z.boolean(),
   timezone: z.string().optional(),
   user: z.object({
-    callsign: z.string(),
+    callsign: z.string().min(1).max(30),
+    name: z.string().min(1).max(80).optional(),
+    names: z.array(z.string().min(1).max(80)).max(12).optional(),
+    prefix: z.string().max(20).optional(),
+    gender: z.enum(['male', 'female', 'nonbinary', 'unspecified']).optional(),
+    email: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z.string().email().max(254).optional(),
+    ),
   }).optional(),
   setupComplete: z.boolean().optional(),
   rag: ragConfigSchema,

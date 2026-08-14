@@ -99,8 +99,8 @@ export function useVoiceCommsSession({
     voiceOnly,
     engine,
     conversationMode,
-    Boolean(voiceCtx?.wakeWordEnabled),
-    voiceCtx?.wakePhrase ?? '',
+    engine === 'realtime_xai' ? false : Boolean(voiceCtx?.wakeWordEnabled),
+    engine === 'realtime_xai' ? '' : (voiceCtx?.wakePhrase ?? ''),
   );
 
   useEffect(() => {

@@ -65,6 +65,24 @@ describe('ProgressiveDisclosure', () => {
     expect(ids).not.toContain('deploy_k8s');
   });
 
+  it('always exposes custom-crew template tools as core', () => {
+    const tools = [
+      makeTool('crew_list_templates'),
+      makeTool('crew_get_template'),
+      makeTool('crew_resolve_template'),
+      makeTool('crew_draft_persona'),
+      makeTool('crew_validate_prompt'),
+      makeTool('crew_list_roster'),
+      makeTool('crew_create_custom'),
+      makeTool('deploy_k8s'),
+    ];
+    const ids = getCoreTools(tools).map((t) => t.id);
+    expect(ids).toContain('crew_list_templates');
+    expect(ids).toContain('crew_draft_persona');
+    expect(ids).toContain('crew_create_custom');
+    expect(ids).not.toContain('deploy_k8s');
+  });
+
   it('creates three bridge tools', () => {
     const bridges = createBridgeTools();
     expect(bridges).toHaveLength(3);

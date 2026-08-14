@@ -31,6 +31,15 @@ describe('voice speech normalization', () => {
     expect(out).not.toContain('⟨/voice⟩');
     expect(out).toContain('Hello there');
   });
+
+  it('speaks the site name instead of a full URL', () => {
+    const out = normalizeTextForSpeech(
+      'Here is https://images.pexels.com/photos/123456/pexels-photo-123456.jpeg?auto=compress&cs=tinysrgb&h=650',
+    );
+    expect(out).toContain('pexels.com');
+    expect(out).not.toContain('https://');
+    expect(out).not.toContain('123456');
+  });
 });
 
 describe('voice config helpers', () => {

@@ -9,6 +9,7 @@ import { getAttachmentWorkerLimit } from '../performance/PerformanceGovernor.js'
 
 const ALLOWED_MIMES = new Set([
   'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml',
+  'video/mp4', 'video/webm', 'video/quicktime', 'video/3gpp',
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -399,7 +400,9 @@ export class AttachmentService {
     const ext = filename.split('.').pop()?.toLowerCase();
     const map: Record<string, string> = {
       png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
-      webp: 'image/webp', svg: 'image/svg+xml', pdf: 'application/pdf',
+      webp: 'image/webp', svg: 'image/svg+xml',
+      mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', '3gp': 'video/3gpp',
+      pdf: 'application/pdf',
       docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -415,6 +418,7 @@ export class AttachmentService {
     if (mime.startsWith('text/')) return true;
     if (this.isCodeFile(filename)) return true;
     if (mime.startsWith('image/')) return true;
+    if (mime.startsWith('video/')) return true;
     return false;
   }
 

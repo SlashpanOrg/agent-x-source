@@ -1,18 +1,13 @@
 import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useColorScheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
-import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 import MicIcon from '@mui/icons-material/Mic';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import ScheduleIcon from '@mui/icons-material/Schedule';
 import GroupsIcon from '@mui/icons-material/Groups';
 import MemoryIcon from '@mui/icons-material/Memory';
-import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined';
-import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined';
-import ContrastIcon from '@mui/icons-material/Contrast';
 import { useAppCore, useAppLive } from '../store/AppContext';
 import { usePageVisible } from '../hooks/usePageVisible';
 import { VoiceAgentCard, VoiceAgentHeaderControls } from './voice/VoiceAgentCard';
@@ -36,8 +31,6 @@ import type {
   PerformanceShowcaseResponse,
   PerformancePresetId,
 } from '../api';
-
-const MODE_CYCLE = ['dark', 'light', 'system'] as const;
 
 const PRESET_ORDER: PerformancePresetId[] = ['quiet', 'balanced', 'moderate', 'ultimate'];
 
@@ -428,12 +421,10 @@ export function BentoDashboard() {
   const { username } = useAppCore();
   const { healthData, serverOnline, refreshHealth } = useAppLive();
   const visible = usePageVisible();
-  const { mode, setMode } = useColorScheme();
   const personaName = usePersonaName();
   const mounted = useRef(true);
 
   const [voiceActiveForPulses, setVoiceActiveForPulses] = useState(false);
-  const [voiceBypassChip, setVoiceBypassChip] = useState(false);
   const [voiceprintEnabled, setVoiceprintEnabled] = useState(false);
 
   const [subagentTasks, setSubagentTasks] = useState<SubAgentTaskInfo[]>([]);
@@ -577,17 +568,6 @@ export function BentoDashboard() {
     }
   }, [presetSaving]);
 
-  const currentMode = mode ?? 'system';
-  const cycleMode = () => {
-    const next = MODE_CYCLE[(MODE_CYCLE.indexOf(currentMode as typeof MODE_CYCLE[number]) + 1) % MODE_CYCLE.length]!;
-    setMode(next);
-  };
-  const modeIcon = currentMode === 'light'
-    ? <LightModeOutlinedIcon sx={{ fontSize: 16 }} />
-    : currentMode === 'system'
-      ? <ContrastIcon sx={{ fontSize: 16 }} />
-      : <DarkModeOutlinedIcon sx={{ fontSize: 16 }} />;
-
   const activePreset = (perf?.showcase.activePreset ?? 'balanced') as PerformancePresetId;
   const lanes = perf?.showcase.active;
   const cpuPct = metrics?.cpu.system ?? metrics?.cpu.process ?? 0;
@@ -697,11 +677,6 @@ export function BentoDashboard() {
           <Typography sx={{ fontSize: '0.58rem', fontFamily: MONO, color: colors.text.dim, display: { xs: 'none', sm: 'inline' } }}>
             {new Date(lastTick).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
           </Typography>
-          <Tooltip title={`Theme: ${currentMode}`}>
-            <IconButton size="small" onClick={cycleMode} sx={{ color: colors.text.dim, '&:hover': { color: colors.text.primary } }}>
-              {modeIcon}
-            </IconButton>
-          </Tooltip>
         </Box>
       </Box>
 
@@ -727,9 +702,7 @@ export function BentoDashboard() {
             icon={<MicIcon sx={{ fontSize: 15, color: colors.accent.blue }} />}
             action={
               <VoiceAgentHeaderControls
-                bypassChip={voiceBypassChip}
                 voiceprintEnabled={voiceprintEnabled}
-                onBypassChipChange={setVoiceBypassChip}
                 onVoiceprintEnabledChange={setVoiceprintEnabled}
               />
             }
@@ -744,7 +717,6 @@ export function BentoDashboard() {
           >
             <VoiceAgentCard
               onActiveChange={setVoiceActiveForPulses}
-              bypassChip={voiceBypassChip}
               voiceprintEnabled={voiceprintEnabled}
             />
           </Panel>
@@ -785,11 +757,13 @@ export function BentoDashboard() {
                   size={64}
                 />
                 <ArcMeter
-                  label="RAM"
+                  label="System RAM"
                   value={memPct}
                   display={metrics ? `${memPct.toFixed(0)}%` : '—'}
                   accent={meterColor(memPct)}
-                  hint={metrics ? formatBytes(metrics.memory.used) : undefined}
+                  hint={metrics
+                    ? `${formatBytes(metrics.memory.used)} sys · ${formatBytes(metrics.memory.rss)} proc`
+                    : undefined}
                   size={64}
                 />
               </Box>

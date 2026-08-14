@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { syncAuthTokenFromSession } from '../api';
-import { VoiceSessionClient, VOICE_CONNECT_SUPERSEDED, type VoiceClientState, type VoiceTurnTimings, type VoicePermissionPrompt, type VoicePermissionChoice } from '../voice/VoiceSessionClient';
+import { VoiceSessionClient, VOICE_CONNECT_SUPERSEDED, type VoiceClientState, type VoiceTurnTimings } from '../voice/VoiceSessionClient';
 import { VOICE_MAX_TURN_SECONDS, VOICE_TURN_COUNTDOWN_FROM_SECONDS, VOICE_MIN_RECORDING_MS, VOICE_ACCIDENTAL_TAP_MS, VOICE_MIN_SPEECH_LEVEL } from '../voice/constants';
 import { type VoiceTurnPipeline } from '../voice/voice-turn-pipeline';
 import { markVoiceOutputUnlocked } from '../voice/support';
@@ -59,9 +59,9 @@ export function useVoiceSession(
   const [audioLevel, setAudioLevel] = useState(0);
   const [silenceProgress, setSilenceProgress] = useState(0);
   const [muted, setMuted] = useState(false);
+  const mutedRef = useRef(false);
   const [textOnlyPlayback, setTextOnlyPlayback] = useState(false);
   const [voiceTimings, setVoiceTimings] = useState<VoiceTurnTimings | null>(null);
-  const [permissionPrompt, setPermissionPrompt] = useState<VoicePermissionPrompt | null>(null);
   const [agentTurnComplete, setAgentTurnComplete] = useState(false);
   const [pttTurnLocked, setPttTurnLocked] = useState(false);
   const [playbackActive, setPlaybackActive] = useState(false);
@@ -344,12 +344,11 @@ export function useVoiceSession(
           setVoiceTimings(timings);
           callbacksRef.current?.onVoiceTiming?.(timings);
         },
-        onPermissionPrompt: (prompt) => setPermissionPrompt(prompt),
-        onPermissionResolved: () => setPermissionPrompt(null),
         onWakeIdle: (_active, until) => {
           setWakeIdleUntil(until);
         },
       });
+      clientRef.current.setMicMuted(mutedRef.current);
     }
     return clientRef.current;
   }, [enabled, mode, engine, chatSessionId, voiceOnly, unlockPttTurn]);
@@ -442,17 +441,7 @@ export function useVoiceSession(
     setPlaybackActive(false);
     setTurnPipeline('idle');
     setPttReady(false);
-    setPermissionPrompt(null);
   }, [stopTimer]);
-
-  const respondToPermission = useCallback((
-    choice: VoicePermissionChoice,
-    opts?: { reason?: 'timeout' | 'user' },
-  ) => {
-    const requestId = permissionPrompt?.requestId;
-    clientRef.current?.respondToPermission(choice, { ...opts, requestId });
-    setPermissionPrompt(null);
-  }, [permissionPrompt?.requestId]);
 
   const shouldDiscardCapture = useCallback((heldMs: number, listenedMs: number, peakAudio: number) => {
     const effectiveMs = Math.max(heldMs, listenedMs);
@@ -623,7 +612,13 @@ export function useVoiceSession(
     clientRef.current?.setTextOnlyPlayback(true);
   }, []);
 
-  const setToggles = useCallback((toggles: { searchWeb?: boolean; bypassChip?: boolean; voiceprintEnabled?: boolean }) => {
+  const setMicMuted = useCallback((next: boolean) => {
+    mutedRef.current = next;
+    setMuted(next);
+    clientRef.current?.setMicMuted(next);
+  }, []);
+
+  const setToggles = useCallback((toggles: { searchWeb?: boolean; voiceprintEnabled?: boolean }) => {
     clientRef.current?.setToggles(toggles);
   }, []);
 
@@ -659,14 +654,12 @@ export function useVoiceSession(
     silenceProgress,
     warning,
     muted,
-    setMuted,
+    setMuted: setMicMuted,
     mode,
     textOnlyPlayback,
     voiceTimings,
     wakeIdleActive,
     wakeIdleUntil,
-    permissionPrompt,
-    respondToPermission,
     startSession,
     stopSession,
     ensureSessionLink,

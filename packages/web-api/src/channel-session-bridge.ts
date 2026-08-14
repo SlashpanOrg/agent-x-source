@@ -273,13 +273,8 @@ function parseStoredResumeState(row: Record<string, unknown> | null | undefined)
 
 export function resolveInboundAgentForChannel(channel: ChannelBindingId, senderId?: string): Agent {
   const eng = getEngine();
-  // Bindings link desktop context per channel — each surface has its own transcript session.
-  // For WhatsApp, per-contact sessions are used — the binding/sync is only for
-  // the shared desktop context, not the per-contact agent.
-  if (channel !== 'whatsapp' || !senderId) {
-    autoBindChannelToUiSession(eng, channel);
-    syncChannelSuperSessionContext(eng, channel);
-  }
+  autoBindChannelToUiSession(eng, channel);
+  syncChannelSuperSessionContext(eng, channel);
   return ensureChannelAgent(channel, senderId);
 }
 

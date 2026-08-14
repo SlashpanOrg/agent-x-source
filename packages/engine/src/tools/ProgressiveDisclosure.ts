@@ -33,7 +33,7 @@ const CORE_TOOL_PATTERNS = [
   /^agent_x_overview$/,
   // Agent meta / charts / todos
   /^ask_clarification/, /^delegate_to/, /^sub_agent/, /^todo/,
-  /^search_crew_hub/, /^render_chart$/, /^spawn_crew/, /^save_to_markdown$/, /^markdown_list$/,
+  /^search_crew_hub/, /^crew_/, /^render_chart$/, /^present_visual$/, /^spawn_crew/, /^save_to_markdown$/, /^markdown_list$/,
   // Native channel tools (Telegram/Slack/Discord/Email/WhatsApp) — must be
   // available on messaging sessions. WhatsApp has a full native tool surface
   // (session management, messaging, contacts, groups) via Baileys, not just

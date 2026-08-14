@@ -933,6 +933,8 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
 
 /** Show the permission prompt modal for risky tool operations. */
 const handlePermissionRequired = (ev: TelemetryEvent, ctx: EventHandlerContext): void => {
+  // Voice sessions confirm tools by speech only — never a chat/UI banner.
+  if (ev.voice === true) return;
   ctx.setMessages((prev) => {
     // Ignore stale permission prompts replayed from telemetry buffer on page load,
     // and prompts that arrive after the user already stopped the turn.

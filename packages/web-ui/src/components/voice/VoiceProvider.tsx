@@ -16,7 +16,6 @@ import { useVoiceCommsSession, type VoiceCommsContextInput } from '../../hooks/u
 import { voiceDisabledReason } from '../../voice/support';
 import { resolveWakePhrase } from '../../voice/wake-phrase';
 import type { VoiceConfig, VoiceSidecarHealth } from '../../api';
-import { VoiceToolPermissionModal } from './VoiceToolPermissionModal';
 const VOICE_ACTIVE_STORAGE_KEY = 'agentx_voice_active_v1';
 
 function readVoiceActiveFromStorage(): boolean {
@@ -214,8 +213,8 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
     setVoiceConfig(cfg);
     // Wake word is an active voice feature, so treat voice as enabled if either
     // the master switch or the wake-word switch is on.
-    setVoiceEnabled(Boolean(cfg.enabled) || Boolean(cfg.wakeWord?.enabled));
-    setWakeWordEnabled(Boolean(cfg.wakeWord?.enabled));
+    setVoiceEnabled(Boolean(cfg.enabled) || (cfg.engine !== 'realtime_xai' && Boolean(cfg.wakeWord?.enabled)));
+    setWakeWordEnabled(cfg.engine !== 'realtime_xai' && Boolean(cfg.wakeWord?.enabled));
   }, []);
 
   const loadVoiceState = useCallback(async () => {
@@ -227,10 +226,9 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
         personaApi.get().catch(() => ({} as Record<string, never>)),
       ]);
       setVoiceConfig(cfg);
-      // Wake word is an active voice feature, so treat voice as enabled if either
-      // the master switch or the wake-word switch is on.
-      setVoiceEnabled(Boolean(cfg.enabled) || Boolean(cfg.wakeWord?.enabled));
-      setWakeWordEnabled(Boolean(cfg.wakeWord?.enabled));
+      const wakeOn = cfg.engine !== 'realtime_xai' && Boolean(cfg.wakeWord?.enabled);
+      setVoiceEnabled(Boolean(cfg.enabled) || wakeOn);
+      setWakeWordEnabled(wakeOn);
       const personaName = typeof persona?.name === 'string' ? persona.name : null;
       const customPhrase = cfg.wakeWord?.phrase?.trim() ? cfg.wakeWord.phrase : null;
       setWakePhrase(resolveWakePhrase(customPhrase ?? personaName));
@@ -347,17 +345,6 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
     <VoiceContext.Provider value={value}>
       <VoiceCommsContext.Provider value={commsContextValue}>
         {children}
-        {/* Global voice permission modal — rendered at the app root so it's
-            available on any page, not just the dashboard or chat. */}
-        <VoiceToolPermissionModal
-          open={Boolean(dashboardComms.session.permissionPrompt)}
-          prompt={dashboardComms.session.permissionPrompt}
-          onRespond={dashboardComms.session.respondToPermission}
-          onSwitchToBypass={() => {
-            dashboardComms.session.setToggles({ bypassChip: true });
-            dashboardComms.session.respondToPermission('approve_all');
-          }}
-        />
       </VoiceCommsContext.Provider>
     </VoiceContext.Provider>
   );

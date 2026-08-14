@@ -14,7 +14,7 @@ import SpeedIcon from '@mui/icons-material/Speed';
 import NotificationsIcon from '@mui/icons-material/Notifications';
 import KeyboardVoiceIcon from '@mui/icons-material/KeyboardVoice';
 import SecurityIcon from '@mui/icons-material/Security';
-import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
+import PublicIcon from '@mui/icons-material/Public';
 import BugReportIcon from '@mui/icons-material/BugReport';
 import { CheckCircle } from './CheckCircle';
 import { config, personaApi, settingsPermissions, type AgentXConfig, type AgentPersonaConfig } from '../api';
@@ -31,10 +31,10 @@ import { ChannelsTab, mergeChannelsConfig } from './settings/ChannelsTab';
 import { LocalModelTab } from './settings/LocalModelTab';
 import { PerformanceTab } from './settings/PerformanceTab';
 import { VoiceTab, mergeVoiceConfig } from './settings/VoiceTab';
+import { HostTab, mergeHostSettingsConfig } from './settings/HostTab';
 import { notifyVoiceConfigUpdated } from '../voice/support';
 import { ProvidersPanel } from './ProvidersPanel';
 import { useLocalModelSupported } from '../hooks/useSystemCapabilities';
-import { KnowledgeTab } from './settings/KnowledgeTab';
 import { PermissionsTab } from './settings/PermissionsTab';
 import { GeneralTab } from './settings/GeneralTab';
 import { DeveloperTab } from './settings/DeveloperTab';
@@ -46,10 +46,10 @@ type SettingsTab =
   | 'tools'
   | 'persistence'
   | 'local-model'
-  | 'knowledge'
   | 'channels'
   | 'performance'
   | 'voice'
+  | 'host'
   | 'permissions'
   | 'developer';
 
@@ -61,8 +61,8 @@ const ALL_TABS: Array<{ id: SettingsTab; label: string; icon: React.ReactNode }>
   { id: 'performance', label: 'Performance', icon: <SpeedIcon sx={{ fontSize: 14 }} /> },
   { id: 'persona', label: 'Persona', icon: <SmartToyIcon sx={{ fontSize: 14 }} /> },
   { id: 'local-model', label: 'Local', icon: <BrainIcon sx={{ fontSize: 14 }} /> },
-  { id: 'knowledge', label: 'Knowledge', icon: <LibraryBooksIcon sx={{ fontSize: 14 }} /> },
   { id: 'voice', label: 'Voice', icon: <KeyboardVoiceIcon sx={{ fontSize: 14 }} /> },
+  { id: 'host', label: 'Host', icon: <PublicIcon sx={{ fontSize: 14 }} /> },
   { id: 'channels', label: 'Channels', icon: <NotificationsIcon sx={{ fontSize: 14 }} /> },
   { id: 'tools', label: 'Search', icon: <TravelExploreIcon sx={{ fontSize: 14 }} /> },
   { id: 'persistence', label: 'Storage', icon: <StorageIcon sx={{ fontSize: 14 }} /> },
@@ -128,6 +128,7 @@ export function SettingsPanel() {
       const payload: Partial<AgentXConfig> = {
         ...rest,
         channels: mergeChannelsConfig(nextCfg.channels),
+        host: mergeHostSettingsConfig(nextCfg.host),
         tools: nextCfg.tools?.webSearch
           ? { ...nextCfg.tools, webSearch: mergeWebSearchConfig(nextCfg.tools.webSearch) }
           : nextCfg.tools,
@@ -260,17 +261,24 @@ export function SettingsPanel() {
         )}
         {activeTab === 'models' && <ProvidersPanel />}
         {activeTab === 'local-model' && <LocalModelTab />}
-        {activeTab === 'knowledge' && <KnowledgeTab />}
         {activeTab === 'voice' && (
           <VoiceTab
             value={cfg.voice}
             onChange={(voice) => updateCfg({ ...cfg, voice })}
           />
         )}
+        {activeTab === 'host' && (
+          <HostTab
+            value={cfg.host}
+            onChange={(host) => updateCfg({ ...cfg, host })}
+          />
+        )}
         {activeTab === 'channels' && (
           <ChannelsTab
             value={channelsConfig}
             onChange={(channels) => updateCfg({ ...cfg, channels })}
+            hostConfig={cfg.host}
+            onHostChange={(host) => updateCfg({ ...cfg, host })}
           />
         )}
         {activeTab === 'tools' && (

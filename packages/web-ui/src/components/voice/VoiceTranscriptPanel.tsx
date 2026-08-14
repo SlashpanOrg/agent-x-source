@@ -5,6 +5,7 @@ import CircularProgress from '@mui/material/CircularProgress';
 import { colors, alphaColor, MONO } from '../../theme';
 import { sessions } from '../../api';
 import { sanitizeVoiceDisplayText } from '../../voice/sanitize-display-text';
+import { LastShownChip } from '../../visual/LastShownChip';
 import { parseCallDivider, readCallDividerMeta } from '@agentx/shared/browser';
 import type { ChatMessage } from '../../api';
 
@@ -84,6 +85,29 @@ function mapTranscriptLines(messages: ChatMessage[]): TranscriptLine[] {
   return lines;
 }
 
+/** Streaming deltas grow (or briefly shrink); a new utterance does neither. */
+function isAgentTranscriptContinuation(prev: string, next: string): boolean {
+  if (!prev) return true;
+  if (!next) return false;
+  return next.startsWith(prev) || prev.startsWith(next);
+}
+
+interface SettledAgentLine {
+  id: string;
+  text: string;
+}
+
+/** Drop settled live lines once history contains the same assistant texts. */
+function unmatchedSettledAgentLines(settled: SettledAgentLine[], historyTexts: string[]): SettledAgentLine[] {
+  const remaining = [...historyTexts];
+  return settled.filter((line) => {
+    const idx = remaining.indexOf(line.text);
+    if (idx === -1) return true;
+    remaining.splice(idx, 1);
+    return false;
+  });
+}
+
 /**
  * Call-style log transcript for the Voice Agent card (not chat bubbles).
  * Latest 25 messages; older pages load on demand with sliding-window recycle.
@@ -108,7 +132,9 @@ export function VoiceTranscriptPanel({
   const [loadingOlder, setLoadingOlder] = useState(false);
   /** Sticky live lines until history catch-up (assistant persist lags phase idle). */
   const [pendingUser, setPendingUser] = useState('');
-  const [pendingAgent, setPendingAgent] = useState('');
+  /** Completed agent utterances not yet in history — consecutive replies must not share one slot. */
+  const [settledAgents, setSettledAgents] = useState<SettledAgentLine[]>([]);
+  const prevLiveAgentRef = useRef('');
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const liveCapRef = useRef(true);
   const detachedRef = useRef(false);
@@ -216,10 +242,16 @@ export function VoiceTranscriptPanel({
   }, [liveUserClean]);
 
   useEffect(() => {
-    if (liveAgentClean) {
-      setPendingAgent(liveAgentClean);
+    const prev = prevLiveAgentRef.current;
+    const next = liveAgentClean;
+    if (prev && !isAgentTranscriptContinuation(prev, next)) {
+      setSettledAgents((list) => (
+        list[list.length - 1]?.text === prev
+          ? list
+          : [...list, { id: crypto.randomUUID(), text: prev }]
+      ));
     }
-    // Do not clear pending when live text clears — history catch-up clears it below.
+    prevLiveAgentRef.current = next;
   }, [liveAgentClean]);
 
   // Avoid duplicate lines when history already includes the same utterance
@@ -231,30 +263,33 @@ export function VoiceTranscriptPanel({
     }
     return '';
   })();
-  const lastAgentText = (() => {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const m = messages[i]!;
-      if (m.role === 'assistant') return m.text;
-    }
-    return '';
-  })();
+  const historyAgentTexts = messages.filter((m) => m.role === 'assistant').map((m) => m.text);
+  const lastAgentText = historyAgentTexts[historyAgentTexts.length - 1] ?? '';
+  const unmatchedSettled = unmatchedSettledAgentLines(settledAgents, historyAgentTexts);
+
+  useEffect(() => {
+    const historyTexts = messages.filter((m) => m.role === 'assistant').map((m) => m.text);
+    setSettledAgents((prev) => {
+      const next = unmatchedSettledAgentLines(prev, historyTexts);
+      if (next.length === prev.length && next.every((line, i) => line.id === prev[i]?.id)) return prev;
+      return next;
+    });
+  }, [messages]);
 
   useEffect(() => {
     if (pendingUser && pendingUser === lastUserText) setPendingUser('');
   }, [pendingUser, lastUserText]);
 
-  useEffect(() => {
-    if (pendingAgent && pendingAgent === lastAgentText) setPendingAgent('');
-  }, [pendingAgent, lastAgentText]);
-
   const displayUser = liveUserClean || pendingUser;
-  const displayAgent = liveAgentClean || pendingAgent;
+  const lastSettledText = unmatchedSettled[unmatchedSettled.length - 1]?.text ?? '';
   const showLiveUser = Boolean(displayUser) && displayUser !== lastUserText;
-  const showLiveAgent = Boolean(displayAgent) && displayAgent !== lastAgentText;
+  const showLiveAgent = Boolean(liveAgentClean)
+    && liveAgentClean !== lastAgentText
+    && liveAgentClean !== lastSettledText;
 
   useEffect(() => {
-    if (showLiveUser || showLiveAgent) scrollToBottom('smooth');
-  }, [showLiveUser, showLiveAgent, displayUser, displayAgent, scrollToBottom]);
+    if (showLiveUser || showLiveAgent || unmatchedSettled.length > 0) scrollToBottom('smooth');
+  }, [showLiveUser, showLiveAgent, displayUser, liveAgentClean, unmatchedSettled.length, scrollToBottom]);
 
   return (
     <Box sx={{
@@ -276,15 +311,18 @@ export function VoiceTranscriptPanel({
         py: 0.55,
         borderBottom: `1px solid ${colors.border.subtle}`,
       }}>
-        <Typography sx={{
-          fontSize: '0.52rem',
-          fontFamily: MONO,
-          letterSpacing: '1.2px',
-          color: colors.text.dim,
-          textTransform: 'uppercase',
-        }}>
-          Transcript
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+          <Typography sx={{
+            fontSize: '0.52rem',
+            fontFamily: MONO,
+            letterSpacing: '1.2px',
+            color: colors.text.dim,
+            textTransform: 'uppercase',
+          }}>
+            Transcript
+          </Typography>
+          <LastShownChip />
+        </Box>
         {detachedRef.current && (
           <Box
             component="button"
@@ -348,7 +386,7 @@ export function VoiceTranscriptPanel({
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
             <CircularProgress size={14} sx={{ color: colors.text.dim }} />
           </Box>
-        ) : messages.length === 0 && !showLiveUser && !showLiveAgent ? (
+        ) : messages.length === 0 && !showLiveUser && !showLiveAgent && unmatchedSettled.length === 0 ? (
           <Typography sx={{
             fontSize: '0.6rem',
             fontFamily: MONO,
@@ -373,6 +411,15 @@ export function VoiceTranscriptPanel({
           ))
         )}
 
+        {unmatchedSettled.map((line) => (
+          <LogLine
+            key={line.id}
+            role="agent"
+            text={line.text}
+            agentLabel={agentLabel}
+          />
+        ))}
+
         {showLiveUser && (
           <LogLine
             role="operator"
@@ -385,8 +432,8 @@ export function VoiceTranscriptPanel({
         {showLiveAgent && (
           <LogLine
             role="agent"
-            text={displayAgent}
-            live={Boolean(liveAgentClean)}
+            text={liveAgentClean}
+            live
             agentLabel={agentLabel}
           />
         )}

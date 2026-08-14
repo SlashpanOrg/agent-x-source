@@ -41,6 +41,19 @@ export class StreamingPlayback {
       this.primingChunks = [];
       this.primingSampleCount = 0;
     }
+    await this.playPcm(playPcm, sampleRate);
+  }
+
+  /** Play leftover priming audio that never reached MIN_FIRST_PLAYBACK_SAMPLES (short announces). */
+  async flushPriming(): Promise<void> {
+    if (this.primingSampleCount === 0 || this.primingChunks.length === 0) return;
+    const playPcm = mergeInt16Chunks(this.primingChunks);
+    this.primingChunks = [];
+    this.primingSampleCount = 0;
+    await this.playPcm(playPcm, this.defaultSampleRate);
+  }
+
+  private async playPcm(playPcm: Int16Array, sampleRate: number): Promise<void> {
     const ctx = await this.ensureContext();
     const floats = int16ToFloat32(playPcm);
     const channel = new Float32Array(floats);

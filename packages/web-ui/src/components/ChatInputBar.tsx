@@ -247,7 +247,7 @@ const ChatInputBarComponent = React.forwardRef<ChatInputBarHandle, ChatInputBarP
 
         {streaming ? (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
-            <IconButton size="small" onClick={onCancel} sx={{ color: colors.accent.red, p: 0.5 }}>
+            <IconButton size="small" onClick={onCancel} aria-label="Stop generation" sx={{ color: colors.accent.red, p: 0.5 }}>
               <StopIcon sx={{ fontSize: 20 }} />
             </IconButton>
             {hasText && (

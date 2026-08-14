@@ -23,6 +23,11 @@ function readFileState(sessionId: string): VoiceRealtimeState | null {
   }
 }
 
+/** Instant file-backed identity for xAI connect — never waits on Postgres. */
+export function peekVoiceRealtimeStateFromFile(sessionId: string): VoiceRealtimeState | null {
+  return readFileState(sessionId);
+}
+
 function writeFileState(state: VoiceRealtimeState): void {
   try {
     writeFileSync(filePath(state.sessionId), JSON.stringify(state, null, 2), 'utf8');

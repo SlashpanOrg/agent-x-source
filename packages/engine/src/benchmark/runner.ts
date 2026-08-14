@@ -13,6 +13,7 @@ import type {
   BenchmarkTestResult,
 } from './types.js';
 import type { CompletionRequest } from '@agentx/shared';
+import { commandCodeBenchmarkReasoningEffort } from '../providers/commandcode/commandcode-metadata.js';
 
 type TestDef = {
   id: BenchmarkTestId;
@@ -40,10 +41,24 @@ const BENCHMARK_TOOLS = [
   },
 ];
 
-function benchmarkRequest(_config: BenchmarkRunConfig, request: CompletionRequest): CompletionRequest {
-  // Force minimal reasoning for all providers unless the test explicitly opts in.
-  // The benchmark measures capability, not thinking latency.
-  return { ...request, reasoningEffort: request.reasoningEffort ?? 'none' };
+/**
+ * Resolve benchmark reasoning effort per provider.
+ * Most providers accept `none` for “minimal thinking”; CommandCode only allows
+ * low|medium|high|xhigh|max and rejects `none`.
+ */
+function resolveBenchmarkReasoningEffort(
+  config: BenchmarkRunConfig,
+  request: CompletionRequest,
+): CompletionRequest['reasoningEffort'] {
+  if (request.reasoningEffort) return request.reasoningEffort;
+  if (config.providerId === 'commandcode') {
+    return commandCodeBenchmarkReasoningEffort(config.reasoningEffort);
+  }
+  return (config.reasoningEffort as CompletionRequest['reasoningEffort']) ?? 'none';
+}
+
+function benchmarkRequest(config: BenchmarkRunConfig, request: CompletionRequest): CompletionRequest {
+  return { ...request, reasoningEffort: resolveBenchmarkReasoningEffort(config, request) };
 }
 
 async function benchComplete(
@@ -582,8 +597,8 @@ export async function runModelBenchmark(
       tests.push(result);
       onProgress?.({ type: 'test_complete', result, index: i + 1, total });
     } catch (err) {
-      // Auth / network / provider-unavailable: stop the suite. Capability misses
-      // and wrong answers continue so remaining probes can still score.
+      // Auth / network / bad-request (400): stop the suite immediately.
+      // Capability misses and wrong answers continue so remaining probes can still score.
       if (isProviderAccessOrNetworkError(err)) {
         throw new Error(formatBenchmarkAbortError(err));
       }

@@ -1000,7 +1000,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
         </SettingsCard>
         )}
 
-        {engine && ecapaInstalled && (
+        {engine === 'stt_llm_tts' && ecapaInstalled && (
           <SettingsCard title="Voiceprints" subtitle="Manage voice profiles and anti-spoof tools">
             <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
               <Button
@@ -1021,7 +1021,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
           </SettingsCard>
         )}
 
-        {engine && (
+        {engine === 'stt_llm_tts' && (
           <SpeakerLibraryCard ecapaInstalled={installedAssetIds.has('speechbrain-ecapa')} />
         )}
 
@@ -1162,6 +1162,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
 
         {!loading && (
         <>
+        {engine === 'stt_llm_tts' && (
         <SettingsCard title="Voice activation" subtitle="How you use voice in chat sessions">
           <FormControlLabel
             control={(
@@ -1175,7 +1176,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
                     wakeWord: { ...voiceConfig.wakeWord, enabled: e.target.checked },
                   });
                 }}
-                disabled={engine === 'realtime_xai' ? !xaiConfigured : !kitReady}
+                disabled={!kitReady}
               />
             )}
             label={<Typography sx={{ fontSize: '0.72rem', ...settingsMonoSx }}>Wake word ("{wakePhraseLabel}")</Typography>}
@@ -1185,6 +1186,7 @@ export function VoiceTab({ value, onChange }: VoiceTabProps) {
             Hold Space in chat voice mode while speaking.
           </Typography>
         </SettingsCard>
+        )}
 
         {engine === 'stt_llm_tts' && (
         <SettingsCard

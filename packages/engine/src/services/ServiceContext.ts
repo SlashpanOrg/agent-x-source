@@ -10,6 +10,8 @@ import type { IChannelService } from './channel/IChannelService.js';
 import { ChannelService } from './channel/ChannelService.js';
 import { resolveChannelInboundAgent } from '../channels/channel-inbound-router.js';
 import type { WhatsAppSessionService } from '../whatsapp/WhatsAppSessionService.js';
+import type { StandingOrderStore } from '../whatsapp/jarvis/StandingOrderStore.js';
+import type { ContactDirectoryStore } from '../whatsapp/contacts/ContactDirectoryStore.js';
 
 /**
  * Shared context passed to every service on startup.
@@ -61,6 +63,26 @@ export function getWhatsAppSessionServiceInstance(): WhatsAppSessionService | nu
 
 export function setWhatsAppSessionServiceInstance(instance: WhatsAppSessionService | null): void {
   _whatsappSessionServiceInstance = instance;
+}
+
+let _standingOrderStoreInstance: StandingOrderStore | null = null;
+
+export function getStandingOrderStoreInstance(): StandingOrderStore | null {
+  return _standingOrderStoreInstance;
+}
+
+export function setStandingOrderStoreInstance(instance: StandingOrderStore | null): void {
+  _standingOrderStoreInstance = instance;
+}
+
+let _contactDirectoryStoreInstance: ContactDirectoryStore | null = null;
+
+export function getContactDirectoryStoreInstance(): ContactDirectoryStore | null {
+  return _contactDirectoryStoreInstance;
+}
+
+export function setContactDirectoryStoreInstance(instance: ContactDirectoryStore | null): void {
+  _contactDirectoryStoreInstance = instance;
 }
 
 /**

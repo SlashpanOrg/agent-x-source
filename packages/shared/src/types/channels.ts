@@ -60,26 +60,13 @@ export interface WhatsAppChannelConfig {
    */
   engine?: 'baileys' | 'electron-wwebjs';
   /**
-   * Inbound auto-reply policy:
-   * - 'saved_contacts' (default): Only reply to contacts saved in the user's
-   *   phone address book. Unknown numbers and business promotions are silently
-   *   dropped — no auto-reply. The user can explicitly allow a number via chat.
-   * - 'allowlist': Only reply to JIDs in `allowedJids`. All others are dropped.
-   * - 'all': Reply to all inbound messages (not recommended — spam risk).
+   * @deprecated Ignored. WhatsApp is Jarvis-mode: world messages brief the
+   * owner; standing orders control any auto-send.
    */
   autoReplyMode?: 'saved_contacts' | 'allowlist' | 'all';
-  /**
-   * Explicitly allowed JIDs (WhatsApp user IDs, e.g. `917010541995@s.whatsapp.net`).
-   * Used when `autoReplyMode` is 'allowlist', or as a supplement to
-   * 'saved_contacts' mode (numbers the user explicitly allowed even though
-   * they're not in the phone's address book).
-   */
+  /** @deprecated Ignored. Use standing orders. */
   allowedJids?: string[];
-  /**
-   * Explicitly blocked JIDs. Messages from these senders are always dropped,
-   * regardless of `autoReplyMode`. Useful for blocking spam that passes the
-   * saved-contacts check (e.g. a saved contact that sends promotional content).
-   */
+  /** @deprecated Ignored. Use standing orders or whatsapp_block_contact. */
   blockedJids?: string[];
 }
 

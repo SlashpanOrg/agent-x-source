@@ -136,6 +136,7 @@ import {
 } from './crew-auto-compose.js';
 import { CrewMissionOrchestrator, type CrewMissionOptions, type CrewMissionResult } from './CrewMissionOrchestrator.js';
 import { setCrewMissionDeps } from '../tools/builtin/spawn-crew-workers.js';
+import { setCustomCrewCreateAgent } from '../tools/builtin/create-custom-crew.js';
 import { isMissionInProgress } from './crew-mission-registry.js';
 import { evaluateCrewDelegation } from './crew-delegation-guard.js';
 import { ContextTracker } from './ContextTracker.js';
@@ -168,6 +169,7 @@ import { withSpan } from '../observability/tracer.js';
 import { reconcileIntegrationHintWithActiveTools } from '../integrations/integration-tool-availability.js';
 import type { ThirdPartyTurnPolicy } from '../integrations/third-party-access.js';
 import { buildGoogleAiSdkProviderOptions } from '../providers/google/gemini-metadata.js';
+import { buildCommandCodeAiSdkProviderOptions } from '../providers/commandcode/commandcode-metadata.js';
 import { createAiSdkStreamHandler, consumeStreamWithWatchdog, STREAM_IDLE_TIMEOUT_MS } from './AiSdkStreamHandler.js';
 import type { PartPersistFn } from './AiSdkStreamHandler.js';
 import { applyRichResponsePolicy } from './rich-response-policy.js';
@@ -301,6 +303,16 @@ function isAffirmativeConsentAnswer(answer: string): boolean {
   const v = afterColon.toLowerCase();
   if (/^(no|nope|nah|cancel|deny|decline)\b/.test(v)) return false;
   return /^(yes|yeah|yep|y|sure|ok|okay|go ahead|proceed|do it|allow|approve)\b/.test(v);
+}
+
+/** Telegram/Discord numeric ids only. WhatsApp ids are alphanumeric and must not become NaN. */
+function toNullableBigintId(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
 }
 
 export class Agent {
@@ -662,6 +674,7 @@ export class Agent {
     if (!this._crewMissionOrchestrator) {
       this._crewMissionOrchestrator = new CrewMissionOrchestrator(this.eventBus);
       setCrewMissionDeps(this);
+      setCustomCrewCreateAgent(this);
     }
     return this._crewMissionOrchestrator;
   }
@@ -1244,6 +1257,7 @@ export class Agent {
     }
     this.toolExecutor?.setConfig(this.config);
     setToolRegistryInstance(this.toolRegistry ?? null);
+    setCustomCrewCreateAgent(this);
 
     this.sessionRunner = new SessionRunner({
       sessionId: this.sessionId,
@@ -1272,8 +1286,8 @@ export class Agent {
         this.toolExecutor.getPermissionManager().resetForNewSession(this.sessionId);
       }
       this.toolExecutor.setSessionContextKind(this.options.contextKind);
-      // Messaging channels always prompt; dashboard voice (__channel__:voice) uses
-      // normal risk rules + the bypass chip so PTT turns aren't stuck on every tool.
+      // Messaging channels always prompt. Voice uses normal risk rules and
+      // spoken confirmation only — never a bypass chip or UI modal.
       if (this.options.channelSession && this.options.promptProfile !== 'voice') {
         this.toolExecutor.setAlwaysPromptPermissions(true);
       }
@@ -1292,7 +1306,7 @@ export class Agent {
     }
 
     // Wire permission requests to event bus (skipped for ephemeral automation workers and messaging channel sessions).
-    // Voice-only sessions still need the interactive permission modal, so keep binding for promptProfile === 'voice'.
+    // Voice-only sessions bind the handler so the voice engine can collect spoken confirmation.
     if (this.toolExecutor && !this.options.automationRun && (!this.options.channelSession || this.options.promptProfile === 'voice')) {
       this.bindPermissionHandler();
 
@@ -1657,6 +1671,7 @@ export class Agent {
 
   setCrewManager(crewManager: CrewManager): void {
     this._crewManager = crewManager;
+    setCustomCrewCreateAgent(this);
   }
 
   get crew(): CrewManager {
@@ -1919,7 +1934,7 @@ export class Agent {
     const agentName = this.persona?.name ?? 'Agent-X';
     const defaultSystem = [
       `You are ${agentName} composing a short outbound Telegram message.`,
-      callsign ? `The user's name/callsign is "${callsign}".` : '',
+      callsign ? `If this message is to the owner, address them by callsign "${callsign}" — not a public honorific.` : '',
       'Reply with ONLY the message body — warm, concise, no markdown headers, no tool names, no meta commentary.',
     ].filter(Boolean).join(' ');
     const messages = [
@@ -2290,8 +2305,14 @@ export class Agent {
     }
     if (messagingChannelInbound && options?.sourceMessageId) {
       if (options?.sourceChannel) messageMetadata['channel'] = options.sourceChannel;
-      messageMetadata['platformMessageId'] = Number(options.sourceMessageId);
-      if (options?.channelId) messageMetadata['platformChatId'] = Number(options.channelId);
+      const platformMessageId = toNullableBigintId(options.sourceMessageId);
+      if (platformMessageId != null) messageMetadata['platformMessageId'] = platformMessageId;
+      else messageMetadata['sourceMessageId'] = String(options.sourceMessageId);
+      if (options?.channelId) {
+        const platformChatId = toNullableBigintId(options.channelId);
+        if (platformChatId != null) messageMetadata['platformChatId'] = platformChatId;
+        else messageMetadata['sourceChatId'] = String(options.channelId);
+      }
     }
 
     const userMessage: Message = {
@@ -2539,7 +2560,7 @@ export class Agent {
           try { identityBlock = this.persona?.name ?? ''; } catch { /* test env */ }
           fastPrompt = this.decisionEngine.buildFastReplyPrompt(identityBlock);
           const callsign = this.config.user?.callsign;
-          userNote = callsign ? `\nThe user's name is "${callsign}".` : '';
+          userNote = callsign ? `\nAddress the user by their callsign "${callsign}".` : '';
         }
         // The current user message was already pushed to history above — drop it
         // from the recent window so it isn't sent twice.
@@ -2800,15 +2821,31 @@ export class Agent {
       // Log failed turn outcome
       this.logTurnOutcome(startTime, false, content);
 
+      // User stop must win over provider/anomaly classification — cancel can surface
+      // non-AbortError teardown errors from the SDK or in-flight tool work.
+      if (this.userCancelledTurn) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw error;
+        }
+        const cancelledMessage: Message = {
+          id: generateMessageId(),
+          sessionId: this.sessionId,
+          role: 'assistant',
+          content: '⏹ Cancelled.',
+          toolCalls: null,
+          createdAt: new Date().toISOString(),
+          tokenCount: 0,
+        };
+        this.emit({ type: 'message_received', message: cancelledMessage, elapsed: Date.now() - startTime });
+        return cancelledMessage;
+      }
+
       // ─── UNIFIED: Classify error via ErrorClassifier ───
       const classified = this.errorClassifier.classify(error);
       this.telemetry.markError(`turn-${startTime}`, classified.reason, classified.providerMessage ?? '');
 
-      // If cancelled by user, propagate abort so the turn registry/UI finalize as cancelled.
+      // If aborted without an explicit user stop, surface a friendly cancelled line.
       if (error instanceof Error && error.name === 'AbortError') {
-        if (this.userCancelledTurn) {
-          throw error;
-        }
         const cancelledMessage: Message = {
           id: generateMessageId(),
           sessionId: this.sessionId,
@@ -3075,6 +3112,10 @@ export class Agent {
           effectiveReasoningEffort,
         )
         : undefined;
+      const commandCodeProviderOptions = this.config.provider.activeProvider === 'commandcode'
+        ? buildCommandCodeAiSdkProviderOptions(effectiveReasoningEffort)
+        : undefined;
+      const aiSdkProviderOptions = googleProviderOptions ?? commandCodeProviderOptions;
       const sdkMessages = await this.buildSdkMessages(aiMessages);
       span.setAttribute('llm.input_messages', JSON.stringify(sdkMessages.slice(-20)));
       span.setAttribute('gen_ai.system', this.config.provider.activeProvider);
@@ -3088,7 +3129,7 @@ export class Agent {
         maxOutputTokens: turnMaxOutputTokens,
         stopWhen: ({ steps }) => steps.length >= Math.min(stepLimit(), toolPolicy.stepCap),
         toolChoice: toolPolicy.choice,
-        ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+        ...(aiSdkProviderOptions ? { providerOptions: aiSdkProviderOptions } : {}),
         prepareStep: async ({ stepNumber, messages }) => {
           this.turnState.setStage('execution', stepNumber);
           const stepMessages = messages.map((m) => ({
@@ -3404,7 +3445,7 @@ export class Agent {
                 maxOutputTokens: turnMaxOutputTokens,
                 stopWhen: stepCountIs(Math.min(stepBudget, 40)),
                 toolChoice: contPolicy.choice,
-                ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+                ...(aiSdkProviderOptions ? { providerOptions: aiSdkProviderOptions } : {}),
               });
               await consumeStreamWithWatchdog(contResult.fullStream, (chunk) => streamHandler.handleEvent(chunk));
               return (streamHandler.getState().accumulatedContent || '').trim();
@@ -3528,7 +3569,7 @@ export class Agent {
                   ),
                   stopWhen: stepCountIs(Math.min(stepBudget, 40)),
                   toolChoice: contPolicy.choice,
-                  ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+                  ...(aiSdkProviderOptions ? { providerOptions: aiSdkProviderOptions } : {}),
                 });
                 await consumeStreamWithWatchdog(contResult.fullStream, (chunk) => streamHandler.handleEvent(chunk));
                 return (streamHandler.getState().accumulatedContent || '').trim();
@@ -3690,7 +3731,7 @@ export class Agent {
                 maxOutputTokens: turnMaxOutputTokens,
                 stopWhen: stepCountIs(Math.min(stepBudget, 40)),
                 toolChoice: contPolicy.choice,
-                ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+                ...(aiSdkProviderOptions ? { providerOptions: aiSdkProviderOptions } : {}),
                 prepareStep: async ({ stepNumber, messages }) => {
                   if (stepNumber === 0) return {};
                   const todosRev = this.todoManager.getRevision();
@@ -3753,14 +3794,61 @@ export class Agent {
       const finalTokenCount = usage
         ? (usage.inputTokens || 0) + (usage.outputTokens || 0)
         : Math.ceil(content.length / 4);
+      // Stream handler toolExecutions can lag behind ToolLedger (ground truth from execute callback).
+      const ledgerToolExecs = this.toolLedger.getEntries().map((e) => ({
+        tool: e.name,
+        success: e.success,
+        output: e.output,
+        elapsed: e.elapsed,
+      }));
+      const reflectionToolExecs = this.toolCallLogForReflection.map((t) => ({
+        tool: t.name,
+        success: t.success,
+        output: t.output,
+        elapsed: t.elapsed,
+      }));
+      const finalStreamToolExecs = (streamState.toolExecutions?.length
+        ? streamState.toolExecutions
+        : ledgerToolExecs.length
+          ? ledgerToolExecs
+          : reflectionToolExecs);
+      const toolParts = finalStreamToolExecs.map((e, i) => {
+        const id = `ledger_${i}_${e.tool}`;
+        return {
+          type: 'tool' as const,
+          id,
+          tool: {
+            id,
+            name: e.tool,
+            args: {},
+            status: e.success ? 'done' : 'error',
+            result: e.output,
+            elapsed: e.elapsed,
+          },
+        };
+      });
+      const textPart = content.trim()
+        ? [{ type: 'text' as const, id: `text_${outId}`, content }]
+        : [];
+      const toolCalls = finalStreamToolExecs.length > 0
+        ? finalStreamToolExecs.map((e, i) => ({
+            id: `ledger_${i}_${e.tool}`,
+            name: e.tool,
+            arguments: '{}',
+            result: e.output,
+          }))
+        : null;
       let finalMessage = this.tagCrewPrivateAssistant({
         id: outId,
         sessionId: this.sessionId,
         role: 'assistant' as const,
         content,
-        toolCalls: null,
+        toolCalls,
         createdAt: new Date().toISOString(),
         tokenCount: finalTokenCount,
+        ...(toolParts.length || textPart.length
+          ? { parts: [...toolParts, ...textPart] }
+          : {}),
       });
       let richPartAttached = false;
       try {
@@ -4014,6 +4102,7 @@ export class Agent {
       scopePath: this.scopePath,
       telegramConnected: this._telegramConnected,
       userCallsign: this.config.user?.callsign,
+      userConfig: this.config.user,
       getUserTimezone: () => this.getUserTimezone(),
       getUtcOffset: () => this.getUtcOffset(),
       crewOrchestrator: this.crewOrchestrator ? {
@@ -4037,6 +4126,7 @@ export class Agent {
       linkedContextBlock: () => this.buildLinkedContextPromptBlock(),
       contextKind: this.options.contextKind,
       sessionId: this.sessionId,
+      promptProfile: this.options.promptProfile,
       getTodos: () => this.todoManager.getItems(),
       areTodosDeferredThisTurn: () => this.todoDispositionThisTurn === 'defer',
       bypassPermissions: this.bypassPermissions,

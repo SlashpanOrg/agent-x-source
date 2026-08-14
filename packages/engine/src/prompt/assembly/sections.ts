@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
-import type { AgentPersonaConfig, ClientSituation, SessionContextKind, ThinkingMode, OutputMode } from '@agentx/shared';
-import { resolveClientNow, resolveClientTimezone, crewParticipationMode } from '@agentx/shared';
+import type { AgentPersonaConfig, ClientSituation, SessionContextKind, ThinkingMode, OutputMode, UserConfig } from '@agentx/shared';
+import { resolveClientNow, resolveClientTimezone, crewParticipationMode, renderOwnerIdentityPrompt } from '@agentx/shared';
 import { getRetrievalSettings } from '../../neural/retrieval/settings.js';
 import type { PromptSection } from './types.js';
 import type { CategoryResult } from '../CategoryDetector.js';
@@ -22,6 +22,7 @@ export interface SectionContext {
   scopePath: string;
   telegramConnected: boolean;
   userCallsign: string | undefined;
+  userConfig?: UserConfig;
   getUserTimezone(): string;
   getUtcOffset(): string;
   crewOrchestrator: { getMembers(): Array<{ crew: { id: string; name: string; title?: string; callsign: string; systemPrompt: string; traits?: string[]; emotion?: string; tools?: string[] }; expertise: string[] }> } | null;
@@ -39,6 +40,8 @@ export interface SectionContext {
   linkedContextBlock?: () => string | null;
   contextKind?: SessionContextKind;
   sessionId?: string;
+  /** Prompt profile for this agent (e.g. crew_private). */
+  promptProfile?: 'default' | 'crew_worker' | 'crew_private' | 'voice';
   /** Live TASKS checklist for planning (not just UI). */
   getTodos?: () => Array<{ id: number; title: string; status: string }>;
   /** Continual harness supplemental block (when enabled). */
@@ -735,6 +738,8 @@ export function createCrewPrivateConductSection(): PromptSection<string> {
     `ROLE OVER PERSONAL ASSISTANT (STRICT):`,
     `- Your BINDING ROLE in [CREW_IDENTITY] overrides generic assistant habits on every turn — including greetings.`,
     `- Forbidden when your role is proactive: "What would you like to discuss?", "How can I help you today?", "I'm ready whenever you are — what should we cover?".`,
+    `- HOST DEFERENCE BAN: Do not open or pad replies with butler/valet/host-assistant deference (e.g. "Sir,", "Madam,", "Right away, Sir") unless your [CREW_IDENTITY] role is explicitly a butler, valet, or personal assistant. Speak as your profession would.`,
+    `- You are NOT Agent-X, JARVIS, FRIDAY, or the host persona. Never claim those names or their mannerisms.`,
     `- Interviewer: YOU run the interview. After a brief hello (optional), ask a real domain interview question. Keep probing after each answer. Do not wait for the candidate to set the agenda.`,
     `- INTERVIEWER ZERO LEAK: never reveal solutions, model answers, or spoilers. If the candidate asks you to answer / "you tell me" / reverses the question — refuse and continue with a tougher related probe from keywords in their last attempt.`,
     `- Tutor / coach / support / reviewer / PM / sales / sounding board: open or continue with that profession's real workflow, not a generic helpdesk greeting.`,
@@ -863,6 +868,11 @@ export function createCrewRosterGuideSection(compact = false): PromptSection<str
     `3. Offer matches via ask_clarification (max 5) or brief inline @callsign mentions.`,
     `4. If [CREW_ROSTER_HINT] says user skipped modal, do NOT re-offer crew — handle as Agent-X.`,
     `5. If no fits, proceed as Agent-X without apologizing.`,
+    `CREATE CUSTOM CREW (chat or voice): when the owner asks to create / add / make a new crew, do NOT send them to the UI.`,
+    `- If they name a template (coach, support, …) honor it. If they say no template / from scratch, use custom.`,
+    `- You write the system prompt. Tools: crew_resolve_template → crew_get_template / crew_draft_persona → write prompt → crew_validate_prompt → crew_create_custom.`,
+    `- Only ask one question if both role and domain are missing, or they asked for a template but did not name one.`,
+    `- Then tell them @callsign is on the roster.`,
     `[/CREW_ROSTER]`,
   ].join('\n') : [
     `[CREW_ROSTER]`,
@@ -875,6 +885,19 @@ export function createCrewRosterGuideSection(compact = false): PromptSection<str
     `4. If [CREW_ROSTER_HINT] says the user skipped the crew modal, do NOT re-offer crew — handle the request as Agent-X.`,
     `5. If search returns no fits, proceed as Agent-X (plans, hiring guidance, execution) without apologizing excessively.`,
     `Do not jump to external hiring/staffing plans before a quick crew roster check when workforce intent is clear.`,
+    ``,
+    `CREATE CUSTOM CREW (desktop chat, WhatsApp self-chat, or voice):`,
+    `When the owner asks to create, add, or make a new crew member (persona, skills, traits, tone, or a named template) — this is roster creation, not a Hub search.`,
+    `- Do NOT tell them to use Settings → Crews. You create it here.`,
+    `- TEMPLATES: the owner may name one (coach, support, interviewer, friend, researcher, tutor, reviewer, project_manager, sales, sounding_board) or refuse one (no template / from scratch / custom).`,
+    `  Honor a named template. If they refuse, invent a specific profession (template=custom). If they say "use a template" but not which, call crew_list_templates and pick or ask once.`,
+    `  If they do not mention a template, infer from the role (crew_resolve_template).`,
+    `- YOU write systemPrompt. Never persist a generic dump. Never paste a template contract unchanged.`,
+    `  Required in YOUR prompt: identity ("You are …"), BINDING ROLE, ANTI-ASSISTANT rule, HARD CONSTRAINTS from their brief, METHOD/FLOW, tone.`,
+    `- Tool path: crew_list_roster (avoid collisions) → crew_resolve_template / crew_get_template → crew_draft_persona → write the prompt → crew_validate_prompt → crew_create_custom(brief, template?, systemPrompt, name, title, …).`,
+    `- If crew_create_custom returns PROMPT_REQUIRED, write the prompt from the kit and retry. Do not ask the owner to write it.`,
+    `- Ask at most ONE clarifying question, and only if both the role and the domain are missing, or they demanded a template without naming it.`,
+    `- After success: say they are on the roster as @callsign and can be @mentioned, private-chatted, or voice-called.`,
     `[/CREW_ROSTER]`,
   ].join('\n');
   return {
@@ -932,6 +955,11 @@ export const CHAT_MARKDOWN_PROMPT = [
   `- Example: \`\`\`chart\\n{"v":1,"type":"bar","title":"…","data":[{"x":"A","y":1}]}\\n\`\`\``,
   `- Diagrams → \`\`\`mermaid blocks. JSON data only — no chart JS.`,
   ``,
+  `VISUALS (photos, video, PDFs, website cards):`,
+  `- When the user needs to see a file or page, call present_visual instead of saying you saved it.`,
+  `- Chat renders it inline. Voice / crew call opens the visual stage modal — do not dump the file into the transcript.`,
+  `- kind=url: in chat, a title + http(s) link that opens in the default browser. In a voice / crew call, the visual stage loads the page in the modal.`,
+  ``,
   `TOOL FILE CONTENT (file_write, file_edit, apply_patch):`,
   `- Write EXACT bytes the destination file requires (.py, .ts, .json, .yaml, etc.).`,
   `- Do NOT wrap source code or config in markdown formatting.`,
@@ -946,6 +974,25 @@ export const CHAT_MARKDOWN_PROMPT = [
   `Short confirmations ("Done.", "Failed: …") → plain text, no markdown. Use structure only when the reply has multiple sections, lists, or data.`,
   `[/CHAT_MARKDOWN]`,
 ].join('\n');
+
+export function createVisualStageSection(): PromptSection<string> {
+  const TEXT = [
+    `[VISUAL_STAGE]`,
+    `When the user needs to SEE something (photo, video, PDF, or a website card), call present_visual.`,
+    `- Chat: renders inline in the turn. Prefer this over "I saved a file".`,
+    `- Voice / crew call: opens the visual stage modal. Do not dump the file into the transcript.`,
+    `- Web photos/videos: kind=image (or video) plus the http(s) url. Bare hosts like images.pexels.com/photo.jpg work. Do not spell the URL aloud.`,
+    `- kind=url: chat shows a link that opens in the default browser. Voice / crew call loads the page in the visual stage modal.`,
+    `- WhatsApp inbound media is shown automatically after the owner says yes / show me / read that. You still read the caption or text aloud.`,
+    `[/VISUAL_STAGE]`,
+  ].join('\n');
+  return {
+    key: 'core/visual-stage',
+    load: () => TEXT,
+    render: (text) => text,
+    diff: () => null,
+  };
+}
 
 export function createChatMarkdownSection(): PromptSection<string> {
   return {
@@ -1297,12 +1344,15 @@ export function createChannelMessagingSection(personaName?: string): PromptSecti
       '- Use agent_x_overview to see which channels are connected if the user asks about available delivery options.',
       '',
       'WHATSAPP-SPECIFIC RULES:',
-      '- Each WhatsApp contact has their OWN isolated conversation session. You are talking to ONE person at a time — do not mix context between different contacts.',
-      '- The sender\'s name is shown in the message metadata. Use it to personalize responses.',
-      '- Only contacts SAVED in the user\'s phone address book get auto-replies. Unknown numbers and business promotions are silently dropped — you will never see those messages.',
-      '- If the user asks to allow a specific number (e.g. "allow 917010541995"), use whatsapp_allow_sender with the JID (number@s.whatsapp.net). Use whatsapp_check_number first to get the JID from a phone number.',
-      '- If the user asks to block someone (e.g. "stop replying to X"), use whatsapp_block_sender with their JID.',
-      '- Group messages are always allowed — the user explicitly joined the group.',
+      '- WhatsApp is the owner\'s communications organ, not a chatbot for their contacts.',
+      '- You talk to the OWNER in WhatsApp "Message yourself" (self-chat). Your replies there are prefixed [Agent-X]. Never speak as Agent-X in someone else\'s chat.',
+      '- Messages from other people are world events. Default: brief the owner. Do NOT auto-reply to them unless they asked this turn ("tell Mom I\'ll be late") or a standing order matches.',
+      '- The owner\'s WhatsApp address book is indexed (saved name, first/last, business name, profile name, phone, JID). This is a precise directory, not a fuzzy search.',
+      '- When the owner names a person, call whatsapp_resolve_contact (or pass the name as chatId to whatsapp_send_text). If several people match, ASK which one — never invent a JID and never pick the closest name.',
+      '- Teach nicknames with whatsapp_remember_contact_alias (e.g. Mom → a specific contact) after a unique resolve.',
+      '- Standing orders: whatsapp_standing_order_upsert / list / revoke. senders can be names; they resolve the same way. auto_reply requires an exact replyTemplate. List active orders when asked.',
+      '- Groups: observe and brief. Speak in a group only when the owner commands it or a standing order says so.',
+      '- Inbound WhatsApp photos/videos/documents are stored, then shown on the visual stage after the owner says yes / show me / read that. You still read the caption or text aloud. Do not call present_visual for that auto-show.',
       '[/CHANNEL_MESSAGING]',
     ].join('\n'),
     diff: () => null,
@@ -1454,21 +1504,31 @@ export function createMultiCrewSection(ctx: SectionContext): PromptSection<CrewS
 }
 
 // ─────────────────────────────────────────────────────────────
-// User callsign
+// Owner identity — callsign (to the owner) vs public name (to others)
 // ─────────────────────────────────────────────────────────────
 
-export function createUserSection(ctx: SectionContext): PromptSection<string | null> {
+export function createUserSection(ctx: SectionContext): PromptSection<UserConfig | null> {
+  const crewPrivate = () => ctx.contextKind === 'crew_private' || ctx.promptProfile === 'crew_private';
+  const snapshot = (user: UserConfig | null | undefined) => JSON.stringify({
+    callsign: user?.callsign ?? '',
+    names: user?.names ?? (user?.name ? [user.name] : []),
+    prefix: user?.prefix ?? '',
+    gender: user?.gender ?? '',
+    email: user?.email ?? '',
+  });
   return {
     key: 'core/user',
-    load: () => ctx.userCallsign ?? null,
-    render: (callsign) => {
-      if (!callsign) return '';
-      return `[USER]\nThe user's name/callsign is "${callsign}". Address them by this name when appropriate.\n[/USER]`;
+    load: () => {
+      if (ctx.userConfig) return ctx.userConfig;
+      if (ctx.userCallsign) return { callsign: ctx.userCallsign };
+      return null;
     },
+    render: (user) => renderOwnerIdentityPrompt(user, { crewPrivate: crewPrivate() }),
     diff: (prev, current) => {
-      if (prev === current) return null;
-      if (!current) return `[USER — REMOVED]\n[/USER]`;
-      return `[USER — UPDATED]\nThe user's name/callsign is now "${current}". Address them by this name.\n[/USER]`;
+      if (snapshot(prev) === snapshot(current)) return null;
+      if (!current?.callsign && !current?.names?.length && !current?.name) return `[USER — REMOVED]\n[/USER]`;
+      const body = renderOwnerIdentityPrompt(current, { crewPrivate: crewPrivate() });
+      return body.replace('[USER]', '[USER — UPDATED]');
     },
   };
 }

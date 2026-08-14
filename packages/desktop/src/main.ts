@@ -357,6 +357,12 @@ function attachExternalLinkHandlers(win: BrowserWindow, appOrigin: string): void
       event.preventDefault();
     }
   });
+
+  // Voice visual stage iframes may navigate; only http(s) is allowed.
+  win.webContents.on('will-frame-navigate', (details) => {
+    if (details.isMainFrame) return;
+    if (!isExternalHttpUrl(details.url)) details.preventDefault();
+  });
 }
 
 // ==================== Window ====================

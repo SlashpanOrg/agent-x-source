@@ -199,6 +199,7 @@ function resetMocks() {
   handlers.clear();
   mockClient.initialize.mockClear();
   mockClient.destroy.mockClear();
+  mockClient.logout.mockClear();
   mockClient.sendMessage.mockClear();
   mockClient.sendReaction.mockClear();
   mockClient.getMessageById.mockClear();
@@ -345,7 +346,15 @@ describe('ElectronWebJsEngine', () => {
       await engine.initialize();
       await engine.forceDestroy();
       expect(mockClient.destroy).toHaveBeenCalledTimes(1);
+      expect(mockClient.logout).not.toHaveBeenCalled();
       expect(engine.getStatus()).toBe('disconnected');
+    });
+
+    it('logoutFromServer() logs out of WhatsApp', async () => {
+      const { engine } = newEngine();
+      await engine.initialize();
+      await engine.logoutFromServer();
+      expect(mockClient.logout).toHaveBeenCalledTimes(1);
     });
 
     it('throws when sendText called before initialize', async () => {
@@ -448,6 +457,33 @@ describe('ElectronWebJsEngine', () => {
       await engine.initialize();
       emitEvent('message', makeMockMessage({ body: 'hello from test' }));
       expect(messages).toEqual(['hello from test']);
+    });
+
+    it('onMessage fires for Message-yourself fromMe creates', async () => {
+      const { engine } = newEngine();
+      const inbound: string[] = [];
+      engine.setCallbacks({ onMessage: (m) => inbound.push(m.body) });
+
+      await engine.initialize();
+      emitEvent('message_create', makeMockMessage({
+        fromMe: true,
+        from: '15551234567@c.us',
+        to: '15551234567@c.us',
+        body: 'remind me at 5',
+        type: 'chat',
+        id: { fromMe: true, remote: '15551234567@c.us', id: 'self-1', _serialized: 'true_15551234567@c.us_self-1' },
+      }));
+      expect(inbound).toEqual(['remind me at 5']);
+    });
+
+    it('ignores protocol stubs as inbound', async () => {
+      const { engine } = newEngine();
+      const inbound: string[] = [];
+      engine.setCallbacks({ onMessage: (m) => inbound.push(m.body) });
+
+      await engine.initialize();
+      emitEvent('message', makeMockMessage({ type: 'protocol', body: '' }));
+      expect(inbound).toEqual([]);
     });
 
     it('onMessageAck fires on message_ack event', async () => {

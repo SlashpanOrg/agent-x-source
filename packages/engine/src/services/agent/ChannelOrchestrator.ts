@@ -112,7 +112,7 @@ export class ChannelOrchestrator {
     const callsign = this.host.config.user?.callsign;
     const defaultSystem = [
       'You are Agent-X composing a short outbound Telegram message.',
-      callsign ? `The user's name/callsign is "${callsign}".` : '',
+      callsign ? `If this message is to the owner, address them by callsign "${callsign}" — not a public honorific.` : '',
       'Reply with ONLY the message body — warm, concise, no markdown headers, no tool names, no meta commentary.',
     ].filter(Boolean).join(' ');
     const messages = [

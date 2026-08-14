@@ -39,6 +39,22 @@ function cityToSituation(city: Awaited<ReturnType<typeof resolveClientCityAuto>>
   };
 }
 
+/**
+ * Sync snapshot for voice session start — never waits on GPS/IP.
+ * Includes coordinates only when already cached; otherwise timezone only.
+ */
+export function peekCachedClientSituation(): ClientSituation {
+  const snap = snapshotGetter?.();
+  if (!snap) return timezoneOnlySituation();
+  const now: ClientSituation = {
+    clientNow: new Date().toISOString(),
+    timezone: snap.timezone || readBrowserTimezone(),
+    source: snap.source || readSource(),
+  };
+  if (!isClientLocationKnown(snap)) return now;
+  return { ...snap, ...now };
+}
+
 /** Collect client situation for chat/voice turns — uses provider snapshot when location is known. */
 export async function collectClientSituation(): Promise<ClientSituation> {
   const snap = snapshotGetter?.();

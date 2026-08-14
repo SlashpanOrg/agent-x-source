@@ -16,7 +16,8 @@ export type ParticlePhase =
   | 'listening'
   | 'recording'
   | 'thinking'
-  | 'speaking';
+  | 'speaking'
+  | 'muted';
 
 interface Particle {
   x: number;
@@ -41,6 +42,7 @@ const PHASE_TOKEN: Record<ParticlePhase, string> = {
   recording: colors.accent.green,
   thinking: colors.accent.orange,
   speaking: colors.accent.purple,
+  muted: colors.accent.orange,
 };
 
 /** @deprecated Prefer live resolve via theme tokens; kept for callers that import the map. */
@@ -53,6 +55,7 @@ export const PARTICLE_PHASE_COLORS: Record<ParticlePhase, { r: number; g: number
   recording: { r: 34, g: 197, b: 94 },
   thinking: { r: 249, g: 115, b: 22 },
   speaking: { r: 168, g: 85, b: 247 },
+  muted: { r: 249, g: 115, b: 22 },
 };
 
 const PARTICLE_COUNT = 40;
@@ -208,7 +211,8 @@ export function VoiceParticleField({
             break;
           }
           case 'connecting':
-          case 'idle': {
+          case 'idle':
+          case 'muted': {
             p.angle += p.angularVel;
             p.x = cx + Math.cos(p.angle) * p.orbitRadius;
             p.y = cy + Math.sin(p.angle) * p.orbitRadius;

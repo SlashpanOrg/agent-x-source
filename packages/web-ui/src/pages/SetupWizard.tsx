@@ -23,7 +23,6 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import Collapse from '@mui/material/Collapse';
 import { CheckCircle } from '../components/CheckCircle';
-import BadgeIcon from '@mui/icons-material/Badge';
 import StorageIcon from '@mui/icons-material/Storage';
 import CloudIcon from '@mui/icons-material/Cloud';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -39,6 +38,7 @@ import { WizardVoiceStep } from '../components/setup/WizardVoiceStep';
 import { WizardNeuralStep } from '../components/setup/WizardNeuralStep';
 import { WizardChannelStep } from '../components/setup/WizardChannelStep';
 import { WorkspaceCard } from '../components/settings/WorkspaceCard';
+import { OwnerIdentityFields, ownerIdentityReady } from '../components/settings/OwnerIdentityFields';
 import { WizardPerformancePreset } from '../components/setup/WizardPerformancePreset';
 import { WizardCheckMark, WizardStepHeader, WizardStepIcon } from '../components/setup/wizard-ui';
 import {
@@ -61,8 +61,9 @@ import {
 } from '../utils/wizard-progress';
 import { buildLocalBaseUrl, parseLocalEndpoint, defaultLocalPort } from '../utils/local-provider-endpoint';
 import type { AgentPersonaConfig, CommunicationStyle, DecisionMakingStyle } from '../api';
+import { mergeUserConfig, normalizeOwnerNames, type UserGender } from '@agentx/shared';
 
-const ALL_STEPS = ['Storage', 'Provider', 'Profile', 'Local AI', 'Model', 'Benchmark', 'Neural Core', 'Callsign', 'Personality', 'Voice', 'Channels', 'Complete'];
+const ALL_STEPS = ['Storage', 'Provider', 'Profile', 'Local AI', 'Model', 'Benchmark', 'Neural Core', 'You', 'Personality', 'Voice', 'Channels', 'Complete'];
 
 /** Preset personas the user can quickly pick in the wizard. */
 const PERSONA_PRESETS: Array<{
@@ -207,6 +208,11 @@ export function SetupWizard() {
   /** Models that already have a passing benchmark on disk for the current provider. */
   const [clearedModels, setClearedModels] = useState<Map<string, { grade: BenchmarkGrade; percent: number }>>(new Map());
   const [callsign, setCallsign] = useState('');
+  const [ownerNames, setOwnerNames] = useState<string[]>([]);
+  const [ownerNameDraft, setOwnerNameDraft] = useState('');
+  const [ownerPrefix, setOwnerPrefix] = useState('');
+  const [ownerGender, setOwnerGender] = useState<UserGender | ''>('unspecified');
+  const [ownerEmail, setOwnerEmail] = useState('');
   const [profileName, setProfileName] = useState('');
   const [personaName, setPersonaName] = useState(PERSONA_PRESETS[0]!.name);
   const [personaDescription, setPersonaDescription] = useState(PERSONA_PRESETS[0]!.description);
@@ -299,6 +305,17 @@ export function SetupWizard() {
       setSelectedModel(saved.selectedModel);
       if (saved.selectedReasoningEffort) setSelectedReasoningEffort(saved.selectedReasoningEffort);
       setCallsign(saved.callsign || '');
+      if (Array.isArray(saved.ownerNames) && saved.ownerNames.length) {
+        setOwnerNames(normalizeOwnerNames({ names: saved.ownerNames }));
+      } else if (saved.ownerName) {
+        setOwnerNames(normalizeOwnerNames({ name: saved.ownerName }));
+      }
+      if (saved.ownerNameDraft) setOwnerNameDraft(saved.ownerNameDraft);
+      if (saved.ownerPrefix) setOwnerPrefix(saved.ownerPrefix);
+      if (saved.ownerGender === 'male' || saved.ownerGender === 'female' || saved.ownerGender === 'nonbinary' || saved.ownerGender === 'unspecified') {
+        setOwnerGender(saved.ownerGender);
+      }
+      if (saved.ownerEmail) setOwnerEmail(saved.ownerEmail);
       if (saved.profileName) setProfileName(saved.profileName);
       if (saved.apiKey) setApiKey(saved.apiKey);
       if (saved.apiKeyConfigured) setApiKeyConfigured(true);
@@ -355,11 +372,11 @@ export function SetupWizard() {
           if (saved.selectedModel) {
             const model = m.find((entry) => entry.id === saved.selectedModel);
             const levels = model?.reasoning?.effortLevels ?? [];
+            const savedEffort = saved.selectedReasoningEffort ?? '';
             setSelectedReasoningEffort(
-              saved.selectedReasoningEffort
-                || model?.reasoning?.defaultEffort
-                || levels[0]
-                || '',
+              savedEffort && levels.includes(savedEffort as typeof levels[number])
+                ? savedEffort
+                : (model?.reasoning?.defaultEffort ?? levels[0] ?? ''),
             );
           }
           setModelsLoading(false);
@@ -402,6 +419,12 @@ export function SetupWizard() {
       selectedModel,
       selectedReasoningEffort,
       callsign,
+      ownerNames,
+      ownerName: ownerNames[0],
+      ownerNameDraft,
+      ownerPrefix,
+      ownerGender: ownerGender || undefined,
+      ownerEmail,
       selectedBackend,
       profileName,
       apiKey,
@@ -431,6 +454,7 @@ export function SetupWizard() {
     });
   }, [
     progressHydrated, step, maxReachedStep, selectedProvider, selectedModel, selectedReasoningEffort, callsign,
+    ownerNames, ownerNameDraft, ownerPrefix, ownerGender, ownerEmail,
     selectedBackend, profileName, apiKey, apiKeyConfigured, baseUrl, localHost, localPort,
     selectedLocalModel, skipLocalModel, voiceCalibrated, neuralReady, telegramLinked, telegramBotLabel, telegramChatLabel,
     whatsappLinked, whatsappPhoneNumber, whatsappPushName,
@@ -827,11 +851,18 @@ export function SetupWizard() {
         try { await settings.db.update({ backend: 'postgres', postgres: { connectionString: connStr } }); } catch {}
       }
       try { await settings.db.systemInit(); } catch {}
-      const setupPatch: Partial<AgentXConfig> = { setupComplete: true, user: { callsign } };
+      const user = mergeUserConfig(undefined, {
+        callsign: callsign.trim(),
+        names: normalizeOwnerNames({ names: [...ownerNames, ownerNameDraft] }),
+        prefix: ownerPrefix,
+        gender: ownerGender || undefined,
+        email: ownerEmail,
+      });
+      const setupPatch: Partial<AgentXConfig> = { setupComplete: true, user };
       if (!localModelSupported) {
         setupPatch.localModel = { enabled: false };
       }
-      await config.completeSetup(callsign.trim());
+      await config.completeSetup(user);
       await config.update(setupPatch);
       // Save the agent persona chosen in the wizard.
       try {
@@ -1487,6 +1518,7 @@ export function SetupWizard() {
                     modelName={selectedModelInfo?.name}
                     profileId={profileName.trim()}
                     modelCapabilities={selectedModelInfo?.capabilities}
+                    reasoningEffort={selectedReasoningEffort || undefined}
                     onComplete={setBenchmarkResult}
                     onRunningChange={setBenchmarkRunning}
                   />
@@ -1513,18 +1545,32 @@ export function SetupWizard() {
               )}
 
               {step === 7 && (
-                <Box sx={{ maxWidth: 520, mx: 'auto' }}>
-                  <WizardStepHeader codename="MODULE · CALLSIGN" title="Your Callsign" subtitle="How should Agent-X address you?" />
-                  <TextField label="Callsign" value={callsign} onChange={e => setCallsign(e.target.value)} fullWidth placeholder="e.g. Commander"
-                    slotProps={wizardTextFieldSlotProps} />
-                  <Box sx={{ ...wizardPanelSx, mt: 4 }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1.5 }}>
-                      <BadgeIcon sx={{ fontSize: 20, color: wizardTheme.textSecondary }} />
-                      <Typography variant="body2" sx={{ fontWeight: 700, fontFamily: WIZARD_MONO, letterSpacing: '1px', fontSize: '0.75rem' }}>WHAT IS A CALLSIGN?</Typography>
-                    </Box>
-                    <Typography variant="body2" sx={{ color: wizardTheme.textSecondary, fontSize: '0.8rem', lineHeight: 1.6 }}>Your unique identity within Agent-X. Used in conversations, logs, and notifications.</Typography>
-                    <Typography variant="caption" sx={{ display: 'block', mt: 1.5, color: wizardTheme.textDim, fontFamily: WIZARD_MONO, fontSize: '0.65rem' }}>Examples: Commander, Captain, Architect, Operator</Typography>
-                  </Box>
+                <Box sx={{ maxWidth: 560, mx: 'auto' }}>
+                  <WizardStepHeader
+                    codename="MODULE · YOU"
+                    title="Your identity"
+                    subtitle="Callsign is how Agent-X talks to you. Public names are how it refers to you when talking to other people."
+                  />
+                  <OwnerIdentityFields
+                    value={{
+                      callsign,
+                      names: ownerNames,
+                      nameInput: ownerNameDraft,
+                      prefix: ownerPrefix,
+                      gender: ownerGender,
+                      email: ownerEmail,
+                    }}
+                    onChange={(next) => {
+                      setCallsign(next.callsign);
+                      setOwnerNames(next.names);
+                      setOwnerNameDraft(next.nameInput);
+                      setOwnerPrefix(next.prefix);
+                      setOwnerGender(next.gender);
+                      setOwnerEmail(next.email);
+                    }}
+                    slotProps={wizardTextFieldSlotProps}
+                    selectSx={{ fontSize: '0.8rem', fontFamily: WIZARD_MONO }}
+                  />
                 </Box>
               )}
 
@@ -1773,6 +1819,7 @@ export function SetupWizard() {
                         selectedProvider || null,
                         selectedModel || null,
                         callsign ? `@${callsign}` : null,
+                        ownerNames.length ? ownerNames.join(', ') : null,
                         personaName || null,
                         voiceCalibrated ? 'Voice' : null,
                         telegramLinked ? 'Telegram' : null,
@@ -1903,7 +1950,23 @@ export function SetupWizard() {
                   : 'Continue →'}
             </Button>
           )}
-          {step === 7 && <Button variant="contained" onClick={handleCallsignNext} disabled={!callsign.trim()} sx={wizardPrimaryBtnSx}>Next</Button>}
+          {step === 7 && (
+            <Button
+              variant="contained"
+              onClick={handleCallsignNext}
+              disabled={!ownerIdentityReady({
+                callsign,
+                names: ownerNames,
+                nameInput: ownerNameDraft,
+                prefix: ownerPrefix,
+                gender: ownerGender,
+                email: ownerEmail,
+              })}
+              sx={wizardPrimaryBtnSx}
+            >
+              Next
+            </Button>
+          )}
           {step === 8 && <Button variant="contained" onClick={next} disabled={!personaName.trim()} sx={wizardPrimaryBtnSx}>Next</Button>}
           {step === 9 && (
             <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', justifyContent: voiceCalibrated ? 'flex-end' : 'space-between', width: '100%' }}>

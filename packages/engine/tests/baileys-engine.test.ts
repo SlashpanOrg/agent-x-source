@@ -17,6 +17,7 @@ import type { Pool } from 'pg';
  */
 
 // Static imports — vi.mock() calls below are hoisted above these by vitest.
+import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { BaileysEngine } from '../src/whatsapp/engine/BaileysEngine.js';
 import { createWhatsAppEngine } from '../src/whatsapp/engine/EngineFactory.js';
 
@@ -62,6 +63,7 @@ const mockSock = {
   onWhatsApp: vi.fn(async (phone: string) => [{ jid: `${phone}@c.us`, exists: true }]),
   updateBlockStatus: vi.fn(async () => {}),
   rejectCall: vi.fn(async () => {}),
+  sendPresenceUpdate: vi.fn(async () => {}),
   sendMessage: vi.fn(async (jid: string, content: unknown) => ({
     key: { remoteJid: jid, id: `msg-${Math.random().toString(36).slice(2, 8)}`, fromMe: true },
     messageTimestamp: Math.floor(Date.now() / 1000),
@@ -248,15 +250,23 @@ describe('BaileysEngine', () => {
       expect(engine.getStatus()).toBe('disconnected');
     });
 
-    it('forceDestroy() logs out and ends the socket', async () => {
+    it('forceDestroy() ends the socket without logging out of WhatsApp', async () => {
       const { engine } = newEngine();
       await engine.initialize();
       emit('connection.update', { connection: 'open' });
       await engine.forceDestroy();
 
-      expect(mockSock.logout).toHaveBeenCalledTimes(1);
+      expect(mockSock.logout).not.toHaveBeenCalled();
       expect(mockSock.end).toHaveBeenCalledTimes(1);
       expect(engine.getStatus()).toBe('disconnected');
+    });
+
+    it('logoutFromServer() revokes the device on WhatsApp', async () => {
+      const { engine } = newEngine();
+      await engine.initialize();
+      emit('connection.update', { connection: 'open' });
+      await engine.logoutFromServer();
+      expect(mockSock.logout).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -354,7 +364,7 @@ describe('BaileysEngine', () => {
 
       const result = await engine.sendText('15559998888@c.us', 'hello world');
       expect(mockSock.sendMessage).toHaveBeenCalledWith(
-        '15559998888@c.us',
+        '15559998888@s.whatsapp.net',
         expect.objectContaining({ text: 'hello world' }),
         expect.objectContaining({ quoted: undefined }),
       );
@@ -397,6 +407,29 @@ describe('BaileysEngine', () => {
       const [, content] = mockSock.sendMessage.mock.calls.at(-1)!;
       expect(content.react.text).toBe('👍');
       expect(content.react.key.id).toBe('msg-123');
+      expect(content.react.key.fromMe).toBe(false);
+    });
+
+    it('react can target a self-chat (fromMe) message', async () => {
+      const { engine } = newEngine();
+      await engine.initialize();
+      emit('connection.update', { connection: 'open' });
+
+      await engine.react('15551234567@c.us', 'self-1', '👀', { fromMe: true });
+      const [, content] = mockSock.sendMessage.mock.calls.at(-1)!;
+      expect(content.react.key.fromMe).toBe(true);
+      expect(content.react.text).toBe('👀');
+    });
+
+    it('setTyping sends composing / paused presence', async () => {
+      const { engine } = newEngine();
+      await engine.initialize();
+      emit('connection.update', { connection: 'open' });
+
+      await engine.setTyping('15559998888@c.us', true);
+      expect(mockSock.sendPresenceUpdate).toHaveBeenCalledWith('composing', '15559998888@s.whatsapp.net');
+      await engine.setTyping('15559998888@c.us', false);
+      expect(mockSock.sendPresenceUpdate).toHaveBeenCalledWith('paused', '15559998888@s.whatsapp.net');
     });
 
     it('deleteMessage sends a delete content', async () => {
@@ -448,11 +481,11 @@ describe('BaileysEngine', () => {
       emit('connection.update', { connection: 'open' });
 
       await engine.blockContact('15559998888@c.us');
-      expect(mockSock.updateBlockStatus).toHaveBeenCalledWith('15559998888@c.us', 'block');
+      expect(mockSock.updateBlockStatus).toHaveBeenCalledWith('15559998888@s.whatsapp.net', 'block');
       mockSock.updateBlockStatus.mockClear();
 
       await engine.unblockContact('15559998888@c.us');
-      expect(mockSock.updateBlockStatus).toHaveBeenCalledWith('15559998888@c.us', 'unblock');
+      expect(mockSock.updateBlockStatus).toHaveBeenCalledWith('15559998888@s.whatsapp.net', 'unblock');
     });
 
     it('rejectCall delegates to sock.rejectCall with tracked from-jid', async () => {
@@ -471,7 +504,7 @@ describe('BaileysEngine', () => {
       }]);
 
       await engine.rejectCall('call-1');
-      expect(mockSock.rejectCall).toHaveBeenCalledWith('call-1', '15559998888@c.us');
+      expect(mockSock.rejectCall).toHaveBeenCalledWith('call-1', '15559998888@s.whatsapp.net');
     });
   });
 
@@ -495,6 +528,55 @@ describe('BaileysEngine', () => {
 
       await new Promise((r) => setTimeout(r, 0));
       expect(messages).toEqual(['hello']);
+    });
+
+    it('onMessage fires for Message-yourself upserts even when fromMe', async () => {
+      const { engine } = newEngine();
+      const inbound: string[] = [];
+      const sent: string[] = [];
+      engine.setCallbacks({
+        onMessage: (m) => inbound.push(m.body),
+        onMessageSent: (m) => sent.push(m.body),
+      });
+
+      await engine.initialize();
+      emit('connection.update', { connection: 'open' });
+
+      emit('messages.upsert', {
+        messages: [{
+          key: { remoteJid: '15551234567@c.us', id: 'self-1', fromMe: true },
+          message: { conversation: 'what is on my calendar' },
+          messageTimestamp: 1700000000,
+        }],
+        type: 'notify',
+      });
+
+      await new Promise((r) => setTimeout(r, 0));
+      expect(inbound).toEqual(['what is on my calendar']);
+      expect(sent).toEqual(['what is on my calendar']);
+    });
+
+    it('skips protocolMessage upserts and does not download media', async () => {
+      const { engine } = newEngine();
+      const inbound: string[] = [];
+      engine.setCallbacks({ onMessage: (m) => inbound.push(m.body) });
+
+      await engine.initialize();
+      emit('connection.update', { connection: 'open' });
+      vi.mocked(downloadMediaMessage).mockClear();
+
+      emit('messages.upsert', {
+        messages: [{
+          key: { remoteJid: '15551234567@c.us', id: 'proto-1', fromMe: true },
+          message: { protocolMessage: { type: 5 } },
+          messageTimestamp: 1700000000,
+        }],
+        type: 'notify',
+      });
+
+      await new Promise((r) => setTimeout(r, 0));
+      expect(inbound).toEqual([]);
+      expect(downloadMediaMessage).not.toHaveBeenCalled();
     });
 
     it('onMessageAck fires on messages.update with status', async () => {

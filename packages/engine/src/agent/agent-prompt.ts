@@ -19,6 +19,7 @@ import {
   createQuestionnaireGuideSection,
   createCrewRosterGuideSection,
   createChatMarkdownSection,
+  createVisualStageSection,
   createMarkdownSection,
   createCurrentTimeSection,
   createSchedulingSection,
@@ -54,6 +55,7 @@ export interface PromptRegistrationContext {
   options: {
     promptProfile?: string;
     channelSession?: boolean;
+    crewPrivateHost?: { name?: string; callsign?: string } | null;
   };
   personaName?: string;
   usesCompactContext(): boolean;
@@ -70,6 +72,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createProviderPromptSection(secCtx))
       .register(createIdentitySection(secCtx))
       .register(createCompactRulesSection({ bypassPermissions: secCtx.bypassPermissions }))
+      .register(createVisualStageSection())
       .register(createCurrentTimeSection(secCtx))
       .register(createUserSection(secCtx))
       .register(createMemoryContextSection(secCtx));
@@ -98,10 +101,12 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
 
   if (ctx.options.promptProfile === 'crew_private') {
     const secCtx = ctx.createSectionContext();
+    const crewName = ctx.options.crewPrivateHost?.name?.trim() || ctx.personaName || 'Specialist';
     if (ctx.usesCompactContext()) {
       ctx.promptAssembly
         .register(createCrewPrivateConductSection())
-        .register(createLocalPersonaGuardSection(ctx.personaName))
+        .register(createLocalPersonaGuardSection(crewName))
+        .register(createVisualStageSection())
         .register(createWorkingDirectorySection(secCtx))
         .register(createUserSection(secCtx))
         .register(createSessionNarrativeSection(secCtx))
@@ -110,6 +115,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       ctx.promptAssembly
         .register(createCrewPrivateConductSection())
         .register(createTurnModeSection(secCtx))
+        .register(createVisualStageSection())
         .register(createQuestionnaireGuideSection())
         .register(createChatMarkdownSection())
         .register(createMarkdownSection())
@@ -144,6 +150,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createChannelLinkedContextSection(secCtx))
       .register(createChannelMessagingSection(ctx.personaName))
       .register(createThirdPartyServicesSection())
+      .register(createVisualStageSection())
       .register(createChatMarkdownSection())
       .register(createMarkdownSection())
       .register(createCurrentTimeSection(secCtx))
@@ -178,6 +185,8 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createCompactRulesSection({ bypassPermissions: secCtx.bypassPermissions }))
       .register(createTurnModeSection(secCtx))
       .register(createMissionPlanSection(secCtx.scopePath))
+      .register(createCrewRosterGuideSection(true))
+      .register(createVisualStageSection())
       .register(createUserSection(secCtx))
       .register(createSessionNarrativeSection(secCtx))
       .register(createTaskPanelSection())
@@ -203,6 +212,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createDocumentStudioSection())
       .register(createMissionPlanSection(secCtx.scopePath))
       .register(createThirdPartyServicesSection())
+      .register(createVisualStageSection())
       .register(createQuestionnaireGuideSection())
       .register(createChatMarkdownSection())
       .register(createMarkdownSection())

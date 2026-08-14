@@ -8,7 +8,12 @@ import {
   ChannelService,
   WhatsAppSessionService,
   WhatsAppBridgeAdapter,
+  StandingOrderStore,
+  WhatsAppJarvisRouter,
+  ContactDirectoryStore,
   setWhatsAppSessionServiceInstance,
+  setStandingOrderStoreInstance,
+  setContactDirectoryStoreInstance,
 } from '@agentx/engine';
 import type { AgentXConfig } from '@agentx/shared';
 import { parseAllowedUserIds } from '@agentx/shared';
@@ -16,6 +21,7 @@ import { getLogger } from '@agentx/shared';
 import { getEngine } from '../engine.js';
 import { channelEnabled, wantsInbound, resolveTelegramBotToken, telegramRuntime } from './shared.js';
 import { isTelegramInboundReady, persistTelegramSettings, startTelegramInbound, stopTelegramInbound } from './telegram.js';
+import { createWhatsAppJarvisHooks } from '../whatsapp-jarvis-hooks.js';
 
 /** Start/stop inbound bridges from Settings → Channels config. */
 export async function applyChannelsConfig(cfg?: AgentXConfig): Promise<void> {
@@ -61,6 +67,8 @@ export async function applyChannelsConfig(cfg?: AgentXConfig): Promise<void> {
       try { await eng.whatsappSessionService.stop(); } catch { /* best-effort */ }
       eng.whatsappSessionService = null;
       setWhatsAppSessionServiceInstance(null);
+      setStandingOrderStoreInstance(null);
+      setContactDirectoryStoreInstance(null);
     }
 
     // Discord inbound (bot)
@@ -134,29 +142,31 @@ export async function applyChannelsConfig(cfg?: AgentXConfig): Promise<void> {
         engine: whatsapp?.engine ?? 'baileys',
       });
       try {
-        // Boot-time reconciliation: auto-restart if previously authenticated.
-        // If this fails, reconcileOnBoot() sets the paused flag internally.
+        // Boot-time reconciliation: if a completed QR link is stored, reconnect
+        // silently (WhatsApp Web behaviour). First-time setup does not start a
+        // QR here — the owner clicks Connect when they are ready to scan.
         await sessionService.reconcileOnBoot();
-        // NOTE: We do NOT call link() here for first-time setup. If there's no
-        // previous session, reconcileOnBoot() returns without starting the
-        // engine. The user should explicitly click "Connect with QR" in the
-        // wizard or settings page to start the link flow. Auto-starting link()
-        // here would generate a QR before the user is ready to scan it, and
-        // the QR could expire by the time the user sees it.
-        // reconcileOnBoot() already calls link() if a previous READY session
-        // exists (returning user), so we only need to handle the case where
-        // reconcile didn't auto-start.
       } catch (e) {
         getLogger().warn('CHANNELS', `WhatsApp startup failed: ${e instanceof Error ? e.message : String(e)} — entering paused state`);
         sessionService.paused = true;
       }
       // Always register the bridge and store the service, even if paused —
       // the bridge and tool helpers check the paused flag at runtime.
+      const standingOrders = new StandingOrderStore(eng.pgPool);
+      setStandingOrderStoreInstance(standingOrders);
+      const contactDirectory = new ContactDirectoryStore(eng.pgPool);
+      setContactDirectoryStoreInstance(contactDirectory);
+      sessionService.setContactDirectory(contactDirectory);
+      void contactDirectory.load();
+      const jarvisRouter = new WhatsAppJarvisRouter({
+        sessionService,
+        standingOrders,
+        contactDirectory,
+        ...createWhatsAppJarvisHooks(),
+      });
       const adapter = new WhatsAppBridgeAdapter({
         sessionService,
-        autoReplyMode: whatsapp?.autoReplyMode ?? 'saved_contacts',
-        extraAllowedJids: whatsapp?.allowedJids,
-        blockedJids: whatsapp?.blockedJids,
+        jarvisRouter,
       });
       channelService.registerBridge('whatsapp', adapter);
       eng.whatsappSessionService = sessionService;

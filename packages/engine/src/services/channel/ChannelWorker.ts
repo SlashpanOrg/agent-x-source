@@ -46,6 +46,10 @@ export class ChannelWorker {
   }
 
   async process(payload: InboundPayload): Promise<void> {
+    if (payload.channel === 'whatsapp') {
+      this.logger.info('CHANNEL_WHATSAPP_SKIP', 'WhatsApp inbound is handled by JarvisRouter — ChannelWorker will not auto-reply');
+      return;
+    }
     const agent = await this.ensureChannelAgent(payload.channel, payload.sender.id);
     if (!agent) {
       this.logger.warn('CHANNEL_AGENT_MISSING', 'No channel agent available', {

@@ -12,7 +12,7 @@
  * individual messages that were already sent remain sent).
  */
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
-import { requireEngine, runTool, requireStringArray, optionalNumber, optionalString } from './helpers.js';
+import { requireEngine, runTool, requireStringArray, optionalNumber, optionalString, resolveChatTarget } from './helpers.js';
 
 // ─── In-memory batch tracking ────────────────────────────────────────────
 
@@ -56,13 +56,15 @@ export async function whatsappSendBulk(
         error: 'MISSING_INPUT',
       };
     }
+    const resolvedChatId = resolveChatTarget(chatId);
+    if (typeof resolvedChatId !== 'string') return resolvedChatId;
 
     const delayMs = optionalNumber(args, 'delayMs') ?? 2000; // conservative default
     const batchId = `bulk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     const batch: BulkBatch = {
       id: batchId,
-      chatId,
+      chatId: resolvedChatId,
       total: messages.length,
       sent: 0,
       failed: 0,
@@ -78,8 +80,8 @@ export async function whatsappSendBulk(
 
     return {
       success: true,
-      output: `Bulk send started: ${messages.length} messages to ${chatId}. Batch ID: ${batchId}. Use WhatsAppGetBatchStatus to check progress.`,
-      metadata: { batchId, total: messages.length, chatId },
+      output: `Bulk send started: ${messages.length} messages to ${resolvedChatId}. Batch ID: ${batchId}. Use WhatsAppGetBatchStatus to check progress.`,
+      metadata: { batchId, total: messages.length, chatId: resolvedChatId },
     };
   });
 }

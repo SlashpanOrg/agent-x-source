@@ -10,6 +10,13 @@ export interface WizardProgress {
   selectedModel: string;
   selectedReasoningEffort?: string;
   callsign: string;
+  ownerNames?: string[];
+  /** Legacy single name — still read on hydrate. */
+  ownerName?: string;
+  ownerNameDraft?: string;
+  ownerPrefix?: string;
+  ownerGender?: string;
+  ownerEmail?: string;
   selectedBackend: string;
   /** Profile step */
   profileName?: string;

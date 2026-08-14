@@ -5,8 +5,6 @@ import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
 import CircularProgress from '@mui/material/CircularProgress';
 import DownloadIcon from '@mui/icons-material/Download';
-import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
-import { SettingsSectionHeader } from './SettingsSectionHeader';
 import { SettingsCard } from './SettingsCard';
 import { settingsTheme, settingsHelperSx } from '../../styles/settings-theme';
 import { colors, alphaColor } from '../../theme';
@@ -44,7 +42,8 @@ interface ParserState {
   error?: string;
 }
 
-export function KnowledgeTab() {
+/** Compact parser install/status block — lives under Settings → General. */
+export function DocumentParsersSection() {
   const [parsers, setParsers] = useState<ParserState[]>(
     PARSERS.map((p) => ({ id: p.id, installed: false, installing: false })),
   );
@@ -98,99 +97,106 @@ export function KnowledgeTab() {
   };
 
   return (
-    <Box>
-      <SettingsSectionHeader
-        icon={<LibraryBooksIcon sx={{ fontSize: 16 }} />}
-        title="Knowledge"
-        subtitle="Optional premium document parsers"
-      />
+    <SettingsCard title="Document parsers" subtitle="Optional — not required for normal use">
+      <Typography sx={{ ...settingsHelperSx, mb: 1.25 }}>
+        Install layout-aware PDF/DOCX parsers when you need higher-quality extraction.
+      </Typography>
 
-      <SettingsCard title="Optional document parsers" subtitle="Install layout-aware PDF and document parsers">
-        <Typography sx={{ ...settingsHelperSx, mb: 1.5 }}>
-          These are not required for normal use. Click install to download and load the package automatically.
-        </Typography>
+      {checking && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+          <CircularProgress size={14} sx={{ color: settingsTheme.text.dim }} />
+          <Typography sx={{ ...settingsHelperSx, mb: 0 }}>Checking status…</Typography>
+        </Box>
+      )}
 
-        {checking && (
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-            <CircularProgress size={14} sx={{ color: settingsTheme.text.dim }} />
-            <Typography sx={{ ...settingsHelperSx, mb: 0 }}>Checking parser status…</Typography>
-          </Box>
-        )}
-
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          {PARSERS.map((meta) => {
-            const state = parsers.find((p) => p.id === meta.id) as ParserState;
-            return (
-              <Box
-                key={meta.id}
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 1.5,
-                  p: 1,
-                  bgcolor: settingsTheme.bg.panel,
-                  border: `1px solid ${settingsTheme.border.default}`,
-                  borderRadius: 1,
-                }}
-              >
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.25 }}>
-                    <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: settingsTheme.text.primary }}>
-                      {meta.name}
-                    </Typography>
-                    <Chip
-                      label={state.installed ? 'Installed' : 'Not installed'}
-                      size="small"
-                      sx={{
-                        height: 16,
-                        fontSize: '0.55rem',
-                        fontFamily: MONO,
-                        color: state.installed ? colors.accent.green : colors.accent.orange,
-                        bgcolor: state.installed ? alphaColor(colors.accent.green, 0.1) : alphaColor(colors.accent.orange, 0.1),
-                        border: `1px solid ${state.installed ? alphaColor(colors.accent.green, 0.25) : alphaColor(colors.accent.orange, 0.25)}`,
-                      }}
-                    />
-                  </Box>
-                  <Typography sx={{ fontSize: '0.65rem', color: settingsTheme.text.secondary }}>
-                    {meta.description}
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+        {PARSERS.map((meta) => {
+          const state = parsers.find((p) => p.id === meta.id) as ParserState;
+          return (
+            <Box
+              key={meta.id}
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 1.5,
+                p: 1,
+                bgcolor: settingsTheme.bg.panel,
+                border: `1px solid ${settingsTheme.border.default}`,
+                borderRadius: 1,
+              }}
+            >
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.25 }}>
+                  <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: settingsTheme.text.primary }}>
+                    {meta.name}
                   </Typography>
-                  {state.version && (
-                    <Typography sx={{ fontSize: '0.6rem', color: settingsTheme.text.dim, fontFamily: MONO }}>
-                      {state.version}
-                    </Typography>
-                  )}
-                  {state.error && (
-                    <Typography sx={{ fontSize: '0.6rem', color: colors.accent.red, mt: 0.25 }}>
-                      {state.error}
-                    </Typography>
-                  )}
-                </Box>
-
-                {!state.installed && (
-                  <Button
-                    variant="outlined"
+                  <Chip
+                    label={state.installed ? 'Installed' : 'Not installed'}
                     size="small"
-                    disabled={state.installing}
-                    startIcon={state.installing ? <CircularProgress size={12} sx={{ color: 'inherit' }} /> : <DownloadIcon sx={{ fontSize: 14 }} />}
-                    onClick={() => void install(meta.id)}
                     sx={{
-                      minWidth: 90,
-                      border: `1px solid ${colors.accent.blue}`,
-                      color: colors.accent.blue,
-                      fontSize: '0.65rem',
-                      textTransform: 'none',
-                      '&:hover': { borderColor: colors.accent.blue, bgcolor: alphaColor(colors.accent.blue, 0.12) },
+                      height: 16,
+                      fontSize: '0.55rem',
+                      fontFamily: MONO,
+                      color: state.installed ? colors.accent.green : colors.accent.orange,
+                      bgcolor: state.installed
+                        ? alphaColor(colors.accent.green, 0.1)
+                        : alphaColor(colors.accent.orange, 0.1),
+                      border: `1px solid ${
+                        state.installed
+                          ? alphaColor(colors.accent.green, 0.25)
+                          : alphaColor(colors.accent.orange, 0.25)
+                      }`,
                     }}
-                  >
-                    {state.installing ? 'Installing…' : 'Install'}
-                  </Button>
+                  />
+                </Box>
+                <Typography sx={{ fontSize: '0.65rem', color: settingsTheme.text.secondary }}>
+                  {meta.description}
+                </Typography>
+                {state.version && (
+                  <Typography sx={{ fontSize: '0.6rem', color: settingsTheme.text.dim, fontFamily: MONO }}>
+                    {state.version}
+                  </Typography>
+                )}
+                {state.error && (
+                  <Typography sx={{ fontSize: '0.6rem', color: colors.accent.red, mt: 0.25 }}>
+                    {state.error}
+                  </Typography>
                 )}
               </Box>
-            );
-          })}
-        </Box>
-      </SettingsCard>
-    </Box>
+
+              {!state.installed && (
+                <Button
+                  variant="outlined"
+                  size="small"
+                  disabled={state.installing}
+                  startIcon={
+                    state.installing ? (
+                      <CircularProgress size={12} sx={{ color: 'inherit' }} />
+                    ) : (
+                      <DownloadIcon sx={{ fontSize: 14 }} />
+                    )
+                  }
+                  onClick={() => void install(meta.id)}
+                  sx={{
+                    minWidth: 90,
+                    border: `1px solid ${colors.accent.blue}`,
+                    color: colors.accent.blue,
+                    fontSize: '0.65rem',
+                    textTransform: 'none',
+                    '&:hover': {
+                      borderColor: colors.accent.blue,
+                      bgcolor: alphaColor(colors.accent.blue, 0.12),
+                    },
+                  }}
+                >
+                  {state.installing ? 'Installing…' : 'Install'}
+                </Button>
+              )}
+            </Box>
+          );
+        })}
+      </Box>
+    </SettingsCard>
   );
 }

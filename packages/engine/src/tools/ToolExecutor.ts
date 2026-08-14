@@ -168,6 +168,10 @@ export class ToolExecutor implements ToolPermissionHost {
     this.voiceTurnActive = active;
   }
 
+  getVoiceTurnActive(): boolean {
+    return this.voiceTurnActive;
+  }
+
   setThirdPartyTurnPolicy(policy: ThirdPartyTurnPolicy | null): void {
     this.thirdPartyTurnPolicy = policy;
   }

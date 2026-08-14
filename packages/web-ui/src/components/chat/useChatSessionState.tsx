@@ -888,6 +888,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
 
 
   const handleCancel = useCallback(async () => {
+    const turnId = activeTurnIdRef.current;
     // Mark all pending questionnaires/crew-roster-pickers as expired so the
     // UI disables their submit buttons immediately. When a turn is stopped,
     // any pending interaction prompts are no longer actionable.
@@ -903,10 +904,24 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
         return p;
       }),
     })));
-    endTurnUi();
     setPermissionPrompt(null);
     setPendingPermissionCount(0);
-    try { await chat.cancel(); } catch { /* ignore */ }
+    try {
+      await chat.cancel();
+      if (turnId) {
+        const record = await chat.getTurn(turnId).catch(() => null);
+        if (record?.status === 'cancelled') {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.role === 'assistant' && last.streaming) {
+              return [...prev.slice(0, -1), { ...last, content: '⏹ Cancelled.', streaming: false, parts: undefined }];
+            }
+            return prev;
+          });
+        }
+      }
+    } catch { /* ignore */ }
+    endTurnUi();
   }, [endTurnUi]);
 
   // handleSelectSession has been moved to useChatSessionLifecycle.

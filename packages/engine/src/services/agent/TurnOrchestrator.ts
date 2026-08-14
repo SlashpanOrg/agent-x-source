@@ -20,6 +20,7 @@ import { modelMessageContentToText, estimateToolSchemaChars } from '../../agent/
 import { reconcileIntegrationHintWithActiveTools } from '../../integrations/integration-tool-availability.js';
 import type { ThirdPartyTurnPolicy } from '../../integrations/third-party-access.js';
 import { buildGoogleAiSdkProviderOptions } from '../../providers/google/gemini-metadata.js';
+import { buildCommandCodeAiSdkProviderOptions } from '../../providers/commandcode/commandcode-metadata.js';
 import { getPerfTracker } from '../../benchmark/perf.js';
 import type { ITurnOrchestrator, TurnOrchestratorHost, TurnRunOptions } from './ITurnOrchestrator.js';
 
@@ -228,6 +229,10 @@ export class TurnOrchestrator implements ITurnOrchestrator {
           effectiveReasoningEffort,
         )
         : undefined;
+      const commandCodeProviderOptions = this.host.config.provider.activeProvider === 'commandcode'
+        ? buildCommandCodeAiSdkProviderOptions(effectiveReasoningEffort)
+        : undefined;
+      const aiSdkProviderOptions = googleProviderOptions ?? commandCodeProviderOptions;
       const result = streamText({
         model,
         messages: aiMessages,
@@ -237,7 +242,7 @@ export class TurnOrchestrator implements ITurnOrchestrator {
         maxOutputTokens: effectiveMaxOutputTokens,
         stopWhen: ({ steps }) => steps.length >= Math.min(stepLimit(), this.host.modeStepCap),
         toolChoice: 'auto',
-        ...(googleProviderOptions ? { providerOptions: googleProviderOptions } : {}),
+        ...(aiSdkProviderOptions ? { providerOptions: aiSdkProviderOptions } : {}),
         prepareStep: async ({ stepNumber, messages }) => {
           this.host.turnState.setStage('execution', stepNumber);
           const stepMessages = messages.map((m) => ({

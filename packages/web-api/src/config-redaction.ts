@@ -1,4 +1,5 @@
 import type { AgentXConfig, WebSearchToolsConfig } from '@agentx/shared';
+import { mergeHostConfigPreservingSecrets } from './host/routes.js';
 
 /** @deprecated Legacy placeholder — never send or persist. Kept for merge of old clients. */
 export const REDACTED_SECRET = '••••••••';
@@ -138,11 +139,48 @@ export function redactConfigForClient(config: AgentXConfig): AgentXConfig {
       }
     : config.voice;
 
+  const host = config.host ? redactHostSection(config.host) : config.host;
+
   return {
     ...config,
     provider: { ...config.provider, providers: providers as AgentXConfig['provider']['providers'] },
     tools: tools as AgentXConfig['tools'],
     voice,
+    host,
+  };
+}
+
+function redactHostSection(host: NonNullable<AgentXConfig['host']>): NonNullable<AgentXConfig['host']> {
+  const tunnelProviders: NonNullable<NonNullable<AgentXConfig['host']>['tunnelProviders']> = {};
+  for (const [id, cfg] of Object.entries(host.tunnelProviders ?? {})) {
+    const creds = cfg.credentials ?? {};
+    tunnelProviders[id] = {
+      ...cfg,
+      credentials: {
+        accountId: creds.accountId,
+        extras: creds.extras,
+        authTokenConfigured: Boolean(creds.authToken?.trim() || creds.authTokenConfigured),
+      },
+    };
+  }
+  const providers: NonNullable<NonNullable<NonNullable<AgentXConfig['host']>['telephony']>['providers']> = {};
+  for (const [id, cfg] of Object.entries(host.telephony?.providers ?? {})) {
+    const creds = cfg.credentials ?? {};
+    providers[id] = {
+      ...cfg,
+      credentials: {
+        accountId: creds.accountId,
+        extras: creds.extras,
+        authTokenConfigured: Boolean(creds.authToken?.trim() || creds.authTokenConfigured),
+        apiKeyConfigured: Boolean(creds.apiKey?.trim() || creds.apiKeyConfigured),
+        apiSecretConfigured: Boolean(creds.apiSecret?.trim() || creds.apiSecretConfigured),
+      },
+    };
+  }
+  return {
+    ...host,
+    tunnelProviders,
+    telephony: host.telephony ? { ...host.telephony, providers } : host.telephony,
   };
 }
 
@@ -217,6 +255,10 @@ export function mergeConfigPreservingSecrets(existing: AgentXConfig, incoming: A
       },
     };
     delete (merged.voice.xai as { apiKeyConfigured?: boolean }).apiKeyConfigured;
+  }
+
+  if (incoming.host) {
+    merged.host = mergeHostConfigPreservingSecrets(existing.host ?? {}, incoming.host);
   }
 
   return merged;

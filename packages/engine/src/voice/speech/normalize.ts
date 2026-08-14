@@ -6,7 +6,19 @@ const BOLD_RE = /\*\*([^*]+)\*\*/g;
 const ITALIC_RE = /\*([^*]+)\*/g;
 const XML_TAG_RE = /<\/?[a-zA-Z][^>]*>/g;
 const UNICODE_TAG_RE = /[⟨⟩][^⟨⟩]*[⟨⟩]/g;
+const BARE_URL_RE = /https?:\/\/[^\s]+/gi;
 const MAX_SPOKEN_CHARS = 4000;
+
+function spokenHostFromUrl(raw: string): string {
+  try {
+    const host = new URL(raw).hostname
+      .replace(/^www\./i, '')
+      .replace(/^(images|cdn|static|media|assets|img)\./i, '');
+    return host || 'a web page';
+  } catch {
+    return 'a web page';
+  }
+}
 
 export interface NormalizeSpeechOptions {
   maxChars?: number;
@@ -26,6 +38,7 @@ export function normalizeTextForSpeech(text: string, options: NormalizeSpeechOpt
   out = out.replace(ITALIC_RE, '$1');
   out = out.replace(XML_TAG_RE, ' ');
   out = out.replace(UNICODE_TAG_RE, ' ');
+  out = out.replace(BARE_URL_RE, (url) => spokenHostFromUrl(url));
   out = out.replace(/[#>*_~|]/g, ' ');
   out = out.replace(/\s+/g, ' ').trim();
 

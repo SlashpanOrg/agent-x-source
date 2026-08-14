@@ -17,7 +17,7 @@ function hexToRgbChannels(hex: string): string {
 }
 
 export function Login() {
-  const { setAuthenticated, setAuthState } = useApp();
+  const { setAuthenticated, setAuthState, refreshHealth } = useApp();
   const navigate = useNavigate();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -92,6 +92,8 @@ export function Login() {
     try {
       const res = await auth.login(username, password);
       setAuthToken(res.token);
+      // Ensure DockingStation / health banner see the live API immediately after login.
+      await refreshHealth().catch(() => {});
 
       // Check if setup wizard was completed before redirecting
       const setupStatus = await config.getSetupStatus();
@@ -200,6 +202,7 @@ export function Login() {
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUsername(e.target.value)}
               autoFocus
               autoComplete="username"
+              aria-label="Username"
               sx={{
                 width: '100%', px: 1.5, py: 1,
                 bgcolor: colors.bg.primary,
@@ -212,7 +215,7 @@ export function Login() {
                 '&:focus': { borderColor: alphaColor(colors.accent.blue, '80') },
                 '&::placeholder': { color: colors.text.dim },
               }}
-              placeholder="operator"
+              placeholder="username"
             />
           </Box>
 

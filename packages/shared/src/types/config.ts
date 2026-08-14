@@ -3,11 +3,46 @@ import type { RAGConfig } from './rag.js';
 import type { PermissionRule } from './permission.js';
 import type { NotificationChannelsConfig } from './channels.js';
 import type { VoiceConfig } from './voice.js';
+import type { HostConfig } from './host.js';
 
 export type { NotificationChannelsConfig, NotificationChannelId, NotificationChannelStatus } from './channels.js';
+export type { HostConfig } from './host.js';
+export type { TelephonyConfig, TelephonyProviderId } from './telephony.js';
+
+export const USER_HONORIFIC_PREFIXES = ['Mr.', 'Ms.', 'Mrs.', 'Miss', 'Dr.', 'Prof.', 'Mx.'] as const;
+export type UserHonorificPrefix = (typeof USER_HONORIFIC_PREFIXES)[number];
+
+export const USER_GENDERS = ['male', 'female', 'nonbinary', 'unspecified'] as const;
+export type UserGender = (typeof USER_GENDERS)[number];
+
+export const USER_GENDER_LABELS: Record<UserGender, string> = {
+  male: 'Male (he/him)',
+  female: 'Female (she/her)',
+  nonbinary: 'Non-binary (they/them)',
+  unspecified: 'Prefer not to say',
+};
 
 export interface UserConfig {
+  /**
+   * How Agent-X addresses the root user directly (dashboard, voice, WhatsApp self-chat).
+   * Never used when talking to other people about the owner.
+   */
   callsign: string;
+  /**
+   * Given names and nicknames Agent-X may use when referring to the owner to other
+   * people (WhatsApp contacts, Telegram, email, etc.). Pick any of them at random.
+   */
+  names?: string[];
+  /**
+   * First public name — kept in sync with `names[0]` for older configs.
+   * Prefer `names`.
+   */
+  name?: string;
+  /** Honorific that may be paired with any public name for third parties (Mr., Dr., …). */
+  prefix?: string;
+  gender?: UserGender;
+  /** Optional; only used when a task actually needs to contact the owner by email. */
+  email?: string;
 }
 
 export type CommunicationStyle = 'formal' | 'casual' | 'direct' | 'empathetic';
@@ -88,6 +123,11 @@ export interface AgentXConfig extends Record<string, unknown> {
   channels?: NotificationChannelsConfig;
   /** Optional strictly-local voice subsystem. Disabled unless configured. */
   voice?: VoiceConfig;
+  /**
+   * Host / public edge / VOIP. Disabled by default; public access is opt-in.
+   * Tunnel + telephony secrets live here (encrypted at rest).
+   */
+  host?: HostConfig;
   localModel?: LocalModelConfig;
   featureRouting?: FeatureRoutingConfig;
   maxSubAgents?: number; // Maximum number of concurrent sub-agents (default: 5, max: 20)

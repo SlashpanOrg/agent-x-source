@@ -21,20 +21,33 @@
  *
  * Written from scratch for Agent-X — not copied from any reference project.
  */
+import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import { getLogger } from '@agentx/shared';
 
 import { WhatsAppEventBus } from './WhatsAppEventBus.js';
-import { purgeWhatsAppAuthState, type SessionRow } from './WhatsAppStore.js';
+import { hasRegisteredWhatsAppCreds, purgeWhatsAppAuthState, type SessionRow } from './WhatsAppStore.js';
 import { createWhatsAppEngine, type WhatsAppEngineKind } from './engine/EngineFactory.js';
 import { EngineStatus } from './engine/IWhatsAppEngine.js';
 import type {
   IWhatsAppEngine,
   WhatsAppEngineCallbacks,
+  WhatsAppContactEntry,
+  WhatsAppIncomingMessage,
 } from './engine/IWhatsAppEngine.js';
+import { toNeutralJid } from './identity/wa-id.js';
+import type { ContactDirectoryStore } from './contacts/ContactDirectoryStore.js';
+import { getAttachmentService } from '../attachments/index.js';
+import { visualKindFromMime } from '@agentx/shared';
+import { waUnixTimestamp } from './wa-timestamp.js';
+import { isAgentMarkedBody } from './jarvis/constants.js';
 
 /** Single-row id for the whatsapp_session table. */
 const SESSION_ID = 'default';
+
+function isRemoteLogout(reason: string | undefined): boolean {
+  return Boolean(reason && /^logged_out\b/i.test(reason));
+}
 
 /** Watchdog configuration. */
 export interface WatchdogConfig {
@@ -95,17 +108,9 @@ export class WhatsAppSessionService {
    */
   private _paused = false;
 
-  /**
-   * Runtime allowlist of WhatsApp JIDs that the agent should auto-reply to,
-   * even if they're not in the user's saved contacts. Populated by the
-   * whatsapp_allow_sender tool when the user explicitly approves a number.
-   */
-  private readonly runtimeAllowedJids = new Set<string>();
-  /**
-   * Runtime blocklist of WhatsApp JIDs that should never get auto-replies.
-   * Populated by the whatsapp_block_sender tool.
-   */
-  private readonly runtimeBlockedJids = new Set<string>();
+  /** Recent self-chat outbound ids so Jarvis can drop our own echoes. */
+  private readonly recentOutboundIds = new Set<string>();
+  private readonly recentOutboundOrder: string[] = [];
 
   private engine: IWhatsAppEngine | null = null;
   private eventBus: WhatsAppEventBus = new WhatsAppEventBus();
@@ -117,6 +122,14 @@ export class WhatsAppSessionService {
   private currentPushName?: string;
   private currentError?: string;
   private currentQrDataUrl?: string;
+  private contactDirectory: ContactDirectoryStore | null = null;
+  private pendingContactEntries: WhatsAppContactEntry[] = [];
+  private contactFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private contactReadySyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private contactRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly persistInflight = new Map<string, Promise<void>>();
+  /** Last inbound "Message yourself" chat id (often the owner's LID). */
+  private lastSelfChatId: string | null = null;
 
   constructor(opts: WhatsAppSessionServiceOptions) {
     this.pool = opts.pool;
@@ -148,34 +161,190 @@ export class WhatsAppSessionService {
     return this.engine;
   }
 
-  // ─── Inbound allowlist management ──────────────────────────────────────
-
-  /** Add a JID to the runtime allowlist (agent will auto-reply to this sender). */
-  allowSender(jid: string): void {
-    this.runtimeAllowedJids.add(jid);
-    this.runtimeBlockedJids.delete(jid);
+  /** Neutral owner JIDs for the linked handset (self-chat). */
+  getOwnerJids(): string[] {
+    const out = new Set<string>();
+    const phone = (this.currentPhoneNumber ?? '').replace(/\D/g, '');
+    if (phone) out.add(`${phone}@c.us`);
+    for (const jid of this.engine?.getLinkedUserJids?.() ?? []) {
+      const n = toNeutralJid(jid);
+      if (n) out.add(n);
+    }
+    return [...out];
   }
 
-  /** Add a JID to the runtime blocklist (agent will silently drop messages). */
-  blockSender(jid: string): void {
-    this.runtimeBlockedJids.add(jid);
-    this.runtimeAllowedJids.delete(jid);
+  /** WhatsApp "Message yourself" chat id, or null if the number is unknown. */
+  getSelfChatId(): string | null {
+    if (this.lastSelfChatId) return this.lastSelfChatId;
+    const jids = this.getOwnerJids();
+    const lid = jids.find((j) => j.endsWith('@lid'));
+    if (lid) return lid;
+    return jids[0] ?? null;
   }
 
-  /** Remove a JID from both the allowlist and blocklist. */
-  removeSenderRestriction(jid: string): void {
-    this.runtimeAllowedJids.delete(jid);
-    this.runtimeBlockedJids.delete(jid);
+  rememberSelfChatId(chatId: string): void {
+    const n = toNeutralJid(chatId) || chatId.trim();
+    if (n) this.lastSelfChatId = n;
   }
 
-  /** Check if a JID is explicitly allowed (via whatsapp_allow_sender tool). */
-  isRuntimeAllowed(jid: string): boolean {
-    return this.runtimeAllowedJids.has(jid);
+  rememberOutboundId(id: string): void {
+    if (!id) return;
+    this.recentOutboundIds.add(id);
+    this.recentOutboundOrder.push(id);
+    while (this.recentOutboundOrder.length > 64) {
+      const old = this.recentOutboundOrder.shift();
+      if (old) this.recentOutboundIds.delete(old);
+    }
   }
 
-  /** Check if a JID is explicitly blocked (via whatsapp_block_sender tool). */
-  isRuntimeBlocked(jid: string): boolean {
-    return this.runtimeBlockedJids.has(jid);
+  setContactDirectory(store: ContactDirectoryStore | null): void {
+    this.contactDirectory = store;
+  }
+
+  getContactDirectory(): ContactDirectoryStore | null {
+    return this.contactDirectory;
+  }
+
+  getRecentOutboundIds(): Set<string> {
+    return this.recentOutboundIds;
+  }
+
+  async persistInboundMessage(msg: WhatsAppIncomingMessage): Promise<void> {
+    await this.persistWhatsAppMessage(msg);
+  }
+
+  async persistWhatsAppMessage(msg: WhatsAppIncomingMessage): Promise<void> {
+    const waId = msg.id || randomUUID();
+    const existing = this.persistInflight.get(waId);
+    if (existing) {
+      await existing;
+      return;
+    }
+    const run = this.writeWhatsAppMessage(msg, waId).finally(() => {
+      this.persistInflight.delete(waId);
+    });
+    this.persistInflight.set(waId, run);
+    await run;
+  }
+
+  private async writeWhatsAppMessage(msg: WhatsAppIncomingMessage, waId: string): Promise<void> {
+    const attachmentId = msg.attachmentId ?? await this.persistInboundMedia(msg);
+    if (attachmentId) msg.attachmentId = attachmentId;
+    const direction = msg.fromMe ? 'outbound' : 'inbound';
+    const actor = msg.fromMe
+      ? (isAgentMarkedBody(msg.body) ? 'agent' : 'owner')
+      : 'contact';
+    await this.pool.query(
+      `INSERT INTO whatsapp_messages
+         (id, wa_message_id, chat_id, direction, "from", "to", body, type, status, timestamp, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+       ON CONFLICT (wa_message_id) DO UPDATE SET
+         body = COALESCE(NULLIF(EXCLUDED.body, ''), whatsapp_messages.body),
+         metadata = whatsapp_messages.metadata || EXCLUDED.metadata,
+         status = EXCLUDED.status,
+         type = CASE
+           WHEN EXCLUDED.type IS NOT NULL AND EXCLUDED.type <> 'unknown' THEN EXCLUDED.type
+           ELSE whatsapp_messages.type
+         END,
+         timestamp = COALESCE(EXCLUDED.timestamp, whatsapp_messages.timestamp)`,
+      [
+        randomUUID(),
+        waId,
+        toNeutralJid(msg.chatId || msg.from) || msg.chatId || '',
+        direction,
+        toNeutralJid(msg.author ?? msg.from) || msg.from || '',
+        toNeutralJid(msg.to || '') || msg.to || '',
+        msg.body ?? '',
+        msg.type,
+        msg.fromMe ? 'sent' : 'received',
+        waUnixTimestamp(msg.timestamp),
+        JSON.stringify({
+          isGroup: msg.isGroup,
+          fromMe: msg.fromMe,
+          actor,
+          pushName: msg.pushName ?? null,
+          author: msg.author ?? null,
+          mediaCaption: msg.media?.caption ?? null,
+          mediaOmitted: msg.media?.omitted ?? false,
+          mediaFileName: msg.media?.fileName ?? null,
+          ...(msg.location ? { location: msg.location } : {}),
+          ...(attachmentId ? { storageId: attachmentId, mediaMime: msg.media?.mimetype ?? null } : {}),
+        }),
+      ],
+    );
+  }
+
+  async listPersistedMessages(opts: {
+    chatId?: string;
+    query?: string;
+    limit?: number;
+  } = {}): Promise<Array<{
+    waMessageId: string;
+    chatId: string;
+    direction: string;
+    from: string;
+    to: string;
+    body: string;
+    type: string;
+    timestamp: number;
+    metadata: Record<string, unknown>;
+  }>> {
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+    const params: unknown[] = [];
+    const where: string[] = [];
+    if (opts.chatId?.trim()) {
+      params.push(toNeutralJid(opts.chatId) || opts.chatId.trim());
+      where.push(`chat_id = $${params.length}`);
+    }
+    if (opts.query?.trim()) {
+      params.push(`%${opts.query.trim()}%`);
+      where.push(`(body ILIKE $${params.length} OR "from" ILIKE $${params.length} OR metadata->>'pushName' ILIKE $${params.length})`);
+    }
+    params.push(limit);
+    const sql = `SELECT wa_message_id AS "waMessageId", chat_id AS "chatId", direction,
+                        "from", "to", body, type, timestamp, metadata
+                 FROM whatsapp_messages
+                 ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+                 ORDER BY timestamp DESC
+                 LIMIT $${params.length}`;
+    const { rows } = await this.pool.query(sql, params);
+    return rows.map((row) => ({
+      waMessageId: String(row.waMessageId ?? ''),
+      chatId: String(row.chatId ?? ''),
+      direction: String(row.direction ?? ''),
+      from: String(row.from ?? ''),
+      to: String(row.to ?? ''),
+      body: String(row.body ?? ''),
+      type: String(row.type ?? 'text'),
+      timestamp: Number(row.timestamp) || 0,
+      metadata: (row.metadata && typeof row.metadata === 'object' ? row.metadata : {}) as Record<string, unknown>,
+    }));
+  }
+
+  private async persistInboundMedia(msg: WhatsAppIncomingMessage): Promise<string | undefined> {
+    const media = msg.media;
+    if (!media?.data || media.omitted) return undefined;
+    try {
+      const kind = visualKindFromMime(media.mimetype, 'document');
+      const ext = media.fileName?.includes('.')
+        ? media.fileName.slice(media.fileName.lastIndexOf('.'))
+        : kind === 'image' ? '.jpg' : kind === 'video' ? '.mp4' : '.bin';
+      const filename = media.fileName?.trim() || `whatsapp-${kind}-${msg.id || 'media'}${ext}`;
+      const stored = await getAttachmentService().registerAttachment({
+        sessionId: '__channel__:voice',
+        filename,
+        mimeType: media.mimetype,
+        buffer: Buffer.from(media.data, 'base64'),
+        source: 'whatsapp',
+      });
+      return stored.id;
+    } catch (err) {
+      getLogger().warn(
+        'WHATSAPP',
+        `Inbound media persist skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
   }
 
   /** Whether WhatsApp is soft-paused (protocol break / version upgrade). */
@@ -196,14 +365,24 @@ export class WhatsAppSessionService {
    * reconnect silently (no QR needed).
    */
   async link(): Promise<void> {
-    // Idempotent: if the engine is already active (e.g. from reconcileOnBoot
-    // auto-reconnecting), don't throw — just return. The caller can check
-    // getStatus() to see the current state and getQr() for the QR code.
+    // Idempotent while a live handshake or socket is up. A dead engine
+    // (FAILED / DISCONNECTED leftover after a drop) must be replaced.
     if (this.engine) {
-      return;
+      const live = this.engine.getStatus();
+      if (
+        live === EngineStatus.READY
+        || live === EngineStatus.QR_READY
+        || live === EngineStatus.AUTHENTICATING
+        || live === EngineStatus.INITIALIZING
+        || live === EngineStatus.PAIRING
+      ) {
+        return;
+      }
+      getLogger().info('WHATSAPP', `link(): replacing dead engine (status=${live})`);
+      try { await this.engine.forceDestroy(); } catch { /* best-effort */ }
+      this.engine = null;
     }
     if (this.initializing) {
-      // Another link() is in progress — wait briefly then return
       return;
     }
     this.initializing = true;
@@ -211,20 +390,19 @@ export class WhatsAppSessionService {
     this.currentError = undefined;
     this.currentQrDataUrl = undefined;
 
-    // Purge stale credentials from any previous failed/partial link attempt.
-    // If a previous QR scan failed mid-handshake, Baileys may have written
-    // partial creds to the DB. On the next link(), loadOrInit() would load
-    // these stale creds and Baileys would think it's "registered" — causing
-    // the handshake to fail with "Check your connection" on the phone.
-    // Only skip purge if we have a confirmed READY session in the DB.
-    const existingRow = await this.readSessionRow();
-    if (existingRow && existingRow.status !== EngineStatus.READY) {
-      getLogger().info('WHATSAPP', `link(): purging stale credentials (previous status: ${existingRow.status})`);
+    // Only wipe unregistered leftover noise from a failed QR handshake.
+    // A completed link (creds.registered) must survive app restarts, Stop,
+    // watchdog reconnects, and transient disconnects — like WhatsApp Web.
+    const registered = await hasRegisteredWhatsAppCreds(this.pool, this.dek);
+    if (!registered) {
+      getLogger().info('WHATSAPP', 'link(): no registered session — clearing leftover unregistered auth material');
       try {
         await purgeWhatsAppAuthState(this.pool, this.dek);
       } catch (err) {
-        getLogger().warn('WHATSAPP', `link(): stale credential purge failed: ${err instanceof Error ? err.message : String(err)}`);
+        getLogger().warn('WHATSAPP', `link(): leftover auth purge failed: ${err instanceof Error ? err.message : String(err)}`);
       }
+    } else {
+      getLogger().info('WHATSAPP', 'link(): registered session found — reconnecting silently (no QR)');
     }
 
     try {
@@ -272,6 +450,9 @@ export class WhatsAppSessionService {
     // to the DB row status so the UI doesn't falsely show "disconnected"
     // when WhatsApp is actually linked but the engine hasn't been started.
     const engineStatus = this.engine?.getStatus() ?? (row?.status as EngineStatus) ?? EngineStatus.DISCONNECTED;
+    if (!this.currentPhoneNumber && row?.phone_number) {
+      this.currentPhoneNumber = row.phone_number;
+    }
     return {
       status: engineStatus,
       engine: this.engineKind,
@@ -324,6 +505,7 @@ export class WhatsAppSessionService {
     if (this.stopping) return;
     this.stopping = true;
     this.stopWatchdog();
+    this.stopContactSync();
 
     const engine = this.engine;
     if (!engine) {
@@ -348,6 +530,7 @@ export class WhatsAppSessionService {
   /** Hard kill for a wedged engine. */
   async forceKill(): Promise<void> {
     this.stopWatchdog();
+    this.stopContactSync();
     const engine = this.engine;
     if (engine) {
       try { await engine.forceDestroy(); } catch { /* ignore */ }
@@ -360,10 +543,13 @@ export class WhatsAppSessionService {
   }
 
   /**
-   * Unlink — delete all credentials and session data. The engine must be
-   * stopped first (or this will stop it).
+   * Unlink — revoke the device on WhatsApp (like logging out of WhatsApp Web),
+   * then delete stored credentials. Only the owner should call this.
    */
   async unlink(): Promise<void> {
+    if (this.engine?.logoutFromServer) {
+      try { await this.engine.logoutFromServer(); } catch { /* already closed */ }
+    }
     await this.stop();
     try {
       await purgeWhatsAppAuthState(this.pool, this.dek);
@@ -371,6 +557,7 @@ export class WhatsAppSessionService {
       getLogger().error('WHATSAPP', err instanceof Error ? err : new Error(String(err)), { ctx: 'unlink-purge' });
     }
     await this.deleteSessionRow();
+    await this.contactDirectory?.purge();
     this.currentPhoneNumber = undefined;
     this.currentPushName = undefined;
     this.currentError = undefined;
@@ -379,40 +566,37 @@ export class WhatsAppSessionService {
   }
 
   /**
-   * Boot-time reconciliation (§3.4). Call once on app startup.
-   * - If the session was left in "initializing" or "qr_ready", reset to "disconnected".
-   * - If the session was previously authenticated (status was "ready"), auto-restart.
+   * Boot-time reconciliation. A completed QR link persists like WhatsApp Web:
+   * if registered creds (or a previously linked phone) exist, reconnect
+   * silently. Incomplete QR attempts are reset to disconnected.
    */
   async reconcileOnBoot(): Promise<void> {
+    const registered = await hasRegisteredWhatsAppCreds(this.pool, this.dek);
     const row = await this.readSessionRow();
-    if (!row) {
-      // No session record — nothing to reconcile.
+    const wasLinked = registered || Boolean(row?.phone_number);
+
+    if (wasLinked) {
+      getLogger().info('WHATSAPP', 'Persisted WhatsApp link found — reconnecting silently (no QR)');
+      try {
+        await this.link();
+        this._paused = false;
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        getLogger().warn('WHATSAPP', `Auto-reconnect failed: ${errMsg} — entering paused state`);
+        await this.upsertSessionRow(EngineStatus.DISCONNECTED, {
+          lastError: `Auto-reconnect failed: ${errMsg}`,
+        });
+        this._paused = true;
+      }
       return;
     }
+
+    if (!row) return;
 
     const staleStates: EngineStatus[] = [EngineStatus.INITIALIZING, EngineStatus.QR_READY, EngineStatus.PAIRING, EngineStatus.AUTHENTICATING];
     if (staleStates.includes(row.status as EngineStatus)) {
       getLogger().info('WHATSAPP', `Reconciling stale session state '${row.status}' → 'disconnected'`);
       await this.upsertSessionRow(EngineStatus.DISCONNECTED);
-      return;
-    }
-
-    if (row.status === EngineStatus.READY) {
-      getLogger().info('WHATSAPP', 'Previously authenticated session found — auto-restarting engine');
-      try {
-        await this.link();
-        // Connection succeeded — ensure we're not paused
-        this._paused = false;
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        getLogger().warn('WHATSAPP', `Auto-restart failed: ${errMsg} — entering paused state`);
-        await this.upsertSessionRow(EngineStatus.DISCONNECTED, {
-          lastError: `Auto-restart failed: ${errMsg}`,
-        });
-        // Auto-pause: the engine couldn't connect, likely due to a protocol
-        // break or library incompatibility. The UI will show a retry button.
-        this._paused = true;
-      }
     }
   }
 
@@ -474,32 +658,142 @@ export class WhatsAppSessionService {
           pushName: this.currentPushName,
           connectedAt: status === EngineStatus.READY ? new Date() : undefined,
         });
+        if (status === EngineStatus.READY) {
+          this.scheduleContactSync();
+        }
       },
       onMessage: (msg) => {
-        this.eventBus.emit('message', msg);
-        void this.touchLastActive();
+        const owners = new Set(this.getOwnerJids());
+        if (owners.has(toNeutralJid(msg.chatId)) || owners.has(toNeutralJid(msg.from))) {
+          this.rememberSelfChatId(msg.chatId);
+        }
+        void this.persistWhatsAppMessage(msg)
+          .catch((err) => {
+            getLogger().warn(
+              'WHATSAPP',
+              `Persist inbound failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          })
+          .finally(() => {
+            this.eventBus.emit('message', msg);
+            void this.touchLastActive();
+          });
       },
       onMessageSent: (msg) => {
-        this.eventBus.emit('messageSent', msg);
-        void this.touchLastActive();
+        void this.persistWhatsAppMessage(msg)
+          .catch((err) => {
+            getLogger().warn(
+              'WHATSAPP',
+              `Persist outbound failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          })
+          .finally(() => {
+            this.eventBus.emit('messageSent', msg);
+            void this.touchLastActive();
+          });
       },
       onMessageAck: (ack) => this.eventBus.emit('messageAck', ack),
       onMessageRevoked: (chatId, messageId) => this.eventBus.emit('messageRevoked', chatId, messageId),
+      onMessageEdited: (msg) => {
+        void this.persistWhatsAppMessage(msg)
+          .catch((err) => {
+            getLogger().warn(
+              'WHATSAPP',
+              `Persist edit failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          })
+          .finally(() => {
+            this.eventBus.emit('messageEdited', msg);
+          });
+      },
       onMessageReaction: (chatId, messageId, senderId, emoji) =>
         this.eventBus.emit('messageReaction', chatId, messageId, senderId, emoji),
-      onMessageEdited: (msg) => this.eventBus.emit('messageEdited', msg),
       onGroupEvent: (event) => this.eventBus.emit('groupEvent', event),
       onCallReceived: (call) => this.eventBus.emit('callReceived', call),
       onDisconnected: (reason) => {
         this.eventBus.emit('disconnected', reason);
+        if (isRemoteLogout(reason)) {
+          void this.handleRemoteLogout(reason);
+          return;
+        }
         void this.upsertSessionRow(EngineStatus.DISCONNECTED);
+        // Baileys reconnects itself while INITIALIZING. A dead socket
+        // (wwebjs, or Baileys after a hard fail) is recovered here.
+        const live = this.engine?.getStatus();
+        if (
+          !this.stopping
+          && !this._paused
+          && (live === EngineStatus.DISCONNECTED || live === EngineStatus.FAILED || !this.engine)
+        ) {
+          void this.recoverLinkedSession();
+        }
       },
       onError: (error) => {
         this.currentError = error.message;
         this.eventBus.emit('error', error);
         void this.upsertSessionRow(this.engine?.getStatus() ?? EngineStatus.FAILED, { lastError: error.message });
       },
+      onContactsChanged: (contacts) => {
+        this.eventBus.emit('contactsChanged', contacts);
+        this.queueContactSync(contacts);
+      },
     };
+  }
+
+  private queueContactSync(contacts: WhatsAppContactEntry[]): void {
+    if (contacts.length === 0) return;
+    this.pendingContactEntries.push(...contacts);
+    if (this.contactFlushTimer) clearTimeout(this.contactFlushTimer);
+    this.contactFlushTimer = setTimeout(() => void this.flushContactSync(), 400);
+  }
+
+  private async flushContactSync(): Promise<void> {
+    const batch = this.pendingContactEntries;
+    this.pendingContactEntries = [];
+    this.contactFlushTimer = null;
+    if (batch.length === 0 || !this.contactDirectory) return;
+    const n = await this.contactDirectory.upsertFromEngine(batch);
+    if (n > 0) {
+      getLogger().info('WHATSAPP', `Indexed ${n} WhatsApp contact(s) (${this.contactDirectory.count()} total)`);
+    }
+  }
+
+  private scheduleContactSync(): void {
+    void this.syncContactsFromEngine();
+    if (this.contactReadySyncTimer) clearTimeout(this.contactReadySyncTimer);
+    this.contactReadySyncTimer = setTimeout(() => void this.syncContactsFromEngine(), 30_000);
+    if (this.contactRefreshTimer) clearInterval(this.contactRefreshTimer);
+    this.contactRefreshTimer = setInterval(() => void this.syncContactsFromEngine(), 15 * 60_000);
+  }
+
+  async syncContactsFromEngine(): Promise<number> {
+    const engine = this.engine;
+    if (!engine?.listContacts || !this.contactDirectory) return 0;
+    try {
+      const contacts = await engine.listContacts({ limit: 50_000 });
+      const n = await this.contactDirectory.upsertFromEngine(contacts);
+      getLogger().info('WHATSAPP', `WhatsApp contact directory sync: ${n} upserted, ${this.contactDirectory.count()} indexed`);
+      return n;
+    } catch (err) {
+      getLogger().warn('WHATSAPP', `Contact directory sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      return 0;
+    }
+  }
+
+  private stopContactSync(): void {
+    if (this.contactFlushTimer) {
+      clearTimeout(this.contactFlushTimer);
+      this.contactFlushTimer = null;
+    }
+    if (this.contactReadySyncTimer) {
+      clearTimeout(this.contactReadySyncTimer);
+      this.contactReadySyncTimer = null;
+    }
+    if (this.contactRefreshTimer) {
+      clearInterval(this.contactRefreshTimer);
+      this.contactRefreshTimer = null;
+    }
+    this.pendingContactEntries = [];
   }
 
   // ─── Internal: watchdog (§3.3) ──────────────────────────────────────────
@@ -557,6 +851,45 @@ export class WhatsAppSessionService {
       await this.link();
     } catch (err) {
       getLogger().error('WHATSAPP', err instanceof Error ? err : new Error(String(err)), { ctx: 'watchdog-reconnect' });
+    }
+  }
+
+  /** Phone revoked the linked device — drop auth and require a new QR. */
+  private async handleRemoteLogout(reason: string): Promise<void> {
+    getLogger().warn('WHATSAPP', `WhatsApp logged out remotely (${reason}) — credentials purged; scan QR to link again`);
+    this.stopWatchdog();
+    this.stopContactSync();
+    const engine = this.engine;
+    this.engine = null;
+    if (engine) {
+      try { await engine.forceDestroy(); } catch { /* already closed */ }
+    }
+    try {
+      await purgeWhatsAppAuthState(this.pool, this.dek);
+    } catch (err) {
+      getLogger().error('WHATSAPP', err instanceof Error ? err : new Error(String(err)), { ctx: 'remote-logout-purge' });
+    }
+    await this.deleteSessionRow();
+    this.currentPhoneNumber = undefined;
+    this.currentPushName = undefined;
+    this.currentError = 'Logged out from WhatsApp. Scan the QR code again to link.';
+    this.currentQrDataUrl = undefined;
+  }
+
+  /**
+   * After a transient drop, restart the engine if a completed link is stored.
+   * Never starts a fresh QR on its own.
+   */
+  private async recoverLinkedSession(): Promise<void> {
+    if (this.stopping || this._paused || this.initializing) return;
+    const registered = await hasRegisteredWhatsAppCreds(this.pool, this.dek);
+    const row = await this.readSessionRow();
+    if (!registered && !row?.phone_number) return;
+    getLogger().info('WHATSAPP', 'Linked session dropped — reconnecting without QR');
+    try {
+      await this.link();
+    } catch (err) {
+      getLogger().warn('WHATSAPP', `Linked-session recover failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

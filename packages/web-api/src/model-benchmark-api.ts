@@ -248,6 +248,7 @@ router.post('/model-benchmark/start', async (req, res) => {
       apiKey?: string;
       baseUrl?: string;
       modelCapabilities?: string[];
+      reasoningEffort?: string;
       force?: boolean;
     };
 
@@ -300,6 +301,7 @@ router.post('/model-benchmark/start', async (req, res) => {
             apiKey: creds.apiKey,
             baseUrl: creds.baseUrl,
             modelCapabilities: body.modelCapabilities as ModelCapability[] | undefined,
+            reasoningEffort: body.reasoningEffort,
           },
           (event) => {
             if (event.type === 'complete') return;

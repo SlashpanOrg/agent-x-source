@@ -14,6 +14,7 @@ import type { Pool } from 'pg';
  *   - boot-time reconciliation
  */
 import { WhatsAppSessionService } from '../src/whatsapp/WhatsAppSessionService.js';
+import { purgeWhatsAppAuthState } from '../src/whatsapp/WhatsAppStore.js';
 import { WhatsAppEventBus } from '../src/whatsapp/WhatsAppEventBus.js';
 import { EngineStatus } from '../src/whatsapp/engine/IWhatsAppEngine.js';
 import type { IWhatsAppEngine, WhatsAppEngineCallbacks, WhatsAppIncomingMessage } from '../src/whatsapp/engine/IWhatsAppEngine.js';
@@ -29,6 +30,7 @@ class MockEngine implements IWhatsAppEngine {
   public destroyCalled = false;
   public forceDestroyCalled = false;
   public disconnectCalled = false;
+  public logoutFromServerCalled = false;
   public livenessResult = true;
 
   setCallbacks(callbacks: WhatsAppEngineCallbacks): void {
@@ -59,6 +61,10 @@ class MockEngine implements IWhatsAppEngine {
   async forceDestroy(): Promise<void> {
     this.forceDestroyCalled = true;
     this.status = EngineStatus.DISCONNECTED;
+  }
+
+  async logoutFromServer(): Promise<void> {
+    this.logoutFromServerCalled = true;
   }
 
   getStatus(): EngineStatus {
@@ -147,8 +153,11 @@ vi.mock('../src/whatsapp/engine/EngineFactory.js', () => ({
   }),
 }));
 
+const registeredCreds = { value: false };
+
 vi.mock('../src/whatsapp/WhatsAppStore.js', () => ({
   purgeWhatsAppAuthState: vi.fn(async () => {}),
+  hasRegisteredWhatsAppCreds: vi.fn(async () => registeredCreds.value),
 }));
 
 // ─── Tests ───────────────────────────────────────────────────────────────
@@ -159,6 +168,8 @@ describe('WhatsAppSessionService', () => {
   beforeEach(() => {
     pool = createMockPool();
     mockEngine = new MockEngine();
+    registeredCreds.value = false;
+    vi.mocked(purgeWhatsAppAuthState).mockClear();
   });
 
   describe('link()', () => {
@@ -191,6 +202,13 @@ describe('WhatsAppSessionService', () => {
       expect(qrCodes).toEqual(['data:image/png;base64,FAKE']);
     });
 
+    it('does not purge registered credentials when reconnecting', async () => {
+      registeredCreds.value = true;
+      const service = new WhatsAppSessionService({ pool, dek: Buffer.alloc(32) });
+      await service.link();
+      expect(purgeWhatsAppAuthState).not.toHaveBeenCalled();
+    });
+
     it('is idempotent — link() called while already active returns without throwing', async () => {
       const service = new WhatsAppSessionService({ pool, dek: Buffer.alloc(32) });
       await service.link();
@@ -217,7 +235,7 @@ describe('WhatsAppSessionService', () => {
 
       await service.link();
       mockEngine.simulateInboundMessage('hello from test');
-      expect(messages).toEqual(['hello from test']);
+      await vi.waitFor(() => expect(messages).toEqual(['hello from test']));
     });
 
     it('routes disconnected events through the event bus', async () => {
@@ -273,13 +291,26 @@ describe('WhatsAppSessionService', () => {
   });
 
   describe('unlink()', () => {
-    it('stops the engine and purges auth state', async () => {
+    it('revokes the device, stops the engine, and purges auth state', async () => {
       const service = new WhatsAppSessionService({ pool, dek: Buffer.alloc(32) });
       await service.link();
       await service.unlink();
 
+      expect(mockEngine.logoutFromServerCalled).toBe(true);
       expect(mockEngine.disconnectCalled).toBe(true);
-      // purgeWhatsAppAuthState is mocked — verify DB delete was called
+      expect(pool.query).toHaveBeenCalledWith(
+        expect.stringContaining('DELETE FROM whatsapp_session'),
+        expect.any(Array),
+      );
+    });
+  });
+
+  describe('remote logout', () => {
+    it('purges the session when the phone revokes the linked device', async () => {
+      const service = new WhatsAppSessionService({ pool, dek: Buffer.alloc(32) });
+      await service.link();
+      mockEngine.simulateDisconnect('logged_out (401)');
+      await new Promise((r) => setTimeout(r, 20));
       expect(pool.query).toHaveBeenCalledWith(
         expect.stringContaining('DELETE FROM whatsapp_session'),
         expect.any(Array),
@@ -334,11 +365,19 @@ describe('WhatsAppSessionService', () => {
     });
 
     it('auto-restarts if previously "ready"', async () => {
-      const readyPool = createMockPool({ id: 'default', status: 'ready', engine: 'baileys' });
+      const readyPool = createMockPool({ id: 'default', status: 'ready', engine: 'baileys', phone_number: '15551234567' });
       const service = new WhatsAppSessionService({ pool: readyPool, dek: Buffer.alloc(32) });
 
       await service.reconcileOnBoot();
-      // link() should have been called
+      expect(mockEngine.initializeCalled).toBe(true);
+    });
+
+    it('auto-restarts a linked session even if last status was disconnected', async () => {
+      registeredCreds.value = true;
+      const downPool = createMockPool({ id: 'default', status: 'disconnected', engine: 'baileys', phone_number: '15551234567' });
+      const service = new WhatsAppSessionService({ pool: downPool, dek: Buffer.alloc(32) });
+
+      await service.reconcileOnBoot();
       expect(mockEngine.initializeCalled).toBe(true);
     });
 

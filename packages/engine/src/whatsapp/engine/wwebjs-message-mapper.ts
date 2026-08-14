@@ -14,6 +14,7 @@
 import type { Message, MessageMedia, MessageAck } from 'whatsapp-web.js';
 import * as WAWebModule from 'whatsapp-web.js';
 import type { WhatsAppIncomingMessage, WhatsAppMessageType, WhatsAppMessageStatus } from './IWhatsAppEngine.js';
+import { waUnixTimestamp } from '../wa-timestamp.js';
 
 const WA = (WAWebModule as any).default ?? (WAWebModule as any);
 const { MessageAck: MessageAckV } = WA;
@@ -92,7 +93,7 @@ export function mapWWebJsMessage(
     isGroup,
     type: mapType(msg.type),
     body: msg.body ?? '',
-    timestamp: msg.timestamp ?? 0,
+    timestamp: waUnixTimestamp(msg.timestamp),
     quotedMessageId: msg.hasQuotedMsg ? undefined : undefined, // wwebjs needs async getQuotedMessage(); caller fills this
     mentions: msg.mentionedIds && msg.mentionedIds.length > 0 ? msg.mentionedIds : undefined,
     isLidSender: false, // wwebjs resolves LIDs to phone JIDs internally

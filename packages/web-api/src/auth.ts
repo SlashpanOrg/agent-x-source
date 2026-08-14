@@ -24,6 +24,15 @@ import { startAppSpan } from '@agentx/engine';
 import { metricsRegistry } from './metrics/MetricsRegistry.js';
 import { clearDevFlagsForToken } from './middleware/dev-mode.js';
 
+/** Provider webhook/media paths — signature-authenticated, not cookie/session. */
+export function isTelephonyWebhookPath(pathname: string): boolean {
+  // /api/telephony/:providerId/(inbound|status|recording|health|media)
+  // Exclude /api/telephony/providers/*
+  return /^\/api\/telephony\/(?!providers(?:\/|$))[^/]+\/(inbound|status|recording|health|media)\/?$/.test(
+    pathname,
+  );
+}
+
 /**
  * Handle returned by {@link startAuthSpan}. Extends the base app-span handle
  * with the monotonic start timestamp and operation/provider labels so
@@ -169,6 +178,13 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   }
 
   if (publicPaths.includes(req.path)) {
+    next();
+    return;
+  }
+
+  // Telephony provider webhooks/media — authenticated by signature middleware, not session.
+  // Management under /api/telephony/providers remains session-protected.
+  if (isTelephonyWebhookPath(req.path)) {
     next();
     return;
   }

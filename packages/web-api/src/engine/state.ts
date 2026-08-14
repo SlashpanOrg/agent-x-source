@@ -593,6 +593,8 @@ export function setEngineDEK(dek: Buffer | null): void {
             state.integrationHub.syncToToolkit(state.toolkit.registry, state.toolkit.executor);
             const { applyChannelsConfig } = await import('../channels-sync.js');
             await applyChannelsConfig();
+            const { applyHostConfig } = await import('../host/apply-host-config.js');
+            await applyHostConfig(state.configManager.load());
           } catch (error) {
             channelsBootstrappedAfterAuth = false;
             getLogger().warn('CHANNELS', error instanceof Error ? error.message : String(error));

@@ -55,6 +55,7 @@ vi.mock('../src/whatsapp/engine/EngineFactory.js', () => ({
 
 vi.mock('../src/whatsapp/WhatsAppStore.js', () => ({
   purgeWhatsAppAuthState: vi.fn(async () => {}),
+  hasRegisteredWhatsAppCreds: vi.fn(async () => false),
 }));
 
 // ─── Imports ─────────────────────────────────────────────────────────────

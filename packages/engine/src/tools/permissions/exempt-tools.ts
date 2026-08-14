@@ -12,6 +12,7 @@ export const PERMISSION_EXEMPT_WEB_TOOLS = new Set([
   'web_scrape',
   'http_get',
   'web_browse',
+  'present_visual',
 ]);
 
 /** Scheduling catalog tools that are safe to run without an interactive prompt. */

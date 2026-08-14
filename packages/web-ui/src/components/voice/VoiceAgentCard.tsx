@@ -8,8 +8,8 @@ import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import MicIcon from '@mui/icons-material/Mic';
 import MicOffIcon from '@mui/icons-material/MicOff';
+import HearingIcon from '@mui/icons-material/Hearing';
 import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
-import ShieldIcon from '@mui/icons-material/Shield';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 import FiberNewIcon from '@mui/icons-material/FiberNew';
 import { colors, alphaColor, MONO, getActiveScheme } from '../../theme';
@@ -41,17 +41,15 @@ const VOICE_SESSION_ID = '__channel__:voice';
  *  - Toggle chips + provider/model dropdowns in the card header
  */
 
-type ButtonPhase = 'disabled' | 'connecting' | 'idle' | 'recording' | 'thinking' | 'speaking';
+type ButtonPhase = 'disabled' | 'connecting' | 'idle' | 'recording' | 'thinking' | 'speaking' | 'muted';
 
 export function VoiceAgentCard({
   onActiveChange,
   onPhaseChange,
-  bypassChip,
   voiceprintEnabled,
 }: {
   onActiveChange?: (active: boolean) => void;
   onPhaseChange?: (phase: ParticlePhase) => void;
-  bypassChip: boolean;
   voiceprintEnabled?: boolean;
 }) {
   const voiceCtx = useVoiceOptional();
@@ -65,6 +63,7 @@ export function VoiceAgentCard({
   const comms = commsCtx?.comms;
 
   const sessionReady = Boolean(voiceCtx?.voiceReady) && !envBlocked;
+  const localEngine = (voiceCtx?.voiceConfig?.engine ?? 'stt_llm_tts') === 'stt_llm_tts';
 
   // ── Continue / New conversation modal ──────────────────────────────────
   // When the user activates voice and there is existing transcript history,
@@ -93,20 +92,22 @@ export function VoiceAgentCard({
   // Push toggle state to backend whenever wake or manual voice is active.
   useEffect(() => {
     if (sessionActive && sessionReady && comms) {
-      comms.session.setToggles({ bypassChip, voiceprintEnabled });
+      comms.session.setToggles({ voiceprintEnabled: localEngine && Boolean(voiceprintEnabled) });
     }
-  }, [sessionActive, sessionReady, bypassChip, voiceprintEnabled, comms]);
+  }, [sessionActive, sessionReady, voiceprintEnabled, comms, localEngine]);
 
   // Derive button phase — connecting stays blue; thinking is orange only after a turn.
+  // Mic mute overrides listening/idle (green) to orange "Muted"; speaking/thinking stay.
   const phase: ButtonPhase = useMemo(() => {
     if (!sessionActive || !sessionReady || !comms) return 'disabled';
     if (comms.commsPhase === 'boot' || comms.commsPhase === 'link') return 'connecting';
     if (comms.session.state === 'connecting') return 'connecting';
-    if (comms.commsPhase === 'operator_record') return 'recording';
     if (comms.commsPhase === 'agent_tx') return 'speaking';
     if (comms.commsPhase === 'operator_stt' || comms.commsPhase === 'relay_process' || comms.commsPhase === 'agent_prep') return 'thinking';
+    if (comms.session.muted) return 'muted';
+    if (comms.commsPhase === 'operator_record') return 'recording';
     return 'idle';
-  }, [sessionActive, sessionReady, comms]);
+  }, [sessionActive, sessionReady, comms, comms?.session.muted, comms?.commsPhase, comms?.session.state]);
 
   const particlePhase: ParticlePhase = phase;
 
@@ -161,6 +162,7 @@ export function VoiceAgentCard({
     if (!sessionReady) return 'Voice kit required';
     if (phase === 'disabled') return 'Click to activate';
     if (phase === 'connecting') return comms?.statusLabel || 'Connecting…';
+    if (phase === 'muted') return 'Muted';
     if (phase === 'recording') return comms?.isDuplex ? 'Listening…' : 'Listening… release Space';
     if (phase === 'thinking') return comms?.statusLabel || 'Thinking…';
     if (phase === 'speaking') return 'Agent speaking';
@@ -282,6 +284,8 @@ export function VoiceAgentCard({
                 <ThinkingOrb state='working' size={64} theme={getActiveScheme() === 'dark' ? 'dark' : 'light'} style={{ width: 26, height: 26 }} />
               ) : phase === 'disabled' ? (
                 <MicOffIcon sx={{ fontSize: 24, color: colors.text.dim, opacity: 0.5 }} />
+              ) : phase === 'muted' ? (
+                <MicOffIcon sx={{ fontSize: 24, color: colors.accent.orange }} />
               ) : phase === 'recording' ? (
                 <MicIcon sx={{ fontSize: 24, color: colors.accent.green }} />
               ) : phase === 'speaking' ? (
@@ -314,7 +318,7 @@ export function VoiceAgentCard({
                 ? colors.accent.green
                 : phase === 'speaking'
                   ? colors.accent.purple
-                  : phase === 'thinking'
+                  : phase === 'thinking' || phase === 'muted'
                     ? colors.accent.orange
                     : phase === 'connecting'
                       ? colors.accent.blue
@@ -454,17 +458,19 @@ export function VoiceToggleChip({
   activeColor,
   onClick,
   title,
+  disabled = false,
 }: {
   icon: React.ReactNode;
   active: boolean;
   activeColor: string;
   onClick: () => void;
   title: string;
+  disabled?: boolean;
 }) {
   return (
     <Tooltip title={title}>
       <Box
-        onClick={onClick}
+        onClick={disabled ? undefined : onClick}
         sx={{
           width: 22,
           height: 22,
@@ -472,12 +478,13 @@ export function VoiceToggleChip({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          cursor: 'pointer',
-          border: `1px solid ${active ? alphaColor(activeColor, '66') : colors.border.default}`,
-          bgcolor: active ? alphaColor(activeColor, '1a') : 'transparent',
-          color: active ? activeColor : colors.text.dim,
+          cursor: disabled ? 'default' : 'pointer',
+          opacity: disabled ? 0.4 : 1,
+          border: `1px solid ${active && !disabled ? alphaColor(activeColor, '66') : colors.border.default}`,
+          bgcolor: active && !disabled ? alphaColor(activeColor, '1a') : 'transparent',
+          color: active && !disabled ? activeColor : colors.text.dim,
           transition: 'all 0.2s',
-          '&:hover': {
+          '&:hover': disabled ? undefined : {
             borderColor: activeColor,
             color: activeColor,
             transform: 'scale(1.1)',
@@ -492,16 +499,14 @@ export function VoiceToggleChip({
 
 /** Exported so BentoDashboard can render toggles in the card header (right-aligned). */
 export function VoiceAgentHeaderToggles({
-  bypassChip,
   voiceprintEnabled,
-  onBypassChipChange,
   onVoiceprintEnabledChange,
 }: {
-  bypassChip: boolean;
   voiceprintEnabled: boolean;
-  onBypassChipChange: (v: boolean) => void;
   onVoiceprintEnabledChange: (v: boolean) => void;
 }) {
+  const engine = useVoiceOptional()?.voiceConfig?.engine ?? 'stt_llm_tts';
+  if (engine !== 'stt_llm_tts') return null;
   return (
     <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
       <VoiceToggleChip
@@ -510,13 +515,6 @@ export function VoiceAgentHeaderToggles({
         activeColor={colors.accent.blue}
         onClick={() => onVoiceprintEnabledChange(!voiceprintEnabled)}
         title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'}
-      />
-      <VoiceToggleChip
-        icon={<ShieldIcon sx={{ fontSize: 13 }} />}
-        active={bypassChip}
-        activeColor={colors.accent.orange}
-        onClick={() => onBypassChipChange(!bypassChip)}
-        title={bypassChip ? 'Bypass enabled — auto-approve tools' : 'Enable bypass — auto-approve tools'}
       />
     </Box>
   );
@@ -530,14 +528,10 @@ export function VoiceAgentHeaderToggles({
  * provider/model selectors are also shown.
  */
 export function VoiceAgentHeaderControls({
-  bypassChip,
   voiceprintEnabled,
-  onBypassChipChange,
   onVoiceprintEnabledChange,
 }: {
-  bypassChip: boolean;
   voiceprintEnabled: boolean;
-  onBypassChipChange: (v: boolean) => void;
   onVoiceprintEnabledChange: (v: boolean) => void;
 }) {
   const [configuredProviders, setConfiguredProviders] = useState<ConfiguredProvider[]>([]);
@@ -561,7 +555,10 @@ export function VoiceAgentHeaderControls({
   const xaiVoiceId = voiceCfg?.xai?.voice ?? 'eve';
 
   const voice = useVoiceOptional();
+  const comms = useVoiceCommsOptional()?.comms;
   const wakeEnabled = voice?.wakeWordEnabled ?? false;
+  const sessionActive = Boolean(voice?.commsActive);
+  const micMuted = comms?.session.muted ?? false;
 
   const handleWakeToggle = useCallback(async () => {
     const cfg = voice?.voiceConfig;
@@ -707,29 +704,39 @@ export function VoiceAgentHeaderControls({
   const xaiVoiceMatch = xaiVoices.find((v) => v.id === xaiVoiceId);
   const xaiVoiceLabel = xaiVoiceMatch?.name || xaiVoiceId;
   const voiceLabel = engine === 'realtime_xai' ? xaiVoiceLabel : kokoroVoiceLabel;
+  const showLocalVoiceGates = engine === 'stt_llm_tts';
 
   return (
     <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+      {showLocalVoiceGates && (
+        <>
+          <VoiceToggleChip
+            icon={<RecordVoiceOverIcon sx={{ fontSize: 13 }} />}
+            active={voiceprintEnabled}
+            activeColor={colors.accent.blue}
+            onClick={() => onVoiceprintEnabledChange(!voiceprintEnabled)}
+            title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'}
+          />
+          <VoiceToggleChip
+            icon={<HearingIcon sx={{ fontSize: 13 }} />}
+            active={wakeEnabled}
+            activeColor={colors.accent.green}
+            onClick={handleWakeToggle}
+            title={wakeEnabled ? 'Wake word on — say the wake phrase to start' : 'Enable wake word'}
+          />
+        </>
+      )}
       <VoiceToggleChip
-        icon={<RecordVoiceOverIcon sx={{ fontSize: 13 }} />}
-        active={voiceprintEnabled}
-        activeColor={colors.accent.blue}
-        onClick={() => onVoiceprintEnabledChange(!voiceprintEnabled)}
-        title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'}
-      />
-      <VoiceToggleChip
-        icon={<ShieldIcon sx={{ fontSize: 13 }} />}
-        active={bypassChip}
-        activeColor={colors.accent.orange}
-        onClick={() => onBypassChipChange(!bypassChip)}
-        title={bypassChip ? 'Bypass enabled — auto-approve tools' : 'Enable bypass — auto-approve tools'}
-      />
-      <VoiceToggleChip
-        icon={<MicIcon sx={{ fontSize: 13 }} />}
-        active={wakeEnabled}
-        activeColor={colors.accent.green}
-        onClick={handleWakeToggle}
-        title={wakeEnabled ? 'Wake word on — say the wake phrase to start' : 'Enable wake word'}
+        icon={micMuted ? <MicOffIcon sx={{ fontSize: 13 }} /> : <MicIcon sx={{ fontSize: 13 }} />}
+        active={sessionActive}
+        activeColor={micMuted ? colors.accent.orange : colors.accent.green}
+        disabled={!sessionActive}
+        onClick={() => comms?.session.setMuted(!micMuted)}
+        title={!sessionActive
+          ? 'Start the voice session to mute the mic'
+          : micMuted
+            ? 'Mic muted — click to unmute'
+            : 'Mute mic'}
       />
       <ConfigChip
         label={engineLabel}
@@ -954,7 +961,8 @@ function phaseColor(phase: ButtonPhase, border: boolean): string {
     case 'connecting':
     case 'idle': return border ? alphaColor(colors.accent.blue, '66') : colors.accent.blue;
     case 'recording': return border ? alphaColor(colors.accent.green, '66') : colors.accent.green;
-    case 'thinking': return border ? alphaColor(colors.accent.orange, '66') : colors.accent.orange;
+    case 'thinking':
+    case 'muted': return border ? alphaColor(colors.accent.orange, '66') : colors.accent.orange;
     case 'speaking': return border ? alphaColor(colors.accent.purple, '66') : colors.accent.purple;
   }
 }

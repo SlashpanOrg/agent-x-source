@@ -9,6 +9,15 @@ import type { CacheState } from './pg-helpers.js';
 
 const _logger = getLogger();
 
+function toNullableBigintColumn(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 /**
  * Context required by the message storage helpers. Mirrors the relevant
  * private state/methods of PostgresStorageAdapter so the extracted functions
@@ -222,9 +231,9 @@ export function insertMessage(
       partsOut ? JSON.stringify(partsOut) : null,
       metadataOut ? JSON.stringify(metadataOut) : null,
       msg.attachments ? JSON.stringify(msg.attachments) : null,
-      msg.platformMessageId ?? null,
+      toNullableBigintColumn(msg.platformMessageId),
       platformMessageIdsJson,
-      msg.platformChatId ?? null,
+      toNullableBigintColumn(msg.platformChatId),
     ]
   );
 }
@@ -266,9 +275,9 @@ export function updateMessage(
   if (patch.parts !== undefined) { sets.push(`parts = $${n++}`); vals.push(JSON.stringify(patch.parts)); }
   if (patch.metadata !== undefined) { sets.push(`metadata = $${n++}`); vals.push(JSON.stringify(patch.metadata)); }
   if (patch.attachments !== undefined) { sets.push(`attachments = $${n++}`); vals.push(patch.attachments != null ? JSON.stringify(patch.attachments) : null); }
-  if (patch.platformMessageId !== undefined) { sets.push(`platform_message_id = $${n++}`); vals.push(patch.platformMessageId); }
+  if (patch.platformMessageId !== undefined) { sets.push(`platform_message_id = $${n++}`); vals.push(toNullableBigintColumn(patch.platformMessageId)); }
   if (patch.platformMessageIds !== undefined) { sets.push(`platform_message_ids = $${n++}`); vals.push(patch.platformMessageIds != null ? JSON.stringify(patch.platformMessageIds) : null); }
-  if (patch.platformChatId !== undefined) { sets.push(`platform_chat_id = $${n++}`); vals.push(patch.platformChatId); }
+  if (patch.platformChatId !== undefined) { sets.push(`platform_chat_id = $${n++}`); vals.push(toNullableBigintColumn(patch.platformChatId)); }
   if (sets.length === 0) return;
   vals.push(messageId, sessionId);
   ctx.write(`UPDATE messages SET ${sets.join(', ')} WHERE id = $${n} AND session_id = $${n + 1}`, vals);

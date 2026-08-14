@@ -12,7 +12,7 @@
  * a clear "not supported" error before reaching the body.
  */
 import type { ToolResult, ToolExecutionContext } from '@agentx/shared';
-import { requireEngineWithCapability, runTool, requireString } from './helpers.js';
+import { requireEngineWithCapability, runTool, requireString, requireResolvedChatId } from './helpers.js';
 
 // ─── WhatsAppListLabels ──────────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ export async function whatsappGetChatLabels(
     const resolved = requireEngineWithCapability('labels');
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
 
     return {
@@ -65,7 +65,7 @@ export async function whatsappAddLabelToChat(
     const resolved = requireEngineWithCapability('labels');
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const labelId = requireString(args, 'labelId');
     if (typeof labelId !== "string") return labelId;
@@ -88,7 +88,7 @@ export async function whatsappRemoveLabelFromChat(
     const resolved = requireEngineWithCapability('labels');
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const labelId = requireString(args, 'labelId');
     if (typeof labelId !== "string") return labelId;
