@@ -22,6 +22,7 @@ describe('ConfigSchema', () => {
       user: {
         callsign: 'tester',
         name: 'Siva',
+        names: ['Siva', 'Siv'],
         prefix: 'Mr.',
         gender: 'male',
         email: 'siva@example.com',
@@ -177,5 +178,34 @@ describe('ConfigSchema', () => {
 
     expect(parsed.localModel).toBeUndefined();
     expect(parsed.featureRouting).toBeUndefined();
+  });
+
+  it('persists multiple public names instead of stripping them', () => {
+    const config = {
+      provider: {
+        activeProvider: 'openai',
+        activeModel: 'gpt-4o',
+        providers: {
+          openai: {
+            apiKey: 'sk-test',
+            configured: true,
+          },
+        },
+      },
+      ui: {
+        theme: 'dark',
+        showTokenBar: true,
+        showTimers: true,
+      },
+      user: {
+        callsign: 'Mitra',
+        name: 'Siva',
+        names: ['Siva', 'Siv', 'Mitraa'],
+      },
+    };
+
+    const parsed = agentXConfigSchema.parse(config);
+    expect(parsed.user?.names).toEqual(['Siva', 'Siv', 'Mitraa']);
+    expect(parsed.user?.name).toBe('Siva');
   });
 });

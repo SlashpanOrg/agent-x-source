@@ -48,6 +48,8 @@ export const organizationConfigSchema = z.object({
 export const userConfigSchema = z.object({
   callsign: z.string().min(1).max(30),
   name: z.string().min(1).max(80).optional(),
+  /** Public names/nicknames. Must stay in sync with shared `agentXConfigSchema` — Zod strips unknown keys on save. */
+  names: z.array(z.string().min(1).max(80)).max(12).optional(),
   prefix: z.string().max(20).optional(),
   gender: z.enum(['male', 'female', 'nonbinary', 'unspecified']).optional(),
   email: z.preprocess(
