@@ -288,6 +288,8 @@ export { CrewOrchestrator, buildCrewPrivateIdentityPrompt, buildCrewPrivateFastR
 export { CrewSuggestionService } from './crew/CrewSuggestionService.js';
 export type { CrewCatalogStore } from './crew/CrewSuggestionService.js';
 export { createCrewKeywordExpander, isExpertiseOpinionQuery, parseExpandedKeywords } from './crew/crew-keyword-expander.js';
+export { prepareCustomCrew, inferBehaviourProfile, uniqueCallsign, buildPersonaDraftKit, validateAgentSystemPrompt } from './crew/prepare-custom-crew.js';
+export { listCrewPersonaTemplates, resolveNamedTemplate, resolveTemplate, classifyTemplateSource } from './crew/crew-persona-catalog.js';
 export type { CrewKeywordExpandFn } from './crew/crew-keyword-expander.js';
 export { filterSubstantiveMatches, hasSubstantiveKeywordMatch } from './crew/crew-match-quality.js';
 export { catalogEntryToSummary } from './crew/catalog-summary.js';
@@ -558,7 +560,14 @@ export { ChannelWorker } from './services/channel/ChannelWorker.js';
 export { ChannelRateLimiter } from './services/channel/ChannelRateLimiter.js';
 export type { ChannelServiceConfig } from './services/channel/ChannelService.js';
 export type { ChannelPolicyConfig, ChannelRetryConfig } from './services/channel/ChannelRateLimiter.js';
-export { getWhatsAppSessionServiceInstance, setWhatsAppSessionServiceInstance } from './services/ServiceContext.js';
+export {
+  getWhatsAppSessionServiceInstance,
+  setWhatsAppSessionServiceInstance,
+  getStandingOrderStoreInstance,
+  setStandingOrderStoreInstance,
+  getContactDirectoryStoreInstance,
+  setContactDirectoryStoreInstance,
+} from './services/ServiceContext.js';
 export type { ChannelId, OutboundMessage, InboundPayload, ChannelStatus, IChannelService } from './services/channel/IChannelService.js';
 export type { IChannelBridge, OnInboundCallback } from './services/channel/IChannelBridge.js';
 export { DiscordBridgeAdapter } from './services/channel/adapters/DiscordBridgeAdapter.js';
@@ -645,10 +654,34 @@ export type {
 } from './services/telephony/index.js';
 
 // WhatsApp session lifecycle + event bus
+export { setVisualPresentHook, notifyVisualPresent } from './visual/present-hook.js';
+
 export { WhatsAppSessionService } from './whatsapp/WhatsAppSessionService.js';
 export type { WhatsAppSessionServiceOptions, WhatsAppSessionStatus, WatchdogConfig } from './whatsapp/WhatsAppSessionService.js';
 export { WhatsAppEventBus } from './whatsapp/WhatsAppEventBus.js';
 export type { WhatsAppEvent, WhatsAppEventMap } from './whatsapp/WhatsAppEventBus.js';
+export {
+  WhatsAppJarvisRouter,
+  StandingOrderStore,
+  classifyWhatsAppInbound,
+  matchStandingOrder,
+  AGENT_X_WHATSAPP_MARKER,
+  formatAgentSelfChat,
+} from './whatsapp/jarvis/index.js';
+export {
+  ContactDirectoryStore,
+  resolveContact,
+  contactDisplayName,
+  formatContactLine,
+} from './whatsapp/contacts/index.js';
+export type { IndexedContact, ResolveResult } from './whatsapp/contacts/index.js';
+export type {
+  JarvisNotificationInput,
+  WhatsAppJarvisRouterOptions,
+  StandingOrder,
+  StandingOrderWrite,
+  InboundClass,
+} from './whatsapp/jarvis/index.js';
 
 // GeoLocation service (server-side IP geolocation with periodic refresh)
 export { GeoLocationService, setGeoLocationServiceInstance, getGeoLocationService } from './services/GeoLocationService.js';

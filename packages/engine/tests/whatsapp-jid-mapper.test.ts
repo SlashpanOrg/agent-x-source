@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseWaId,
   toNeutralJid,
+  toBaileysJid,
   chatKind,
   isLidJid,
   phoneFromNeutralJid,
@@ -98,6 +99,22 @@ describe('wa-id — parseWaId', () => {
 });
 
 // ─── Normalization ───────────────────────────────────────────────────────
+
+describe('wa-id — toBaileysJid', () => {
+  it('converts c.us to s.whatsapp.net so Baileys can deliver', () => {
+    expect(toBaileysJid('15551234567@c.us')).toBe('15551234567@s.whatsapp.net');
+  });
+
+  it('keeps s.whatsapp.net', () => {
+    expect(toBaileysJid('15551234567@s.whatsapp.net')).toBe('15551234567@s.whatsapp.net');
+  });
+
+  it('keeps lid, group, and status dialects', () => {
+    expect(toBaileysJid('123456789012345@lid')).toBe('123456789012345@lid');
+    expect(toBaileysJid('120363012345678901@g.us')).toBe('120363012345678901@g.us');
+    expect(toBaileysJid('status@broadcast')).toBe('status@broadcast');
+  });
+});
 
 describe('wa-id — toNeutralJid', () => {
   it('normalizes s.whatsapp.net to c.us', () => {
@@ -307,6 +324,34 @@ describe('Baileys message mapper', () => {
       expect(result.location.longitude).toBe(-122.4194);
       expect(result.location.name).toBe('San Francisco');
     }
+  });
+
+  it('unwraps view-once image envelopes so media is not dropped', async () => {
+    const { mapBaileysMessage } = await import('../src/whatsapp/engine/baileys-message-mapper.js');
+    const result = mapBaileysMessage({
+      key: { id: 'vo-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      message: {
+        viewOnceMessage: {
+          message: {
+            imageMessage: { caption: 'secret pic', mimetype: 'image/jpeg' },
+          },
+        },
+      },
+      messageTimestamp: 1700000004,
+    }, 'me@s.whatsapp.net');
+    expect(result.type).toBe('image');
+    expect(result.body).toBe('secret pic');
+  });
+
+  it('coerces Baileys Long timestamps instead of NaN', async () => {
+    const { mapBaileysMessage } = await import('../src/whatsapp/engine/baileys-message-mapper.js');
+    const result = mapBaileysMessage({
+      key: { id: 'long-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      message: { conversation: 'hi' },
+      messageTimestamp: { toNumber: () => 1_700_000_123 },
+    }, 'me@s.whatsapp.net');
+    expect(result.timestamp).toBe(1_700_000_123);
+    expect(Number.isFinite(result.timestamp)).toBe(true);
   });
 });
 

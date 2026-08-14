@@ -16,11 +16,14 @@ import type { ToolResult } from '@agentx/shared';
 import { readFileSync } from 'node:fs';
 import { resolve, isAbsolute } from 'node:path';
 import { isAgentInternalPath } from '@agentx/shared';
-import { getWhatsAppSessionServiceInstance } from '../../../services/ServiceContext.js';
+import { getContactDirectoryStoreInstance, getWhatsAppSessionServiceInstance } from '../../../services/ServiceContext.js';
 import type { IWhatsAppEngine } from '../../../whatsapp/engine/IWhatsAppEngine.js';
 import { EngineStatus } from '../../../whatsapp/engine/IWhatsAppEngine.js';
 import type { EngineCapability } from '../../../whatsapp/engine/IWhatsAppEngine.js';
 import type { WhatsAppSessionService } from '../../../whatsapp/WhatsAppSessionService.js';
+import { formatResolveForTool } from '../../../whatsapp/contacts/formatContact.js';
+import { queryToNeutralJid } from '../../../whatsapp/contacts/normalize.js';
+import { resolveContact } from '../../../whatsapp/contacts/resolveContact.js';
 
 /**
  * The paused message shown to the agent and the user when WhatsApp is
@@ -207,6 +210,55 @@ export function resolveFilePath(filePath: string, scopePath: string): string {
     return filePath;
   }
   return resolve(scopePath, filePath);
+}
+
+/**
+ * Resolve a name, phone, or JID to a sendable WhatsApp JID.
+ * Unique match or literal phone/JID only — never a fuzzy guess.
+ */
+export function resolveChatTarget(raw: string): string | ToolResult {
+  const query = raw.trim();
+  const directory = getContactDirectoryStoreInstance();
+  if (directory) {
+    const result = directory.resolve(query);
+    const formatted = formatResolveForTool(result);
+    if (result.status === 'unique') {
+      if (!result.contact.sendable) {
+        return {
+          success: false,
+          output: formatted.output,
+          error: 'CONTACT_NOT_SENDABLE',
+          metadata: formatted.metadata,
+        };
+      }
+      return result.contact.jid;
+    }
+    return {
+      success: formatted.success,
+      output: formatted.output,
+      error: formatted.error,
+      metadata: formatted.metadata,
+    };
+  }
+
+  const fallback = resolveContact(query, []);
+  if (fallback.status === 'unique' && fallback.contact.sendable) {
+    return fallback.contact.jid;
+  }
+  const literal = queryToNeutralJid(query);
+  if (literal) return literal;
+  return {
+    success: false,
+    output: `Cannot resolve "${query}" to a WhatsApp JID. The contact directory is not loaded yet — use a phone number or JID (number@c.us), or wait until WhatsApp finishes syncing contacts.`,
+    error: 'CONTACT_NOT_FOUND',
+  };
+}
+
+/** Required chatId/jid that may be a saved name, business name, phone, or JID. */
+export function requireResolvedChatId(args: Record<string, unknown>, key = 'chatId'): string | ToolResult {
+  const raw = requireString(args, key);
+  if (typeof raw !== 'string') return raw;
+  return resolveChatTarget(raw);
 }
 
 /** Extract a required string argument from the tool args. Returns the string or an error ToolResult. */

@@ -45,7 +45,7 @@ export function WizardWhatsAppStep({
     <WizardStepShell
       codename="MODULE · WHATSAPP LINK"
       title="WhatsApp Field Link"
-      subtitle="Link a WhatsApp number via QR scan. ⚠️ Unofficial integrations carry a risk of account ban — use a number you can afford to lose."
+      subtitle="Link WhatsApp so Agent-X can brief you and send as you. Talk to it in Message yourself — it will not answer your contacts. ⚠️ Unofficial integrations carry a ban risk — use a number you can afford to lose."
       icon={<WhatsAppIcon sx={{ fontSize: 24 }} />}
     >
       <WizardWhatsAppFields

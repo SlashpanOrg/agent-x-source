@@ -19,6 +19,7 @@ import {
   createQuestionnaireGuideSection,
   createCrewRosterGuideSection,
   createChatMarkdownSection,
+  createVisualStageSection,
   createMarkdownSection,
   createCurrentTimeSection,
   createSchedulingSection,
@@ -71,6 +72,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createProviderPromptSection(secCtx))
       .register(createIdentitySection(secCtx))
       .register(createCompactRulesSection({ bypassPermissions: secCtx.bypassPermissions }))
+      .register(createVisualStageSection())
       .register(createCurrentTimeSection(secCtx))
       .register(createUserSection(secCtx))
       .register(createMemoryContextSection(secCtx));
@@ -104,6 +106,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       ctx.promptAssembly
         .register(createCrewPrivateConductSection())
         .register(createLocalPersonaGuardSection(crewName))
+        .register(createVisualStageSection())
         .register(createWorkingDirectorySection(secCtx))
         .register(createUserSection(secCtx))
         .register(createSessionNarrativeSection(secCtx))
@@ -112,6 +115,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       ctx.promptAssembly
         .register(createCrewPrivateConductSection())
         .register(createTurnModeSection(secCtx))
+        .register(createVisualStageSection())
         .register(createQuestionnaireGuideSection())
         .register(createChatMarkdownSection())
         .register(createMarkdownSection())
@@ -146,6 +150,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createChannelLinkedContextSection(secCtx))
       .register(createChannelMessagingSection(ctx.personaName))
       .register(createThirdPartyServicesSection())
+      .register(createVisualStageSection())
       .register(createChatMarkdownSection())
       .register(createMarkdownSection())
       .register(createCurrentTimeSection(secCtx))
@@ -180,6 +185,8 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createCompactRulesSection({ bypassPermissions: secCtx.bypassPermissions }))
       .register(createTurnModeSection(secCtx))
       .register(createMissionPlanSection(secCtx.scopePath))
+      .register(createCrewRosterGuideSection(true))
+      .register(createVisualStageSection())
       .register(createUserSection(secCtx))
       .register(createSessionNarrativeSection(secCtx))
       .register(createTaskPanelSection())
@@ -205,6 +212,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createDocumentStudioSection())
       .register(createMissionPlanSection(secCtx.scopePath))
       .register(createThirdPartyServicesSection())
+      .register(createVisualStageSection())
       .register(createQuestionnaireGuideSection())
       .register(createChatMarkdownSection())
       .register(createMarkdownSection())

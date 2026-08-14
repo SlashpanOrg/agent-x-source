@@ -1,6 +1,6 @@
 // Centralized API client for all web-api endpoints
 
-import type { ClientSituation, TurnAttachment, AttachmentReference, AttachmentPreview, KnowledgeSource, KnowledgeSearchResult, KnowledgeSearchRequest, KnowledgeSourceListResponse, ScannedReference, SpeakerProfile } from '@agentx/shared';
+import type { ClientSituation, TurnAttachment, AttachmentReference, AttachmentPreview, KnowledgeSource, KnowledgeSearchResult, KnowledgeSearchRequest, KnowledgeSourceListResponse, ScannedReference, SpeakerProfile, UserConfig } from '@agentx/shared';
 import { AGENTX_AUTH_TOKEN_KEY } from './utils/client-storage';
 import { notifyVoiceConfigUpdated } from './voice/support';
 
@@ -138,10 +138,10 @@ export const auth = {
 // ─── Setup & Config ───
 export const config = {
   getSetupStatus: () => request<{ setupComplete: boolean; configured: boolean }>('/setup/status'),
-  completeSetup: (callsign?: string) =>
+  completeSetup: (user?: string | { callsign?: string; name?: string; names?: string[]; prefix?: string; gender?: string; email?: string }) =>
     request<{ ok: boolean; setupComplete: boolean }>('/setup/complete', {
       method: 'POST',
-      body: JSON.stringify({ callsign }),
+      body: JSON.stringify(typeof user === 'string' || user == null ? { callsign: user } : user),
     }),
   get: () => request<AgentXConfig>('/config'),
   update: (data: Partial<AgentXConfig>) => request<{ ok: boolean }>('/config', { method: 'PUT', body: JSON.stringify(data) }),
@@ -1165,7 +1165,7 @@ export const channels = {
 // ─── Automation & Notifications ───
 export type AutomationNotifyChannel = 'in_app' | 'desktop' | 'telegram' | 'slack' | 'email' | 'discord';
 export type AutomationTaskStatus = 'active' | 'paused' | 'cancelled' | 'completed';
-export type NotificationKind = 'automation_success' | 'automation_failure' | 'automation_scheduled' | 'background_task_complete' | 'background_task_failed';
+export type NotificationKind = 'automation_success' | 'automation_failure' | 'automation_scheduled' | 'background_task_complete' | 'background_task_failed' | 'whatsapp_inbound';
 
 export interface AutomationTaskRecord {
   id: string;
@@ -1374,7 +1374,7 @@ export interface AgentXConfig {
   organization: { name: string; contact?: string } | null;
   telemetry: boolean;
   timezone?: string;
-  user?: { callsign: string };
+  user?: UserConfig;
   setupComplete?: boolean;
   rag?: { enabled: boolean; embeddingModel: string; chunkSize: number; topK: number };
   localModel?: { enabled?: boolean; modelId?: string; modelName?: string; displayName?: string };
@@ -3063,6 +3063,7 @@ export interface HostStatusResponse {
     failCount: number;
     readyForPublicAccess: boolean;
   };
+  config?: import('@agentx/shared/browser').HostConfig;
   updatedAt: string;
 }
 

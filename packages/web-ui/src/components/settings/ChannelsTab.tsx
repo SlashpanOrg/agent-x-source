@@ -105,13 +105,14 @@ const CHANNELS: ChannelMeta[] = [
   {
     id: 'whatsapp',
     name: 'WhatsApp',
-    tagline: 'Chat with Agent-X via your linked number',
+    tagline: 'Your eyes and hands on WhatsApp — Agent-X talks to you, not your contacts',
     accent: brands.whatsapp ?? '#25D366',
     icon: <WhatsAppIcon sx={{ fontSize: 16 }} />,
     instructions: [
-      'Enable WhatsApp and click Connect to start the linking flow.',
-      'Scan the QR code with WhatsApp → Settings → Linked Devices → Link a Device.',
-      '⚠️ Using unofficial WhatsApp integrations carries a risk of account ban. Link a number you can afford to lose.',
+      'Enable WhatsApp and click Connect. Scan the QR with WhatsApp → Settings → Linked Devices → Link a Device.',
+      'Talk to Agent-X in WhatsApp → Message yourself. Agent-X replies there with an [Agent-X] prefix.',
+      'Your contacts are not talking to the agent. Incoming chats brief you (self-chat + Notifications). Agent-X only texts them when you say so, or when a standing order you set fires.',
+      '⚠️ Unofficial WhatsApp integrations carry a ban risk. Link a number you can afford to lose.',
     ],
   },
 ];
@@ -449,7 +450,7 @@ function WhatsAppFields() {
     setError(null);
     try {
       await bridges.whatsapp.stop();
-      setSuccess('WhatsApp session stopped');
+      setSuccess('WhatsApp disconnected. Your link is saved — Connect restores it without a new QR.');
       await fetchStatus();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to stop session');

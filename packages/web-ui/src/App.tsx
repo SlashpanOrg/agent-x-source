@@ -7,6 +7,7 @@ import { ErrorBandProvider } from './components/ErrorBand';
 import { ClientSituationProvider } from './context/ClientSituationProvider';
 import { VoiceProvider } from './components/voice/VoiceProvider';
 import { CrewCallProvider } from './components/crew-call';
+import { VisualStageProvider } from './components/visual/VisualStageProvider';
 import { DockingStation } from './pages/DockingStation';
 import { SetupAuth } from './pages/SetupAuth';
 import { SetupWizard } from './pages/SetupWizard';
@@ -93,6 +94,7 @@ export function App() {
     <ErrorBandProvider>
       <ClientSituationProvider>
       <VoiceProvider>
+        <VisualStageProvider>
         <CrewCallProvider>
         <DesktopStartupPermissions />
         <Routes>
@@ -122,6 +124,7 @@ export function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         </CrewCallProvider>
+        </VisualStageProvider>
       </VoiceProvider>
       </ClientSituationProvider>
     </ErrorBandProvider>

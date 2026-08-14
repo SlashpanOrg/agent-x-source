@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { VoiceService, WebSocketVoiceTransport, mergeVoiceConfig, getPersonaStore, startAppSpan } from '@agentx/engine';
+import { VoiceService, WebSocketVoiceTransport, mergeVoiceConfig, getPersonaStore, startAppSpan, setVisualPresentHook } from '@agentx/engine';
 import type { SpeakerIdentificationResult, VoiceSessionSpeaker } from '@agentx/engine';
 import { XaiRealtimeEngine } from './voice/engines/XaiRealtimeEngine.js';
 import type { VoiceEngineSession } from './voice/engines/types.js';
@@ -58,6 +58,9 @@ import {
   WAKE_WORD_IDLE_MS,
   pickWakeAck,
 } from './voice/wake-phrase.js';
+import { formatWhatsAppVoiceBriefInstruction, peekWhatsAppVoiceBrief } from './whatsapp-voice-brief.js';
+import { maybePresentWhatsAppVisual, setVisualPresentEmitter } from './visual-present.js';
+import type { VisualItem } from '@agentx/shared';
 
 const SAMPLE_RATE = 16_000;
 /** Minimum interval between streaming STT preview passes (PTT + duplex). */
@@ -161,9 +164,10 @@ async function sendSessionAudio(
   audio: Buffer,
   sampleRate: number,
   filler = false,
+  system = false,
 ): Promise<void> {
   if (session.textOnlyPlayback) return;
-  await session.transport.playAudio(audio, sampleRate, { filler });
+  await session.transport.playAudio(audio, sampleRate, { filler, system: system || filler });
 }
 
 async function cancelActiveSynth(session: VoiceWsSession): Promise<void> {
@@ -189,7 +193,12 @@ async function speakShortCachedLine(
     if (session.activeSynthId !== synthId) return;
     const audio = await readFile(wavPath);
     await sendSessionAudio(session, audio, result.sampleRate ?? 24_000, filler);
-  } catch { /* best-effort TTS */ } finally {
+  } catch (err) {
+    getLogger().warn(
+      'VOICE',
+      `Filler TTS failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
     if (session.activeSynthId === synthId) session.activeSynthId = undefined;
     try {
       await rm(tmpRoot, { recursive: true, force: true });
@@ -197,9 +206,41 @@ async function speakShortCachedLine(
   }
 }
 
-/** Speak a short line of text out-of-band (permission prompts, confirmations). */
+/** Speak a short line of text out-of-band (permission prompts, confirmations, WhatsApp). */
 async function speakSystemLine(session: VoiceWsSession, line: string): Promise<void> {
-  await speakShortCachedLine(session, line, false);
+  if (session.textOnlyPlayback || !line.trim()) return;
+  session.transport.sendControl({
+    type: 'agent_status',
+    sessionId: session.sessionId,
+    status: 'speaking',
+    text: line,
+  });
+  const voiceSession = getVoiceService().getSession(session.sessionId);
+  const service = getVoiceService();
+  const synthId = randomUUID();
+  session.activeSynthId = synthId;
+  session.speaking = true;
+  voiceSession?.setState('speaking');
+  try {
+    const stream = await service.synthesizeStreamText(line, {
+      requestId: synthId,
+      ...(session.crewVoiceId ? { voiceId: session.crewVoiceId } : {}),
+    });
+    for await (const chunk of stream.chunks) {
+      if (session.activeSynthId !== stream.requestId) break;
+      const audio = Buffer.from(chunk.pcmBase64, 'base64');
+      await sendSessionAudio(session, audio, chunk.sampleRate, false, true);
+    }
+  } catch (err) {
+    getLogger().warn(
+      'VOICE',
+      `System line TTS failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
+    if (session.activeSynthId === synthId) session.activeSynthId = undefined;
+    session.speaking = false;
+    session.transport.sendControl({ type: 'audio_end', sessionId: session.sessionId });
+  }
 }
 
 /** Speak a short ack when the user only utters the wake word. */
@@ -735,16 +776,6 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
   if (voiceConfig.engine === 'realtime_xai') {
     const transport = new WebSocketVoiceTransport({ ws, sessionId: voiceWsSessionId, mode, engine: 'realtime_xai' });
     const engine = new XaiRealtimeEngine();
-    // Voiceprint (speaker) identification still runs through the local sidecar even
-    // when xAI handles STT/TTS, so warm it up before the session begins.
-    try {
-      const service = getVoiceService();
-      await service.start();
-      void service.warmFillerCache();
-    } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err);
-      getLogger().warn('VOICE', `xAI sidecar warmup failed, voiceprint unavailable: ${raw}`);
-    }
     // Apply per-crew xAI voice override if this is a crew call with a profile.
     const xaiVoiceConfig = crewXaiVoice
       ? { ...voiceConfig, xai: { ...voiceConfig.xai, voice: crewXaiVoice } }
@@ -758,8 +789,6 @@ async function startSession(ws: WebSocket, msg: Record<string, unknown>): Promis
         chatSessionId,
         clientSituation,
         voiceConfig: xaiVoiceConfig,
-        wakeWord: wakeWordEnabled,
-        wakePhrase,
       });
       activeEngineSessions.set(ws, session);
     } catch (err) {
@@ -1455,13 +1484,18 @@ async function finishTurn(ws: WebSocket, session: VoiceWsSession, opts: { preStt
         || (isAffirmativeReply(text) && voiceOfferedChatReport(priorContent))
       );
 
-      const turnInstruction = crewCall
+      const waBrief = !crewCall && sid === '__channel__:voice' ? peekWhatsAppVoiceBrief() : null;
+      const waBriefBlock = waBrief ? `\n\n${formatWhatsAppVoiceBriefInstruction(waBrief)}` : '';
+      if (!crewCall && sid === '__channel__:voice') {
+        maybePresentWhatsAppVisual(text);
+      }
+      const turnInstruction = (crewCall
         ? buildCrewCallTurnInstruction()
         : pendingVoiceSummary && wantsChatReport
           ? buildVoiceChatReportPhaseInstruction()
           : priorHasVoiceBlock
             ? buildVoiceFollowUpPhaseInstruction()
-            : buildVoiceSummaryPhaseInstruction();
+            : buildVoiceSummaryPhaseInstruction()) + waBriefBlock;
 
       const chatReportOnly = pendingVoiceSummary && wantsChatReport;
       if (chatReportOnly) {
@@ -1830,6 +1864,57 @@ export function countActiveVoiceWebSocketSessions(): number {
   return activeSessions.size + activeEngineSessions.size;
 }
 
+/** Open the visual stage on every live voice / crew-call WebSocket. */
+export async function presentVisualToActiveVoiceSessions(item: VisualItem): Promise<void> {
+  const payload = { type: 'visual_present', item };
+  for (const session of activeSessions.values()) {
+    try {
+      session.transport.sendControl(payload);
+    } catch { /* ignore */ }
+  }
+  for (const [ws] of activeEngineSessions.entries()) {
+    try {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
+    } catch { /* ignore */ }
+  }
+}
+
+function isDashboardVoiceChat(chatSessionId?: string): boolean {
+  if (!chatSessionId || chatSessionId === '__channel__:voice') return true;
+  return !isCrewVoiceSessionId(chatSessionId);
+}
+
+/** Speak a system line into live dashboard voice sessions (not crew calls). */
+export async function announceToActiveVoiceSessions(line: string, context?: string): Promise<void> {
+  const spoken = line.trim();
+  if (!spoken) return;
+  const tasks: Promise<void>[] = [];
+  for (const session of activeSessions.values()) {
+    if (!isDashboardVoiceChat(session.chatSessionId)) continue;
+    tasks.push(speakSystemLine(session, spoken).catch((err) => {
+      getLogger().warn(
+        'VOICE',
+        `WhatsApp announce failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }));
+  }
+  for (const engineSession of activeEngineSessions.values()) {
+    if (!isDashboardVoiceChat(engineSession.chatSessionId) || !engineSession.announce) continue;
+    tasks.push(engineSession.announce(spoken, context).catch((err) => {
+      getLogger().warn(
+        'VOICE',
+        `WhatsApp xAI announce failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }));
+  }
+  if (tasks.length === 0) {
+    getLogger().info('VOICE', 'WhatsApp announce skipped — no live dashboard voice session');
+    return;
+  }
+  getLogger().info('VOICE', `WhatsApp announce to ${tasks.length} voice session(s)`);
+  await Promise.all(tasks);
+}
+
 export async function shutdownVoiceWebSocket(): Promise<void> {
   for (const ws of activeSessions.keys()) {
     ws.close();
@@ -1849,3 +1934,6 @@ export async function shutdownVoiceWebSocket(): Promise<void> {
 }
 
 export { extractAssistantText };
+
+setVisualPresentEmitter((item) => { void presentVisualToActiveVoiceSessions(item); });
+setVisualPresentHook((item) => { void presentVisualToActiveVoiceSessions(item); });

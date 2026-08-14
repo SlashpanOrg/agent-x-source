@@ -72,6 +72,7 @@ const SAFE_PARALLEL = new Set([
   'text_diff',
   'validate_schema',
   'render_chart',
+  'present_visual',
   'list',
   'search',
   'project_detect',

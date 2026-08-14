@@ -14,6 +14,8 @@ export interface VoiceEngineSession {
   onBinaryAudio(_pcm: Buffer): void;
   onClientMessage(_msg: Record<string, unknown>): Promise<void>;
   onDisconnect(): void;
+  /** Optional system line spoken into an active voice session (WhatsApp Jarvis briefs). */
+  announce?(line: string, context?: string): Promise<void>;
 }
 
 export interface VoiceEngineSessionOptions {

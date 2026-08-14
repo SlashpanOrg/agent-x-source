@@ -9,7 +9,8 @@ export type NotificationKind =
   | 'automation_failure'
   | 'automation_scheduled'
   | 'background_task_complete'
-  | 'background_task_failed';
+  | 'background_task_failed'
+  | 'whatsapp_inbound';
 
 export interface AutomationRegisterInput {
   title: string;

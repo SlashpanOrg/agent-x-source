@@ -21,6 +21,10 @@ describe('ConfigSchema', () => {
       },
       user: {
         callsign: 'tester',
+        name: 'Siva',
+        prefix: 'Mr.',
+        gender: 'male',
+        email: 'siva@example.com',
       },
       setupComplete: true,
       localModel: {
@@ -51,6 +55,7 @@ describe('ConfigSchema', () => {
 
     expect(parsed.localModel).toEqual(config.localModel);
     expect(parsed.featureRouting).toEqual(config.featureRouting);
+    expect(parsed.user).toEqual(config.user);
   });
 
   it('preserves optional tuning and agent fields', () => {

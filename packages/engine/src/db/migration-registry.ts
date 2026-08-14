@@ -1380,4 +1380,53 @@ CREATE TABLE IF NOT EXISTS host_security_events (
 CREATE INDEX IF NOT EXISTS idx_host_security_events_created
   ON host_security_events(created_at DESC);
 ` },
+  { version: 10, name: 'whatsapp_jarvis', sql: `-- WhatsApp Jarvis: owner standing orders (when to brief / auto-reply / ignore).
+
+CREATE TABLE IF NOT EXISTS whatsapp_standing_orders (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  priority INTEGER NOT NULL DEFAULT 0,
+  match_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  action_json JSONB NOT NULL DEFAULT '{"type":"brief"}'::jsonb,
+  created_from TEXT NOT NULL DEFAULT 'unknown',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_standing_orders_enabled
+  ON whatsapp_standing_orders(enabled, priority DESC, created_at ASC);
+` },
+  { version: 11, name: 'whatsapp_contacts', sql: `-- Owner WhatsApp address book. Structured index (not RAG) so name → JID
+-- resolution is deterministic: unique match or ask, never a fuzzy guess.
+
+CREATE TABLE IF NOT EXISTS whatsapp_contacts (
+  jid TEXT PRIMARY KEY,
+  phone TEXT,
+  lid_jid TEXT,
+  saved_name TEXT,
+  first_name TEXT,
+  last_name TEXT,
+  notify_name TEXT,
+  business_name TEXT,
+  username TEXT,
+  is_saved BOOLEAN NOT NULL DEFAULT FALSE,
+  sendable BOOLEAN NOT NULL DEFAULT TRUE,
+  aliases TEXT[] NOT NULL DEFAULT '{}'::text[],
+  search_text TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_contacts_phone
+  ON whatsapp_contacts(phone);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_contacts_saved_name
+  ON whatsapp_contacts(lower(saved_name));
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_contacts_business_name
+  ON whatsapp_contacts(lower(business_name));
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_contacts_search
+  ON whatsapp_contacts(search_text);
+` },
 ];

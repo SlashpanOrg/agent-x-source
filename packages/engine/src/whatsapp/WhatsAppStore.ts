@@ -201,6 +201,20 @@ export async function purgeWhatsAppAuthState(pool: PgPool, dek: Buffer): Promise
   await keyStore.clear();
 }
 
+/**
+ * True when a completed WhatsApp multi-device link is stored (creds.registered).
+ * Incomplete QR handshakes write unregistered creds — those must not count.
+ */
+export async function hasRegisteredWhatsAppCreds(pool: PgPool, dek: Buffer): Promise<boolean> {
+  try {
+    const { credsStore } = createWhatsAppAuthStores(pool, dek);
+    const creds = await credsStore.load();
+    return Boolean(creds?.registered);
+  } catch {
+    return false;
+  }
+}
+
 /** Row shape for the `whatsapp_session` table (used by WhatsAppSessionService). */
 export interface SessionRow {
   id: string;

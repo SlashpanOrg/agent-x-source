@@ -47,6 +47,13 @@ export const organizationConfigSchema = z.object({
 
 export const userConfigSchema = z.object({
   callsign: z.string().min(1).max(30),
+  name: z.string().min(1).max(80).optional(),
+  prefix: z.string().max(20).optional(),
+  gender: z.enum(['male', 'female', 'nonbinary', 'unspecified']).optional(),
+  email: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.string().email().max(254).optional(),
+  ),
 }).optional();
 
 export const agentPersonaConfigSchema = z.object({

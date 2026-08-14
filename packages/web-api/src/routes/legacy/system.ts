@@ -8,7 +8,7 @@ import { Router } from 'express';
 import os from 'node:os';
 import { join } from 'node:path';
 import { mkdir, writeFile, rm } from 'node:fs/promises';
-import { getDataDir, getConfigDir, getCacheDir, agentXConfigSchema, voiceConfigSchema, authManager, buildPublicSystemCapabilities, resolvePerformanceSettings, buildPerformanceShowcase, getLogger, normalizeClientSituation } from '@agentx/shared';
+import { getDataDir, getConfigDir, getCacheDir, agentXConfigSchema, voiceConfigSchema, authManager, buildPublicSystemCapabilities, resolvePerformanceSettings, buildPerformanceShowcase, getLogger, normalizeClientSituation, mergeUserConfig, isUserGender } from '@agentx/shared';
 import type { AgentXConfig } from '@agentx/shared';
 import { getEngine, destroyAgent, clearEngine, applyPerformanceSettings, applyAdoptionSettings, setCurrentClientSituation, getCurrentClientSituation } from '../../engine.js';
 import { getOrCreateBoundSessionAgent } from '../../engine/agent-lifecycle.js';
@@ -89,12 +89,24 @@ export function createSystemRouter(): Router {
     try {
       const eng = getEngine();
       const existing = eng.configManager.load();
-      const callsignRaw = typeof req.body?.callsign === 'string' ? req.body.callsign.trim() : '';
+      const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+      const nested = body.user && typeof body.user === 'object' ? body.user as Record<string, unknown> : body;
+      const callsignRaw = typeof nested.callsign === 'string' ? nested.callsign.trim()
+        : typeof body.callsign === 'string' ? body.callsign.trim()
+          : '';
       const callsign = callsignRaw || existing.user?.callsign?.trim() || '';
+      const patch = {
+        ...(callsign ? { callsign } : {}),
+        ...(Array.isArray(nested.names) ? { names: nested.names as string[] } : {}),
+        ...(typeof nested.name === 'string' ? { name: nested.name } : {}),
+        ...(typeof nested.prefix === 'string' ? { prefix: nested.prefix } : {}),
+        ...(isUserGender(nested.gender) ? { gender: nested.gender } : {}),
+        ...(typeof nested.email === 'string' ? { email: nested.email } : {}),
+      };
       const merged: AgentXConfig = {
         ...existing,
         setupComplete: true,
-        ...(callsign ? { user: { callsign } } : {}),
+        ...(callsign ? { user: mergeUserConfig(existing.user, patch) } : {}),
       };
       eng.configManager.save(merged);
       res.json({ ok: true, setupComplete: true });
@@ -167,6 +179,17 @@ export function createSystemRouter(): Router {
     try {
       const existing = eng.configManager.load();
       const merged = mergeConfigPreservingSecrets(existing, { ...existing, ...req.body });
+      if (req.body.user && typeof req.body.user === 'object') {
+        const incoming = req.body.user as { callsign?: string; name?: string; names?: string[]; prefix?: string; gender?: string; email?: string };
+        merged.user = mergeUserConfig(undefined, {
+          callsign: (incoming.callsign || existing.user?.callsign || '').trim(),
+          names: incoming.names,
+          name: incoming.name,
+          prefix: incoming.prefix,
+          gender: isUserGender(incoming.gender) ? incoming.gender : undefined,
+          email: incoming.email,
+        });
+      }
       if (req.body.tools?.webSearch) {
         merged.tools = {
           ...existing.tools,

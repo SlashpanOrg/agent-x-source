@@ -7,6 +7,7 @@ import {
   isAffirmativeReply,
   isVoiceSummaryOnlyMessage,
   userWantsVoiceChatReport,
+  userWantsWhatsAppVisual,
   voiceOfferedChatReport,
   sanitizeSpeakableText,
   sanitizeVoiceDisplayText,
@@ -52,6 +53,13 @@ describe('voice interactive flow helpers', () => {
     const voiceOnly = `${VOICE_BLOCK_OPEN}Summary here.${VOICE_BLOCK_CLOSE}`;
     expect(isVoiceSummaryOnlyMessage(voiceOnly)).toBe(true);
     expect(isVoiceSummaryOnlyMessage(`${voiceOnly}\n\n${'Detailed markdown body. '.repeat(8)}`)).toBe(false);
+  });
+
+  it('detects WhatsApp visual show/read requests', () => {
+    expect(userWantsWhatsAppVisual('show me')).toBe(true);
+    expect(userWantsWhatsAppVisual('read that')).toBe(true);
+    expect(userWantsWhatsAppVisual('yes')).toBe(true);
+    expect(userWantsWhatsAppVisual('ignore them')).toBe(false);
   });
 
   it('detects short affirmative replies', () => {

@@ -226,6 +226,18 @@ export function isVoiceSummaryOnlyMessage(content: string): boolean {
   return chat.length < 80;
 }
 
+/** Owner asked to see or hear the pending WhatsApp brief (ask-first visual). */
+export function userWantsWhatsAppVisual(text: string): boolean {
+  const t = text.toLowerCase().trim();
+  if (!t) return false;
+  if (isAffirmativeReply(t)) return true;
+  if (/\b(show|see|open|display)\b/.test(t) && t.split(/\s+/).length <= 8) return true;
+  if (/\bread\s+(it|that|the\s+(message|text|caption))?\b/.test(t)) return true;
+  if (/\bwhat did (they|she|he|someone)\s+(say|send|write)\b/.test(t)) return true;
+  if (/\bwhat(?:'s| is) (?:in )?(?:the )?(?:photo|image|picture|video|message)\b/.test(t)) return true;
+  return false;
+}
+
 /** Short affirmative that accepts the assistant's previous offer ("yes please", "sure, go ahead"). */
 export function isAffirmativeReply(text: string): boolean {
   const t = text.toLowerCase().trim().replace(/[.!,\s]+$/, '');

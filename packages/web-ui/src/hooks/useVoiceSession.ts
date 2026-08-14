@@ -59,6 +59,7 @@ export function useVoiceSession(
   const [audioLevel, setAudioLevel] = useState(0);
   const [silenceProgress, setSilenceProgress] = useState(0);
   const [muted, setMuted] = useState(false);
+  const mutedRef = useRef(false);
   const [textOnlyPlayback, setTextOnlyPlayback] = useState(false);
   const [voiceTimings, setVoiceTimings] = useState<VoiceTurnTimings | null>(null);
   const [agentTurnComplete, setAgentTurnComplete] = useState(false);
@@ -347,6 +348,7 @@ export function useVoiceSession(
           setWakeIdleUntil(until);
         },
       });
+      clientRef.current.setMicMuted(mutedRef.current);
     }
     return clientRef.current;
   }, [enabled, mode, engine, chatSessionId, voiceOnly, unlockPttTurn]);
@@ -610,6 +612,12 @@ export function useVoiceSession(
     clientRef.current?.setTextOnlyPlayback(true);
   }, []);
 
+  const setMicMuted = useCallback((next: boolean) => {
+    mutedRef.current = next;
+    setMuted(next);
+    clientRef.current?.setMicMuted(next);
+  }, []);
+
   const setToggles = useCallback((toggles: { searchWeb?: boolean; voiceprintEnabled?: boolean }) => {
     clientRef.current?.setToggles(toggles);
   }, []);
@@ -646,7 +654,7 @@ export function useVoiceSession(
     silenceProgress,
     warning,
     muted,
-    setMuted,
+    setMuted: setMicMuted,
     mode,
     textOnlyPlayback,
     voiceTimings,

@@ -19,6 +19,7 @@ import type {
   WhatsAppMessageAck,
   WhatsAppCallEvent,
   WhatsAppGroupEvent,
+  WhatsAppContactEntry,
   EngineStatus,
   EngineReadyInfo,
 } from './engine/IWhatsAppEngine.js';
@@ -37,7 +38,8 @@ export type WhatsAppEvent =
   | 'qrCode'
   | 'pairingCode'
   | 'disconnected'
-  | 'error';
+  | 'error'
+  | 'contactsChanged';
 
 /** Typed event map for the bus. */
 export interface WhatsAppEventMap {
@@ -54,6 +56,7 @@ export interface WhatsAppEventMap {
   pairingCode: [code: string];
   disconnected: [reason: string];
   error: [error: Error];
+  contactsChanged: [contacts: WhatsAppContactEntry[]];
 }
 
 /**

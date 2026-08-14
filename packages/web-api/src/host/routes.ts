@@ -193,6 +193,22 @@ export function createHostRouter(): Router {
   return router;
 }
 
+/**
+ * Client payloads are redacted (`authTokenConfigured: false` when empty).
+ * A new secret must win over that stale flag — otherwise Verify + autosave
+ * wipes the token and the next page load shows the paste UI again.
+ */
+function resolvePersistedSecret(
+  previous: string | undefined,
+  incoming: string | undefined,
+  configuredFlag: boolean | undefined,
+): string | undefined {
+  const next = typeof incoming === 'string' ? incoming.trim() : '';
+  if (next) return next;
+  if (configuredFlag === false) return '';
+  return previous;
+}
+
 /** Merge host config while preserving tunnel/telephony secrets (apiKeyConfigured pattern). */
 export function mergeHostConfigPreservingSecrets(existing: HostConfig, incoming: HostConfig): HostConfig {
   const merged = mergeHostConfig(existing, incoming);
@@ -204,11 +220,11 @@ export function mergeHostConfigPreservingSecrets(existing: HostConfig, incoming:
     const prev = tunnelProviders[id] ?? {};
     const prevCreds = prev.credentials ?? {};
     const nextCreds = cfg.credentials ?? {};
-    let authToken = prevCreds.authToken;
-    if (nextCreds.authTokenConfigured === false) authToken = '';
-    else if (typeof nextCreds.authToken === 'string' && nextCreds.authToken.trim()) {
-      authToken = nextCreds.authToken.trim();
-    }
+    const authToken = resolvePersistedSecret(
+      prevCreds.authToken,
+      nextCreds.authToken,
+      nextCreds.authTokenConfigured,
+    );
     tunnelProviders[id] = {
       ...prev,
       ...cfg,
@@ -229,21 +245,21 @@ export function mergeHostConfigPreservingSecrets(existing: HostConfig, incoming:
     const prev = providers[id] ?? {};
     const prevCreds = prev.credentials ?? {};
     const nextCreds = cfg.credentials ?? {};
-    let authToken = prevCreds.authToken;
-    let apiKey = prevCreds.apiKey;
-    let apiSecret = prevCreds.apiSecret;
-    if (nextCreds.authTokenConfigured === false) authToken = '';
-    else if (typeof nextCreds.authToken === 'string' && nextCreds.authToken.trim()) {
-      authToken = nextCreds.authToken.trim();
-    }
-    if (nextCreds.apiKeyConfigured === false) apiKey = '';
-    else if (typeof nextCreds.apiKey === 'string' && nextCreds.apiKey.trim()) {
-      apiKey = nextCreds.apiKey.trim();
-    }
-    if (nextCreds.apiSecretConfigured === false) apiSecret = '';
-    else if (typeof nextCreds.apiSecret === 'string' && nextCreds.apiSecret.trim()) {
-      apiSecret = nextCreds.apiSecret.trim();
-    }
+    const authToken = resolvePersistedSecret(
+      prevCreds.authToken,
+      nextCreds.authToken,
+      nextCreds.authTokenConfigured,
+    );
+    const apiKey = resolvePersistedSecret(
+      prevCreds.apiKey,
+      nextCreds.apiKey,
+      nextCreds.apiKeyConfigured,
+    );
+    const apiSecret = resolvePersistedSecret(
+      prevCreds.apiSecret,
+      nextCreds.apiSecret,
+      nextCreds.apiSecretConfigured,
+    );
     providers[id] = {
       ...prev,
       ...cfg,

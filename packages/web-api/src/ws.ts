@@ -7,7 +7,7 @@ import { getCommandJournal, getSessionGenerationManager, MemoryFabric, startAppS
 import { validateWebSocketConnection } from './auth.js';
 import { registerWebSocketRoute } from './ws-upgrade-router.js';
 import { getSessionConnection } from './session-connection.js';
-import { getLogger, stripToolNoise, appendStreamText, repairStreamTextGlitches, type MessagePart, attachDeepSearchPartsFromTools, attachChartPartsFromTools, deepSearchBundleFromMetadata, upsertDeepSearchPart, dedupeResponseDocumentParts, dedupeToolParts } from '@agentx/shared';
+import { getLogger, stripToolNoise, appendStreamText, repairStreamTextGlitches, type MessagePart, attachDeepSearchPartsFromTools, attachChartPartsFromTools, attachVisualPartsFromTools, deepSearchBundleFromMetadata, upsertDeepSearchPart, dedupeResponseDocumentParts, dedupeToolParts } from '@agentx/shared';
 import type { DeepSearchProgress, EngineEvent, EventHandler, Message, MessageMetadata, NormalizedAttachment } from '@agentx/shared';
 import { metricsRegistry } from './metrics/MetricsRegistry.js';
 
@@ -616,7 +616,7 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
     let parts = accumulatedParts.length > 0
       ? JSON.parse(JSON.stringify(accumulatedParts)) as MessagePart[]
       : undefined;
-    if (parts) parts = attachChartPartsFromTools(attachDeepSearchPartsFromTools(parts, toolCalls), toolCalls);
+    if (parts) parts = attachVisualPartsFromTools(attachChartPartsFromTools(attachDeepSearchPartsFromTools(parts, toolCalls), toolCalls), toolCalls);
     const extra: ReturnType<typeof buildExtra> = {};
     if (thinkingText) extra.thinking = thinkingText;
     if (thinkingStartedAt != null) extra.thinkingStartedAt = thinkingStartedAt;

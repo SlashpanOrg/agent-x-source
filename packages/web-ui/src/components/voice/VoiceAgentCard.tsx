@@ -8,6 +8,7 @@ import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import MicIcon from '@mui/icons-material/Mic';
 import MicOffIcon from '@mui/icons-material/MicOff';
+import HearingIcon from '@mui/icons-material/Hearing';
 import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 import FiberNewIcon from '@mui/icons-material/FiberNew';
@@ -62,6 +63,7 @@ export function VoiceAgentCard({
   const comms = commsCtx?.comms;
 
   const sessionReady = Boolean(voiceCtx?.voiceReady) && !envBlocked;
+  const localEngine = (voiceCtx?.voiceConfig?.engine ?? 'stt_llm_tts') === 'stt_llm_tts';
 
   // ── Continue / New conversation modal ──────────────────────────────────
   // When the user activates voice and there is existing transcript history,
@@ -90,9 +92,9 @@ export function VoiceAgentCard({
   // Push toggle state to backend whenever wake or manual voice is active.
   useEffect(() => {
     if (sessionActive && sessionReady && comms) {
-      comms.session.setToggles({ voiceprintEnabled });
+      comms.session.setToggles({ voiceprintEnabled: localEngine && Boolean(voiceprintEnabled) });
     }
-  }, [sessionActive, sessionReady, voiceprintEnabled, comms]);
+  }, [sessionActive, sessionReady, voiceprintEnabled, comms, localEngine]);
 
   // Derive button phase — connecting stays blue; thinking is orange only after a turn.
   const phase: ButtonPhase = useMemo(() => {
@@ -451,17 +453,19 @@ export function VoiceToggleChip({
   activeColor,
   onClick,
   title,
+  disabled = false,
 }: {
   icon: React.ReactNode;
   active: boolean;
   activeColor: string;
   onClick: () => void;
   title: string;
+  disabled?: boolean;
 }) {
   return (
     <Tooltip title={title}>
       <Box
-        onClick={onClick}
+        onClick={disabled ? undefined : onClick}
         sx={{
           width: 22,
           height: 22,
@@ -469,12 +473,13 @@ export function VoiceToggleChip({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          cursor: 'pointer',
-          border: `1px solid ${active ? alphaColor(activeColor, '66') : colors.border.default}`,
-          bgcolor: active ? alphaColor(activeColor, '1a') : 'transparent',
-          color: active ? activeColor : colors.text.dim,
+          cursor: disabled ? 'default' : 'pointer',
+          opacity: disabled ? 0.4 : 1,
+          border: `1px solid ${active && !disabled ? alphaColor(activeColor, '66') : colors.border.default}`,
+          bgcolor: active && !disabled ? alphaColor(activeColor, '1a') : 'transparent',
+          color: active && !disabled ? activeColor : colors.text.dim,
           transition: 'all 0.2s',
-          '&:hover': {
+          '&:hover': disabled ? undefined : {
             borderColor: activeColor,
             color: activeColor,
             transform: 'scale(1.1)',
@@ -495,6 +500,8 @@ export function VoiceAgentHeaderToggles({
   voiceprintEnabled: boolean;
   onVoiceprintEnabledChange: (v: boolean) => void;
 }) {
+  const engine = useVoiceOptional()?.voiceConfig?.engine ?? 'stt_llm_tts';
+  if (engine !== 'stt_llm_tts') return null;
   return (
     <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
       <VoiceToggleChip
@@ -543,7 +550,10 @@ export function VoiceAgentHeaderControls({
   const xaiVoiceId = voiceCfg?.xai?.voice ?? 'eve';
 
   const voice = useVoiceOptional();
+  const comms = useVoiceCommsOptional()?.comms;
   const wakeEnabled = voice?.wakeWordEnabled ?? false;
+  const sessionActive = Boolean(voice?.commsActive);
+  const micMuted = comms?.session.muted ?? false;
 
   const handleWakeToggle = useCallback(async () => {
     const cfg = voice?.voiceConfig;
@@ -689,22 +699,39 @@ export function VoiceAgentHeaderControls({
   const xaiVoiceMatch = xaiVoices.find((v) => v.id === xaiVoiceId);
   const xaiVoiceLabel = xaiVoiceMatch?.name || xaiVoiceId;
   const voiceLabel = engine === 'realtime_xai' ? xaiVoiceLabel : kokoroVoiceLabel;
+  const showLocalVoiceGates = engine === 'stt_llm_tts';
 
   return (
     <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+      {showLocalVoiceGates && (
+        <>
+          <VoiceToggleChip
+            icon={<RecordVoiceOverIcon sx={{ fontSize: 13 }} />}
+            active={voiceprintEnabled}
+            activeColor={colors.accent.blue}
+            onClick={() => onVoiceprintEnabledChange(!voiceprintEnabled)}
+            title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'}
+          />
+          <VoiceToggleChip
+            icon={<HearingIcon sx={{ fontSize: 13 }} />}
+            active={wakeEnabled}
+            activeColor={colors.accent.green}
+            onClick={handleWakeToggle}
+            title={wakeEnabled ? 'Wake word on — say the wake phrase to start' : 'Enable wake word'}
+          />
+        </>
+      )}
       <VoiceToggleChip
-        icon={<RecordVoiceOverIcon sx={{ fontSize: 13 }} />}
-        active={voiceprintEnabled}
-        activeColor={colors.accent.blue}
-        onClick={() => onVoiceprintEnabledChange(!voiceprintEnabled)}
-        title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'}
-      />
-      <VoiceToggleChip
-        icon={<MicIcon sx={{ fontSize: 13 }} />}
-        active={wakeEnabled}
-        activeColor={colors.accent.green}
-        onClick={handleWakeToggle}
-        title={wakeEnabled ? 'Wake word on — say the wake phrase to start' : 'Enable wake word'}
+        icon={micMuted ? <MicOffIcon sx={{ fontSize: 13 }} /> : <MicIcon sx={{ fontSize: 13 }} />}
+        active={sessionActive}
+        activeColor={micMuted ? colors.accent.orange : colors.accent.green}
+        disabled={!sessionActive}
+        onClick={() => comms?.session.setMuted(!micMuted)}
+        title={!sessionActive
+          ? 'Start the voice session to mute the mic'
+          : micMuted
+            ? 'Mic muted — click to unmute'
+            : 'Mute mic'}
       />
       <ConfigChip
         label={engineLabel}

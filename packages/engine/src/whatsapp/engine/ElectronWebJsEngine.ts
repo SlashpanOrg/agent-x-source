@@ -32,6 +32,7 @@ const WA = (WAWebModule as any).default ?? (WAWebModule as any);
 const { Client, LocalAuth, MessageMedia, Location: WWebLocation, Poll, Events } = WA;
 
 import { toNeutralJid, phoneFromNeutralJid } from '../identity/wa-id.js';
+import { waUnixTimestamp } from '../wa-timestamp.js';
 import { mapWWebJsMessage, ackStatusFromWWebJs, mediaFromWWebJs } from './wwebjs-message-mapper.js';
 import { EngineStatus } from './IWhatsAppEngine.js';
 import type {
@@ -42,6 +43,7 @@ import type {
   WhatsAppSendResult,
   WhatsAppCallEvent,
   WhatsAppGroupEvent,
+  WhatsAppContactEntry,
   EngineCapability,
 } from './IWhatsAppEngine.js';
 
@@ -78,6 +80,8 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
   private callbacks: WhatsAppEngineCallbacks = {};
   private client: ClientType | null = null;
   private currentQr: string | null = null;
+  private meJid = '';
+  private readonly recentSelfInboundIds = new Set<string>();
   private intentionallyStopped = false;
   private initializing = false;
 
@@ -161,6 +165,20 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
     this.setStatus(EngineStatus.DISCONNECTED);
   }
 
+  async logoutFromServer(): Promise<void> {
+    const client = this.client;
+    if (!client) return;
+    try {
+      await client.logout();
+    } catch {
+      // already closed / already logged out
+    }
+  }
+
+  getLinkedUserJids(): string[] {
+    return this.meJid ? [this.meJid] : [];
+  }
+
   getStatus(): EngineStatus {
     return this.status;
   }
@@ -198,7 +216,7 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
 
   // ─── Messaging ──────────────────────────────────────────────────────────
 
-  async sendText(chatId: string, text: string, opts?: { mentions?: string[]; quotedMessageId?: string }): Promise<WhatsAppSendResult> {
+  async sendText(chatId: string, text: string, opts?: { mentions?: string[]; quotedMessageId?: string; quotedFromMe?: boolean }): Promise<WhatsAppSendResult> {
     const client = this.requireClient();
     const msg = await client.sendMessage(chatId, text, {
       mentions: opts?.mentions,
@@ -286,9 +304,19 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
     return { messageId: 'forwarded', timestamp: Math.floor(Date.now() / 1000) };
   }
 
-  async react(_chatId: string, messageId: string, emoji: string | null): Promise<void> {
+  async react(_chatId: string, messageId: string, emoji: string | null, _opts?: { fromMe?: boolean }): Promise<void> {
     const client = this.requireClient();
     await client.sendReaction(messageId, emoji ?? '');
+  }
+
+  async setTyping(chatId: string, typing: boolean): Promise<void> {
+    const client = this.requireClient() as ClientType & {
+      getChatById?: (id: string) => Promise<{ sendStateTyping?: () => Promise<void>; clearState?: () => Promise<void> } | null>;
+    };
+    const chat = await client.getChatById?.(chatId);
+    if (!chat) return;
+    if (typing) await chat.sendStateTyping?.();
+    else await chat.clearState?.();
   }
 
   async editMessage(_chatId: string, messageId: string, newText: string): Promise<void> {
@@ -330,6 +358,43 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
     const client = this.requireClient();
     const contact = await client.getContactById(jid);
     await contact.unblock();
+  }
+
+  async listContacts(opts?: { limit?: number; search?: string }): Promise<WhatsAppContactEntry[]> {
+    const client = this.requireClient();
+    const contacts = await client.getContacts();
+    const limit = opts?.limit ?? 100;
+    const search = opts?.search?.toLowerCase().trim();
+    const entries: WhatsAppContactEntry[] = [];
+
+    for (const c of contacts) {
+      if (c.isGroup || c.isMe) continue;
+      const rawJid = c.id?._serialized ?? '';
+      if (!rawJid || rawJid.endsWith('@g.us') || rawJid.endsWith('@broadcast') || rawJid.endsWith('@newsletter')) continue;
+      const jid = toNeutralJid(rawJid);
+      const savedName = c.isMyContact ? (c.name || c.shortName || undefined) : undefined;
+      const notify = c.pushname || undefined;
+      const businessName = c.verifiedName || (c.isBusiness && c.name && !c.isMyContact ? c.name : undefined);
+      const phone = (c.number || phoneFromNeutralJid(jid) || '').replace(/\D/g, '') || undefined;
+      const display = savedName ?? notify ?? businessName;
+      if (!display && !phone) continue;
+      if (search) {
+        const hay = [savedName, notify, businessName, phone, jid].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(search)) continue;
+      }
+      entries.push({
+        jid,
+        rawJid,
+        phoneNumber: phone,
+        name: display,
+        savedName,
+        notify,
+        businessName,
+      });
+    }
+
+    entries.sort((a, b) => (a.savedName ?? a.name ?? '').localeCompare(b.savedName ?? b.name ?? ''));
+    return entries.slice(0, limit);
   }
 
   // ─── Calls ──────────────────────────────────────────────────────────────
@@ -374,6 +439,7 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
     client.on(Events.READY, () => {
       const info = client.info;
       const phoneNumber = info?.wid?.user ? phoneFromNeutralJid(`${info.wid.user}@c.us`) : undefined;
+      if (info?.wid?.user) this.meJid = toNeutralJid(`${info.wid.user}@c.us`);
       const pushName = info?.pushname ?? undefined;
       this.setStatus(EngineStatus.READY, { phoneNumber, pushName });
     });
@@ -382,25 +448,31 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
       // Map synchronously first (no media), then download media async and
       // re-emit. This ensures the agent sees the message immediately even if
       // media download is slow or fails.
+      if (msg.type === 'protocol') return;
       const mapped = mapWWebJsMessage(msg);
+      const selfChat = Boolean(this.meJid && mapped.chatId === this.meJid);
+      if (selfChat && (mapped.body?.trim() || msg.hasMedia)) {
+        this.emitSelfChatInbound(mapped);
+      }
       if (msg.fromMe) {
         this.callbacks.onMessageSent?.(mapped);
-      } else {
+      } else if (!selfChat) {
         this.callbacks.onMessage?.(mapped);
       }
-      // Fire-and-forget media download
       if (msg.hasMedia) {
         this.downloadAndEnrichMedia(msg, mapped).catch(() => {});
       }
     });
 
     client.on(Events.MESSAGE_CREATE, (msg: Message) => {
-      // `message_create` fires for both sent and received; we already handle
-      // `message` for the inbound path, so only surface sent messages here
-      // that weren't already caught by `message`.
-      if (msg.fromMe && msg.type !== 'protocol') {
-        this.callbacks.onMessageSent?.(mapWWebJsMessage(msg));
+      if (msg.type === 'protocol') return;
+      if (!msg.fromMe) return;
+      const mapped = mapWWebJsMessage(msg);
+      const selfChat = Boolean(this.meJid && mapped.chatId === this.meJid);
+      if (selfChat && (mapped.body?.trim() || msg.hasMedia)) {
+        this.emitSelfChatInbound(mapped);
       }
+      this.callbacks.onMessageSent?.(mapped);
     });
 
     client.on(Events.MESSAGE_ACK, (msg: Message) => {
@@ -459,12 +531,32 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
       }
     });
 
-    client.on(Events.DISCONNECTED, () => {
+    client.on(Events.DISCONNECTED, (reason?: string) => {
+      const remoteLogout = String(reason ?? '').toUpperCase() === 'LOGOUT';
+      if (remoteLogout) {
+        this.intentionallyStopped = true;
+        this.setStatus(EngineStatus.FAILED);
+        this.callbacks.onDisconnected?.('logged_out (wwebjs)');
+        return;
+      }
       if (!this.intentionallyStopped) {
-        this.callbacks.onDisconnected?.('whatsapp-web.js client disconnected');
+        this.callbacks.onDisconnected?.(`whatsapp-web.js client disconnected (${reason ?? 'unknown'})`);
       }
       this.setStatus(EngineStatus.DISCONNECTED);
     });
+  }
+
+  private emitSelfChatInbound(mapped: WhatsAppIncomingMessage): void {
+    const id = mapped.id;
+    if (id && this.recentSelfInboundIds.has(id)) return;
+    if (id) {
+      this.recentSelfInboundIds.add(id);
+      if (this.recentSelfInboundIds.size > 64) {
+        const first = this.recentSelfInboundIds.values().next().value;
+        if (first) this.recentSelfInboundIds.delete(first);
+      }
+    }
+    this.callbacks.onMessage?.(mapped);
   }
 
   private emitGroupEvent(notification: { id: string; recipientIds: string[]; author: string }, action: 'add' | 'remove' | 'promote' | 'demote'): void {
@@ -495,7 +587,8 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
       getLogger().warn('WHATSAPP', `wwebjs media download failed: ${err instanceof Error ? err.message : String(err)}`);
       base.media = { mimetype: 'application/octet-stream', omitted: true };
     }
-    // Re-emit with media attached
+    // Re-emit with media attached. Self-chat already went inbound on the
+    // first emit — do not re-fire onMessage or Jarvis would double-reply.
     if (msg.fromMe) {
       this.callbacks.onMessageSent?.(base);
     } else {
@@ -520,7 +613,7 @@ export class ElectronWebJsEngine implements IWhatsAppEngine {
   private toSendResult(msg: Message): WhatsAppSendResult {
     return {
       messageId: msg.id._serialized,
-      timestamp: msg.timestamp ?? Math.floor(Date.now() / 1000),
+      timestamp: waUnixTimestamp(msg.timestamp),
     };
   }
 }

@@ -14,6 +14,7 @@ import {
   requireEngineWithCapability,
   runTool,
   requireString,
+  requireResolvedChatId,
   optionalString,
   optionalNumber,
   optionalBoolean,
@@ -33,7 +34,7 @@ export async function whatsappSendText(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatIdResult = requireString(args, 'chatId');
+    const chatIdResult = requireResolvedChatId(args, 'chatId');
     if (typeof chatIdResult !== "string") return chatIdResult;
     const textResult = requireString(args, 'text');
     if (typeof textResult !== "string") return textResult;
@@ -64,7 +65,7 @@ export async function whatsappSendImage(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const filePath = requireString(args, 'filePath');
     if (typeof filePath !== "string") return filePath;
@@ -94,7 +95,7 @@ export async function whatsappSendVideo(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const filePath = requireString(args, 'filePath');
     if (typeof filePath !== "string") return filePath;
@@ -124,7 +125,7 @@ export async function whatsappSendAudio(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const filePath = requireString(args, 'filePath');
     if (typeof filePath !== "string") return filePath;
@@ -154,7 +155,7 @@ export async function whatsappSendDocument(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const filePath = requireString(args, 'filePath');
     if (typeof filePath !== "string") return filePath;
@@ -186,7 +187,7 @@ export async function whatsappSendLocation(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const latitude = optionalNumber(args, 'latitude');
     const longitude = optionalNumber(args, 'longitude');
@@ -216,7 +217,7 @@ export async function whatsappSendContact(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const displayName = requireString(args, 'displayName');
     if (typeof displayName !== "string") return displayName;
@@ -244,7 +245,7 @@ export async function whatsappSendPoll(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const question = requireString(args, 'question');
     if (typeof question !== "string") return question;
@@ -272,7 +273,7 @@ export async function whatsappSendSticker(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const filePath = requireString(args, 'filePath');
     if (typeof filePath !== "string") return filePath;
@@ -301,7 +302,7 @@ export async function whatsappReply(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const quotedMessageId = requireString(args, 'quotedMessageId');
     if (typeof quotedMessageId !== "string") return quotedMessageId;
@@ -328,9 +329,9 @@ export async function whatsappForward(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
-    const sourceChatId = requireString(args, 'sourceChatId');
+    const sourceChatId = requireResolvedChatId(args, 'sourceChatId');
     if (typeof sourceChatId !== "string") return sourceChatId;
     const messageId = requireString(args, 'messageId');
     if (typeof messageId !== "string") return messageId;
@@ -355,7 +356,7 @@ export async function whatsappReact(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const messageId = requireString(args, 'messageId');
     if (typeof messageId !== "string") return messageId;
@@ -383,7 +384,7 @@ export async function whatsappEditMessage(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const messageId = requireString(args, 'messageId');
     if (typeof messageId !== "string") return messageId;
@@ -410,7 +411,7 @@ export async function whatsappDeleteMessage(
     const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const messageId = requireString(args, 'messageId');
     if (typeof messageId !== "string") return messageId;
@@ -429,50 +430,73 @@ export async function whatsappDeleteMessage(
 }
 
 // ─── WhatsAppGetMessageHistory ───────────────────────────────────────────
-// Requires the 'chatHistoryFetch' capability. Baileys returns messages
-// observed since the session connected (full history sync is disabled per §0.7).
+// Reads Postgres first (every message persisted since connect). Falls back
+// to the engine in-memory store when the DB has no rows yet.
 
 export async function whatsappGetMessageHistory(
   args: Record<string, unknown>,
   _context: ToolExecutionContext,
 ): Promise<ToolResult> {
   return runTool('get message history', async () => {
-    const resolved = requireEngineWithCapability('chatHistoryFetch');
+    const resolved = requireEngine();
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
-    if (typeof chatId !== "string") return chatId;
+    const chatIdRaw = typeof args['chatId'] === 'string' ? args['chatId'].trim() : '';
+    const chatId = chatIdRaw
+      ? requireResolvedChatId(args, 'chatId')
+      : undefined;
+    if (chatId && typeof chatId !== 'string') return chatId;
+    const query = typeof args['query'] === 'string' ? args['query'].trim() : '';
     const limit = optionalNumber(args, 'limit') ?? 50;
 
-    if (!resolved.engine.getMessageHistory) {
-      return {
-        success: false,
-        output: 'This WhatsApp engine does not support fetching message history.',
-        error: 'NOT_SUPPORTED',
-      };
-    }
+    const persisted = await resolved.sessionService.listPersistedMessages({
+      ...(typeof chatId === 'string' ? { chatId } : {}),
+      ...(query ? { query } : {}),
+      limit,
+    }).catch(() => []);
 
-    const messages = await resolved.engine.getMessageHistory(chatId, limit);
-
-    if (messages.length === 0) {
+    if (persisted.length > 0) {
+      const lines = persisted.map((m) => {
+        const meta = m.metadata;
+        const actor = typeof meta.actor === 'string' ? meta.actor : m.direction;
+        const who = typeof meta.pushName === 'string' && meta.pushName
+          ? meta.pushName
+          : (actor === 'owner' ? 'You' : actor === 'agent' ? 'Agent-X' : m.from);
+        const time = new Date(m.timestamp * 1000).toISOString();
+        const body = m.body || `[${m.type}]`;
+        const media = typeof meta.storageId === 'string' ? ` [stored:${meta.storageId}]` : '';
+        return `[${time}] ${who} (${m.direction}/${m.type}): ${body}${media}`;
+      });
       return {
         success: true,
-        output: `No recent messages found for ${chatId}. Messages are tracked from the moment the session connected — send or receive a message first, or the chat may have no recent activity.`,
-        metadata: { chatId, count: 0 },
+        output: `${persisted.length} persisted WhatsApp message${persisted.length === 1 ? '' : 's'}${typeof chatId === 'string' ? ` in ${chatId}` : ''}${query ? ` matching "${query}"` : ''}:\n${lines.join('\n')}`,
+        metadata: { chatId: chatId ?? null, count: persisted.length, source: 'db', messages: persisted },
       };
     }
 
-    const lines = messages.map((m) => {
-      const dir = m.fromMe ? 'You' : (m.pushName ?? m.from ?? 'Them');
-      const time = new Date(m.timestamp * 1000).toISOString();
-      const body = m.body || `[${m.type}]`;
-      return `[${time}] ${dir}: ${body}`;
-    });
+    if (typeof chatId === 'string' && resolved.engine.getMessageHistory) {
+      const messages = await resolved.engine.getMessageHistory(chatId, limit);
+      if (messages.length > 0) {
+        const lines = messages.map((m) => {
+          const dir = m.fromMe ? 'You' : (m.pushName ?? m.from ?? 'Them');
+          const time = new Date(m.timestamp * 1000).toISOString();
+          const body = m.body || `[${m.type}]`;
+          return `[${time}] ${dir}: ${body}`;
+        });
+        return {
+          success: true,
+          output: `Last ${messages.length} in-memory message${messages.length === 1 ? '' : 's'} in ${chatId}:\n${lines.join('\n')}`,
+          metadata: { chatId, count: messages.length, source: 'memory', messages },
+        };
+      }
+    }
 
     return {
       success: true,
-      output: `Last ${messages.length} message${messages.length === 1 ? '' : 's'} in ${chatId}:\n${lines.join('\n')}`,
-      metadata: { chatId, count: messages.length, messages },
+      output: typeof chatId === 'string'
+        ? `No persisted messages found for ${chatId}. Messages are stored from the moment the session connected.`
+        : 'No persisted WhatsApp messages yet. They are stored from the moment the session connected.',
+      metadata: { chatId: chatId ?? null, count: 0 },
     };
   });
 }
@@ -487,7 +511,7 @@ export async function whatsappGetReactions(
     const resolved = requireEngineWithCapability('messageReactionsQuery');
     if ("error" in resolved) return resolved.error;
 
-    const chatId = requireString(args, 'chatId');
+    const chatId = requireResolvedChatId(args, 'chatId');
     if (typeof chatId !== "string") return chatId;
     const messageId = requireString(args, 'messageId');
     if (typeof messageId !== "string") return messageId;

@@ -16,8 +16,10 @@ import { alphaColor, colors } from '../../theme';
 import { friendlyVoiceError } from '../voice/voice-comms-theme';
 import { getCrewAccent } from '../../styles/crew-theme';
 import { VoiceParticleField } from '../voice/VoiceParticleField';
+import { useVoiceOptional } from '../voice/VoiceProvider';
 import type { useVoiceCommsSession } from '../../hooks/useVoiceCommsSession';
 import { CallTranscriptDivider } from './CallTranscriptDivider';
+import { LastShownChip } from '../../visual/LastShownChip';
 import { callTheme, formatCallDuration } from './crew-call-theme';
 import { resolveCallParticlePhase } from './resolve-call-particle-phase';
 import type { CrewCallPhase, CrewCallTarget, CrewCallTranscriptLine } from './types';
@@ -77,6 +79,8 @@ export function CrewCallModal({
   onMinimize,
   onRetry,
 }: CrewCallModalProps) {
+  const voiceCtx = useVoiceOptional();
+  const localEngine = (voiceCtx?.voiceConfig?.engine ?? 'stt_llm_tts') === 'stt_llm_tts';
   const [mousePttHeld, setMousePttHeld] = useState(false);
   const [voiceprintEnabled, setVoiceprintEnabled] = useState(false);
   const transcriptBoxRef = useRef<HTMLDivElement>(null);
@@ -95,9 +99,9 @@ export function CrewCallModal({
 
   useEffect(() => {
     if (linked) {
-      comms.session.setToggles({ voiceprintEnabled });
+      comms.session.setToggles({ voiceprintEnabled: localEngine && voiceprintEnabled });
     }
-  }, [linked, voiceprintEnabled, comms.session]);
+  }, [linked, voiceprintEnabled, comms.session, localEngine]);
 
   const statusLine = useMemo(() => {
     if (phase === 'failed') return error || 'Call unavailable';
@@ -409,6 +413,7 @@ export function CrewCallModal({
             <Typography sx={{ fontFamily: callTheme.mono, fontSize: '0.5rem', letterSpacing: '0.14em', color: callTheme.text.dim }}>
               TRANSCRIPT
             </Typography>
+            <LastShownChip />
             <Box sx={{ flex: 1 }} />
             {historyHasMore && (
               <Button
@@ -611,6 +616,7 @@ export function CrewCallModal({
           </Button>
         )}
 
+        {localEngine && (
         <Tooltip title={voiceprintEnabled ? 'Voiceprint on' : 'Enable voiceprint'} arrow>
           <IconButton
             onClick={() => setVoiceprintEnabled((v) => !v)}
@@ -626,6 +632,7 @@ export function CrewCallModal({
             <RecordVoiceOverIcon sx={{ fontSize: 18 }} />
           </IconButton>
         </Tooltip>
+        )}
 
         <Tooltip title="End call" arrow>
           <IconButton

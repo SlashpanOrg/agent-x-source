@@ -46,7 +46,7 @@ export class WebSocketVoiceTransport implements VoiceTransport {
     this.sendControl({ type: 'audio_end', sessionId: this.meta.sessionId });
   }
 
-  async playAudio(pcm: Buffer, sampleRate: number, meta?: { filler?: boolean }): Promise<void> {
+  async playAudio(pcm: Buffer, sampleRate: number, meta?: { filler?: boolean; system?: boolean }): Promise<void> {
     if (this.closed || this.ws.readyState !== this.ws.OPEN) return;
     this.sendControl({
       type: 'audio_chunk_meta',

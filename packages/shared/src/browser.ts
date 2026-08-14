@@ -44,6 +44,17 @@ export {
 export type { DeepSearchPartPayload } from './utils/deep-search-parts.js';
 
 export { attachChartPartsFromTools } from './utils/chart-parts.js';
+export { attachVisualPartsFromTools, visualItemFromPart } from './utils/visual-parts.js';
+export {
+  isVisualKind,
+  isHttpUrl,
+  visualKindFromMime,
+  parseVisualSource,
+  parseVisualItem,
+  buildVisualItem,
+} from './utils/visual-item.js';
+export type { VisualItem, VisualKind, VisualSource } from './types/visual.js';
+export { VISUAL_KINDS } from './types/visual.js';
 export {
   MEDICAL_INFORMATIONAL_DISCLAIMER,
   MEDICAL_HUB_CATEGORY_IDS,
@@ -392,6 +403,17 @@ export {
   clientLocationCityLabel,
   formatClientSituationBlock,
 } from './utils/client-situation.js';
+
+export {
+  formatOwnerPublicName,
+  formatOwnerReferralExample,
+  mergeUserConfig,
+  normalizeOwnerNames,
+  isOwnerEmailValid,
+  ownerPronouns,
+} from './utils/owner-identity.js';
+export type { UserConfig, UserGender, UserHonorificPrefix } from './types/config.js';
+export { USER_HONORIFIC_PREFIXES, USER_GENDERS, USER_GENDER_LABELS } from './types/config.js';
 
 export type {
   DeepSearchContentType,

@@ -111,7 +111,7 @@ export async function whatsappStopSession(
     await resolved.stop();
     return {
       success: true,
-      output: 'WhatsApp session stopped. The session can be restarted with WhatsAppLinkSession.',
+      output: 'WhatsApp socket stopped. The link is still saved (like closing WhatsApp Web). WhatsAppLinkSession reconnects without a new QR. Use WhatsAppUnlinkSession only to remove the device.',
     };
   });
 }
@@ -167,46 +167,3 @@ export async function whatsappRequestPairingCode(
   });
 }
 
-// ─── WhatsAppAllowSender ─────────────────────────────────────────────────
-
-export async function whatsappAllowSender(
-  args: Record<string, unknown>,
-  _context: ToolExecutionContext,
-): Promise<ToolResult> {
-  return runTool('allow sender', async () => {
-    const resolved = requireSessionService();
-    if ("error" in resolved) return resolved.error;
-
-    const jidResult = requireString(args, 'jid');
-    if (typeof jidResult !== 'string') return jidResult;
-    const jid = jidResult;
-
-    resolved.allowSender(jid);
-    return {
-      success: true,
-      output: `Sender ${jid} added to the WhatsApp allowlist. The agent will now auto-reply to their messages.`,
-    };
-  });
-}
-
-// ─── WhatsAppBlockSender ─────────────────────────────────────────────────
-
-export async function whatsappBlockSender(
-  args: Record<string, unknown>,
-  _context: ToolExecutionContext,
-): Promise<ToolResult> {
-  return runTool('block sender', async () => {
-    const resolved = requireSessionService();
-    if ("error" in resolved) return resolved.error;
-
-    const jidResult = requireString(args, 'jid');
-    if (typeof jidResult !== 'string') return jidResult;
-    const jid = jidResult;
-
-    resolved.blockSender(jid);
-    return {
-      success: true,
-      output: `Sender ${jid} added to the WhatsApp blocklist. The agent will silently drop all messages from this sender — no auto-reply.`,
-    };
-  });
-}

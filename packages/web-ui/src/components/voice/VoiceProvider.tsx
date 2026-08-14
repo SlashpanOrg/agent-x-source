@@ -213,8 +213,8 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
     setVoiceConfig(cfg);
     // Wake word is an active voice feature, so treat voice as enabled if either
     // the master switch or the wake-word switch is on.
-    setVoiceEnabled(Boolean(cfg.enabled) || Boolean(cfg.wakeWord?.enabled));
-    setWakeWordEnabled(Boolean(cfg.wakeWord?.enabled));
+    setVoiceEnabled(Boolean(cfg.enabled) || (cfg.engine !== 'realtime_xai' && Boolean(cfg.wakeWord?.enabled)));
+    setWakeWordEnabled(cfg.engine !== 'realtime_xai' && Boolean(cfg.wakeWord?.enabled));
   }, []);
 
   const loadVoiceState = useCallback(async () => {
@@ -226,10 +226,9 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
         personaApi.get().catch(() => ({} as Record<string, never>)),
       ]);
       setVoiceConfig(cfg);
-      // Wake word is an active voice feature, so treat voice as enabled if either
-      // the master switch or the wake-word switch is on.
-      setVoiceEnabled(Boolean(cfg.enabled) || Boolean(cfg.wakeWord?.enabled));
-      setWakeWordEnabled(Boolean(cfg.wakeWord?.enabled));
+      const wakeOn = cfg.engine !== 'realtime_xai' && Boolean(cfg.wakeWord?.enabled);
+      setVoiceEnabled(Boolean(cfg.enabled) || wakeOn);
+      setWakeWordEnabled(wakeOn);
       const personaName = typeof persona?.name === 'string' ? persona.name : null;
       const customPhrase = cfg.wakeWord?.phrase?.trim() ? cfg.wakeWord.phrase : null;
       setWakePhrase(resolveWakePhrase(customPhrase ?? personaName));

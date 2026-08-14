@@ -107,6 +107,31 @@ export function toNeutralJid(jid: string, resolvePhone?: (lid: string) => string
   }
 }
 
+/**
+ * Convert a neutral (`@c.us`) or mixed JID into the dialect Baileys' socket
+ * expects. Baileys `isJidUser()` is `@s.whatsapp.net` only — sending `@c.us`
+ * returns a local WAMessage (so we persist it) but WhatsApp never delivers it.
+ */
+export function toBaileysJid(jid: string): string {
+  const parsed = parseWaId(jid);
+  switch (parsed.kind) {
+    case 'user':
+      return `${parsed.id}@s.whatsapp.net`;
+    case 'lid':
+      return `${parsed.id}@lid`;
+    case 'group':
+      return `${parsed.id}@g.us`;
+    case 'status':
+      return 'status@broadcast';
+    case 'newsletter':
+      return `${parsed.id}@newsletter`;
+    case 'broadcast':
+      return `${parsed.id}@broadcast`;
+    default:
+      return jid;
+  }
+}
+
 export type ChatKind = 'individual' | 'group' | 'channel' | 'status' | 'broadcast' | 'unknown';
 
 export function chatKind(jid: string): ChatKind {

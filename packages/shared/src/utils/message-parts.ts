@@ -2,6 +2,8 @@ import { stripToolNoise } from './text-sanitize.js';
 import { appendStreamText, repairStreamTextGlitches } from './stream-text.js';
 import { attachDeepSearchPartsFromTools } from './deep-search-parts.js';
 import { attachChartPartsFromTools } from './chart-parts.js';
+import { attachVisualPartsFromTools } from './visual-parts.js';
+import type { VisualItem } from '../types/visual.js';
 import type { StorableMessage } from '../types/storage.js';
 import {
   parseResponseDocument,
@@ -25,7 +27,7 @@ import type { DeepSearchProgress, DeepSearchResultBundle } from '../types/deep-s
 import type { PermissionOutcomeRecord } from '../types/permission-outcome.js';
 
 export interface MessagePart extends Record<string, unknown> {
-  type: 'text' | 'tool' | 'subagent' | 'questionnaire' | 'crew_roster_picker' | 'deep_search' | 'chart' | 'thinking' | 'permission' | 'response_document';
+  type: 'text' | 'tool' | 'subagent' | 'questionnaire' | 'crew_roster_picker' | 'deep_search' | 'chart' | 'thinking' | 'permission' | 'response_document' | 'visual';
   id: string;
   content?: string;
   questionnaire?: QuestionnaireRecord;
@@ -34,6 +36,8 @@ export interface MessagePart extends Record<string, unknown> {
   permission?: PermissionOutcomeRecord;
   /** Canonical ChartSpec JSON string for structured chart parts. */
   chartJson?: string;
+  /** Shared visual stage item (image / video / document / url). */
+  visual?: VisualItem;
   /** Validated, renderer-safe rich final response document. */
   responseDocument?: ResponseDocumentV1;
   /** Canonical portable fallback used for invalid versions and export. */
@@ -770,6 +774,7 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
       if (p.type === 'crew_roster_picker' && p.crewRosterPicker) return p;
       if (p.type === 'deep_search' && p.deepSearch) return p;
       if (p.type === 'chart' && p.chartJson) return p;
+      if (p.type === 'visual' && p.visual) return p;
       if (p.type === 'response_document') {
         const parsed = parseResponseDocument(p.responseDocument);
         if (parsed.ok) {
@@ -791,7 +796,7 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
     if (!shouldRebuildStoredParts(content, mapped, toolCalls) && !missingThinkingChronology) {
       return withThinkingAndSubAgents(msg, sessionParts, {
         content,
-        parts: attachChartPartsFromTools(attachDeepSearchPartsFromTools(mapped, toolCalls), toolCalls),
+        parts: attachVisualPartsFromTools(attachChartPartsFromTools(attachDeepSearchPartsFromTools(mapped, toolCalls), toolCalls), toolCalls),
         toolCalls,
       });
     }
@@ -807,7 +812,7 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
     ) {
       return withThinkingAndSubAgents(msg, sessionParts, {
         content,
-        parts: attachChartPartsFromTools(attachDeepSearchPartsFromTools(mapped, toolCalls), toolCalls),
+        parts: attachVisualPartsFromTools(attachChartPartsFromTools(attachDeepSearchPartsFromTools(mapped, toolCalls), toolCalls), toolCalls),
         toolCalls,
       });
     }
@@ -823,7 +828,7 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
     if (parts.length > 0 && !shouldRebuildStoredParts(content, parts, effectiveTools)) {
       return withThinkingAndSubAgents(msg, sessionParts, {
         content,
-        parts: attachChartPartsFromTools(attachDeepSearchPartsFromTools(parts, effectiveTools), effectiveTools),
+        parts: attachVisualPartsFromTools(attachChartPartsFromTools(attachDeepSearchPartsFromTools(parts, effectiveTools), effectiveTools), effectiveTools),
         toolCalls: effectiveTools,
       });
     }
@@ -838,7 +843,7 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
     ) {
       return withThinkingAndSubAgents(msg, sessionParts, {
         content,
-        parts: attachChartPartsFromTools(attachDeepSearchPartsFromTools(parts, effectiveTools), effectiveTools),
+        parts: attachVisualPartsFromTools(attachChartPartsFromTools(attachDeepSearchPartsFromTools(parts, effectiveTools), effectiveTools), effectiveTools),
         toolCalls: effectiveTools,
       });
     }
@@ -849,7 +854,7 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
     return withThinkingAndSubAgents(msg, sessionParts, {
       content,
       parts: parts.length > 0
-        ? attachChartPartsFromTools(attachDeepSearchPartsFromTools(parts, toolCalls), toolCalls)
+        ? attachVisualPartsFromTools(attachChartPartsFromTools(attachDeepSearchPartsFromTools(parts, toolCalls), toolCalls), toolCalls)
         : undefined,
       toolCalls,
     });

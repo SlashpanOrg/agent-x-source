@@ -11,9 +11,12 @@ export {
   whatsappStopSession,
   whatsappUnlinkSession,
   whatsappRequestPairingCode,
-  whatsappAllowSender,
-  whatsappBlockSender,
 } from './session-tools.js';
+export {
+  whatsappStandingOrderList,
+  whatsappStandingOrderUpsert,
+  whatsappStandingOrderRevoke,
+} from './standing-order-tools.js';
 
 // Messaging tools (Phase 6.2)
 export {
@@ -50,6 +53,9 @@ export {
   whatsappListContacts,
   whatsappGetContact,
   whatsappGetProfilePicture,
+  whatsappResolveContact,
+  whatsappRememberContactAlias,
+  whatsappSyncContacts,
 } from './contact-tools.js';
 
 // Group tools (Phase 6.5)

@@ -10,6 +10,7 @@ import type { WAMessage, proto } from '@whiskeysockets/baileys';
 import { getContentType } from '@whiskeysockets/baileys';
 import type { WhatsAppIncomingMessage, WhatsAppMessageType } from './IWhatsAppEngine.js';
 import { toNeutralJid, isLidJid } from '../identity/wa-id.js';
+import { waUnixTimestamp } from '../wa-timestamp.js';
 
 /** Baileys' `getContentType()` key -> our neutral vocabulary. */
 const TYPE_MAP: Partial<Record<string, WhatsAppMessageType>> = {
@@ -37,6 +38,19 @@ const TYPE_MAP: Partial<Record<string, WhatsAppMessageType>> = {
 
 function resolveAudioType(msg: proto.IMessage): WhatsAppMessageType {
   return msg.audioMessage?.ptt ? 'voice' : 'audio';
+}
+
+/** Unwrap ephemeral / view-once / document-with-caption envelopes. */
+export function unwrapBaileysMessage(msg: proto.IMessage | null | undefined): proto.IMessage {
+  if (!msg) return {};
+  const inner =
+    msg.ephemeralMessage?.message
+    ?? msg.viewOnceMessage?.message
+    ?? msg.viewOnceMessageV2?.message
+    ?? msg.viewOnceMessageV2Extension?.message
+    ?? msg.documentWithCaptionMessage?.message
+    ?? msg.editedMessage?.message;
+  return inner ? unwrapBaileysMessage(inner) : msg;
 }
 
 /** Best-effort display text extraction across the many WhatsApp Business "interactive" shapes. */
@@ -91,7 +105,7 @@ export function mapBaileysMessage(
   meJid: string,
   resolvedMedia?: BaileysMediaResolution,
 ): WhatsAppIncomingMessage {
-  const msg = info.message ?? {};
+  const msg = unwrapBaileysMessage(info.message);
   const contentType = getContentType(msg);
   const rawFrom = info.key.remoteJid ?? '';
   const rawAuthor = info.key.participant ?? info.participant ?? undefined;
@@ -113,8 +127,7 @@ export function mapBaileysMessage(
     }
     : undefined;
 
-  const timestampRaw = info.messageTimestamp;
-  const timestamp = typeof timestampRaw === 'number' ? timestampRaw : Number(timestampRaw ?? 0);
+  const timestamp = waUnixTimestamp(info.messageTimestamp);
 
   return {
     id: info.key.id ?? '',

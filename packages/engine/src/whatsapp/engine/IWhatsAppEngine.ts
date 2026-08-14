@@ -66,6 +66,8 @@ export interface WhatsAppIncomingMessage {
     fileName?: string;
     caption?: string;
   };
+  /** Set after inbound persist when media was stored in the attachment service. */
+  attachmentId?: string;
   location?: {
     latitude: number;
     longitude: number;
@@ -101,14 +103,22 @@ export interface WhatsAppContactContent {
 
 /** A contact entry from the engine's contact store. */
 export interface WhatsAppContactEntry {
-  /** JID (e.g. 1234567890@s.whatsapp.net) */
+  /** Neutral JID when possible (`phone@c.us`); may be `@lid` if phone unknown. */
   jid: string;
-  /** Phone number in E.164-ish form (without +) */
+  /** Raw engine id (Baileys `@s.whatsapp.net` / `@lid`, etc.). */
+  rawJid?: string;
+  /** Phone digits (no +), when known */
   phoneNumber?: string;
-  /** Name the user saved for this contact */
+  /** Best display name (saved ?? notify ?? business) */
   name?: string;
+  /** Name the owner saved in their address book */
+  savedName?: string;
   /** Name the contact set for themselves on WhatsApp */
   notify?: string;
+  /** WhatsApp Business verified / business name */
+  businessName?: string;
+  /** WhatsApp username, when provided */
+  username?: string;
   /** Profile picture URL, if available */
   imgUrl?: string | null;
   /** About/status text, if available */
@@ -191,6 +201,8 @@ export interface WhatsAppEngineCallbacks {
   onCallReceived?: (call: WhatsAppCallEvent) => void;
   onDisconnected?: (reason: string) => void;
   onError?: (error: Error) => void;
+  /** Address-book / profile-name updates. Session service indexes these. */
+  onContactsChanged?: (contacts: WhatsAppContactEntry[]) => void;
 }
 
 /**
@@ -219,8 +231,17 @@ export interface IWhatsAppEngine {
   /** Graceful disconnect — engine may be reused/reinitialized afterwards. */
   disconnect(): Promise<void>;
 
-  /** Hard kill for a wedged engine — no guarantee of clean protocol shutdown. */
+  /** Hard kill for a wedged engine — local teardown only. Must NOT logout/unlink the phone. */
   forceDestroy(): Promise<void>;
+
+  /**
+   * Revoke this device on WhatsApp's servers (like logging out of WhatsApp Web).
+   * Only the owner's explicit unlink should call this.
+   */
+  logoutFromServer?(): Promise<void>;
+
+  /** Neutral JIDs for the linked handset (phone@c.us and/or lid). Used for self-chat. */
+  getLinkedUserJids?(): string[];
 
   getStatus(): EngineStatus;
 
@@ -235,7 +256,7 @@ export interface IWhatsAppEngine {
   supportsCapability(capability: EngineCapability): boolean;
 
   // --- Messaging -----------------------------------------------------------
-  sendText(chatId: string, text: string, opts?: { mentions?: string[]; quotedMessageId?: string }): Promise<WhatsAppSendResult>;
+  sendText(chatId: string, text: string, opts?: { mentions?: string[]; quotedMessageId?: string; quotedFromMe?: boolean }): Promise<WhatsAppSendResult>;
   sendImage(chatId: string, media: { data: string; mimetype: string; caption?: string }): Promise<WhatsAppSendResult>;
   sendVideo(chatId: string, media: { data: string; mimetype: string; caption?: string }): Promise<WhatsAppSendResult>;
   sendAudio(chatId: string, media: { data: string; mimetype: string; ptt?: boolean }): Promise<WhatsAppSendResult>;
@@ -246,7 +267,12 @@ export interface IWhatsAppEngine {
   sendSticker(chatId: string, media: { data: string; mimetype: string }): Promise<WhatsAppSendResult>;
   reply(chatId: string, quotedMessageId: string, text: string): Promise<WhatsAppSendResult>;
   forwardMessage(chatId: string, sourceChatId: string, messageId: string): Promise<WhatsAppSendResult>;
-  react(chatId: string, messageId: string, emoji: string | null): Promise<void>;
+  react(chatId: string, messageId: string, emoji: string | null, opts?: { fromMe?: boolean }): Promise<void>;
+  /**
+   * Show or clear the chat composing indicator. WhatsApp expires this after a
+   * few seconds — callers refresh it while a long turn is running.
+   */
+  setTyping?(chatId: string, typing: boolean): Promise<void>;
   editMessage(chatId: string, messageId: string, newText: string): Promise<void>;
   deleteMessage(chatId: string, messageId: string, forEveryone: boolean): Promise<void>;
 

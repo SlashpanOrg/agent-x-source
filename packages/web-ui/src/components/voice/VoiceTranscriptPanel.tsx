@@ -5,6 +5,7 @@ import CircularProgress from '@mui/material/CircularProgress';
 import { colors, alphaColor, MONO } from '../../theme';
 import { sessions } from '../../api';
 import { sanitizeVoiceDisplayText } from '../../voice/sanitize-display-text';
+import { LastShownChip } from '../../visual/LastShownChip';
 import { parseCallDivider, readCallDividerMeta } from '@agentx/shared/browser';
 import type { ChatMessage } from '../../api';
 
@@ -276,15 +277,18 @@ export function VoiceTranscriptPanel({
         py: 0.55,
         borderBottom: `1px solid ${colors.border.subtle}`,
       }}>
-        <Typography sx={{
-          fontSize: '0.52rem',
-          fontFamily: MONO,
-          letterSpacing: '1.2px',
-          color: colors.text.dim,
-          textTransform: 'uppercase',
-        }}>
-          Transcript
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+          <Typography sx={{
+            fontSize: '0.52rem',
+            fontFamily: MONO,
+            letterSpacing: '1.2px',
+            color: colors.text.dim,
+            textTransform: 'uppercase',
+          }}>
+            Transcript
+          </Typography>
+          <LastShownChip />
+        </Box>
         {detachedRef.current && (
           <Box
             component="button"

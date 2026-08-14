@@ -14,6 +14,7 @@ import DownloadIcon from '@mui/icons-material/Download';
 import type { HostConfig } from '@agentx/shared/browser';
 import { defaultHostConfig, mergeHostConfig } from '@agentx/shared/browser';
 import {
+  config,
   hostApi,
   type HostStatusResponse,
   type TunnelProviderCatalogEntry,
@@ -332,7 +333,12 @@ function NgrokTunnelCard(props: {
 }) {
   const { entry, cfg, status, busy, drafts, setDraft, clearDrafts, patch, run } = props;
   const creds = cfg.tunnelProviders?.[entry.id]?.credentials ?? {};
-  const tokenConfigured = Boolean(creds.authTokenConfigured || creds.authToken?.trim());
+  const statusCreds = status?.config?.tunnelProviders?.[entry.id]?.credentials ?? {};
+  const tokenConfigured = Boolean(
+    creds.authTokenConfigured ||
+      creds.authToken?.trim() ||
+      statusCreds.authTokenConfigured,
+  );
   const tunnelActive = status?.tunnel.state === 'active';
   const tokenDraft = drafts.authToken ?? '';
 
@@ -344,7 +350,7 @@ function NgrokTunnelCard(props: {
       if (!result.ok) {
         throw new Error(result.message ?? 'ngrok rejected this authtoken');
       }
-      patch({
+      const nextHost = {
         provider: entry.id,
         tunnelProviders: {
           ...cfg.tunnelProviders,
@@ -353,10 +359,14 @@ function NgrokTunnelCard(props: {
             credentials: {
               ...cfg.tunnelProviders?.[entry.id]?.credentials,
               authToken: tokenDraft.trim(),
+              authTokenConfigured: true,
             },
           },
         },
-      });
+      };
+      patch(nextHost);
+      // Autosave is debounced; persist immediately so a hard refresh keeps Enable/Disable.
+      await config.update({ host: mergeHostSettingsConfig({ ...cfg, ...nextHost }) });
       clearDrafts();
     });
 

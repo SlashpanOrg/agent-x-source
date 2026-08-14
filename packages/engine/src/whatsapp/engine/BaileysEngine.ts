@@ -43,8 +43,9 @@ import {
   createWhatsAppAuthStores,
 } from '../WhatsAppStore.js';
 import { LidMappingStore } from '../identity/LidMappingStore.js';
-import { toNeutralJid, phoneFromNeutralJid } from '../identity/wa-id.js';
-import { mapBaileysMessage, extractLidPairFromKey } from './baileys-message-mapper.js';
+import { parseWaId, phoneFromNeutralJid, toNeutralJid, toBaileysJid } from '../identity/wa-id.js';
+import { mapBaileysMessage, extractLidPairFromKey, unwrapBaileysMessage } from './baileys-message-mapper.js';
+import { waUnixTimestamp } from '../wa-timestamp.js';
 import { EngineStatus } from './IWhatsAppEngine.js';
 import type {
   IWhatsAppEngine,
@@ -78,6 +79,29 @@ const DEFAULT_RECONNECT: ReconnectConfig = {
 
 /** Inbound media download cap (bytes). Larger media is surfaced as `omitted`. */
 const DEFAULT_INBOUND_MEDIA_CAP_BYTES = 16 * 1024 * 1024; // 16 MiB
+
+const DOWNLOADABLE_MEDIA_TYPES = new Set([
+  'imageMessage',
+  'videoMessage',
+  'audioMessage',
+  'documentMessage',
+  'documentWithCaptionMessage',
+  'stickerMessage',
+]);
+
+/** Protocol / sync stubs — not chat inbound and not media. */
+const SKIP_INBOUND_CONTENT_TYPES = new Set([
+  'protocolMessage',
+  'senderKeyDistributionMessage',
+  'messageContextInfo',
+  'reactionMessage',
+  'encReactionMessage',
+  'associatedChildMessage',
+]);
+
+function isDownloadableMediaType(contentType: string | undefined): contentType is string {
+  return Boolean(contentType && DOWNLOADABLE_MEDIA_TYPES.has(contentType));
+}
 
 /** Map Baileys' `proto.WebMessageInfo.Status` → our neutral ack status. */
 function ackStatusFromWaStatus(status: proto.WebMessageInfo.Status | null | undefined): WhatsAppMessageStatus {
@@ -139,6 +163,7 @@ export class BaileysEngine implements IWhatsAppEngine {
 
   private currentQr: string | null = null;
   private meJid = '';
+  private meJids: string[] = [];
 
   /** In-memory contact store, populated from Baileys events. */
   private contacts = new Map<string, import('@whiskeysockets/baileys').Contact>();
@@ -245,11 +270,8 @@ export class BaileysEngine implements IWhatsAppEngine {
     this.clearReconnectTimer();
     const sock = this.sock;
     if (sock) {
-      try {
-        await sock.logout('forceDestroy');
-      } catch {
-        // ignore — force-kill path
-      }
+      // Local teardown only — never logout here. logout() revokes the device
+      // on the phone (like signing out of WhatsApp Web). That is unlink(), not reconnect.
       try {
         await sock.end(undefined);
       } catch {
@@ -263,6 +285,20 @@ export class BaileysEngine implements IWhatsAppEngine {
     this.reconnectAttempts = 0;
     this.contacts.clear();
     this.setStatus(EngineStatus.DISCONNECTED);
+  }
+
+  async logoutFromServer(): Promise<void> {
+    const sock = this.sock;
+    if (!sock) return;
+    try {
+      await sock.logout('owner-unlink');
+    } catch {
+      // already closed / already logged out
+    }
+  }
+
+  getLinkedUserJids(): string[] {
+    return [...this.meJids];
   }
 
   getStatus(): EngineStatus {
@@ -309,19 +345,26 @@ export class BaileysEngine implements IWhatsAppEngine {
 
   // ─── Messaging ──────────────────────────────────────────────────────────
 
-  async sendText(chatId: string, text: string, opts?: { mentions?: string[]; quotedMessageId?: string }): Promise<WhatsAppSendResult> {
+  private toSendJid(chatId: string): string {
+    return toBaileysJid(chatId);
+  }
+
+  async sendText(chatId: string, text: string, opts?: { mentions?: string[]; quotedMessageId?: string; quotedFromMe?: boolean }): Promise<WhatsAppSendResult> {
     const sock = this.requireSocket();
-    const quoted = opts?.quotedMessageId ? await this.fetchMessageForQuote(opts.quotedMessageId, chatId) : undefined;
-    const sent = await sock.sendMessage(chatId, {
+    const jid = this.toSendJid(chatId);
+    const quoted = opts?.quotedMessageId
+      ? await this.fetchMessageForQuote(opts.quotedMessageId, chatId, opts.quotedFromMe)
+      : undefined;
+    const sent = await sock.sendMessage(jid, {
       text,
-      mentions: opts?.mentions,
+      mentions: opts?.mentions?.map((m) => toBaileysJid(m)),
     }, { quoted });
     return this.toSendResult(sent);
   }
 
   async sendImage(chatId: string, media: { data: string; mimetype: string; caption?: string }): Promise<WhatsAppSendResult> {
     const sock = this.requireSocket();
-    const sent = await sock.sendMessage(chatId, {
+    const sent = await sock.sendMessage(this.toSendJid(chatId), {
       image: Buffer.from(media.data, 'base64'),
       mimetype: media.mimetype,
       caption: media.caption,
@@ -331,7 +374,7 @@ export class BaileysEngine implements IWhatsAppEngine {
 
   async sendVideo(chatId: string, media: { data: string; mimetype: string; caption?: string }): Promise<WhatsAppSendResult> {
     const sock = this.requireSocket();
-    const sent = await sock.sendMessage(chatId, {
+    const sent = await sock.sendMessage(this.toSendJid(chatId), {
       video: Buffer.from(media.data, 'base64'),
       mimetype: media.mimetype,
       caption: media.caption,
@@ -341,7 +384,7 @@ export class BaileysEngine implements IWhatsAppEngine {
 
   async sendAudio(chatId: string, media: { data: string; mimetype: string; ptt?: boolean }): Promise<WhatsAppSendResult> {
     const sock = this.requireSocket();
-    const sent = await sock.sendMessage(chatId, {
+    const sent = await sock.sendMessage(this.toSendJid(chatId), {
       audio: Buffer.from(media.data, 'base64'),
       mimetype: media.mimetype,
       ptt: media.ptt ?? false,
@@ -351,7 +394,7 @@ export class BaileysEngine implements IWhatsAppEngine {
 
   async sendDocument(chatId: string, media: { data: string; mimetype: string; fileName: string; caption?: string }): Promise<WhatsAppSendResult> {
     const sock = this.requireSocket();
-    const sent = await sock.sendMessage(chatId, {
+    const sent = await sock.sendMessage(this.toSendJid(chatId), {
       document: Buffer.from(media.data, 'base64'),
       mimetype: media.mimetype,
       fileName: media.fileName,
@@ -362,7 +405,7 @@ export class BaileysEngine implements IWhatsAppEngine {
 
   async sendLocation(chatId: string, location: { latitude: number; longitude: number; name?: string; address?: string }): Promise<WhatsAppSendResult> {
     const sock = this.requireSocket();
-    const sent = await sock.sendMessage(chatId, {
+    const sent = await sock.sendMessage(this.toSendJid(chatId), {
       location: {
         degreesLatitude: location.latitude,
         degreesLongitude: location.longitude,
@@ -376,7 +419,7 @@ export class BaileysEngine implements IWhatsAppEngine {
   async sendContact(chatId: string, contact: { displayName: string; phone: string; organization?: string }): Promise<WhatsAppSendResult> {
     const sock = this.requireSocket();
     const vcard = buildVCard(contact);
-    const sent = await sock.sendMessage(chatId, {
+    const sent = await sock.sendMessage(this.toSendJid(chatId), {
       contacts: {
         displayName: contact.displayName,
         contacts: [{ vcard }],
@@ -387,7 +430,7 @@ export class BaileysEngine implements IWhatsAppEngine {
 
   async sendPoll(chatId: string, question: string, options: string[], opts?: { selectableCount?: number }): Promise<WhatsAppSendResult> {
     const sock = this.requireSocket();
-    const sent = await sock.sendMessage(chatId, {
+    const sent = await sock.sendMessage(this.toSendJid(chatId), {
       poll: {
         name: question,
         values: options,
@@ -400,7 +443,7 @@ export class BaileysEngine implements IWhatsAppEngine {
 
   async sendSticker(chatId: string, media: { data: string; mimetype: string }): Promise<WhatsAppSendResult> {
     const sock = this.requireSocket();
-    const sent = await sock.sendMessage(chatId, {
+    const sent = await sock.sendMessage(this.toSendJid(chatId), {
       sticker: Buffer.from(media.data, 'base64'),
       mimetype: media.mimetype,
     });
@@ -410,7 +453,7 @@ export class BaileysEngine implements IWhatsAppEngine {
   async reply(chatId: string, quotedMessageId: string, text: string): Promise<WhatsAppSendResult> {
     const sock = this.requireSocket();
     const quoted = await this.fetchMessageForQuote(quotedMessageId, chatId);
-    const sent = await sock.sendMessage(chatId, { text }, { quoted });
+    const sent = await sock.sendMessage(this.toSendJid(chatId), { text }, { quoted });
     return this.toSendResult(sent);
   }
 
@@ -420,32 +463,36 @@ export class BaileysEngine implements IWhatsAppEngine {
     if (!source) {
       throw new Error(`BaileysEngine: cannot forward — source message ${messageId} not found in ${sourceChatId}`);
     }
-    const sent = await sock.sendMessage(chatId, { forward: source, force: false });
+    const sent = await sock.sendMessage(this.toSendJid(chatId), { forward: source, force: false });
     return this.toSendResult(sent);
   }
 
-  async react(chatId: string, messageId: string, emoji: string | null): Promise<void> {
+  async react(chatId: string, messageId: string, emoji: string | null, opts?: { fromMe?: boolean }): Promise<void> {
     const sock = this.requireSocket();
-    await sock.sendMessage(chatId, {
+    await sock.sendMessage(this.toSendJid(chatId), {
       react: {
         text: emoji ?? '',
-        key: { remoteJid: chatId, id: messageId, fromMe: false },
+        key: { remoteJid: this.toSendJid(chatId), id: messageId, fromMe: opts?.fromMe ?? false },
       },
     });
   }
 
+  async setTyping(chatId: string, typing: boolean): Promise<void> {
+    await this.requireSocket().sendPresenceUpdate(typing ? 'composing' : 'paused', this.toSendJid(chatId));
+  }
+
   async editMessage(chatId: string, messageId: string, newText: string): Promise<void> {
     const sock = this.requireSocket();
-    await sock.sendMessage(chatId, {
+    await sock.sendMessage(this.toSendJid(chatId), {
       text: newText,
-      edit: { remoteJid: chatId, id: messageId, fromMe: true },
+      edit: { remoteJid: this.toSendJid(chatId), id: messageId, fromMe: true },
     });
   }
 
   async deleteMessage(chatId: string, messageId: string, forEveryone: boolean): Promise<void> {
     const sock = this.requireSocket();
-    await sock.sendMessage(chatId, {
-      delete: { remoteJid: chatId, id: messageId, fromMe: true },
+    await sock.sendMessage(this.toSendJid(chatId), {
+      delete: { remoteJid: this.toSendJid(chatId), id: messageId, fromMe: true },
     });
     if (!forEveryone) {
       // Baileys' `delete` is always "for everyone" on multi-device; a
@@ -469,12 +516,12 @@ export class BaileysEngine implements IWhatsAppEngine {
 
   async blockContact(jid: string): Promise<void> {
     const sock = this.requireSocket();
-    await sock.updateBlockStatus(jid, 'block');
+    await sock.updateBlockStatus(this.toSendJid(jid), 'block');
   }
 
   async unblockContact(jid: string): Promise<void> {
     const sock = this.requireSocket();
-    await sock.updateBlockStatus(jid, 'unblock');
+    await sock.updateBlockStatus(this.toSendJid(jid), 'unblock');
   }
 
   // ─── Calls ──────────────────────────────────────────────────────────────
@@ -488,7 +535,7 @@ export class BaileysEngine implements IWhatsAppEngine {
       getLogger().warn('WHATSAPP', `rejectCall: no recent call on record for callId=${callId}`);
       return;
     }
-    await sock.rejectCall(callId, from);
+    await sock.rejectCall(callId, this.toSendJid(from));
   }
 
   private lastCallFrom: string | null = null;
@@ -613,6 +660,10 @@ export class BaileysEngine implements IWhatsAppEngine {
       this.currentQr = null;
       const me = this.sock?.user;
       this.meJid = me?.id ?? '';
+      this.meJids = [];
+      if (me?.id) this.meJids.push(toNeutralJid(me.id));
+      const lid = (me as { lid?: string } | undefined)?.lid;
+      if (lid) this.meJids.push(toNeutralJid(lid));
       const phoneNumber = me?.id ? phoneFromNeutralJid(toNeutralJid(me.id)) : undefined;
       this.setStatus(EngineStatus.READY, { phoneNumber, pushName: me?.name ?? me?.notify });
       this.reconnectAttempts = 0;
@@ -632,9 +683,10 @@ export class BaileysEngine implements IWhatsAppEngine {
       const isLoggedOut = code === DisconnectReason.loggedOut;
 
       if (isLoggedOut) {
-        // Hard stop: credentials are invalid. Purge them so a fresh QR can be
-        // generated on the next initialize().
+        // Phone revoked this linked device (WhatsApp → Linked devices → log out).
+        // Drop stored auth so the next link() starts a new QR — do not reconnect.
         void this.credsStore.clear().catch(() => {});
+        void this.keyStore.clear().catch(() => {});
         this.intentionallyStopped = true;
         this.setStatus(EngineStatus.FAILED);
         this.callbacks.onDisconnected?.(`logged_out (${code})`);
@@ -672,7 +724,13 @@ export class BaileysEngine implements IWhatsAppEngine {
       }
 
       const me = this.meJid || this.sock?.user?.id || '';
-      const resolved = await this.resolveMedia(waMsg).catch(() => undefined);
+      const contentType = getContentType(unwrapBaileysMessage(waMsg.message));
+      if (contentType && SKIP_INBOUND_CONTENT_TYPES.has(contentType)) {
+        continue;
+      }
+      const resolved = isDownloadableMediaType(contentType)
+        ? await this.resolveMedia(waMsg).catch(() => undefined)
+        : undefined;
       const mapped = mapBaileysMessage(waMsg, me, resolved);
 
       // Resolve LID sender → phone if we now know it.
@@ -683,10 +741,15 @@ export class BaileysEngine implements IWhatsAppEngine {
         if (phone) mapped.senderPhone = phone;
       }
 
+      const selfChat = this.isLinkedSelfChat(mapped.chatId);
+      const hasInboundBody = Boolean(mapped.body?.trim()) || isDownloadableMediaType(contentType);
+      // "Message yourself" arrives as fromMe=true. Jarvis must see it as inbound.
+      if (selfChat && hasInboundBody) {
+        this.callbacks.onMessage?.(mapped);
+      }
       if (mapped.fromMe) {
-        // Our own outgoing message echoed back (e.g. sent from another device).
         this.callbacks.onMessageSent?.(mapped);
-      } else if (type === 'notify') {
+      } else if (type === 'notify' && !selfChat) {
         this.callbacks.onMessage?.(mapped);
       }
       // type === 'append' (history sync) is intentionally ignored — we disabled
@@ -802,28 +865,85 @@ export class BaileysEngine implements IWhatsAppEngine {
   // ─── Internal: contact store ───────────────────────────────────────────
 
   private handleContactsUpsert(contacts: BaileysEventMap['contacts.upsert']): void {
-    for (const c of contacts) {
-      this.contacts.set(c.id, { ...this.contacts.get(c.id), ...c });
-    }
+    this.mergeAndEmitContacts(contacts);
   }
 
   private handleContactsUpdate(updates: BaileysEventMap['contacts.update']): void {
-    for (const u of updates) {
-      if (!u.id) continue;
-      const existing = this.contacts.get(u.id);
-      if (existing) {
-        this.contacts.set(u.id, { ...existing, ...u });
-      } else {
-        this.contacts.set(u.id, u as import('@whiskeysockets/baileys').Contact);
-      }
-    }
+    this.mergeAndEmitContacts(updates);
   }
 
   private handleMessagingHistorySet(u: BaileysEventMap['messaging-history.set']): void {
-    // Initial history sync — bulk load contacts into the in-memory store.
-    for (const c of u.contacts) {
-      this.contacts.set(c.id, c);
+    this.mergeAndEmitContacts(u.contacts);
+  }
+
+  private mergeAndEmitContacts(updates: Array<{ id?: string } & Partial<import('@whiskeysockets/baileys').Contact>>): void {
+    const entries: WhatsAppContactEntry[] = [];
+    for (const u of updates) {
+      if (!u.id) continue;
+      const existing = this.contacts.get(u.id);
+      const merged = { ...existing, ...u } as import('@whiskeysockets/baileys').Contact;
+      this.contacts.set(u.id, merged);
+      const entry = this.toContactEntry(u.id, merged);
+      if (entry) entries.push(entry);
     }
+    if (entries.length > 0) this.callbacks.onContactsChanged?.(entries);
+  }
+
+  private resolveLidPhone = (lid: string): string | undefined => {
+    return this.lidStore.getCached(lid) ?? undefined;
+  };
+
+  private toContactEntry(jid: string, c: import('@whiskeysockets/baileys').Contact): WhatsAppContactEntry | null {
+    if (jid === this.meJid) return null;
+    if (jid.endsWith('@g.us') || jid.endsWith('@broadcast') || jid.includes('status@broadcast') || jid.endsWith('@newsletter')) {
+      return null;
+    }
+    const neutral = toNeutralJid(jid, this.resolveLidPhone);
+    const parsed = parseWaId(neutral);
+    if (parsed.kind !== 'user' && parsed.kind !== 'lid') return null;
+
+    const savedName = c.name?.trim() || undefined;
+    const notify = c.notify?.trim() || undefined;
+    const businessName = c.verifiedName?.trim() || undefined;
+    const username = c.username?.trim() || undefined;
+    const phoneFromPn = c.phoneNumber
+      ? (phoneFromNeutralJid(toNeutralJid(c.phoneNumber, this.resolveLidPhone)) ?? undefined)
+      : undefined;
+    const phoneNumber = phoneFromPn ?? phoneFromNeutralJid(neutral);
+    const display = savedName ?? notify ?? businessName ?? username;
+    if (!display && !phoneNumber) return null;
+
+    return {
+      jid: neutral,
+      rawJid: jid,
+      phoneNumber: phoneNumber || undefined,
+      name: display,
+      savedName,
+      notify,
+      businessName,
+      username,
+      imgUrl: typeof c.imgUrl === 'string' ? c.imgUrl : undefined,
+      status: c.status,
+    };
+  }
+
+  private findStoredContact(jid: string): import('@whiskeysockets/baileys').Contact | undefined {
+    const parsed = parseWaId(jid);
+    const keys = new Set<string>([jid, toNeutralJid(jid, this.resolveLidPhone)]);
+    if (parsed.kind === 'user') {
+      keys.add(`${parsed.id}@c.us`);
+      keys.add(`${parsed.id}@s.whatsapp.net`);
+    }
+    for (const key of keys) {
+      const hit = this.contacts.get(key);
+      if (hit) return hit;
+    }
+    if (parsed.kind === 'user') {
+      for (const [id, c] of this.contacts) {
+        if (id === parsed.id || id.startsWith(`${parsed.id}@`) || id.startsWith(`${parsed.id}:`)) return c;
+      }
+    }
+    return undefined;
   }
 
   // ─── IWhatsAppEngine: contacts ─────────────────────────────────────────
@@ -834,36 +954,25 @@ export class BaileysEngine implements IWhatsAppEngine {
 
     const entries: WhatsAppContactEntry[] = [];
     for (const [jid, c] of this.contacts) {
-      // Skip the user's own JID, group JIDs, and broadcast lists.
-      if (jid === this.meJid) continue;
-      if (jid.endsWith('@g.us') || jid.endsWith('@broadcast') || jid.endsWith('@status@broadcast')) continue;
-      if (jid.endsWith('@lid')) continue; // Skip LID-only entries (no phone)
-
-      const name = c.name ?? c.notify ?? c.verifiedName ?? undefined;
-      // Only include contacts that have some form of name (saved or WhatsApp profile).
-      if (!name && !c.phoneNumber) continue;
-
-      const phoneNumber = c.phoneNumber ?? phoneFromNeutralJid(toNeutralJid(jid));
-
+      const entry = this.toContactEntry(jid, c);
+      if (!entry) continue;
       if (search) {
-        const haystack = [name, phoneNumber, c.notify, c.username].filter(Boolean).join(' ').toLowerCase();
+        const haystack = [
+          entry.savedName,
+          entry.notify,
+          entry.businessName,
+          entry.username,
+          entry.phoneNumber,
+          entry.jid,
+        ].filter(Boolean).join(' ').toLowerCase();
         if (!haystack.includes(search)) continue;
       }
-
-      entries.push({
-        jid,
-        phoneNumber: phoneNumber || undefined,
-        name,
-        notify: c.notify,
-        imgUrl: c.imgUrl ?? undefined,
-        status: c.status,
-      });
+      entries.push(entry);
     }
 
-    // Sort by name (contacts with names first, then by phone number).
     entries.sort((a, b) => {
-      const an = a.name ?? a.notify ?? a.phoneNumber ?? '';
-      const bn = b.name ?? b.notify ?? b.phoneNumber ?? '';
+      const an = a.savedName ?? a.name ?? a.notify ?? a.phoneNumber ?? '';
+      const bn = b.savedName ?? b.name ?? b.notify ?? b.phoneNumber ?? '';
       return an.localeCompare(bn);
     });
 
@@ -871,11 +980,8 @@ export class BaileysEngine implements IWhatsAppEngine {
   }
 
   isSavedContact(jid: string): { saved: boolean; name?: string } {
-    const c = this.contacts.get(jid);
+    const c = this.findStoredContact(jid);
     // Baileys' Contact.name = "name of the contact, you have saved on your WA"
-    // If name is set, the user has this number saved in their phone address book.
-    // notify = WhatsApp profile name (not a saved contact).
-    // verifiedName = business account name (not a saved contact).
     if (c?.name) {
       return { saved: true, name: c.name };
     }
@@ -941,7 +1047,7 @@ export class BaileysEngine implements IWhatsAppEngine {
   async getProfilePicture(jid: string): Promise<{ url: string | null }> {
     const sock = this.requireSocket();
     try {
-      const url = await sock.profilePictureUrl(jid, 'image');
+      const url = await sock.profilePictureUrl(this.toSendJid(jid), 'image');
       return { url: url ?? null };
     } catch {
       // Privacy-restricted or no picture — return null rather than throwing.
@@ -953,7 +1059,7 @@ export class BaileysEngine implements IWhatsAppEngine {
 
   async createGroup(subject: string, participants: string[]): Promise<{ groupId: string }> {
     const sock = this.requireSocket();
-    const meta = await sock.groupCreate(subject, participants);
+    const meta = await sock.groupCreate(subject, participants.map((p) => toBaileysJid(p)));
     return { groupId: toNeutralJid(meta.id) };
   }
 
@@ -965,22 +1071,22 @@ export class BaileysEngine implements IWhatsAppEngine {
 
   async addParticipants(groupId: string, participants: string[]): Promise<void> {
     const sock = this.requireSocket();
-    await sock.groupParticipantsUpdate(groupId, participants, 'add');
+    await sock.groupParticipantsUpdate(groupId, participants.map((p) => toBaileysJid(p)), 'add');
   }
 
   async removeParticipants(groupId: string, participants: string[]): Promise<void> {
     const sock = this.requireSocket();
-    await sock.groupParticipantsUpdate(groupId, participants, 'remove');
+    await sock.groupParticipantsUpdate(groupId, participants.map((p) => toBaileysJid(p)), 'remove');
   }
 
   async promoteParticipant(groupId: string, participant: string): Promise<void> {
     const sock = this.requireSocket();
-    await sock.groupParticipantsUpdate(groupId, [participant], 'promote');
+    await sock.groupParticipantsUpdate(groupId, [toBaileysJid(participant)], 'promote');
   }
 
   async demoteParticipant(groupId: string, participant: string): Promise<void> {
     const sock = this.requireSocket();
-    await sock.groupParticipantsUpdate(groupId, [participant], 'demote');
+    await sock.groupParticipantsUpdate(groupId, [toBaileysJid(participant)], 'demote');
   }
 
   async setGroupSubject(groupId: string, subject: string): Promise<void> {
@@ -1155,13 +1261,20 @@ export class BaileysEngine implements IWhatsAppEngine {
    * oversize, returns an `omitted` media descriptor so the agent still knows a
    * media payload exists.
    */
+  private isLinkedSelfChat(chatId: string): boolean {
+    const n = toNeutralJid(chatId);
+    if (!n) return false;
+    if (this.meJids.includes(n)) return true;
+    return Boolean(this.meJid && toNeutralJid(this.meJid) === n);
+  }
+
   private async resolveMedia(waMsg: WAMessage): Promise<{ mimetype: string; data?: string; omitted?: boolean; sizeBytes?: number; fileName?: string; caption?: string } | undefined> {
     const sock = this.sock;
     if (!sock) return undefined;
-    const msg = waMsg.message;
-    if (!msg) return undefined;
+    const msg = unwrapBaileysMessage(waMsg.message);
+    if (!msg || Object.keys(msg).length === 0) return undefined;
     const contentType = getContentType(msg);
-    if (!contentType) return undefined;
+    if (!isDownloadableMediaType(contentType)) return undefined;
     const mediaMsg = (msg as Record<string, { mimetype?: string; fileName?: string; caption?: string; fileLength?: number | { toNumber(): number } } | undefined>)[contentType];
     if (!mediaMsg) return undefined;
     const mimetype = mediaMsg.mimetype ?? 'application/octet-stream';
@@ -1174,7 +1287,7 @@ export class BaileysEngine implements IWhatsAppEngine {
     }
 
     try {
-      const buf = await downloadMediaMessage(waMsg, 'buffer', {});
+      const buf = await downloadMediaMessage({ ...waMsg, message: msg }, 'buffer', {});
       if (buf.length > this.inboundMediaCapBytes) {
         return { mimetype, omitted: true, sizeBytes: buf.length, fileName: mediaMsg.fileName, caption: mediaMsg.caption };
       }
@@ -1203,10 +1316,18 @@ export class BaileysEngine implements IWhatsAppEngine {
     if (!sent || !sent.key.id) {
       throw new Error('BaileysEngine: sendMessage returned no message id');
     }
-    const ts = typeof sent.messageTimestamp === 'number'
-      ? sent.messageTimestamp
-      : Number(sent.messageTimestamp ?? Math.floor(Date.now() / 1000));
-    return { messageId: sent.key.id, timestamp: ts };
+    try {
+      const me = this.meJid || this.sock?.user?.id || '';
+      const mapped = mapBaileysMessage(sent, me);
+      this.callbacks.onMessageSent?.(mapped);
+      this.recordMessage(mapped);
+    } catch (err) {
+      getLogger().warn(
+        'WHATSAPP',
+        `Own-send persist emit failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { messageId: sent.key.id, timestamp: waUnixTimestamp(sent.messageTimestamp) };
   }
 
   /**
@@ -1215,9 +1336,9 @@ export class BaileysEngine implements IWhatsAppEngine {
    * We synthesize a minimal stub from the id — quoting works with just the key
    * for text replies in practice.
    */
-  private async fetchMessageForQuote(messageId: string, chatId: string): Promise<WAMessage | undefined> {
+  private async fetchMessageForQuote(messageId: string, chatId: string, fromMe = false): Promise<WAMessage | undefined> {
     return {
-      key: { remoteJid: chatId, id: messageId, fromMe: false },
+      key: { remoteJid: this.toSendJid(chatId), id: messageId, fromMe },
       message: undefined,
     } as unknown as WAMessage;
   }
@@ -1228,7 +1349,7 @@ export class BaileysEngine implements IWhatsAppEngine {
     // best-effort stub keyed only by id — if the protocol requires full
     // content, the agent-tool layer supplies it from its own store.
     return {
-      key: { remoteJid: chatId, id: messageId, fromMe: false },
+      key: { remoteJid: this.toSendJid(chatId), id: messageId, fromMe: false },
       message: undefined,
     } as unknown as WAMessage;
   }

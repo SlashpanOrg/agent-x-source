@@ -26,6 +26,7 @@ import type { TurnFeedbackRating } from '@agentx/shared/browser';
 import { DeepSearchMessageBlock } from './DeepSearchMessageBlock';
 import { formatVoiceTimingMs } from '../voice/timing';
 import { ChartBlock } from './ChartBlock';
+import { VisualInlineBlock } from '../visual/VisualInlineBlock';
 import { WorkflowEntryCard } from './WorkflowEntryCard';
 import { usePersonaName } from '../hooks/usePersonaName';
 import { InlineToolCall, type InlineToolData } from '../components/InlineToolCall';
@@ -251,6 +252,7 @@ function renderParts(
     if (p.type === 'thinking') return !!p.content?.trim();
     if (p.type === 'tool') return !!p.tool;
     if (p.type === 'chart') return !!p.chartJson;
+    if (p.type === 'visual') return !!p.visual;
     if (p.type === 'subagent') return !!p.agent;
     if (p.type === 'questionnaire') return !!p.questionnaire;
     if (p.type === 'permission') return !!p.permission;
@@ -372,6 +374,9 @@ function renderParts(
       case 'chart':
         if (!part.chartJson) return null;
         return <ChartBlock key={part.id} code={part.chartJson} language="chart" />;
+      case 'visual':
+        if (!part.visual) return null;
+        return <VisualInlineBlock key={part.id} item={part.visual} />;
       case 'response_document':
         if (!part.responseDocument) return null;
         return (
@@ -849,7 +854,7 @@ function propsEqual(prev: { message: UIMessage; loadingSteps?: Array<{ id: strin
   if (pm.turnFeedback?.rating !== nm.turnFeedback?.rating) return false;
   if (pm.voiceTimings?.totalMs !== nm.voiceTimings?.totalMs) return false;
   const isRenderedPart = (p: NonNullable<UIMessage['parts']>[number]) =>
-    p.type === 'text' || p.type === 'thinking' || p.type === 'chart' || p.type === 'questionnaire'
+    p.type === 'text' || p.type === 'thinking' || p.type === 'chart' || p.type === 'visual' || p.type === 'questionnaire'
     || p.type === 'crew_roster_picker' || p.type === 'subagent' || p.type === 'tool' || p.type === 'permission'
     || p.type === 'response_document';
   const prevParts = (pm.parts ?? []).filter(isRenderedPart);
@@ -863,6 +868,7 @@ function propsEqual(prev: { message: UIMessage; loadingSteps?: Array<{ id: strin
       if (pp.type === 'text' && pp.content !== np.content) return false;
       if (pp.type === 'thinking' && pp.content !== np.content) return false;
       if (pp.type === 'chart' && pp.chartJson !== np.chartJson) return false;
+      if (pp.type === 'visual' && pp.visual?.id !== np.visual?.id) return false;
       if (pp.type === 'questionnaire' && pp.questionnaire?.status !== np.questionnaire?.status) return false;
       if (pp.type === 'permission' && pp.permission?.decision !== np.permission?.decision) return false;
       if (pp.type === 'response_document') {

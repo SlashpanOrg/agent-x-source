@@ -52,6 +52,7 @@ function kindLabel(kind: NotificationRecord['kind']): string {
     case 'automation_scheduled': return 'Scheduled';
     case 'background_task_complete': return 'Background Task';
     case 'background_task_failed': return 'Background Failed';
+    case 'whatsapp_inbound': return 'WhatsApp';
     default: return kind;
   }
 }

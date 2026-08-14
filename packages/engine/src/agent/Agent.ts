@@ -136,6 +136,7 @@ import {
 } from './crew-auto-compose.js';
 import { CrewMissionOrchestrator, type CrewMissionOptions, type CrewMissionResult } from './CrewMissionOrchestrator.js';
 import { setCrewMissionDeps } from '../tools/builtin/spawn-crew-workers.js';
+import { setCustomCrewCreateAgent } from '../tools/builtin/create-custom-crew.js';
 import { isMissionInProgress } from './crew-mission-registry.js';
 import { evaluateCrewDelegation } from './crew-delegation-guard.js';
 import { ContextTracker } from './ContextTracker.js';
@@ -302,6 +303,16 @@ function isAffirmativeConsentAnswer(answer: string): boolean {
   const v = afterColon.toLowerCase();
   if (/^(no|nope|nah|cancel|deny|decline)\b/.test(v)) return false;
   return /^(yes|yeah|yep|y|sure|ok|okay|go ahead|proceed|do it|allow|approve)\b/.test(v);
+}
+
+/** Telegram/Discord numeric ids only. WhatsApp ids are alphanumeric and must not become NaN. */
+function toNullableBigintId(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
 }
 
 export class Agent {
@@ -663,6 +674,7 @@ export class Agent {
     if (!this._crewMissionOrchestrator) {
       this._crewMissionOrchestrator = new CrewMissionOrchestrator(this.eventBus);
       setCrewMissionDeps(this);
+      setCustomCrewCreateAgent(this);
     }
     return this._crewMissionOrchestrator;
   }
@@ -1245,6 +1257,7 @@ export class Agent {
     }
     this.toolExecutor?.setConfig(this.config);
     setToolRegistryInstance(this.toolRegistry ?? null);
+    setCustomCrewCreateAgent(this);
 
     this.sessionRunner = new SessionRunner({
       sessionId: this.sessionId,
@@ -1658,6 +1671,7 @@ export class Agent {
 
   setCrewManager(crewManager: CrewManager): void {
     this._crewManager = crewManager;
+    setCustomCrewCreateAgent(this);
   }
 
   get crew(): CrewManager {
@@ -1920,7 +1934,7 @@ export class Agent {
     const agentName = this.persona?.name ?? 'Agent-X';
     const defaultSystem = [
       `You are ${agentName} composing a short outbound Telegram message.`,
-      callsign ? `The user's name/callsign is "${callsign}".` : '',
+      callsign ? `If this message is to the owner, address them by callsign "${callsign}" — not a public honorific.` : '',
       'Reply with ONLY the message body — warm, concise, no markdown headers, no tool names, no meta commentary.',
     ].filter(Boolean).join(' ');
     const messages = [
@@ -2291,8 +2305,14 @@ export class Agent {
     }
     if (messagingChannelInbound && options?.sourceMessageId) {
       if (options?.sourceChannel) messageMetadata['channel'] = options.sourceChannel;
-      messageMetadata['platformMessageId'] = Number(options.sourceMessageId);
-      if (options?.channelId) messageMetadata['platformChatId'] = Number(options.channelId);
+      const platformMessageId = toNullableBigintId(options.sourceMessageId);
+      if (platformMessageId != null) messageMetadata['platformMessageId'] = platformMessageId;
+      else messageMetadata['sourceMessageId'] = String(options.sourceMessageId);
+      if (options?.channelId) {
+        const platformChatId = toNullableBigintId(options.channelId);
+        if (platformChatId != null) messageMetadata['platformChatId'] = platformChatId;
+        else messageMetadata['sourceChatId'] = String(options.channelId);
+      }
     }
 
     const userMessage: Message = {
@@ -2540,7 +2560,7 @@ export class Agent {
           try { identityBlock = this.persona?.name ?? ''; } catch { /* test env */ }
           fastPrompt = this.decisionEngine.buildFastReplyPrompt(identityBlock);
           const callsign = this.config.user?.callsign;
-          userNote = callsign ? `\nThe user's name is "${callsign}".` : '';
+          userNote = callsign ? `\nAddress the user by their callsign "${callsign}".` : '';
         }
         // The current user message was already pushed to history above — drop it
         // from the recent window so it isn't sent twice.
@@ -4082,6 +4102,7 @@ export class Agent {
       scopePath: this.scopePath,
       telegramConnected: this._telegramConnected,
       userCallsign: this.config.user?.callsign,
+      userConfig: this.config.user,
       getUserTimezone: () => this.getUserTimezone(),
       getUtcOffset: () => this.getUtcOffset(),
       crewOrchestrator: this.crewOrchestrator ? {

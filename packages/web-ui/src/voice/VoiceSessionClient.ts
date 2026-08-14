@@ -1,5 +1,5 @@
 import { syncAuthTokenFromSession } from '../api';
-import { collectClientSituation } from '../client-situation.js';
+import { peekCachedClientSituation } from '../client-situation.js';
 import {
   XAI_BARGE_IN_MIC_LEVEL,
   XAI_BARGE_IN_PLAYBACK_GRACE_MS,
@@ -13,6 +13,8 @@ import { VOICE_SAMPLE_RATE, mergeInt16Chunks } from './pcm.js';
 import { StreamingPlayback } from './playback.js';
 import { VOICE_CAPTURE_PROCESSOR_NAME, VOICE_CAPTURE_PROCESSOR_URL } from './audioWorkletProcessor.js';
 import { isVoiceOutputUnlocked, markVoiceOutputUnlocked } from './support.js';
+import { parseVisualItem } from '@agentx/shared/browser';
+import { closeVisualFromVoice, openVisualFromVoice } from '../visual/visual-stage-bridge';
 
 export const VOICE_WS_PATH = '/ws/voice';
 export const VOICE_CONNECT_SUPERSEDED = 'Voice connect superseded';
@@ -115,6 +117,8 @@ export class VoiceSessionClient {
   private duplexFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private skipPlayback = false;
   private pendingChunkMeta: { sampleRate: number } | null = null;
+  /** True while a WhatsApp/system announce is playing — do not barge-in or drop PCM. */
+  private systemPlayback = false;
   /** Duplex: true after `audio_end` until playback drains — signals server to resume mic. */
   private duplexAwaitingPlaybackEnd = false;
   private connectPromise: Promise<void> | null = null;
@@ -134,6 +138,8 @@ export class VoiceSessionClient {
   private duplexSpeechFramesAboveTrigger = 0;
   /** Timestamp when the assistant started speaking; used to ignore echo at the start. */
   private playbackStartAt = 0;
+  /** When true, mic frames are dropped so the voice engine hears silence. */
+  private micMuted = false;
 
   constructor(options: VoiceSessionClientOptions = {}) {
     this.events = options;
@@ -153,7 +159,7 @@ export class VoiceSessionClient {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
           this.ws.send(JSON.stringify({ type: 'playback_finished' }));
         }
-        // Now transition to listening — the server will resume the mic.
+        this.systemPlayback = false;
         this.setState('listening');
       }
     });
@@ -257,19 +263,17 @@ export class VoiceSessionClient {
 
       ws.onopen = () => {
         this.ws = ws;
-        void collectClientSituation().then((clientSituation) => {
-          ws.send(JSON.stringify({
-            type: 'session_start',
-            mode: this.mode,
-            sessionId: crypto.randomUUID(),
-            ...(this.voiceOnly ? { voiceOnly: true } : {}),
-            ...(!this.voiceOnly && this.chatSessionId ? { chatSessionId: this.chatSessionId } : {}),
-            ...(this.voiceOnly && this.conversationMode !== 'continue' ? { conversationMode: this.conversationMode } : {}),
-            ...(this.wakeWord ? { wakeWord: true } : {}),
-            ...(this.wakeWord && this.wakePhrase ? { wakePhrase: this.wakePhrase } : {}),
-            clientSituation,
-          }));
-        });
+        ws.send(JSON.stringify({
+          type: 'session_start',
+          mode: this.mode,
+          sessionId: crypto.randomUUID(),
+          ...(this.voiceOnly ? { voiceOnly: true } : {}),
+          ...(!this.voiceOnly && this.chatSessionId ? { chatSessionId: this.chatSessionId } : {}),
+          ...(this.voiceOnly && this.conversationMode !== 'continue' ? { conversationMode: this.conversationMode } : {}),
+          ...(this.wakeWord ? { wakeWord: true } : {}),
+          ...(this.wakeWord && this.wakePhrase ? { wakePhrase: this.wakePhrase } : {}),
+          clientSituation: peekCachedClientSituation(),
+        }));
       };
 
       ws.onmessage = (event) => {
@@ -356,7 +360,20 @@ export class VoiceSessionClient {
     this.duplexPendingChunks = [];
   }
 
+  setMicMuted(muted: boolean): void {
+    this.micMuted = muted;
+    if (muted) this.events.onAudioLevel?.(0);
+  }
+
+  isMicMuted(): boolean {
+    return this.micMuted;
+  }
+
   private onCapturePcm(pcm: Int16Array): void {
+    if (this.micMuted) {
+      this.events.onAudioLevel?.(0);
+      return;
+    }
     const levelActive = this.mode === 'duplex' || this.captureArmed;
     if (this.events.onAudioLevel && levelActive) {
       let sum = 0;
@@ -372,6 +389,7 @@ export class VoiceSessionClient {
       // playback so client-side VAD can detect user barge-in. Drop soft frames
       // so speaker bleed and ambient noise don't trigger a false interrupt.
       if (this.state === 'speaking') {
+        if (this.systemPlayback) return;
         // Ignore the mic for a short grace after the assistant begins speaking.
         // This blocks the initial speaker echo / AEC settle that was causing xAI
         // to barge-in and cut responses within the first few words.
@@ -550,20 +568,16 @@ export class VoiceSessionClient {
       // cached value from session_start, so this is a best-effort refresh.
       const preSttMs = Date.now() - this.pttReleaseAt;
       this.ws?.send(JSON.stringify({ type: 'audio_end', preSttMs }));
-      void collectClientSituation().then((clientSituation) => {
-        this.ws?.send(JSON.stringify({ type: 'client_situation', clientSituation }));
-      }).catch(() => { /* best-effort */ });
+      this.ws?.send(JSON.stringify({ type: 'client_situation', clientSituation: peekCachedClientSituation() }));
       this.setState('processing');
       return;
     }
     await this.stopCaptureOnly();
     this.listenStartedAt = 0;
-    // Same optimization for duplex — audio_end first, situation in parallel.
+    // Same optimization for duplex — audio_end first, situation from cache.
     const preSttMs = Date.now() - this.pttReleaseAt;
     this.ws?.send(JSON.stringify({ type: 'audio_end', preSttMs }));
-    void collectClientSituation().then((clientSituation) => {
-      this.ws?.send(JSON.stringify({ type: 'client_situation', clientSituation }));
-    }).catch(() => { /* best-effort */ });
+    this.ws?.send(JSON.stringify({ type: 'client_situation', clientSituation: peekCachedClientSituation() }));
     this.setState('processing');
   }
 
@@ -594,6 +608,7 @@ export class VoiceSessionClient {
   stopPlayback(): void {
     this.playback.stop();
     this.pendingChunkMeta = null;
+    this.systemPlayback = false;
     this.duplexAwaitingPlaybackEnd = false;
     if (this.mode === 'duplex') {
       if (this.ws?.readyState === WebSocket.OPEN && this.state !== 'listening') {
@@ -720,26 +735,31 @@ export class VoiceSessionClient {
         }
         if (status === 'running') this.setState('processing');
         // Server signalled duplex recovery — resync out of any stale error state.
-        if (status === 'listening' && this.mode === 'duplex') this.setState('listening');
+        if (status === 'listening' && this.mode === 'duplex' && !this.systemPlayback) this.setState('listening');
         break;
       }
       case 'audio_chunk_meta':
         this.pendingChunkMeta = { sampleRate: Number(msg.sampleRate ?? VOICE_OUTPUT_SAMPLE_RATE) };
+        this.systemPlayback = Boolean(msg.system) || Boolean(msg.filler);
+        this.setState('speaking');
         break;
       case 'playback_stop':
         this.stopPlayback();
         break;
       case 'audio_end':
-        this.pendingChunkMeta = null;
-        if (this.mode === 'duplex') {
-          // If no TTS audio was queued (text-only turn), playback is already
-          // idle — notify the server immediately so it can resume the mic.
+        void this.playback.flushPriming().then(() => {
+          this.pendingChunkMeta = null;
+          if (this.mode !== 'duplex') {
+            this.systemPlayback = false;
+            return;
+          }
           if (this.playback.playing) {
             this.duplexAwaitingPlaybackEnd = true;
           } else if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.systemPlayback = false;
             this.ws.send(JSON.stringify({ type: 'playback_finished' }));
           }
-        }
+        });
         break;
       case 'duplex_silence':
         this.events.onDuplexSilence?.(
@@ -809,16 +829,30 @@ export class VoiceSessionClient {
           Number(msg.until ?? 0),
         );
         break;
+      case 'visual_present': {
+        const item = parseVisualItem(msg.item);
+        if (item) openVisualFromVoice(item);
+        break;
+      }
+      case 'visual_close':
+        closeVisualFromVoice();
+        break;
       default:
         break;
     }
   }
 
-  private async handleBinary(data: ArrayBuffer): Promise<void> {
-    // After barge-in, state is 'listening' — drop late-arriving assistant
-    // audio frames so they don't undo the interruption.
-    if (this.mode === 'duplex' && this.state === 'listening') return;
-    const pcm = new Int16Array(data);
+  private async handleBinary(data: ArrayBuffer | Blob): Promise<void> {
+    const buf = data instanceof Blob ? await data.arrayBuffer() : data;
+    // After barge-in, state is 'listening' — drop late assistant frames unless
+    // a system announce already sent audio_chunk_meta.
+    if (
+      this.mode === 'duplex'
+      && this.state === 'listening'
+      && !this.pendingChunkMeta
+      && !this.systemPlayback
+    ) return;
+    const pcm = new Int16Array(buf);
     if (this.events.onPlaybackLevel) {
       let sum = 0;
       for (let i = 0; i < pcm.length; i += 1) sum += Math.abs(pcm[i]!);
@@ -828,6 +862,6 @@ export class VoiceSessionClient {
     markVoiceOutputUnlocked();
     const sampleRate = this.pendingChunkMeta?.sampleRate ?? VOICE_OUTPUT_SAMPLE_RATE;
     await this.playback.enqueuePcm(pcm, sampleRate);
-    if (this.state !== 'listening') this.setState('speaking');
+    if (this.state !== 'listening' || this.systemPlayback) this.setState('speaking');
   }
 }

@@ -3,6 +3,7 @@
 import {
   attachDeepSearchPartsFromTools,
   attachChartPartsFromTools,
+  attachVisualPartsFromTools,
   normalizeMessageForUi,
   normalizeVoiceAssistantContent,
   repairStreamTextGlitches,
@@ -53,7 +54,7 @@ export function reconcileStreamingMessageParts<T extends MessagePart>(
 ): T[] | undefined {
   const base = liveParts?.length ? liveParts : incomingParts;
   if (!base?.length) return base;
-  return attachChartPartsFromTools(attachDeepSearchPartsFromTools(base, toolCalls), toolCalls) as T[];
+  return attachVisualPartsFromTools(attachChartPartsFromTools(attachDeepSearchPartsFromTools(base, toolCalls), toolCalls), toolCalls) as T[];
 }
 
 export function sanitizeForJson(text: string): string {

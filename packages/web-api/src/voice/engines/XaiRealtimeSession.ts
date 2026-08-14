@@ -51,6 +51,7 @@ import {
 } from '../voice-realtime-policy.js';
 import {
   loadVoiceRealtimeState,
+  peekVoiceRealtimeStateFromFile,
   persistXaiConversationId,
   touchVoiceRealtimeActive,
 } from '../voice-realtime-store.js';
@@ -80,6 +81,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   readonly mode: VoiceSessionMode;
 
   private state: VoiceEngineState = 'idle';
+  private systemAnnounce = false;
   private transport: WebSocketVoiceTransport;
   private xaiWs?: WebSocket;
   private xaiPingTimer?: ReturnType<typeof setInterval>;
@@ -202,27 +204,22 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   async start(): Promise<void> {
     getLogger().info('XAI_VOICE', 'Starting xAI realtime session…');
     // Session row must exist in the PG cache BEFORE any transcript persist.
-    // Hydration / identity load can hang — never block connect on those — but
-    // skipping session creation entirely caused PG_INSERT_MESSAGE_SKIP and lost
-    // voice turns.
     this.ensureChatSessionRecord();
-    const prep = Promise.all([
-      this.hydrateChatSessionMessages().catch((err) => {
-        getLogger().warn(
-          'XAI_VOICE',
-          `hydrateChatSessionMessages failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }),
-      this.loadRealtimeIdentity(),
-    ]);
-    const prepTimedOut = await Promise.race([
-      prep.then(() => false),
-      new Promise<true>((resolve) => setTimeout(() => resolve(true), 3_000)),
-    ]);
-    if (prepTimedOut) {
-      getLogger().warn('XAI_VOICE', 'Session prep timed out — connecting to xAI without full identity');
-      void prep.catch(() => undefined);
+    // xAI conversation_id from the local file mirror — do not wait on hydrate or PG.
+    const peeked = peekVoiceRealtimeStateFromFile(this.voiceSessionKey());
+    if (peeked) {
+      this.persistedConversationId = peeked.xaiConversationId?.trim() || null;
+      this.lastVoiceActiveAt = peeked.lastVoiceActiveAt ?? null;
+      const idle = idleMsSince(this.lastVoiceActiveAt);
+      this.idleBand = resolveVoiceIdleBand(idle);
     }
+    void this.hydrateChatSessionMessages().catch((err) => {
+      getLogger().warn(
+        'XAI_VOICE',
+        `hydrateChatSessionMessages failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+    void this.loadRealtimeIdentity().catch(() => undefined);
     this.connect();
     // Wait until the xAI session is configured before returning.
     await new Promise<void>((resolve, reject) => {
@@ -320,6 +317,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
 
   onBinaryAudio(pcm: Buffer): void {
     if (this.closed || !this.xaiWs || this.xaiWs.readyState !== WebSocket.OPEN) return;
+    if (this.systemAnnounce) return;
     this.xaiWs.send(pcm);
     if (this.realtimeRecording) {
       this.realtimeAudioChunks.push(pcm);
@@ -849,8 +847,14 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     });
   }
 
+  async announce(line: string, context?: string): Promise<void> {
+    if (context) this.injectContextItem(context);
+    await this.speakSystemLine(line);
+  }
+
   private async speakSystemLine(line: string): Promise<void> {
     if (!line.trim() || this.closed) return;
+    this.systemAnnounce = true;
     try {
       if (this.currentResponseId) {
         this.sendXai({ type: 'response.cancel', response_id: this.currentResponseId });
@@ -869,9 +873,22 @@ export class XaiRealtimeSession implements VoiceEngineSession {
       });
       for await (const chunk of stream.chunks) {
         if (this.closed) break;
-        await this.transport.playAudio(Buffer.from(chunk.pcmBase64, 'base64'), chunk.sampleRate);
+        await this.transport.playAudio(
+          Buffer.from(chunk.pcmBase64, 'base64'),
+          chunk.sampleRate,
+          { system: true },
+        );
       }
-    } catch { /* best-effort TTS */ } finally {
+      if (!this.closed) {
+        this.transport.sendControl({ type: 'audio_end', sessionId: this.sessionId });
+      }
+    } catch (err) {
+      getLogger().warn(
+        'XAI_VOICE',
+        `System announce TTS failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      this.systemAnnounce = false;
       if (!this.closed) {
         this.setState(this.mode === 'duplex' ? 'listening' : 'idle');
         this.transport.sendControl({
@@ -1276,6 +1293,10 @@ export class XaiRealtimeSession implements VoiceEngineSession {
     }
 
     this.persistUserMessage(text);
+    if ((this.chatSessionId ?? '__channel__:voice') === '__channel__:voice') {
+      const { maybePresentWhatsAppVisual } = await import('../../visual-present.js');
+      maybePresentWhatsAppVisual(text);
+    }
     // xAI only auto-responds when create_response is true. In wake-word mode we
     // trigger the response after a valid (accepted or idle-continued) turn.
     if (this.wakeWordEnabled) {
@@ -1596,6 +1617,7 @@ export class XaiRealtimeSession implements VoiceEngineSession {
   }
 
   private handleSpeechStarted(): void {
+    if (this.systemAnnounce) return;
     // Barge-in only while assistant audio is actively playing — not during the
     // processing/tool window after acknowledgment TTS (cafe noise was cancelling
     // tool runs via spurious speech_started during processing).
