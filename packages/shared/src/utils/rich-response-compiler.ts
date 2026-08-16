@@ -67,13 +67,13 @@ export function shouldCompileRichResponse(input: RichResponseCompileInput): {
 }
 
 function parseCells(line: string): string[] {
-  const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  const trimmed = line.trim().replace(/^\|{2,}/, '|').replace(/^\|/, '').replace(/\|$/, '');
   return trimmed.split('|').map((cell) => cell.trim().replace(/\\\|/g, '|'));
 }
 
 function isTableSeparator(line: string): boolean {
-  const cells = parseCells(line);
-  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+  const cells = parseCells(line).filter((cell) => cell.length > 0);
+  return cells.length > 0 && cells.every((cell) => /^:?-{2,}:?$/.test(cell));
 }
 
 function readTable(lines: string[], start: number): {

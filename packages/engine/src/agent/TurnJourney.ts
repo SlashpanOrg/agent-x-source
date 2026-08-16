@@ -245,6 +245,8 @@ function stripMentionTokensForSearch(userText: string): string {
     .replace(/@file\[[^\]]+\]/g, ' ')
     .replace(/@folder\[[^\]]+\]/g, ' ')
     .replace(/@crew\[[^\]]+\]/g, ' ')
+    .replace(/@article\[[^\]]+\]/g, ' ')
+    .replace(/@session\[[^\]]+\]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }

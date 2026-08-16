@@ -1,11 +1,3 @@
-import type { MarkdownDocumentRecord } from '../api';
-
-export interface MarkdownDocumentDayGroup {
-  dayKey: string;
-  label: string;
-  items: MarkdownDocumentRecord[];
-}
-
 type ListDayFields = {
   listDayKey?: string | null;
   listDayLabel?: string | null;
@@ -42,11 +34,4 @@ export function groupByPersistedListDay<T extends ListDayFields>(
     });
   }
   return groups;
-}
-
-/** Group markdown documents by persisted list-day fields (newest day first when list is DESC). */
-export function groupMarkdownDocumentsByDay(
-  items: MarkdownDocumentRecord[],
-): MarkdownDocumentDayGroup[] {
-  return groupByPersistedListDay(items);
 }

@@ -92,10 +92,10 @@ export { RedisCache } from './cache/RedisCache.js';
 export type { RedisCacheOptions } from './cache/RedisCache.js';
 export { configureHttpKeepAlive, getHttpAgent, getHttpsAgent } from './utils/http-agents.js';
 export {
-  MarkdownDocumentStore,
-  setMarkdownDocumentStoreInstance,
-  getMarkdownDocumentStoreInstance,
-} from './markdown/MarkdownDocumentStore.js';
+  ArticleStore,
+  setArticleStoreInstance,
+  getArticleStoreInstance,
+} from './articles/ArticleStore.js';
 // Attachments
 export { AttachmentService, getAttachmentService } from './attachments/index.js';
 export {
@@ -722,11 +722,21 @@ export {
   searchKnowledgeBaseDocuments,
   getKnowledgeBaseService,
   setKnowledgeBaseService,
+  OCR_STACK_TOOL_ID,
+  detectOcrInstaller,
+  errorNeedsOcrTools,
+  getOcrInstallJob,
+  getOcrToolStatus,
+  startOcrStackInstall,
 } from './knowledge-base/index.js';
 export type {
   KnowledgeBaseServiceOptions,
   KnowledgeBaseStatusListener,
   DocumentIngestPipelineOptions,
+  OcrInstallJob,
+  OcrInstallerId,
+  OcrToolProbe,
+  OcrToolStatus,
 } from './knowledge-base/index.js';
 export {
   TemplateService,

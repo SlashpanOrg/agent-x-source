@@ -269,6 +269,8 @@ export function useChatScroll({
       return;
     }
 
+    if (sessionRestoringRef.current) return;
+
     if (needsInitialScrollRef.current && messages.length > 0) {
       // Force bottom on open — don't gate on atBottom (content-visibility can
       // report a false gap before heights expand).
@@ -283,10 +285,6 @@ export function useChatScroll({
       isAtBottomRef.current = true;
       lastScrollTopRef.current = el.scrollTop;
       paginationCooldownUntilRef.current = Date.now() + 600;
-      if (sessionRestoringRef.current) {
-        setSessionRestoring(false);
-        sessionRestoringRef.current = false;
-      }
       // Follow-up passes after deferred layout / content-visibility expand.
       requestAnimationFrame(() => {
         if (bottomRef.current) bottomRef.current.scrollIntoView({ block: 'end' });
@@ -308,11 +306,11 @@ export function useChatScroll({
         if (box) box.scrollTop = box.scrollHeight;
       }, 350);
     }
-  }, [messages.length, setSessionRestoring, sessionRestoringRef]);
+  }, [messages.length, sessionRestoring, setSessionRestoring, sessionRestoringRef]);
 
   // ─── Initial scroll timer (fallback for layout effect + content-visibility re-scroll) ───
   useEffect(() => {
-    if (!needsInitialScrollRef.current || messages.length === 0) return;
+    if (sessionRestoringRef.current || !needsInitialScrollRef.current || messages.length === 0) return;
     const timer = window.setTimeout(() => {
       const el = messagesContainerRef.current;
       if (!el || !needsInitialScrollRef.current) return;
@@ -330,10 +328,6 @@ export function useChatScroll({
         isAtBottomRef.current = true;
         lastScrollTopRef.current = el.scrollTop;
         paginationCooldownUntilRef.current = Date.now() + 600;
-        if (sessionRestoringRef.current) {
-          setSessionRestoring(false);
-          sessionRestoringRef.current = false;
-        }
       }
     }, 50);
     // Second pass: content-visibility: auto may not have expanded all messages
@@ -352,17 +346,15 @@ export function useChatScroll({
       paginationReadyRef.current = true;
       isAtBottomRef.current = true;
       lastScrollTopRef.current = el.scrollTop;
-      if (sessionRestoringRef.current) {
-        setSessionRestoring(false);
-        sessionRestoringRef.current = false;
-      }
     }, 200);
     return () => { window.clearTimeout(timer); window.clearTimeout(timer2); };
-  }, [messages.length, scrollMessagesToBottom, setSessionRestoring, sessionRestoringRef]);
+  }, [messages.length, sessionRestoring, scrollMessagesToBottom, setSessionRestoring, sessionRestoringRef]);
 
-  // ─── Safety net: never leave the restore overlay stuck if scroll anchoring fails ───
+  // Safety net: if messages already arrived but the overlay stuck after a
+  // failed startTransition, drop it. Never dismiss while the thread is empty
+  // — that made heavy restores look frozen with no loader.
   useEffect(() => {
-    if (!sessionRestoring) return;
+    if (!sessionRestoring || messages.length === 0) return;
     const timer = window.setTimeout(() => {
       if (!sessionRestoringRef.current) return;
       setSessionRestoring(false);
@@ -372,9 +364,9 @@ export function useChatScroll({
       setInitialScrollDone(true);
       paginationReadyRef.current = true;
       scrollMessagesToBottom('instant');
-    }, 2500);
+    }, 1200);
     return () => window.clearTimeout(timer);
-  }, [sessionRestoring, scrollMessagesToBottom, setSessionRestoring, sessionRestoringRef]);
+  }, [sessionRestoring, messages.length, scrollMessagesToBottom, setSessionRestoring, sessionRestoringRef]);
 
   // ─── Auto-scroll when user is at bottom — smooth for new entries and live updates ───
   useEffect(() => {

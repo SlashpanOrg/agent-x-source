@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { getDataDir, type KnowledgeSearchResult } from '@agentx/shared';
+import { getOcrInstallJob, getOcrToolStatus, startOcrStackInstall } from '@agentx/engine';
 import { getKnowledgeBaseService } from '../services/knowledge-base.js';
 import { broadcastKnowledgeBaseSourceStatus } from '../ws.js';
 import type { ApiContext } from '../services/ApiService.js';
@@ -128,6 +129,35 @@ export function router(_ctx: ApiContext): Router {
 
     const { installed, version } = await parserVersion(pkg);
     res.json({ success: true, id, installed, version, message: `${pkg} installed${version ? ` (${version})` : ''}` });
+  });
+
+  r.get('/knowledge-base/tools/status', async (_req: Request, res: Response) => {
+    res.json({ tools: [getOcrToolStatus()] });
+  });
+
+  r.post('/knowledge-base/tools/install', async (req: Request, res: Response) => {
+    const body = req.body as { id?: unknown };
+    const id = typeof body.id === 'string' ? body.id : '';
+    if (id !== 'ocr-stack') {
+      res.status(400).json({ error: 'Unknown tool. Use ocr-stack.' });
+      return;
+    }
+    const job = startOcrStackInstall();
+    res.json({ job });
+  });
+
+  r.get('/knowledge-base/tools/install/:jobId', async (req: Request, res: Response) => {
+    const jobId = req.params['jobId'];
+    if (!jobId) {
+      res.status(400).json({ error: 'jobId is required' });
+      return;
+    }
+    const job = getOcrInstallJob(jobId);
+    if (!job) {
+      res.status(404).json({ error: 'Install job not found' });
+      return;
+    }
+    res.json({ job });
   });
 
   r.get('/knowledge-base/:id/events', async (req: Request, res: Response) => {

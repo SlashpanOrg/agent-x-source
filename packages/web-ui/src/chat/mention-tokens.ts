@@ -6,6 +6,8 @@
  *   @folder[<urlencoded-relativePath>]   ("." = workspace root)
  *   @crew[<callsign>:<urlencoded-name>]
  *   @kb[<sourceId>:<urlencoded-name>]
+ *   @article[<articleId>:<urlencoded-title>]
+ *   @session[<sessionId>:<urlencoded-title>]
  *
  * Legacy (read):
  *   @file:path  @folder:path  @crew:callsign:name
@@ -24,13 +26,15 @@ export const FILE_MENTION_RE = /@file\[([^\]]+)\]/g;
 export const FOLDER_MENTION_RE = /@folder\[([^\]]+)\]/g;
 export const CREW_MENTION_RE = /@crew\[([^\]\s]+)\]/g;
 export const KB_MENTION_RE = /@kb\[([^\]]+)\]/g;
+export const ARTICLE_MENTION_RE = /@article\[([^\]]+)\]/g;
+export const SESSION_MENTION_RE = /@session\[([^\]]+)\]/g;
 
 /**
  * Split plain text into chips + raw segments (keeps delimiters).
  * Bracket forms first; legacy colon forms stop before trailing punctuation.
  */
 export const MENTION_TOKEN_SPLIT_RE = new RegExp(
-  `(@file\\[[^\\]]+\\]|@folder\\[[^\\]]+\\]|@crew\\[[^\\]]+\\]|@kb\\[[^\\]]+\\]|@file:${LEGACY_PATH_BODY}|@folder:${LEGACY_PATH_BODY}|@crew:[^:\\s\\[]+:${LEGACY_PATH_BODY}|@[\\w][\\w.-]*)`,
+  `(@file\\[[^\\]]+\\]|@folder\\[[^\\]]+\\]|@crew\\[[^\\]]+\\]|@kb\\[[^\\]]+\\]|@article\\[[^\\]]+\\]|@session\\[[^\\]]+\\]|@file:${LEGACY_PATH_BODY}|@folder:${LEGACY_PATH_BODY}|@crew:[^:\\s\\[]+:${LEGACY_PATH_BODY}|@[\\w][\\w.-]*)`,
   'g',
 );
 
@@ -72,14 +76,44 @@ export function formatKbMentionToken(sourceId: string, name?: string): string {
   return `@kb[${id}:${encodeURIComponent(label)}]`;
 }
 
-export function parseKbMentionToken(token: string): { sourceId: string; name: string } | null {
-  const bracket = /^@kb\[([^:\]]+):([^\]]+)\]$/.exec(token);
+export function formatArticleMentionToken(articleId: string, title?: string): string {
+  const id = articleId.trim();
+  if (!id) return '';
+  const label = (title?.trim() || id);
+  return `@article[${id}:${encodeURIComponent(label)}]`;
+}
+
+export function formatSessionMentionToken(sessionId: string, title?: string): string {
+  const id = sessionId.trim();
+  if (!id) return '';
+  const label = (title?.trim() || id);
+  return `@session[${id}:${encodeURIComponent(label)}]`;
+}
+
+function parseIdNameToken(prefix: 'kb' | 'article' | 'session', token: string): { id: string; name: string } | null {
+  const re = new RegExp(`^@${prefix}\\[([^:\\]]+):([^\\]]+)\\]$`);
+  const bracket = re.exec(token);
   if (!bracket) return null;
   try {
-    return { sourceId: bracket[1]!, name: decodeURIComponent(bracket[2]!) };
+    return { id: bracket[1]!, name: decodeURIComponent(bracket[2]!) };
   } catch {
-    return { sourceId: bracket[1]!, name: bracket[2]! };
+    return { id: bracket[1]!, name: bracket[2]! };
   }
+}
+
+export function parseKbMentionToken(token: string): { sourceId: string; name: string } | null {
+  const parsed = parseIdNameToken('kb', token);
+  return parsed ? { sourceId: parsed.id, name: parsed.name } : null;
+}
+
+export function parseArticleMentionToken(token: string): { articleId: string; title: string } | null {
+  const parsed = parseIdNameToken('article', token);
+  return parsed ? { articleId: parsed.id, title: parsed.name } : null;
+}
+
+export function parseSessionMentionToken(token: string): { sessionId: string; title: string } | null {
+  const parsed = parseIdNameToken('session', token);
+  return parsed ? { sessionId: parsed.id, title: parsed.name } : null;
 }
 
 export function parseCrewMentionToken(token: string): { callsign: string; name: string } | null {
@@ -143,6 +177,8 @@ export function isCompleteMentionToken(token: string): boolean {
   if (/^@folder\[[^\]]+\]$/.test(token)) return true;
   if (/^@crew\[[^\]]+\]$/.test(token)) return true;
   if (/^@kb\[[^\]]+\]$/.test(token)) return true;
+  if (/^@article\[[^\]]+\]$/.test(token)) return true;
+  if (/^@session\[[^\]]+\]$/.test(token)) return true;
   // Legacy complete tokens (colon form)
   if (new RegExp(`^@file:${LEGACY_PATH_BODY}$`).test(token)) return true;
   if (new RegExp(`^@folder:${LEGACY_PATH_BODY}$`).test(token)) return true;
@@ -164,7 +200,7 @@ export function findActiveMentionQuery(textBefore: string): { atIdx: number; que
   if (/\s/.test(raw)) return null;
 
   // Closed bracket chip: `@file[…]` — anything after `]` is typed text, not a query.
-  if (/^@(?:file|folder|crew|kb)\[[^\]]+\]/.test(raw)) return null;
+  if (/^@(?:file|folder|crew|kb|article|session)\[[^\]]+\]/.test(raw)) return null;
 
   if (isCompleteMentionToken(raw)) return null;
 

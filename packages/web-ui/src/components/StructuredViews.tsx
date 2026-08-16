@@ -143,6 +143,9 @@ const tableInnerSx = {
     fontFamily: "'JetBrains Mono', monospace",
     fontSize: '0.6rem',
     lineHeight: 1.5,
+    whiteSpace: 'normal',
+    wordBreak: 'break-word',
+    overflowWrap: 'anywhere',
   },
   '& tr:last-child td': {
     borderBottom: 'none',

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { messageToMarkdownDocument } from '../src/markdown/markdown-export';
+import { messageToArticleContent } from '../src/articles/message-export';
 import type { UIMessage } from '../src/chat/types';
 
-describe('ResponseUnit Markdown export', () => {
+describe('ResponseUnit article export', () => {
   it('prefers the rich document fallback over duplicate canonical text', () => {
     const message: UIMessage = {
       id: 'assistant-1',
@@ -24,10 +24,10 @@ describe('ResponseUnit Markdown export', () => {
       }],
     };
 
-    const markdown = messageToMarkdownDocument(message);
-    expect(markdown).toContain('# Rich analysis');
-    expect(markdown).toContain('42%');
-    expect(markdown).not.toContain('Canonical answer that should not be duplicated');
+    const content = messageToArticleContent(message);
+    expect(content).toContain('# Rich analysis');
+    expect(content).toContain('42%');
+    expect(content).not.toContain('Canonical answer that should not be duplicated');
   });
 
   it('falls back to ordinary message content when the document is invalid', () => {
@@ -45,6 +45,6 @@ describe('ResponseUnit Markdown export', () => {
       }],
     } as unknown as UIMessage;
 
-    expect(messageToMarkdownDocument(message)).toBe('Safe canonical answer.');
+    expect(messageToArticleContent(message)).toBe('Safe canonical answer.');
   });
 });

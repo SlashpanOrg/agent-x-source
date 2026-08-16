@@ -29,8 +29,8 @@ import {
   applyWebSearchConfigFromAgentConfig,
   setLocalModelConfig,
   applyPerformanceGovernor,
-  MarkdownDocumentStore,
-  setMarkdownDocumentStoreInstance,
+  ArticleStore,
+  setArticleStoreInstance,
   InMemoryQueue,
   PgBossQueue,
   registerNoOpJobWorkers,
@@ -424,7 +424,7 @@ export function getEngine(): EngineState {
     .then(async () => {
       if (!store) return;
       if (state?.pgPool) {
-        setMarkdownDocumentStoreInstance(new MarkdownDocumentStore(state.pgPool));
+        setArticleStoreInstance(new ArticleStore(state.pgPool));
       }
       // Ensure CrewManager is bound to the live adapter (covers deferred→ready swaps).
       if (state) state.crewManager.setStore(store);
@@ -519,7 +519,7 @@ const STORAGE_API_WAIT_MS = 8_000;
 
 /**
  * Wait for storage without blocking API routes on pg-boss bootstrap forever.
- * After PG connect/migrate, chat/markdown can use the pool even if jobQueue.start()
+ * After PG connect/migrate, chat/articles can use the pool even if jobQueue.start()
  * is still running inside storageReady.
  */
 export async function awaitStorageForApi(): Promise<void> {

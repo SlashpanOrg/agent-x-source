@@ -38,7 +38,7 @@ import { setupTelephonyMediaWebSocket } from './telephony/media-bridge.js';
 import { startVoiceCallRetentionScheduler, stopVoiceCallRetentionScheduler } from './telephony/retention.js';
 import { registerEmbeddedPostgresController } from './pg-lifecycle-bridge.js';
 import { registerAutomationRoutes, bootstrapAutomationFromEngine, shutdownAutomation } from './automation/index.js';
-import { registerMarkdownRoutes } from './markdown-api.js';
+import { registerArticleRoutes } from './articles-api.js';
 import { initAgentXOverviewBridge, shutdownAgentXOverviewBridge } from './agent-x-overview-bridge.js';
 import { createApiService } from './services/ApiService.js';
 import { getKnowledgeBaseService } from './services/knowledge-base.js';
@@ -232,7 +232,7 @@ app.use('/api', integrationsRouter);
 app.use('/api', createHostRouter());
 app.use('/api', createTelephonyRouter());
 registerAutomationRoutes(app);
-registerMarkdownRoutes(app);
+registerArticleRoutes(app);
 
 // New route modules
 app.use('/', healthRouter({ api }));

@@ -9,6 +9,8 @@ import {
   parseFileMentionToken,
   parseFolderMentionToken,
   parseKbMentionToken,
+  parseArticleMentionToken,
+  parseSessionMentionToken,
 } from './mention-tokens';
 
 /** Stable per-callsign accent (uses crew.color when provided). */
@@ -299,7 +301,79 @@ export function KbDisplayChip({
   );
 }
 
-/** Tokens for @file[…], @folder[…], @kb[…], @crew[…], and legacy colon / bare @callsign. */
+function IdNameDisplayChip({
+  name,
+  badge,
+  color,
+  title,
+}: {
+  name: string;
+  badge: string;
+  color: string;
+  title: string;
+}) {
+  const display = name.length > 24 ? `${name.slice(0, 24)}…` : name;
+  return (
+    <Box
+      component="span"
+      title={title}
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '3px',
+        boxSizing: 'border-box',
+        padding: '0 5px 0 0',
+        margin: '0 1px',
+        borderRadius: '999px',
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: '0.55rem',
+        fontWeight: 600,
+        color,
+        background: alphaColor(color, '12'),
+        border: `1px solid ${alphaColor(color, '28')}`,
+        userSelect: 'none',
+        whiteSpace: 'nowrap',
+        lineHeight: 1.2,
+        verticalAlign: 'middle',
+        maxWidth: 200,
+        overflow: 'hidden',
+      }}
+    >
+      <Box
+        component="span"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minWidth: 16,
+          px: '3px',
+          height: 14,
+          borderRadius: '999px',
+          fontSize: '0.42rem',
+          fontWeight: 700,
+          color: colors.bg.primary,
+          background: color,
+          flexShrink: 0,
+        }}
+      >
+        {badge}
+      </Box>
+      <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>
+        {display}
+      </Box>
+    </Box>
+  );
+}
+
+export function ArticleDisplayChip({ name }: { name: string }) {
+  return <IdNameDisplayChip name={name} badge="ART" color={colors.accent.cyan} title={`Article: ${name}`} />;
+}
+
+export function SessionDisplayChip({ name }: { name: string }) {
+  return <IdNameDisplayChip name={name} badge="SES" color={colors.accent.green} title={`Session: ${name}`} />;
+}
+
+/** Tokens for @file[…], @folder[…], @kb[…], @article[…], @session[…], @crew[…], and legacy colon / bare @callsign. */
 export function renderComposerMentionTokens(
   text: string,
   opts?: {
@@ -342,6 +416,14 @@ export function renderComposerMentionTokens(
           sourceId={kbTok.sourceId}
         />
       );
+    }
+    const articleTok = parseArticleMentionToken(part);
+    if (articleTok) {
+      return <ArticleDisplayChip key={i} name={articleTok.title} />;
+    }
+    const sessionTok = parseSessionMentionToken(part);
+    if (sessionTok) {
+      return <SessionDisplayChip key={i} name={sessionTok.title} />;
     }
     const crewTok = parseCrewMentionToken(part);
     if (crewTok) {

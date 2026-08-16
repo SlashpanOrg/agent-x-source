@@ -16,14 +16,14 @@ function isAllCapsHeader(line: string): boolean {
 }
 
 function parseTableCells(line: string): string[] {
-  const trimmed = line.trim();
+  const trimmed = line.trim().replace(/^\|{2,}/, '|');
   if (!trimmed.includes('|')) return [];
   const inner = trimmed.replace(/^\|/, '').replace(/\|$/, '');
   return inner.split('|').map((c) => c.trim());
 }
 
 function isSeparatorRow(line: string): boolean {
-  const cells = parseTableCells(line);
+  const cells = parseTableCells(line).filter((c) => c.length > 0);
   return cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c));
 }
 

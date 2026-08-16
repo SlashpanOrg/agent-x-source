@@ -30,7 +30,7 @@ export * from './voice.js';
 export * from './host.js';
 export * from './telephony.js';
 export * from './client-situation.js';
-export * from './markdown-document.js';
+export * from './article.js';
 export * from './channel-render.js';
 export * from './knowledge.js';
 export * from './neural-cortex.js';

@@ -182,8 +182,8 @@ vi.mock('../src/automation/index.js', () => ({
   shutdownAutomation: vi.fn(),
 }));
 
-vi.mock('../src/markdown-api.js', () => ({
-  registerMarkdownRoutes: vi.fn(),
+vi.mock('../src/articles-api.js', () => ({
+  registerArticleRoutes: vi.fn(),
 }));
 
 vi.mock('../src/agent-x-overview-bridge.js', () => ({

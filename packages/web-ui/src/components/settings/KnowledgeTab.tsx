@@ -9,6 +9,7 @@ import { SettingsCard } from './SettingsCard';
 import { settingsTheme, settingsHelperSx } from '../../styles/settings-theme';
 import { colors, alphaColor } from '../../theme';
 import { knowledgeBase } from '../../api';
+import { OcrStackInstallButton } from '../OcrStackInstallButton';
 
 const MONO = "'JetBrains Mono', monospace";
 
@@ -98,6 +99,32 @@ export function DocumentParsersSection() {
 
   return (
     <SettingsCard title="Document parsers" subtitle="Optional — not required for normal use">
+      <Typography sx={{ ...settingsHelperSx, mb: 1.25 }}>
+        Scanned or image-only PDFs need Tesseract + Poppler. The button installs them in the background on macOS, Linux, and Windows.
+      </Typography>
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 1.5,
+          p: 1,
+          mb: 1.25,
+          bgcolor: settingsTheme.bg.panel,
+          border: `1px solid ${settingsTheme.border.default}`,
+          borderRadius: 1,
+        }}
+      >
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography sx={{ fontSize: '0.75rem', fontWeight: 600, color: settingsTheme.text.primary }}>
+            PDF OCR
+          </Typography>
+          <Typography sx={{ fontSize: '0.65rem', color: settingsTheme.text.secondary }}>
+            Required to ingest scanned or outlined PDFs (Tesseract + Poppler).
+          </Typography>
+          <OcrStackInstallButton showWhenInstalled />
+        </Box>
+      </Box>
       <Typography sx={{ ...settingsHelperSx, mb: 1.25 }}>
         Install layout-aware PDF/DOCX parsers when you need higher-quality extraction.
       </Typography>

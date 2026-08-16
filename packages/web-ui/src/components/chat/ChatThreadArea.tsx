@@ -1,5 +1,8 @@
 import React, { useCallback } from 'react';
 import Box from '@mui/material/Box';
+import CircularProgress from '@mui/material/CircularProgress';
+import LinearProgress from '@mui/material/LinearProgress';
+import Typography from '@mui/material/Typography';
 import { ScrollToBottomPill } from '../ChatEnhancements';
 import { ChatThreadView } from './ChatThreadView';
 import { ToolEnableBanner } from './ToolEnableBanner';
@@ -10,6 +13,7 @@ import {
   useChatThreadHandlersContext,
   useChatNavigationHandlersContext,
 } from './ChatSessionProvider';
+import { colors, MONO } from '../../theme';
 
 export const ChatThreadArea = React.memo(function ChatThreadArea() {
   // Message thread values — re-renders on stream chunks (needed for messages, streaming, etc.).
@@ -32,7 +36,7 @@ export const ChatThreadArea = React.memo(function ChatThreadArea() {
   const {
     handleResend, handleQuestionnaireRespond, handleQuestionnaireCancel,
     handleCrewRosterPickerSubmit, handleCrewRosterPickerSkip,
-    handleViewCrewDossier, handleViewCrewByCallsign, handleTurnFeedback, handleSaveMarkdown,
+    handleViewCrewDossier, handleViewCrewByCallsign, handleTurnFeedback, handleSaveArticle,
   } = useChatThreadHandlersContext();
   // Navigation handlers.
   const { openChildSession } = useChatNavigationHandlersContext();
@@ -61,6 +65,41 @@ export const ChatThreadArea = React.memo(function ChatThreadArea() {
         overflow: 'hidden',
       }}
     >
+      {sessionRestoring && (
+        <Box
+          sx={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 3,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 1.25,
+            bgcolor: colors.bg.primary,
+          }}
+        >
+          <CircularProgress size={28} sx={{ color: colors.accent.cyan }} />
+          <Typography sx={{
+            fontSize: '0.68rem',
+            fontFamily: MONO,
+            color: colors.text.secondary,
+            letterSpacing: '0.04em',
+          }}
+          >
+            Loading conversation…
+          </Typography>
+          <LinearProgress
+            sx={{
+              width: 160,
+              height: 2,
+              borderRadius: 1,
+              bgcolor: colors.border.subtle,
+              '& .MuiLinearProgress-bar': { bgcolor: colors.accent.cyan },
+            }}
+          />
+        </Box>
+      )}
       <Box
         sx={{
           flex: 1,
@@ -68,6 +107,7 @@ export const ChatThreadArea = React.memo(function ChatThreadArea() {
           overflow: 'auto',
           px: 2,
           py: 1.5,
+          visibility: sessionRestoring ? 'hidden' : 'visible',
         }}
         ref={messagesContainerRef}
       >
@@ -94,7 +134,7 @@ export const ChatThreadArea = React.memo(function ChatThreadArea() {
           onViewCrewDossier={handleViewCrewDossier}
           onViewCrewByCallsign={handleViewCrewByCallsign}
           onTurnFeedback={handleTurnFeedback}
-          onSaveMarkdown={handleSaveMarkdown}
+          onSaveArticle={handleSaveArticle}
         />
 
         {toolEnablePrompt && (
@@ -106,7 +146,7 @@ export const ChatThreadArea = React.memo(function ChatThreadArea() {
           This keeps it fixed relative to the thread area viewport instead of
           scrolling with the message content. */}
       <ScrollToBottomPill
-        visible={showJumpPill}
+        visible={showJumpPill && !sessionRestoring}
         onClick={handleScrollToBottom}
       />
     </Box>

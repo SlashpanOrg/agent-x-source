@@ -1,6 +1,6 @@
 /** Deliverable tools that must not run proactively without user confirmation. */
 export const PROACTIVE_DELIVERABLE_TOOLS = new Set([
-  'save_to_markdown',
+  'save_to_article',
   'gen_markdown',
   'gen_html',
   'pdf_create',
@@ -17,7 +17,7 @@ export const PROACTIVE_DELIVERABLE_TOOLS = new Set([
 
 const SESSION_WAIVER_RE = /\b(no need to ask(?: me)?(?: for)? permission|don'?t ask(?: me)?(?: for)? permission|do not ask(?: me)?(?: for)? permission|just (?:carry on|continue|proceed|do it)|carry on without asking|skip (?:the )?permission|auto[- ]?approve|you (?:have|got) (?:my )?permission)\b/i;
 
-const EXPLICIT_DELIVERABLE_REQUEST_RE = /\b(save|export|write|create|generate|make|store|persist)\b[\s\S]{0,80}\b(markdown|md|pdf|docx|xlsx|pptx|csv|document|report|file|itinerary|plan|deliverable)\b|\b(save|export)\s+(this|it|that|to)\b|\bwrite (?:it|this|that) (?:to|as|into)\b/i;
+const EXPLICIT_DELIVERABLE_REQUEST_RE = /\b(save|export|write|create|generate|make|store|persist)\b[\s\S]{0,80}\b(article|articles|markdown|md|pdf|docx|xlsx|pptx|csv|document|report|file|itinerary|plan|deliverable)\b|\b(save|export)\s+(this|it|that|to)\b|\bwrite (?:it|this|that) (?:to|as|into)\b/i;
 
 export function isProactiveDeliverableTool(toolId: string): boolean {
   return PROACTIVE_DELIVERABLE_TOOLS.has(toolId);

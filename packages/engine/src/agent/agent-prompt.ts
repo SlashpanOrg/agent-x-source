@@ -20,7 +20,7 @@ import {
   createCrewRosterGuideSection,
   createChatMarkdownSection,
   createVisualStageSection,
-  createMarkdownSection,
+  createArticlesSection,
   createCurrentTimeSection,
   createSchedulingSection,
   createThirdPartyServicesSection,
@@ -90,7 +90,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createMissionPlanSection(secCtx.scopePath))
       .register(createQuestionnaireGuideSection())
       .register(createChatMarkdownSection())
-      .register(createMarkdownSection())
+      .register(createArticlesSection())
       .register(createCurrentTimeSection(secCtx))
       .register(createMemoryContextSection(secCtx));
     if (systemOverride) {
@@ -118,7 +118,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
         .register(createVisualStageSection())
         .register(createQuestionnaireGuideSection())
         .register(createChatMarkdownSection())
-        .register(createMarkdownSection())
+        .register(createArticlesSection())
         .register(createCurrentTimeSection(secCtx))
         .register(createWorkingDirectorySection(secCtx))
         .register(createLearningsSection(secCtx))
@@ -152,7 +152,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createThirdPartyServicesSection())
       .register(createVisualStageSection())
       .register(createChatMarkdownSection())
-      .register(createMarkdownSection())
+      .register(createArticlesSection())
       .register(createCurrentTimeSection(secCtx))
       .register(createSchedulingSection())
       .register(createLearningsSection(secCtx))
@@ -215,7 +215,7 @@ export function registerPromptSections(ctx: PromptRegistrationContext, systemOve
       .register(createVisualStageSection())
       .register(createQuestionnaireGuideSection())
       .register(createChatMarkdownSection())
-      .register(createMarkdownSection())
+      .register(createArticlesSection())
       .register(createCurrentTimeSection(secCtx))
       .register(createSchedulingSection())
       .register(createLearningsSection(secCtx))

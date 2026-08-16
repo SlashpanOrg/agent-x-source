@@ -392,16 +392,13 @@ export const benchmarkRunSchema = z.object({
   tag: z.string().optional(),
 });
 
-export const createMarkdownDocumentSchema = z.object({
+export const createArticleSchema = z.object({
   sessionId: z.string().min(1),
   title: z.string().optional(),
-  contentMarkdown: z.string().optional(),
-  contentTsx: z.string().optional(),
+  content: z.string().min(1),
+  kind: z.enum(['article', 'analysis', 'report', 'insight']).optional(),
   messageId: z.string().optional(),
   sourceRole: z.enum(['user', 'assistant', 'system']).optional(),
-}).refine(
-  (v) => Boolean(v.contentTsx?.trim() || v.contentMarkdown?.trim()),
-  { message: 'contentTsx or contentMarkdown is required' },
-);
+});
 
 

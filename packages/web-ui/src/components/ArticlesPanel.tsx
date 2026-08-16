@@ -7,13 +7,36 @@ import CircularProgress from '@mui/material/CircularProgress';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import { PanelHeader } from './PanelHeader';
 import { ConfirmDeleteDialog } from './ConfirmDeleteDialog';
-import { MarkdownViewer } from './MarkdownViewer';
-import { markdownDocuments, type MarkdownDocumentRecord } from '../api';
-import { groupMarkdownDocumentsByDay } from '../markdown/markdown-list-groups';
+import { ArticleViewer } from './ArticleViewer';
+import { articles, type ArticleRecord } from '../api';
+import { groupArticlesByDay } from '../articles/list-groups';
+import { articleKindLabel, displayArticleTitle, humanizeArticleExcerpt, type ArticleKind } from '@agentx/shared/browser';
 import { useApp } from '../store/AppContext';
-import { colors, MONO, PANEL_SIDE_LIST_WIDTH } from '../theme';
+import { colors, MONO, PANEL_SIDE_LIST_WIDTH, alphaColor } from '../theme';
+import { articleKindAccent } from '../articles/kind-theme';
+import { AGENTX_CLIENT_STORAGE_PREFIX } from '../utils/client-storage';
+
+const LIST_COLLAPSED_KEY = `${AGENTX_CLIENT_STORAGE_PREFIX}articles_list_collapsed`;
+
+function readListCollapsed(): boolean {
+  try {
+    return localStorage.getItem(LIST_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeListCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(LIST_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {
+    /* private mode / quota */
+  }
+}
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, {
@@ -49,13 +72,13 @@ function DateGroupDivider({ label, first }: { label: string; first?: boolean }) 
   );
 }
 
-function MarkdownListItem({
+function ArticleListItem({
   item,
   selected,
   onSelect,
   onDelete,
 }: {
-  item: MarkdownDocumentRecord;
+  item: ArticleRecord;
   selected: boolean;
   onSelect: () => void;
   onDelete: () => void;
@@ -76,9 +99,25 @@ function MarkdownListItem({
     >
       <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.75 }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim, fontFamily: MONO, mb: 0.35 }}>
-            {formatTime(item.createdAt)}
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.35 }}>
+            <Typography sx={{ fontSize: '0.5rem', color: colors.text.dim, fontFamily: MONO }}>
+              {formatTime(item.createdAt)}
+            </Typography>
+            <Typography sx={{
+              fontSize: '0.42rem',
+              fontFamily: MONO,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              color: articleKindAccent(item.contentFormat),
+              border: `1px solid ${alphaColor(articleKindAccent(item.contentFormat), '35')}`,
+              bgcolor: alphaColor(articleKindAccent(item.contentFormat), '12'),
+              px: 0.45,
+              borderRadius: 0.5,
+              lineHeight: 1.4,
+            }}>
+              {articleKindLabel(item.contentFormat)}
+            </Typography>
+          </Box>
           <Typography sx={{
             fontSize: '0.66rem',
             fontWeight: selected ? 700 : 600,
@@ -90,7 +129,7 @@ function MarkdownListItem({
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
           }}>
-            {item.title}
+            {displayArticleTitle(item.title) || item.title}
           </Typography>
           {item.excerpt && (
             <Typography sx={{
@@ -102,11 +141,11 @@ function MarkdownListItem({
               WebkitBoxOrient: 'vertical',
               overflow: 'hidden',
             }}>
-              {item.excerpt}
+              {humanizeArticleExcerpt(item.excerpt)}
             </Typography>
           )}
         </Box>
-        <Tooltip title="Delete document">
+        <Tooltip title="Delete article">
           <IconButton
             size="small"
             onClick={(e) => { e.stopPropagation(); onDelete(); }}
@@ -120,15 +159,17 @@ function MarkdownListItem({
   );
 }
 
-export function MarkdownPanel() {
+export function ArticlesPanel() {
   const { events } = useApp();
-  const [items, setItems] = useState<MarkdownDocumentRecord[]>([]);
+  const [items, setItems] = useState<ArticleRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<{ contentMarkdown?: string } | null>(null);
+  const [detail, setDetail] = useState<{ content?: string } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [deletePendingId, setDeletePendingId] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [listCollapsed, setListCollapsed] = useState(readListCollapsed);
+  const [kindFilter, setKindFilter] = useState<ArticleKind | 'all'>('all');
   const selectedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -138,7 +179,7 @@ export function MarkdownPanel() {
   const loadList = useCallback(async () => {
     setLoading(true);
     try {
-      const { documents: list } = await markdownDocuments.list({ limit: 100 });
+      const { articles: list } = await articles.list({ limit: 100 });
       setItems(list);
       const currentSelectedId = selectedIdRef.current;
       if (list.length > 0 && !currentSelectedId) {
@@ -157,7 +198,7 @@ export function MarkdownPanel() {
 
   useEffect(() => {
     const last = events[events.length - 1];
-    if (last?.type === 'markdown_created') void loadList();
+    if (last?.type === 'article_created') void loadList();
   }, [events, loadList]);
 
   useEffect(() => {
@@ -167,9 +208,9 @@ export function MarkdownPanel() {
     }
     let cancelled = false;
     setDetailLoading(true);
-    void markdownDocuments.get(selectedId).then((payload) => {
+    void articles.get(selectedId).then((payload) => {
       if (cancelled) return;
-      setDetail(payload ? { contentMarkdown: payload.contentMarkdown } : null);
+      setDetail(payload ? { content: payload.content } : null);
     }).catch(() => {
       if (!cancelled) setDetail(null);
     }).finally(() => {
@@ -179,10 +220,13 @@ export function MarkdownPanel() {
   }, [selectedId]);
 
   const selected = items.find((c) => c.id === selectedId) ?? null;
+  const visibleItems = kindFilter === 'all'
+    ? items
+    : items.filter((item) => item.contentFormat === kindFilter);
 
   const handleDelete = async (id: string) => {
     try {
-      await markdownDocuments.delete(id);
+      await articles.delete(id);
       setItems((prev) => prev.filter((c) => c.id !== id));
       if (selectedId === id) {
         const rest = items.filter((c) => c.id !== id);
@@ -202,33 +246,73 @@ export function MarkdownPanel() {
     }
   };
 
+  const toggleListCollapsed = useCallback(() => {
+    setListCollapsed((prev) => {
+      const next = !prev;
+      writeListCollapsed(next);
+      return next;
+    });
+  }, []);
+
   const deletePendingItem = deletePendingId ? items.find((c) => c.id === deletePendingId) : null;
 
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', bgcolor: colors.bg.primary }}>
       <PanelHeader
-        title="Markdown"
-        subtitle="Saved reports & replies — export as PDF"
+        title="Articles"
+        subtitle="Articles, analysis, reports, insights — export as PDF"
         icon={<ArticleOutlinedIcon sx={{ fontSize: 18 }} />}
         action={(
-          <Tooltip title="Refresh">
-            <IconButton size="small" onClick={() => void loadList()} sx={{ color: colors.text.dim }}>
-              <RefreshIcon sx={{ fontSize: 16 }} />
-            </IconButton>
-          </Tooltip>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
+            <Tooltip title={listCollapsed ? 'Show list' : 'Hide list'}>
+              <IconButton
+                size="small"
+                onClick={toggleListCollapsed}
+                sx={{
+                  display: { xs: 'none', md: 'inline-flex' },
+                  color: colors.text.dim,
+                  '&:hover': { color: colors.text.primary },
+                }}
+              >
+                {listCollapsed
+                  ? <ChevronRightIcon sx={{ fontSize: 18 }} />
+                  : <ChevronLeftIcon sx={{ fontSize: 18 }} />}
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Refresh">
+              <IconButton size="small" onClick={() => void loadList()} sx={{ color: colors.text.dim }}>
+                <RefreshIcon sx={{ fontSize: 16 }} />
+              </IconButton>
+            </Tooltip>
+          </Box>
         )}
       />
 
-      <Box sx={{ flex: 1, display: 'flex', minHeight: 0 }}>
+      <Box sx={{ flex: 1, display: 'flex', minHeight: 0, minWidth: 0 }}>
         <Box sx={{
-          width: { xs: '100%', md: PANEL_SIDE_LIST_WIDTH },
+          width: {
+            xs: '100%',
+            md: listCollapsed ? 0 : PANEL_SIDE_LIST_WIDTH,
+          },
+          minWidth: {
+            xs: 0,
+            md: listCollapsed ? 0 : PANEL_SIDE_LIST_WIDTH,
+          },
           flexShrink: 0,
-          borderRight: { md: `1px solid ${colors.border.default}` },
+          borderRight: {
+            md: listCollapsed ? 'none' : `1px solid ${colors.border.default}`,
+          },
           borderBottom: { xs: `1px solid ${colors.border.default}`, md: 'none' },
-          overflow: 'auto',
-          p: 1,
+          overflow: { xs: 'auto', md: listCollapsed ? 'hidden' : 'auto' },
+          p: { xs: 1, md: listCollapsed ? 0 : 1 },
           bgcolor: colors.bg.secondary,
-          display: { xs: selected ? 'none' : 'block', md: 'block' },
+          pointerEvents: { md: listCollapsed ? 'none' : 'auto' },
+          display: {
+            xs: selected ? 'none' : 'block',
+            md: 'block',
+          },
+          transition: 'width 180ms ease, min-width 180ms ease, padding 180ms ease',
+          '@media (prefers-reduced-motion: reduce)': { transition: 'none' },
         }}>
           {loading ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -236,16 +320,49 @@ export function MarkdownPanel() {
             </Box>
           ) : items.length === 0 ? (
             <Typography sx={{ color: colors.text.dim, fontSize: '0.7rem', textAlign: 'center', py: 4, fontFamily: "'JetBrains Mono', monospace" }}>
-              No documents yet. Ask Agent-X to save a response as markdown, or use Save as Markdown on a message.
+              No articles yet. Ask Agent-X to save a response as an article, analysis, report, or insight.
             </Typography>
           ) : (
-            groupMarkdownDocumentsByDay(items).map((group, groupIdx) => (
+            <>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.4, mb: 1 }}>
+              {(['all', 'article', 'analysis', 'report', 'insight'] as const).map((key) => {
+                const active = kindFilter === key;
+                const label = key === 'all' ? 'All' : articleKindLabel(key);
+                const accent = key === 'all' ? colors.accent.cyan : articleKindAccent(key);
+                return (
+                  <Box
+                    key={key}
+                    onClick={() => setKindFilter(key)}
+                    sx={{
+                      px: 0.65,
+                      py: 0.2,
+                      borderRadius: 0.75,
+                      cursor: 'pointer',
+                      fontSize: '0.48rem',
+                      fontFamily: MONO,
+                      letterSpacing: '0.06em',
+                      textTransform: 'uppercase',
+                      color: active ? accent : colors.text.dim,
+                      border: `1px solid ${active ? alphaColor(accent, '45') : colors.border.subtle}`,
+                      bgcolor: active ? alphaColor(accent, '12') : 'transparent',
+                    }}
+                  >
+                    {label}
+                  </Box>
+                );
+              })}
+            </Box>
+            {visibleItems.length === 0 ? (
+              <Typography sx={{ color: colors.text.dim, fontSize: '0.65rem', textAlign: 'center', py: 3, fontFamily: MONO }}>
+                Nothing in this kind yet.
+              </Typography>
+            ) : groupArticlesByDay(visibleItems).map((group, groupIdx) => (
               <Box key={group.dayKey || `ungrouped-${groupIdx}`}>
                 {group.label ? (
                   <DateGroupDivider label={group.label} first={groupIdx === 0} />
                 ) : null}
                 {group.items.map((item) => (
-                  <MarkdownListItem
+                  <ArticleListItem
                     key={item.id}
                     item={item}
                     selected={item.id === selectedId}
@@ -254,7 +371,8 @@ export function MarkdownPanel() {
                   />
                 ))}
               </Box>
-            ))
+            ))}
+            </>
           )}
         </Box>
 
@@ -266,18 +384,19 @@ export function MarkdownPanel() {
           ) : selected && !detail ? (
             <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', p: 3 }}>
               <Typography sx={{ color: colors.accent.red, fontSize: '0.72rem', fontFamily: "'JetBrains Mono', monospace", textAlign: 'center' }}>
-                Failed to load document
+                Failed to load article
               </Typography>
             </Box>
           ) : selected ? (
-            <MarkdownViewer
+            <ArticleViewer
               document={selected}
-              contentMarkdown={detail?.contentMarkdown}
+              content={detail?.content}
+              onBack={() => setSelectedId(null)}
             />
           ) : (
             <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', p: 3 }}>
               <Typography sx={{ color: colors.text.dim, fontSize: '0.72rem', fontFamily: "'JetBrains Mono', monospace", textAlign: 'center' }}>
-                Select a document to view
+                Select an article to view
               </Typography>
             </Box>
           )}
@@ -287,9 +406,9 @@ export function MarkdownPanel() {
       <ConfirmDeleteDialog
         open={Boolean(deletePendingId)}
         busy={deleteBusy}
-        title="DELETE DOCUMENT"
+        title="DELETE ARTICLE"
         description="Permanently delete"
-        itemName={deletePendingItem?.title ?? deletePendingItem?.id ?? 'this document'}
+        itemName={deletePendingItem?.title ?? deletePendingItem?.id ?? 'this article'}
         onClose={() => setDeletePendingId(null)}
         onConfirm={() => { void confirmDelete(); }}
       />

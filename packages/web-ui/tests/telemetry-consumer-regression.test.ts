@@ -6,7 +6,7 @@ import { shouldAppendToAppContextEvents } from '../src/perf/telemetry-event-filt
  * event types whitelisted for global storage.
  */
 describe('telemetry consumer regression', () => {
-  const markdownPanelEvents = ['markdown_created'];
+  const articlesPanelEvents = ['article_created'];
   const notificationsPanelEvents = ['notification_created'];
   const automationGlobalEvents = [
     'automation_run_triggered',
@@ -15,8 +15,8 @@ describe('telemetry consumer regression', () => {
     'automation_run_ended',
   ];
 
-  it('MarkdownPanel refresh events remain in AppContext', () => {
-    for (const type of markdownPanelEvents) {
+  it('ArticlesPanel refresh events remain in AppContext', () => {
+    for (const type of articlesPanelEvents) {
       expect(shouldAppendToAppContextEvents({ type })).toBe(true);
     }
   });

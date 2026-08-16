@@ -1,7 +1,7 @@
 import type { ChatMessage, SessionInfo } from '../api';
 import { mapRestoreHistoryMessage } from './utils';
 import type { UIMessage } from './types';
-import { appendStreamText, repairStreamTextGlitches, type TurnFeedbackRating } from '@agentx/shared/browser';
+import { appendStreamText, repairStreamTextGlitches, suppressOverlappingAssistantTexts, type TurnFeedbackRating } from '@agentx/shared/browser';
 import { sessionHostCrewDisplay } from '../utils/crew-display';
 
 /** Initial messages loaded per role (user + assistant) on session open. */
@@ -75,7 +75,7 @@ export function applyTurnFeedbackRows(
 
 export function mapHistoryToUiMessages(historyMsgs: ChatMessage[]): UIMessage[] {
   const visible = historyMsgs.filter((m) => m.role !== 'part' && m.role !== 'system');
-  return visible.map((m) => {
+  const mapped = visible.map((m) => {
     const restored = mapRestoreHistoryMessage(m as unknown as Record<string, unknown>);
     const restoredSubs = (restored.subAgents as ChatMessage['subAgents'] | undefined)
       ?? m.subAgents;
@@ -111,6 +111,7 @@ export function mapHistoryToUiMessages(historyMsgs: ChatMessage[]): UIMessage[] 
       plan: typeof m.plan === 'string' ? JSON.parse(m.plan) : (m.plan || undefined),
     };
   }) as unknown as UIMessage[];
+  return suppressOverlappingAssistantTexts(mapped) as UIMessage[];
 }
 
 /** Build a streaming assistant bubble from mid-turn orphan parts + partial text. */

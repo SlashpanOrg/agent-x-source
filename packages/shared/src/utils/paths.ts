@@ -16,9 +16,9 @@ export function getLogDir(): string {
   return join(getDataDir(), 'logs');
 }
 
-/** Internal markdown documents; never leaves data dir except via explicit PDF export. */
-export function getMarkdownDocumentsDir(): string {
-  return join(getDataDir(), 'markdown');
+/** Internal articles; never leaves data dir except via explicit PDF export. */
+export function getArticlesDir(): string {
+  return join(getDataDir(), 'articles');
 }
 
 /**

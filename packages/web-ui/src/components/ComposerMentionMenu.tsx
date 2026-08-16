@@ -7,14 +7,17 @@ import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
+import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
+import ForumIcon from '@mui/icons-material/Forum';
 
 import CheckBoxOutlineBlankIcon from '@mui/icons-material/CheckBoxOutlineBlank';
 import CircularProgress from '@mui/material/CircularProgress';
 import { colors, alphaColor } from '../theme';
 import { getCrewAccent } from '../styles/crew-theme';
-import { knowledgeBase, system, type Crew } from '../api';
+import { articles, knowledgeBase, sessions, system, type Crew, type SessionInfo } from '../api';
 import type { KnowledgeSource } from '@agentx/shared';
-import { crewRequiresMedicalDisclaimer } from '@agentx/shared/browser';
+import { articleKindLabel, crewRequiresMedicalDisclaimer, isArticleKind } from '@agentx/shared/browser';
+import { articleKindAccent } from '../articles/kind-theme';
 
 export type ComposerFileHit = {
   name: string;
@@ -34,20 +37,43 @@ export type ComposerKbHit = {
   mimeType?: string;
 };
 
+export type ComposerArticleHit = {
+  articleId: string;
+  title: string;
+  kind?: string;
+};
 
-type MenuStage = 'root' | 'crew' | 'files' | 'kb';
+export type ComposerSessionHit = {
+  sessionId: string;
+  title: string;
+};
+
+
+type MenuStage = 'root' | 'crew' | 'files' | 'kb' | 'articles' | 'sessions';
 
 type NavItem =
   | { kind: 'back' }
   | { kind: 'select-folder' }
-  | { kind: 'category'; category: 'crew' | 'files' | 'kb' }
+  | { kind: 'category'; category: 'crew' | 'files' | 'kb' | 'articles' | 'sessions' }
   | { kind: 'crew'; crew: Crew }
   | { kind: 'dir'; dir: ComposerFolderHit }
   | { kind: 'file'; file: ComposerFileHit }
-  | { kind: 'kb'; source: ComposerKbHit };
+  | { kind: 'kb'; source: ComposerKbHit }
+  | { kind: 'article'; article: ComposerArticleHit }
+  | { kind: 'session'; session: ComposerSessionHit };
+
+function isMentionableGroupSession(session: SessionInfo, excludeSessionId?: string | null): boolean {
+  if (!session.id || session.id === excludeSessionId) return false;
+  if (session.parentId) return false;
+  if (session.id.startsWith('voice:') || session.id.startsWith('__channel__:')) return false;
+  if (session.id.startsWith('automation:')) return false;
+  const kind = session.contextKind ?? 'agent_x';
+  if (kind === 'automation' || kind === 'crew_private' || kind === 'agent_x_core') return false;
+  return true;
+}
 
 /**
- * Multi-level @ picker: Crew / Directory / Knowledge Base.
+ * Multi-level @ picker: Crew / Directory / Knowledge Base / Articles / Sessions.
  */
 export function ComposerMentionMenu({
   query,
@@ -57,6 +83,9 @@ export function ComposerMentionMenu({
   onSelectFile,
   onSelectFolder,
   onSelectKb,
+  onSelectArticle,
+  onSelectSession,
+  excludeSessionId,
   onClose,
 }: {
   query: string;
@@ -66,6 +95,9 @@ export function ComposerMentionMenu({
   onSelectFile: (file: ComposerFileHit) => void;
   onSelectFolder: (folder: ComposerFolderHit) => void;
   onSelectKb?: (source: ComposerKbHit) => void;
+  onSelectArticle?: (article: ComposerArticleHit) => void;
+  onSelectSession?: (session: ComposerSessionHit) => void;
+  excludeSessionId?: string | null;
   onClose: () => void;
 }) {
   const q = query.toLowerCase();
@@ -79,8 +111,12 @@ export function ComposerMentionMenu({
   const [files, setFiles] = useState<ComposerFileHit[]>([]);
   const [searchFiles, setSearchFiles] = useState<ComposerFileHit[]>([]);
   const [kbSources, setKbSources] = useState<ComposerKbHit[]>([]);
+  const [articleHits, setArticleHits] = useState<ComposerArticleHit[]>([]);
+  const [sessionHits, setSessionHits] = useState<ComposerSessionHit[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [loadingKb, setLoadingKb] = useState(false);
+  const [loadingArticles, setLoadingArticles] = useState(false);
+  const [loadingSessions, setLoadingSessions] = useState(false);
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const searching = stage === 'files' && q.length > 0;
@@ -143,6 +179,52 @@ export function ComposerMentionMenu({
     return () => { cancelled = true; };
   }, [stage]);
 
+  useEffect(() => {
+    if (stage !== 'articles') return;
+    let cancelled = false;
+    setLoadingArticles(true);
+    void articles.list({ limit: 80 })
+      .then((res) => {
+        if (cancelled) return;
+        setArticleHits((res.articles ?? []).map((a) => ({
+          articleId: a.id,
+          title: a.title,
+          kind: a.contentFormat,
+        })));
+      })
+      .catch(() => {
+        if (!cancelled) setArticleHits([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingArticles(false);
+      });
+    return () => { cancelled = true; };
+  }, [stage]);
+
+  useEffect(() => {
+    if (stage !== 'sessions') return;
+    let cancelled = false;
+    setLoadingSessions(true);
+    void sessions.list()
+      .then((list: SessionInfo[]) => {
+        if (cancelled) return;
+        const mapped = list
+          .filter((s) => isMentionableGroupSession(s, excludeSessionId))
+          .map((s) => ({
+            sessionId: s.id,
+            title: s.title?.trim() || 'Untitled session',
+          }));
+        setSessionHits(mapped);
+      })
+      .catch(() => {
+        if (!cancelled) setSessionHits([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSessions(false);
+      });
+    return () => { cancelled = true; };
+  }, [stage, excludeSessionId]);
+
   // Flat file search when user types a filter.
   useEffect(() => {
     if (stage !== 'files' || !searching) {
@@ -190,12 +272,28 @@ export function ComposerMentionMenu({
       .slice(0, 24);
   }, [kbSources, q]);
 
+  const articlesFiltered = useMemo(() => {
+    if (!q) return articleHits.slice(0, 24);
+    return articleHits
+      .filter((a) => a.title.toLowerCase().includes(q) || a.articleId.toLowerCase().includes(q) || (a.kind ?? '').includes(q))
+      .slice(0, 24);
+  }, [articleHits, q]);
+
+  const sessionsFiltered = useMemo(() => {
+    if (!q) return sessionHits.slice(0, 24);
+    return sessionHits
+      .filter((s) => s.title.toLowerCase().includes(q) || s.sessionId.toLowerCase().includes(q))
+      .slice(0, 24);
+  }, [sessionHits, q]);
+
   const items: NavItem[] = useMemo(() => {
     if (stage === 'root') {
       const cats: NavItem[] = [];
       if (!disableCrew) cats.push({ kind: 'category', category: 'crew' });
       cats.push({ kind: 'category', category: 'files' });
       cats.push({ kind: 'category', category: 'kb' });
+      cats.push({ kind: 'category', category: 'articles' });
+      cats.push({ kind: 'category', category: 'sessions' });
       return cats;
     }
     if (stage === 'crew') {
@@ -208,6 +306,18 @@ export function ComposerMentionMenu({
       return [
         { kind: 'back' as const },
         ...kbFiltered.map((source) => ({ kind: 'kb' as const, source })),
+      ];
+    }
+    if (stage === 'articles') {
+      return [
+        { kind: 'back' as const },
+        ...articlesFiltered.map((article) => ({ kind: 'article' as const, article })),
+      ];
+    }
+    if (stage === 'sessions') {
+      return [
+        { kind: 'back' as const },
+        ...sessionsFiltered.map((session) => ({ kind: 'session' as const, session })),
       ];
     }
     if (searching) {
@@ -223,7 +333,7 @@ export function ComposerMentionMenu({
       ...dirs.map((dir) => ({ kind: 'dir' as const, dir })),
       ...files.map((file) => ({ kind: 'file' as const, file })),
     ];
-  }, [stage, disableCrew, crewFiltered, kbFiltered, searching, searchFiles, dirs, files]);
+  }, [stage, disableCrew, crewFiltered, kbFiltered, articlesFiltered, sessionsFiltered, searching, searchFiles, dirs, files]);
 
   // Reset highlight only when the browse context changes — not when item count
   // flickers during async loads (that was resetting selection mid-navigation).
@@ -275,6 +385,8 @@ export function ComposerMentionMenu({
     if (item.kind === 'category') {
       if (item.category === 'crew') setStage('crew');
       else if (item.category === 'kb') setStage('kb');
+      else if (item.category === 'articles') setStage('articles');
+      else if (item.category === 'sessions') setStage('sessions');
       else {
         setStage('files');
         setBrowseRel('');
@@ -289,13 +401,21 @@ export function ComposerMentionMenu({
       onSelectKb?.(item.source);
       return;
     }
+    if (item.kind === 'article') {
+      onSelectArticle?.(item.article);
+      return;
+    }
+    if (item.kind === 'session') {
+      onSelectSession?.(item.session);
+      return;
+    }
     if (item.kind === 'dir') {
       setBrowseRel(item.dir.relativePath);
       return;
     }
     onSelectFile(item.file);
   }, [
-    items, onSelectCrew, onSelectFile, onSelectFolder, onSelectKb, onClose, disableCrew,
+    items, onSelectCrew, onSelectFile, onSelectFolder, onSelectKb, onSelectArticle, onSelectSession, onClose, disableCrew,
     stage, browseRel, parentRelative, browseName, browseAbs,
   ]);
 
@@ -349,13 +469,19 @@ export function ComposerMentionMenu({
       ? '@ CREW'
       : stage === 'kb'
         ? '@ KNOWLEDGE BASE'
-        : browseRel
-          ? `@ ${browseRel}`
-          : '@ DIRECTORY';
+        : stage === 'articles'
+          ? '@ ARTICLES'
+          : stage === 'sessions'
+            ? '@ SESSIONS'
+            : browseRel
+              ? `@ ${browseRel}`
+              : '@ DIRECTORY';
 
   const emptyBrowse = !searching && !loadingFiles && dirs.length === 0 && files.length === 0;
   const emptySearch = searching && !loadingFiles && searchFiles.length === 0;
   const emptyKb = stage === 'kb' && !loadingKb && kbFiltered.length === 0;
+  const emptyArticles = stage === 'articles' && !loadingArticles && articlesFiltered.length === 0;
+  const emptySessions = stage === 'sessions' && !loadingSessions && sessionsFiltered.length === 0;
 
   return (
     <Box
@@ -368,7 +494,7 @@ export function ComposerMentionMenu({
         border: `1px solid ${alphaColor(colors.accent.blue, '40')}`,
         borderRadius: '7px',
         boxShadow: `0 5px 14px ${colors.shadow.heavy}`,
-        maxHeight: 200,
+        maxHeight: 240,
         zIndex: 100,
         display: 'flex',
         flexDirection: 'column',
@@ -390,7 +516,10 @@ export function ComposerMentionMenu({
           {title}
         </Typography>
         <Box sx={{ flex: 1 }} />
-        {(stage === 'files' && loadingFiles) || (stage === 'kb' && loadingKb)
+        {(stage === 'files' && loadingFiles)
+          || (stage === 'kb' && loadingKb)
+          || (stage === 'articles' && loadingArticles)
+          || (stage === 'sessions' && loadingSessions)
           ? <CircularProgress size={8} sx={{ color: colors.text.dim }} />
           : null}
         <Typography sx={{ fontSize: '0.4rem', color: colors.text.dim }}>↑↓ · ⏎ · esc</Typography>
@@ -411,7 +540,11 @@ export function ComposerMentionMenu({
           ? { label: 'Crew', hint: 'Mention a crew member', color: colors.accent.blue, icon: <GroupIcon sx={{ fontSize: 13, color: colors.accent.blue }} /> }
           : item.category === 'kb'
             ? { label: 'Knowledge Base', hint: 'Pick an embedded document', color: colors.accent.purple, icon: <LibraryBooksIcon sx={{ fontSize: 13, color: colors.accent.purple }} /> }
-            : { label: 'Directory', hint: 'Browse files & folders', color: colors.accent.cyan, icon: <FolderIcon sx={{ fontSize: 13, color: colors.accent.cyan }} /> };
+            : item.category === 'articles'
+              ? { label: 'Articles', hint: 'Saved articles, reports, insights', color: colors.accent.cyan, icon: <ArticleOutlinedIcon sx={{ fontSize: 13, color: colors.accent.cyan }} /> }
+              : item.category === 'sessions'
+                ? { label: 'Sessions', hint: 'Other group chats as context', color: colors.accent.green, icon: <ForumIcon sx={{ fontSize: 13, color: colors.accent.green }} /> }
+                : { label: 'Directory', hint: 'Browse files & folders', color: colors.accent.cyan, icon: <FolderIcon sx={{ fontSize: 13, color: colors.accent.cyan }} /> };
         return (
           <Box
             key={item.category}
@@ -498,6 +631,123 @@ export function ComposerMentionMenu({
           {emptyKb && (
             <Typography sx={{ px: 1, py: 1.25, fontSize: '0.5rem', color: colors.text.dim }}>
               No ready Knowledge Base documents
+            </Typography>
+          )}
+        </>
+      )}
+
+      {stage === 'articles' && (
+        <>
+          {items.map((item, i) => {
+            if (item.kind === 'back') {
+              return (
+                <Box
+                  key="back"
+                  data-mention-idx={i}
+                  onClick={() => selectIndex(i)}
+                  onMouseEnter={() => setActive(i)}
+                  sx={{
+                    px: 0.85, py: 0.35,
+                    display: 'flex', alignItems: 'center', gap: 0.5,
+                    cursor: 'pointer',
+                    bgcolor: i === active ? alphaColor(colors.accent.cyan, '12') : 'transparent',
+                    borderBottom: `1px solid ${colors.border.subtle}`,
+                  }}
+                >
+                  <ArrowBackIcon sx={{ fontSize: 12, color: colors.text.dim }} />
+                  <Typography sx={{ fontSize: '0.55rem', color: colors.text.secondary }}>Go back</Typography>
+                </Box>
+              );
+            }
+            if (item.kind !== 'article') return null;
+            const art = item.article;
+            const kind = isArticleKind(art.kind) ? art.kind : 'article';
+            const accent = articleKindAccent(kind);
+            return (
+              <Box
+                key={`article-${art.articleId}`}
+                data-mention-idx={i}
+                onClick={() => selectIndex(i)}
+                onMouseEnter={() => setActive(i)}
+                sx={{
+                  px: 0.85, py: 0.3,
+                  display: 'flex', alignItems: 'center', gap: 0.55,
+                  cursor: 'pointer',
+                  bgcolor: i === active ? alphaColor(accent, '15') : 'transparent',
+                  borderLeft: i === active ? `2px solid ${accent}` : '2px solid transparent',
+                }}
+              >
+                <Box sx={{
+                  minWidth: 16, height: 14, px: 0.35, borderRadius: '999px',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  bgcolor: accent, color: colors.bg.primary,
+                  fontSize: '0.4rem', fontWeight: 700, flexShrink: 0,
+                }}>
+                  {articleKindLabel(kind).slice(0, 3).toUpperCase()}
+                </Box>
+                <Typography sx={{ fontSize: '0.55rem', color: colors.text.primary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {art.title}
+                </Typography>
+              </Box>
+            );
+          })}
+          {emptyArticles && (
+            <Typography sx={{ px: 1, py: 1.25, fontSize: '0.5rem', color: colors.text.dim }}>
+              No saved articles, reports, or insights yet
+            </Typography>
+          )}
+        </>
+      )}
+
+      {stage === 'sessions' && (
+        <>
+          {items.map((item, i) => {
+            if (item.kind === 'back') {
+              return (
+                <Box
+                  key="back"
+                  data-mention-idx={i}
+                  onClick={() => selectIndex(i)}
+                  onMouseEnter={() => setActive(i)}
+                  sx={{
+                    px: 0.85, py: 0.35,
+                    display: 'flex', alignItems: 'center', gap: 0.5,
+                    cursor: 'pointer',
+                    bgcolor: i === active ? alphaColor(colors.accent.green, '12') : 'transparent',
+                    borderBottom: `1px solid ${colors.border.subtle}`,
+                  }}
+                >
+                  <ArrowBackIcon sx={{ fontSize: 12, color: colors.text.dim }} />
+                  <Typography sx={{ fontSize: '0.55rem', color: colors.text.secondary }}>Go back</Typography>
+                </Box>
+              );
+            }
+            if (item.kind !== 'session') return null;
+            const sess = item.session;
+            return (
+              <Box
+                key={`session-${sess.sessionId}`}
+                data-mention-idx={i}
+                onClick={() => selectIndex(i)}
+                onMouseEnter={() => setActive(i)}
+                sx={{
+                  px: 0.85, py: 0.3,
+                  display: 'flex', alignItems: 'center', gap: 0.55,
+                  cursor: 'pointer',
+                  bgcolor: i === active ? alphaColor(colors.accent.green, '15') : 'transparent',
+                  borderLeft: i === active ? `2px solid ${colors.accent.green}` : '2px solid transparent',
+                }}
+              >
+                <ForumIcon sx={{ fontSize: 13, color: colors.accent.green, flexShrink: 0 }} />
+                <Typography sx={{ fontSize: '0.55rem', color: colors.text.primary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {sess.title}
+                </Typography>
+              </Box>
+            );
+          })}
+          {emptySessions && (
+            <Typography sx={{ px: 1, py: 1.25, fontSize: '0.5rem', color: colors.text.dim }}>
+              No other group sessions to attach
             </Typography>
           )}
         </>

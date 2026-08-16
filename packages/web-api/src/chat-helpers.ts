@@ -437,11 +437,14 @@ export async function loadSessionMessagesPage(
   const store = getMessageStore();
   if (!store) return { messages: [], total: 0, hasMore: false };
 
-  await store.ensureSessionHydrated?.(sessionId);
-
+  // Paged SQL reads do not need the full session in cache. Hydrating first
+  // pulls every message and every tool part into memory and is what made
+  // opening a heavy thread look frozen. Agent-turn setup hydrates lazily.
   if (store.getMessagesPage) {
     return await store.getMessagesPage(sessionId, opts);
   }
+
+  await store.ensureSessionHydrated?.(sessionId);
 
   const all = (store.getMessages?.(sessionId) ?? [])
     .filter((m) => opts.includeSystem

@@ -238,7 +238,7 @@ type InputHandlers = Pick<ChatSessionStateReturn, InputHandlerKey>;
 const THREAD_HANDLER_KEYS = [
   'handleResend', 'handleQuestionnaireRespond', 'handleQuestionnaireCancel',
   'handleCrewRosterPickerSubmit', 'handleCrewRosterPickerSkip',
-  'handleTurnFeedback', 'handleSaveMarkdown', 'handleViewCrewDossier', 'handleViewCrewByCallsign',
+  'handleTurnFeedback', 'handleSaveArticle', 'handleViewCrewDossier', 'handleViewCrewByCallsign',
 ] as const;
 
 type ThreadHandlerKey = typeof THREAD_HANDLER_KEYS[number];

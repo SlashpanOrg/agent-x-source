@@ -10,7 +10,7 @@ import Typography from '@mui/material/Typography';
 import TextFieldsIcon from '@mui/icons-material/TextFields';
 import { colors, alphaColor } from '../theme';
 import { AttachmentModal } from './AttachmentModal';
-import { normalizeMessageForUi, orderPartsForChatRender, parseResponseDocument } from '@agentx/shared/browser';
+import { collapseOverlappingTextParts, normalizeMessageForUi, orderPartsForChatRender, parseResponseDocument, repairStreamTextGlitches } from '@agentx/shared/browser';
 import type { UIMessage, PartEntry, ToolCall } from './types';
 import { displayContent, stripToolNoise, stripVoiceChannelBlock, extractVoiceChannelBlock } from './utils';
 import { CrewAwareMarkdown, getWebCrewColor, StreamingMarkdown } from './ChatMarkdown';
@@ -244,7 +244,7 @@ function renderParts(
   streaming = false,
   onQuestionnaireCancel?: (messageId: string) => void,
 ) {
-  const filtered = parts.filter((p) => {
+  const filtered = collapseOverlappingTextParts(parts).filter((p) => {
     if (p.type === 'deep_search') {
       return !!(p.deepSearch?.bundle || p.deepSearch?.progress || p.deepSearch?.running);
     }
@@ -309,7 +309,9 @@ function renderParts(
         );
       case 'text':
         if (!part.content) return null;
-        const textContent = stripVoiceChannelBlock(stripToolNoise(part.content, { trim: false }));
+        const textContent = stripVoiceChannelBlock(
+          repairStreamTextGlitches(stripToolNoise(part.content, { trim: false })),
+        );
         if (!textContent) return null;
         return streaming
           ? (
@@ -515,7 +517,7 @@ function renderParts(
   );
 }
 
-function ChatMessageTurnComponent({ message, loadingSteps, onOpenChildSession, onQuestionnaireRespond, onQuestionnaireCancel, onCrewRosterPickerSubmit, onCrewRosterPickerSkip, onViewCrewDossier, showFeedback, onTurnFeedback, onSaveMarkdown, feedbackSubmitting }: {
+function ChatMessageTurnComponent({ message, loadingSteps, onOpenChildSession, onQuestionnaireRespond, onQuestionnaireCancel, onCrewRosterPickerSubmit, onCrewRosterPickerSkip, onViewCrewDossier, showFeedback, onTurnFeedback, onSaveArticle, feedbackSubmitting }: {
   message: UIMessage;
   loadingSteps?: Array<{ id: string; label: string; status: string }> | null;
   onOpenChildSession?: (props: Omit<ChildSessionCardProps, 'onExpand'>) => void;
@@ -526,7 +528,7 @@ function ChatMessageTurnComponent({ message, loadingSteps, onOpenChildSession, o
   onViewCrewDossier?: (candidate: CrewMatchCandidate) => void;
   showFeedback?: boolean;
   onTurnFeedback?: (messageId: string, rating: TurnFeedbackRating) => void;
-  onSaveMarkdown?: (message: UIMessage) => void;
+  onSaveArticle?: (message: UIMessage) => void;
   feedbackSubmitting?: boolean;
 }) {
   const crewInfo = message.crew;
@@ -578,9 +580,9 @@ function ChatMessageTurnComponent({ message, loadingSteps, onOpenChildSession, o
   const hasParts = useMemo(() => !!(displayMessage.parts && displayMessage.parts.length > 0), [displayMessage.parts]);
   const webSources = useMemo(() => collectWebSourceUrls(displayMessage.parts), [displayMessage.parts]);
   const hasQuestionnaire = useMemo(() => !!(displayMessage.parts?.some((p) => p.type === 'questionnaire')), [displayMessage.parts]);
-  const canSaveMarkdown = useMemo(
-    () => !message.streaming && message.role === 'assistant' && onSaveMarkdown && (hasParts || !!cleanContent),
-    [message.streaming, message.role, onSaveMarkdown, hasParts, cleanContent],
+  const canSaveArticle = useMemo(
+    () => !message.streaming && message.role === 'assistant' && onSaveArticle && (hasParts || !!cleanContent),
+    [message.streaming, message.role, onSaveArticle, hasParts, cleanContent],
   );
   const contentBlock = useMemo(
     () => hasParts ? renderParts(
@@ -781,11 +783,11 @@ function ChatMessageTurnComponent({ message, loadingSteps, onOpenChildSession, o
 
       {!message.streaming && (
         <Box sx={{ mt: 0.5, display: 'flex', alignItems: 'center', gap: 0.75, opacity: 0.45 }}>
-            {canSaveMarkdown && (
-              <Tooltip title="Save as Markdown">
+            {canSaveArticle && (
+              <Tooltip title="Save as Article">
                 <IconButton
                   size="small"
-                  onClick={() => onSaveMarkdown!(message)}
+                  onClick={() => onSaveArticle!(message)}
                   sx={{ p: 0.25, color: colors.text.dim, '&:hover': { color: colors.text.primary } }}
                 >
                   <ArticleOutlinedIcon sx={{ fontSize: 13 }} />
@@ -825,8 +827,8 @@ function ChatMessageTurnComponent({ message, loadingSteps, onOpenChildSession, o
   );
 }
 
-function propsEqual(prev: { message: UIMessage; loadingSteps?: Array<{ id: string; label: string; status: string }> | null; onOpenChildSession?: unknown; onQuestionnaireRespond?: unknown; onQuestionnaireCancel?: unknown; onCrewRosterPickerSubmit?: unknown; onCrewRosterPickerSkip?: unknown; onViewCrewDossier?: unknown; showFeedback?: boolean; onTurnFeedback?: unknown; onSaveMarkdown?: unknown; feedbackSubmitting?: boolean },
-  next: { message: UIMessage; loadingSteps?: Array<{ id: string; label: string; status: string }> | null; onOpenChildSession?: unknown; onQuestionnaireRespond?: unknown; onQuestionnaireCancel?: unknown; onCrewRosterPickerSubmit?: unknown; onCrewRosterPickerSkip?: unknown; onViewCrewDossier?: unknown; showFeedback?: boolean; onTurnFeedback?: unknown; onSaveMarkdown?: unknown; feedbackSubmitting?: boolean }) {
+function propsEqual(prev: { message: UIMessage; loadingSteps?: Array<{ id: string; label: string; status: string }> | null; onOpenChildSession?: unknown; onQuestionnaireRespond?: unknown; onQuestionnaireCancel?: unknown; onCrewRosterPickerSubmit?: unknown; onCrewRosterPickerSkip?: unknown; onViewCrewDossier?: unknown; showFeedback?: boolean; onTurnFeedback?: unknown; onSaveArticle?: unknown; feedbackSubmitting?: boolean },
+  next: { message: UIMessage; loadingSteps?: Array<{ id: string; label: string; status: string }> | null; onOpenChildSession?: unknown; onQuestionnaireRespond?: unknown; onQuestionnaireCancel?: unknown; onCrewRosterPickerSubmit?: unknown; onCrewRosterPickerSkip?: unknown; onViewCrewDossier?: unknown; showFeedback?: boolean; onTurnFeedback?: unknown; onSaveArticle?: unknown; feedbackSubmitting?: boolean }) {
   if (prev.loadingSteps !== next.loadingSteps) return false;
   if (prev.onOpenChildSession !== next.onOpenChildSession) return false;
   if (prev.onQuestionnaireRespond !== next.onQuestionnaireRespond) return false;
@@ -836,7 +838,7 @@ function propsEqual(prev: { message: UIMessage; loadingSteps?: Array<{ id: strin
   if (prev.onViewCrewDossier !== next.onViewCrewDossier) return false;
   if (prev.showFeedback !== next.showFeedback) return false;
   if (prev.onTurnFeedback !== next.onTurnFeedback) return false;
-  if (prev.onSaveMarkdown !== next.onSaveMarkdown) return false;
+  if (prev.onSaveArticle !== next.onSaveArticle) return false;
   if (prev.feedbackSubmitting !== next.feedbackSubmitting) return false;
   const pm = prev.message;
   const nm = next.message;

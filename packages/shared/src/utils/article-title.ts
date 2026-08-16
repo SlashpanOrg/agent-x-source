@@ -1,18 +1,29 @@
-export interface DeriveMarkdownTitleInput {
+import {
+  displayArticleTitle,
+  isGfmTableRow,
+  isGfmTableSeparator,
+  parseGfmTableCells,
+} from './article-table.js';
+
+export interface DeriveArticleTitleInput {
   title?: string;
   contentTsx?: string;
-  contentMarkdown?: string;
+  content?: string;
 }
 
 const GENERIC_TITLES = new Set([
   'canvas',
   'markdown',
+  'article',
+  'articles',
   'untitled',
   'untitled canvas',
   'untitled markdown',
+  'untitled article',
   'saved message',
   'saved canvas',
   'saved markdown',
+  'saved article',
   'savedcanvas',
   'new canvas',
   'my canvas',
@@ -20,7 +31,7 @@ const GENERIC_TITLES = new Set([
   'report',
 ]);
 
-export function isGenericMarkdownTitle(title: string): boolean {
+export function isGenericArticleTitle(title: string): boolean {
   const normalized = title.trim().toLowerCase().replace(/\s+/g, ' ');
   return !normalized || GENERIC_TITLES.has(normalized);
 }
@@ -39,7 +50,7 @@ function cleanTitleCandidate(raw: string): string | null {
     .replace(/^["'`]+|["'`]+$/g, '')
     .trim()
     .slice(0, 200);
-  if (!title || isGenericMarkdownTitle(title)) return null;
+  if (!title || isGenericArticleTitle(title)) return null;
   return title;
 }
 
@@ -87,34 +98,66 @@ function titleFromChartFence(content: string): string | null {
   return null;
 }
 
-function titleFromMarkdown(content: string): string | null {
+function firstTableHeaderTitle(content: string): string | null {
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  let inFence = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    if (trimmed.startsWith('```')) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence || !trimmed || isGfmTableSeparator(trimmed)) continue;
+    if (!isGfmTableRow(trimmed)) continue;
+    const next = lines[index + 1]?.trim() ?? '';
+    if (!isGfmTableSeparator(next) && !(next && isGfmTableRow(next))) continue;
+    const cells = parseGfmTableCells(trimmed).filter(Boolean);
+    if (cells.length < 2) continue;
+    return cleanTitleCandidate(cells.join(' · '));
+  }
+  return null;
+}
+
+function titleFromBody(content: string): string | null {
   const chartTitle = titleFromChartFence(content);
   if (chartTitle) return chartTitle;
 
   const heading = content.match(/^#{1,3}\s+(.+)$/m);
-  if (heading?.[1]) {
+  if (heading?.[1] && !isGfmTableRow(heading[1])) {
     const candidate = cleanTitleCandidate(heading[1]);
     if (candidate) return candidate;
   }
 
-  const plain = content
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/[#>*_`~[\]()]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  let inFence = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('```')) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence || !trimmed) continue;
+    if (isGfmTableRow(trimmed) || isGfmTableSeparator(trimmed)) continue;
+    if (/^[-*+]\s/.test(trimmed) || /^\d+\.\s/.test(trimmed)) continue;
+    const plain = trimmed
+      .replace(/[#>*_`~[\]()]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!plain) continue;
+    const sentence = plain.split(/(?<=[.!?])\s+/)[0] ?? plain;
+    const words = sentence.split(' ').filter(Boolean).slice(0, 10).join(' ');
+    const candidate = cleanTitleCandidate(words);
+    if (candidate) return candidate;
+  }
 
-  if (!plain) return null;
-
-  const sentence = plain.split(/(?<=[.!?])\s+/)[0] ?? plain;
-  const words = sentence.split(' ').filter(Boolean).slice(0, 10).join(' ');
-  return cleanTitleCandidate(words);
+  return firstTableHeaderTitle(content);
 }
 
-/** Derive a human-readable markdown document title from explicit title and/or content. */
-export function deriveMarkdownTitle(input: DeriveMarkdownTitleInput): string {
+/** Derive a human-readable article title from explicit title and/or content. */
+export function deriveArticleTitle(input: DeriveArticleTitleInput): string {
   const explicit = input.title?.trim();
-  if (explicit && !isGenericMarkdownTitle(explicit)) {
-    return explicit.slice(0, 200);
+  if (explicit && !isGenericArticleTitle(explicit) && !isGfmTableRow(explicit)) {
+    return displayArticleTitle(explicit) || explicit.slice(0, 200);
   }
 
   const tsx = input.contentTsx?.trim();
@@ -123,17 +166,20 @@ export function deriveMarkdownTitle(input: DeriveMarkdownTitleInput): string {
     if (fromTsx) return fromTsx;
   }
 
-  const markdown = input.contentMarkdown?.trim();
-  if (markdown) {
-    const fromMarkdown = titleFromMarkdown(markdown);
-    if (fromMarkdown) return fromMarkdown;
+  const body = input.content?.trim();
+  if (body) {
+    const fromBody = titleFromBody(body);
+    if (fromBody) return fromBody;
   }
 
   if (tsx) {
-    const fromWrapped = titleFromMarkdown(tsx);
+    const fromWrapped = titleFromBody(tsx);
     if (fromWrapped) return fromWrapped;
   }
 
-  if (explicit) return explicit.slice(0, 200);
-  return 'Markdown';
+  if (explicit) {
+    const fromExplicit = displayArticleTitle(explicit);
+    if (fromExplicit) return fromExplicit;
+  }
+  return 'Article';
 }

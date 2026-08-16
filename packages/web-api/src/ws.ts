@@ -754,8 +754,8 @@ export function subscribeToAgent(agent: { events: { on: (handler: EventHandler) 
           ? result.output
           : JSON.stringify(result ?? '');
       const metadata = event.result?.metadata;
-      if (toolName === 'save_to_markdown' && metadata?.['markdownId']) {
-        broadcast({ type: 'markdown_created', markdownId: metadata['markdownId'], contentFormat: metadata['contentFormat'] });
+      if (toolName === 'save_to_article' && metadata?.['articleId']) {
+        broadcast({ type: 'article_created', articleId: metadata['articleId'], contentFormat: metadata['contentFormat'] });
       }
       if (toolName === 'delegate_to_subagent') {
         const id = event.callId;

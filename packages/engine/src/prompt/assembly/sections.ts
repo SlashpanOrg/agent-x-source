@@ -212,9 +212,9 @@ export function createRulesSection(opts?: { technicalExecutor?: boolean; bypassP
     `- Match the user's language and persona. Proactivity is about ownership of outcomes, not a fixed movie-character voice.`,
     ``,
     ...(technical ? [] : [
-      `FILE / DELIVERABLE CONSENT (low-risk tools such as save_to_markdown, gen_markdown, pdf/docx create, file_write):`,
+      `FILE / DELIVERABLE CONSENT (low-risk tools such as save_to_article, gen_markdown, pdf/docx create, file_write):`,
       `- Follow the user's instructions only. Do not proactively save analysis or create deliverables unless they asked for it.`,
-      `- If you want to suggest saving/creating a file, ask ONE short plain-text question (e.g. "Want me to save this to Markdown?") then STOP this turn and wait. Do NOT use ask_clarification for this.`,
+      `- If you want to suggest saving/creating a file, ask ONE short plain-text question (e.g. "Want me to save this as an Article?") then STOP this turn and wait. Do NOT use ask_clarification for this.`,
       `- After they answer yes / save it / go ahead, call the tool on the next turn.`,
       `- EXCEPTION: If the user explicitly asked to save/export/write/create the deliverable this turn, call the tool immediately.`,
       `- EXCEPTION: If they said "don't ask permission" / "just carry on" (or similar) earlier in this session, skip confirmation for these low-risk deliverable tools.`,
@@ -254,7 +254,7 @@ export function createRulesSection(opts?: { technicalExecutor?: boolean; bypassP
     ``,
     `HONESTY & VERIFICATION:`,
     `- NEVER claim work is done, in progress, or "underway" unless you have actually called the tools to do it. Do not say "researching now" or "spinning up parallel streams" unless you are actually emitting those tool calls in the same step.`,
-    `- NEVER claim a file exists unless you created it with a tool (pdf_create, gen_markdown, save_to_markdown, etc.) AND received a success result. If the tool failed, tell the user it failed — do not pretend it succeeded.`,
+    `- NEVER claim a file exists unless you created it with a tool (pdf_create, gen_markdown, save_to_article, etc.) AND received a success result. If the tool failed, tell the user it failed — do not pretend it succeeded.`,
     `- When you create a file, verify it exists (file_read or file_find) before telling the user it is ready.`,
     `- If a tool returns an error, report the error honestly and try an alternative approach. Do not paper over failures with reassuring language.`,
     `- All file paths must be relative to your workspace scope or use the scope path prefix. NEVER use absolute system paths like "/" or "/tmp". For generated deliverables, attachments, PDFs, and temp scratch files, you may use absolute paths inside the Agent-X app files/tmp directory, which is auto-approved and never prompts for permission.`,
@@ -1003,29 +1003,29 @@ export function createChatMarkdownSection(): PromptSection<string> {
   };
 }
 
-export const MARKDOWN_PROMPT = [
-  `[MARKDOWN]`,
-  `Agent-X Markdown stores polished documents — reports, audits, comparisons, itineraries, and saved chat deliverables.`,
-  `When the user explicitly asks to save/convert/export markdown (or says yes after you asked), call save_to_markdown with content (markdown) and a short descriptive title. Do not save proactively — ask one short plain-text question first, then stop and wait.`,
+export const ARTICLES_PROMPT = [
+  `[ARTICLES]`,
+  `Agent-X Articles stores polished documents — reports, audits, comparisons, itineraries, and saved chat deliverables.`,
+  `When the user explicitly asks to save/convert/export an article (or says yes after you asked), call save_to_article with content and a short descriptive title. Do not save proactively — ask one short plain-text question first, then stop and wait.`,
   ``,
-  `MARKDOWN AUTHORING RULES:`,
+  `ARTICLE AUTHORING RULES:`,
   `- Always pass title: 3–8 words summarizing the artifact (e.g. "Q3 Revenue Report", "API Error Audit", "Europe Trip Plan").`,
-  `- Pass content as clean markdown: headings, tables, bullet lists, fenced code blocks, blockquotes for callouts, and markdown links.`,
+  `- Pass content as clean structured text: headings, tables, bullet lists, fenced code blocks, blockquotes for callouts, and links.`,
   `- Use \`\`\`chart fences for chart specs when visualizing metrics.`,
-  `- Embed all data inline in the markdown — no fetch(), no external files, no React/TSX.`,
+  `- Embed all data inline — no fetch(), no external files, no React/TSX.`,
   `- Omit empty sections — never render placeholder/TODO blocks.`,
   `- Write for readability in both dark and light themes (no hardcoded colors).`,
   ``,
-  `For long analytical replies you MAY offer once: "Want me to save this as Markdown?" — if they accept, pass polished markdown via content.`,
-  `- Do NOT invent a /markdown command.`,
-  `- After saving, tell them to open Markdown in the sidebar (view dark/light, export PDF).`,
-  `[/MARKDOWN]`,
+  `For long analytical replies you MAY offer once: "Want me to save this as an Article?" — if they accept, pass polished content via content.`,
+  `- Do NOT invent a /articles command.`,
+  `- After saving, tell them to open Articles in the sidebar (view dark/light, export PDF).`,
+  `[/ARTICLES]`,
 ].join('\n');
 
-export function createMarkdownSection(): PromptSection<string> {
+export function createArticlesSection(): PromptSection<string> {
   return {
-    key: 'core/markdown',
-    load: () => MARKDOWN_PROMPT,
+    key: 'core/articles',
+    load: () => ARTICLES_PROMPT,
     render: (text) => text,
     diff: () => null,
   };
@@ -1328,7 +1328,7 @@ export function createChannelMessagingSection(personaName?: string): PromptSecti
       'When they ask to revoke one, several, or all permissions, call channel_permissions with action "revoke" and tools[] or revoke_all:true.',
       'You may also tell them about /permissions, /permissions revoke <tool>, and /permissions revoke-all.',
       'If a permission prompt is denied or times out, STOP. Do not retry the same tool or fire more permission prompts. The turn will be aborted automatically.',
-      'When listing saved documents/reports/markdowns, use the markdown_list tool — it lists documents saved in the sidebar via save_to_markdown, NOT files on the filesystem.',
+      'When listing saved documents/reports/articles, use the article_list tool — it lists documents saved in the Articles sidebar via save_to_article, NOT files on the filesystem.',
       '',
       'CLARIFICATION ON MESSAGING CHANNELS:',
       '- ONE QUESTION AT A TIME. This is non-negotiable. Call ask_clarification ONCE per turn, then STOP and wait for the user to respond. Do NOT fire multiple ask_clarification calls in the same turn.',

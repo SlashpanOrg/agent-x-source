@@ -37,6 +37,7 @@ import LinkIcon from '@mui/icons-material/Link';
 import HubIcon from '@mui/icons-material/Hub';
 import { FileViewerModal } from './FileViewerModal';
 import { ConfirmDeleteDialog } from './ConfirmDeleteDialog';
+import { errorNeedsOcrInstall, OcrStackInstallButton } from './OcrStackInstallButton';
 
 const ACCEPTED_EXTS = '.pdf,.docx,.xlsx,.pptx,.txt,.md,.json,.html,.htm';
 
@@ -574,6 +575,9 @@ function DossierMonitor({
             >
               {truncateError(source.error)}
             </Typography>
+            {failed && errorNeedsOcrInstall(source.error) && (
+              <OcrStackInstallButton compact onInstalled={onReprocess} />
+            )}
           </Box>
         )}
 

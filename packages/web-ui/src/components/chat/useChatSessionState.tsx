@@ -5,7 +5,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 
-import { chat, sessions, models, crews, crewSuggestions, providers, settings, permissions, sessionPermissions, sessionTurnModes, markdownDocuments, modelBenchmark, type TodoItem, type SessionInfo, type Crew, type ModelInfo, type ConnectionState, type CrewSuggestionEvaluation, type CrewMatchCandidate, type IntegrationActionPreview } from '../../api';
+import { chat, sessions, models, crews, crewSuggestions, providers, settings, permissions, sessionPermissions, sessionTurnModes, articles, modelBenchmark, type TodoItem, type SessionInfo, type Crew, type ModelInfo, type ConnectionState, type CrewSuggestionEvaluation, type CrewMatchCandidate, type IntegrationActionPreview } from '../../api';
 import type { ThinkingMode, OutputMode } from '@agentx/shared';
 import type { PrebuiltCrew } from '../crew/hub-types';
 import type { ChatInputBarHandle } from '../ChatInputBar';
@@ -380,25 +380,25 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     }
   }, [replaceWarning, setFeedbackSubmitting, setPendingFeedbackMessageId, setMessages, setWarnings, currentSessionIdRef, messagesRef]);
 
-  const handleSaveMarkdown = useCallback(async (message: UIMessage) => {
+  const handleSaveArticle = useCallback(async (message: UIMessage) => {
     const sessionId = currentSessionIdRef.current;
     if (!sessionId || message.streaming) return;
-    const { messageToMarkdownDocument, deriveMarkdownTitleFromMessage } = await import('../../markdown/markdown-export');
-    const contentMarkdown = messageToMarkdownDocument(message);
-    if (!contentMarkdown.trim()) return;
-    const title = deriveMarkdownTitleFromMessage(message);
+    const { messageToArticleContent, deriveArticleTitleFromMessage } = await import('../../articles/message-export');
+    const content = messageToArticleContent(message);
+    if (!content.trim()) return;
+    const title = deriveArticleTitleFromMessage(message);
     try {
-      await markdownDocuments.create({
+      await articles.create({
         sessionId,
         title,
-        contentMarkdown,
+        content,
         messageId: message.id,
         sourceRole: message.role === 'user' ? 'user' : 'assistant',
       });
       const { notify } = await import('../NotificationToast');
-      notify('checkpoint', 'Saved to Markdown — open the sidebar to view or export PDF.');
+      notify('checkpoint', 'Saved to Articles — open the sidebar to view or export PDF.');
     } catch (err) {
-      setWarnings((prev) => replaceWarning(prev, err instanceof Error ? err.message : 'Failed to save markdown'));
+      setWarnings((prev) => replaceWarning(prev, err instanceof Error ? err.message : 'Failed to save article'));
     }
   }, [replaceWarning]);
 
@@ -1025,7 +1025,7 @@ export function useChatSessionState(sessionId?: string, coreSession = false) {
     handleConfirmDeleteSession,
     handleQuestionnaireRespond, handleQuestionnaireCancel,
     handleCrewRosterPickerSubmit, handleCrewRosterPickerSkip,
-    handleTurnFeedback, handleSaveMarkdown, handleViewCrewDossier, handleViewCrewByCallsign,
+    handleTurnFeedback, handleSaveArticle, handleViewCrewDossier, handleViewCrewByCallsign,
     openChildSession,
 
     // Derived values

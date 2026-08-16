@@ -85,7 +85,7 @@ export interface ChatThreadViewProps {
   onViewCrewDossier: (candidate: CrewMatchCandidate) => void;
   onViewCrewByCallsign?: (callsign: string, name?: string) => void;
   onTurnFeedback: (messageId: string, rating: import('@agentx/shared/browser').TurnFeedbackRating) => void;
-  onSaveMarkdown: (message: UIMessage) => void;
+  onSaveArticle: (message: UIMessage) => void;
 }
 
 function ChatThreadViewComponent(props: ChatThreadViewProps) {
@@ -112,7 +112,7 @@ function ChatThreadViewComponent(props: ChatThreadViewProps) {
     onViewCrewDossier,
     onViewCrewByCallsign,
     onTurnFeedback,
-    onSaveMarkdown,
+    onSaveArticle,
   } = props;
 
   const visibleMessagesWithFlags = useMemo(() => {
@@ -166,23 +166,13 @@ function ChatThreadViewComponent(props: ChatThreadViewProps) {
     !freezeMessageLayout && !loadingOlderMessages,
   );
 
+  if (sessionRestoring) {
+    return null;
+  }
+
   return (
     <>
-      {sessionRestoring && (
-        <Box sx={{
-          position: 'absolute',
-          inset: 0,
-          zIndex: 2,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          bgcolor: colors.bg.primary,
-        }}>
-          <CircularProgress size={22} sx={{ color: colors.text.dim }} />
-        </Box>
-      )}
-
-      {threadMessagesWithFlags.length === 0 && !streaming && !sessionRestoring && (
+      {threadMessagesWithFlags.length === 0 && !streaming && (
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
           <Box sx={{ textAlign: 'center', maxWidth: 300 }}>
             <SmartToyIcon sx={{ fontSize: 36, color: colors.border.strong, mb: 1 }} />
@@ -242,7 +232,7 @@ function ChatThreadViewComponent(props: ChatThreadViewProps) {
         onViewCrewByCallsign={onViewCrewByCallsign}
         pendingFeedbackMessageId={sessionRestoring ? null : pendingFeedbackMessageId}
         onTurnFeedback={onTurnFeedback}
-        onSaveMarkdown={onSaveMarkdown}
+        onSaveArticle={onSaveArticle}
         feedbackSubmitting={feedbackSubmitting}
         turnStreaming={turnStreaming}
         turnActivityLabel={turnActivityStage}

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeMarkdownDeliverable } from '../src/utils/markdown-deliverable.js';
+import { sanitizeArticleDeliverable } from '../src/utils/article-deliverable.js';
 
-describe('sanitizeMarkdownDeliverable', () => {
+describe('sanitizeArticleDeliverable', () => {
   it('strips streamed agent monologue before the deliverable', () => {
     const raw = `I'll research the latest gold rates for those three cities and gather bank/auditor forecasts for the prediction chart. Let me run searches in parallel.
 
@@ -23,7 +23,7 @@ The forecast data is blocked everywhere. I have enough city data and public doma
 {"type":"line","data":{"labels":["Jan","Feb"],"datasets":[{"label":"Chennai","data":[6200,6420]}]}}
 \`\`\``;
 
-    const out = sanitizeMarkdownDeliverable(raw);
+    const out = sanitizeArticleDeliverable(raw);
     expect(out).toContain('## Gold rate outlook');
     expect(out).toContain('Chennai');
     expect(out).toContain('```chart');
@@ -35,7 +35,7 @@ The forecast data is blocked everywhere. I have enough city data and public doma
 
   it('keeps short deliverables without headings', () => {
     const raw = 'Here is the summary you asked for:\n\n- Point one\n- Point two';
-    expect(sanitizeMarkdownDeliverable(raw)).toBe(raw);
+    expect(sanitizeArticleDeliverable(raw)).toBe(raw);
   });
 
   it('strips echoed title when provided', () => {
@@ -44,6 +44,18 @@ The forecast data is blocked everywhere. I have enough city data and public doma
 ## Summary
 
 Rates are stable.`;
-    expect(sanitizeMarkdownDeliverable(raw, { title: 'Daily Gold Summary' })).toBe('## Summary\n\nRates are stable.');
+    expect(sanitizeArticleDeliverable(raw, { title: 'Daily Gold Summary' })).toBe('## Summary\n\nRates are stable.');
+  });
+
+  it('does not strip a table header that was mistaken for a title', () => {
+    const table = `| Test | Required/reference range | Actual result | Difference/status |
+| --- | ---: | ---: | --- |
+| FASTING BLOOD GLUCOSE | 70–100 mg/dL | 335 mg/dL | High |`;
+    const out = sanitizeArticleDeliverable(table, {
+      title: '| Test | Required/reference range | Actual result | Difference/status',
+    });
+    expect(out).toContain('| Test |');
+    expect(out).toContain('FASTING BLOOD GLUCOSE');
+    expect(out).not.toMatch(/^\s*\|?\|?-+/m);
   });
 });

@@ -19,6 +19,7 @@ import {
   execPlatformSafe,
   getPdfinfoCheckCommand,
 } from '../tools/platform.js';
+import { prependOcrToolPath } from '../knowledge-base/ocr-tools.js';
 
 export interface PdfOcrResult {
   /** OCR-extracted text from all pages, joined by page markers. */
@@ -69,6 +70,8 @@ export async function ocrPdfViaShell(
   const dpi = opts.dpi ?? 200;
   const maxPages = opts.maxPages ?? 20;
   const warnings: string[] = [];
+
+  prependOcrToolPath();
 
   // Check that both pdftoppm and tesseract are available.
   const hasPdftoppm = checkCommandExists('pdftoppm');

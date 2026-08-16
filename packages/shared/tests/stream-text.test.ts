@@ -70,4 +70,55 @@ describe('repairStreamTextGlitches', () => {
       'EMD: Rs. 45,00,000/- | Deposit: Rs. 1,00,000/-',
     );
   });
+
+  it('collapses a glued full-report restart into one copy', () => {
+    const first = [
+      '## Overall assessment',
+      '',
+      'Sir, the reports show markedly uncontrolled blood glucose and high lipids.',
+      '',
+      '| Test | Actual |',
+      '|---|---|',
+      '| Fasting blood glucose | 335 mg/dL |',
+      '| HbA1c | 11.9% |',
+      '',
+      'These tables compare each result with the laboratory ranges.',
+    ].join('\n');
+    const second = [
+      '## Overall assessment',
+      '',
+      'Sir, the reports show markedly uncontrolled blood glucose and high lipids.',
+      '',
+      '| Test | Actual |',
+      '|---|---|',
+      '| Fasting blood glucose | 335 mg/dL |',
+      '| HbA1c | 11.9% |',
+      '',
+      'Seek same-day medical review.',
+    ].join('\n');
+    const glued = `${first}${second}`;
+    const fixed = repairStreamTextGlitches(glued);
+    expect(fixed).toBe(second);
+    expect(fixed.match(/## Overall assessment/g)?.length).toBe(1);
+    expect(fixed.match(/Fasting blood glucose/g)?.length).toBe(1);
+  });
+
+  it('drops duplicate rows inside one GFM table', () => {
+    const table = [
+      '| Test | Actual |',
+      '|---|---|',
+      '| Fasting blood glucose | 335 mg/dL |',
+      '| Fasting blood glucose | 335 mg/dL |',
+      '| HbA1c | 11.9% |',
+      '| Test | Actual |',
+      '| HbA1c | 11.9% |',
+    ].join('\n');
+    const fixed = repairStreamTextGlitches(table);
+    expect(fixed).toBe([
+      '| Test | Actual |',
+      '|---|---|',
+      '| Fasting blood glucose | 335 mg/dL |',
+      '| HbA1c | 11.9% |',
+    ].join('\n'));
+  });
 });

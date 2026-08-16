@@ -42,7 +42,7 @@ export function assertValidWorkspacePath(path: string): string {
   if (resolved === dataDir) {
     throw new Error('Workspace cannot be the Agent-X data directory itself');
   }
-  const blocked = ['sessions', 'db', 'logs', 'cache', 'uploads', 'markdown'];
+  const blocked = ['sessions', 'db', 'logs', 'cache', 'uploads', 'articles'];
   for (const name of blocked) {
     const blockedPath = resolve(join(dataDir, name));
     if (resolved === blockedPath || resolved.startsWith(blockedPath + '/')) {

@@ -2,7 +2,7 @@
 // Owns session list loading, first-message titles, session CRUD handlers,
 // the session-restore effect (mount/URL change), and handleSelectSession.
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, startTransition } from 'react';
 import { sessions, todos, crews, type SessionInfo, type TodoItem } from '../../api';
 import type { ChildSessionDrawerState } from '../../chat/ChildSessionDrawer';
 import type { ChatView, UIMessage } from '../../chat/types';
@@ -11,7 +11,7 @@ import { CHAT_INITIAL_MESSAGES_PER_ROLE, CORE_SESSION_MESSAGES_PER_ROLE, mapHist
 import { hydrateCrewDeliverables } from '../../chat/restoreCrewHydration';
 import { normalizeTodoItems } from '../../chat/todoItems';
 import { MESSAGE_PAGE_SIZE } from '../../chat/messageWindow';
-import { assistantTextsOverlap, mergeActiveTurnResponseParts } from '../../chat/utils';
+import { assistantTextsOverlap, displayContent, isSettledPersistedTurn, mergeActiveTurnResponseParts, partsIndicateRunningTools } from '../../chat/utils';
 
 function titleFromFirstUserMessage(content: string): string {
   return String(content).split('\n')[0]?.slice(0, 80).trim() ?? '';
@@ -151,6 +151,7 @@ export function useChatSessionLifecycle({
   useEffect(() => { isCrewPrivateSessionRef.current = isCrewPrivateSession; }, [isCrewPrivateSession]);
   useEffect(() => { crewListRef.current = crewList; }, [crewList]);
   useEffect(() => { coreSessionRef.current = coreSession; }, [coreSession]);
+  const restoreInflightRef = useRef<{ sid: string; promise: Promise<void> } | null>(null);
 
   // ─── loadSessions ───
   const loadSessions = useCallback(() => {
@@ -257,7 +258,15 @@ export function useChatSessionLifecycle({
     // prompts for a turn that's already done/cancelled. This handles the
     // case where a turn was stopped (either by the user or by a server
     // restart) but the questionnaire status was never updated in the DB.
-    const turnPhaseForExpiry = turnState?.phase;
+    const lastAssistant = [...windowed].reverse().find((m) => m.role === 'assistant');
+    const lastAssistantText = lastAssistant ? displayContent(lastAssistant) : '';
+    const settledPersistedTurn = isSettledPersistedTurn({
+      phase: turnState?.phase,
+      partialContent: turnState?.partialContent,
+      lastAssistantText,
+      hasRunningTools: partsIndicateRunningTools(turnState?.activeParts),
+    });
+    const turnPhaseForExpiry = settledPersistedTurn ? 'done' : turnState?.phase;
     const turnIsActive = turnPhaseForExpiry
       && turnPhaseForExpiry !== 'idle'
       && turnPhaseForExpiry !== 'done'
@@ -304,13 +313,17 @@ export function useChatSessionLifecycle({
     setTokenOutput(outputEst);
     tokenInputRef.current = inputEst;
     tokenOutputRef.current = outputEst;
-    loadTodos(sid);
 
     // If the backend reports an active turn for this session (agent still
     // processing in the background after navigation), re-activate the turn
     // indicator and rebuild the in-progress assistant bubble (tools/text).
     const turnPhase = turnState?.phase;
-    if (turnPhase && turnPhase !== 'idle' && turnPhase !== 'done' && turnPhase !== 'cancelled') {
+    if (settledPersistedTurn) {
+      turnActiveRef.current = false;
+      activeTurnIdRef.current = null;
+      setStreaming(false);
+      isInitialLoadRef.current = false;
+    } else if (turnPhase && turnPhase !== 'idle' && turnPhase !== 'done' && turnPhase !== 'cancelled') {
       turnActiveRef.current = true;
       activeTurnIdRef.current = turnState?.turnId ?? null;
       setStreaming(true);
@@ -328,7 +341,7 @@ export function useChatSessionLifecycle({
         backgroundTasks,
       });
       if (lastMapped?.role === 'assistant') {
-        const sameReply = assistantTextsOverlap(lastMapped.content, live.content);
+        const sameReply = assistantTextsOverlap(lastAssistantText || lastMapped.content, live.content);
         const restoredParts = mergeActiveTurnResponseParts(lastMapped.parts, live.parts, sameReply);
         // Merge live tools/subagents onto the existing assistant row (streaming or not).
         setMessages([...windowed.slice(0, -1), {
@@ -403,7 +416,34 @@ export function useChatSessionLifecycle({
         } catch { /* best-effort */ }
       })();
     }
-  }, [currentSessionIdRef, navigate, setMessages, setHasOlderMessages, setIsCrewPrivateSession, setCrewPrivateHost, setPrivateHostCrewId, setCurrentSessionTitle, setParentSessionId, setCurrentSessionId, setShowJumpPill, jumpSuppressScrollTopRef, setTokenTotal, setTokenUsed, setCompactionCount, setTokenInput, setTokenOutput, tokenInputRef, tokenOutputRef, loadTodos, applyTitleFromFirstUserMessage, setCrewList, setCrewWorkers, crewMissionSessionIdRef, isAtBottomRef, messagesContainerRef, setSessionRestoring, sessionRestoringRef, isInitialLoadRef, setChildSessionDrawer, coreSessionRef, locationRef, crewListRef, setStreaming, setTurnActivity, setCurrentStep, turnActiveRef, activeTurnIdRef]);
+
+    startTransition(() => {
+      if (currentSessionIdRef.current !== sid) return;
+      setSessionRestoring(false);
+      sessionRestoringRef.current = false;
+    });
+  }, [currentSessionIdRef, navigate, setMessages, setHasOlderMessages, setIsCrewPrivateSession, setCrewPrivateHost, setPrivateHostCrewId, setCurrentSessionTitle, setParentSessionId, setCurrentSessionId, setShowJumpPill, jumpSuppressScrollTopRef, setTokenTotal, setTokenUsed, setCompactionCount, setTokenInput, setTokenOutput, tokenInputRef, tokenOutputRef, applyTitleFromFirstUserMessage, setCrewList, setCrewWorkers, crewMissionSessionIdRef, isAtBottomRef, messagesContainerRef, setSessionRestoring, sessionRestoringRef, isInitialLoadRef, setChildSessionDrawer, coreSessionRef, locationRef, crewListRef, setStreaming, setTurnActivity, setCurrentStep, turnActiveRef, activeTurnIdRef]);
+
+  const beginRestore = useCallback((sid: string, sessionInfo?: SessionInfo) => {
+    const inflight = restoreInflightRef.current;
+    if (inflight?.sid === sid) return inflight.promise;
+    const promise = restoreSessionData(sid, sessionInfo)
+      .catch((err) => {
+        if (currentSessionIdRef.current !== sid) return;
+        console.error('Failed to restore session:', err);
+        setWarnings([`Failed to restore session: ${err instanceof Error ? err.message : 'Unknown error'}`]);
+        setSessionRestoring(false);
+        sessionRestoringRef.current = false;
+        isInitialLoadRef.current = false;
+      })
+      .finally(() => {
+        if (restoreInflightRef.current?.promise === promise) {
+          restoreInflightRef.current = null;
+        }
+      });
+    restoreInflightRef.current = { sid, promise };
+    return promise;
+  }, [restoreSessionData, currentSessionIdRef, setWarnings, setSessionRestoring, sessionRestoringRef, isInitialLoadRef]);
 
   // ─── Session-restore effect (mount/URL change) ───
   useEffect(() => {
@@ -429,48 +469,46 @@ export function useChatSessionLifecycle({
         sessionRestoringRef.current = false;
         return;
       }
+      const inflightSame = restoreInflightRef.current?.sid === sessionId;
       setView('chat');
       setCurrentSessionId(sessionId);
-      resetScrollState();
-      titleGeneratedRef.current = false;
-      setSessionRestoring(true);
-      sessionRestoringRef.current = true;
-      isInitialLoadRef.current = true;
-      setPendingFeedbackMessageId(null);
-      lastTurnFeedbackCandidateRef.current = null;
-      setMessages([]);
+      currentSessionIdRef.current = sessionId;
+      if (!inflightSame) {
+        resetScrollState();
+        titleGeneratedRef.current = false;
+        setSessionRestoring(true);
+        sessionRestoringRef.current = true;
+        isInitialLoadRef.current = true;
+        setPendingFeedbackMessageId(null);
+        lastTurnFeedbackCandidateRef.current = null;
+        setMessages([]);
+      }
 
-      void sessions.get(sessionId).then((sessionInfo) => {
-        if (currentSessionIdRef.current !== sessionId) return;
-        const shell = buildSessionShellPatch(sessionInfo);
+      const cached = sessionListRef.current.find((s) => s.id === sessionId);
+      if (cached) {
+        const shell = buildSessionShellPatch(cached);
         setIsCrewPrivateSession(shell.crewPrivate);
         setCrewPrivateHost(shell.privateHost);
         setPrivateHostCrewId(shell.privateHostCrewId);
         setCurrentSessionTitle(shell.title);
         setBypassPermissionsState(shell.bypassPermissions ?? false);
         if (shell.crewPrivate) {
-          const navState = location.state as { fromCrews?: boolean } | null;
+          const navState = locationRef.current.state as { fromCrews?: boolean } | null;
           chatReturnToRef.current = navState?.fromCrews ? '/console/crews' : 'crew_tab';
         }
-      }).catch(() => { /* full restore follows */ });
+      }
 
-      void restoreSessionData(sessionId).catch((err) => {
-        console.error('Failed to restore session on mount:', err);
-        setWarnings([`Failed to restore session: ${err instanceof Error ? err.message : 'Unknown error'}`]);
-        setSessionRestoring(false);
-        sessionRestoringRef.current = false;
-        isInitialLoadRef.current = false;
-      });
+      void beginRestore(sessionId, cached);
     } else {
       setView('sessions');
       setIsCrewPrivateSession(false);
       setCrewPrivateHost(null);
       setPrivateHostCrewId(null);
     }
-  }, [sessionId, location.state, navigate]);
+  }, [sessionId]);
 
   // ─── handleSelectSession ───
-  const handleSelectSession = useCallback(async (s: SessionInfo) => {
+  const handleSelectSession = useCallback((s: SessionInfo) => {
     const live = messagesRef.current[messagesRef.current.length - 1];
     if (
       s.id === currentSessionIdRef.current
@@ -485,7 +523,7 @@ export function useChatSessionLifecycle({
     }
     const previousId = currentSessionIdRef.current;
     if (previousId && previousId !== s.id) {
-      await discardEmptyGroupSession(previousId);
+      void discardEmptyGroupSession(previousId);
     }
     setWarnings([]);
     rateLimitSeenRef.current = false;
@@ -504,16 +542,11 @@ export function useChatSessionLifecycle({
     setBypassPermissionsState(previewShell.bypassPermissions ?? false);
     setCurrentSessionTitle(previewShell.title);
     if (previewShell.crewPrivate) chatReturnToRef.current = 'crew_tab';
-    try {
-      await restoreSessionData(s.id, s);
-      navigate(`/console/chat/${s.id}`);
-    } catch (e) {
-      setSessionRestoring(false);
-      sessionRestoringRef.current = false;
-      isInitialLoadRef.current = false;
-      setWarnings([`Failed to restore session: ${e instanceof Error ? e.message : 'Unknown error'}`]);
-    }
-  }, [setWarnings, rateLimitSeenRef, setStreaming, resetScrollState, setSessionRestoring, sessionRestoringRef, isInitialLoadRef, setPendingFeedbackMessageId, lastTurnFeedbackCandidateRef, setMessages, setIsCrewPrivateSession, setCrewPrivateHost, setPrivateHostCrewId, setCurrentSessionTitle, chatReturnToRef, restoreSessionData, navigate, messagesRef, turnActiveRef, currentSessionIdRef, skipRestoreRef, setView, discardEmptyGroupSession, setBypassPermissionsState]);
+    setCurrentSessionId(s.id);
+    currentSessionIdRef.current = s.id;
+    setView('chat');
+    navigate(`/console/chat/${s.id}`);
+  }, [setWarnings, rateLimitSeenRef, setStreaming, resetScrollState, setSessionRestoring, sessionRestoringRef, isInitialLoadRef, setPendingFeedbackMessageId, lastTurnFeedbackCandidateRef, setMessages, setIsCrewPrivateSession, setCrewPrivateHost, setPrivateHostCrewId, setCurrentSessionTitle, chatReturnToRef, navigate, messagesRef, turnActiveRef, currentSessionIdRef, skipRestoreRef, setView, discardEmptyGroupSession, setBypassPermissionsState, setCurrentSessionId]);
 
   // ─── handleShowSessions ───
   const handleShowSessions = useCallback(() => {

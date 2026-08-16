@@ -53,7 +53,7 @@ export function Sidebar({ active, onNavigate, highlightCrews, unreadNotification
     { id: 'chat', icon: <ChatIcon sx={{ fontSize: 16 }} />, label: 'Chat' },
     { id: 'calls', icon: <PhoneInTalkIcon sx={{ fontSize: 16 }} />, label: 'Calls' },
     { id: 'notifications', icon: <NotificationsNoneIcon sx={{ fontSize: 16 }} />, label: 'Notifications' },
-    { id: 'markdown', icon: <ArticleOutlinedIcon sx={{ fontSize: 16 }} />, label: 'Markdown' },
+    { id: 'articles', icon: <ArticleOutlinedIcon sx={{ fontSize: 16 }} />, label: 'Articles' },
     { id: 'automation', icon: <ScheduleIcon sx={{ fontSize: 16 }} />, label: 'Automation' },
     { id: 'crews', icon: <GroupsIcon sx={{ fontSize: 16 }} />, label: 'Crews' },
     { id: 'knowledge-base', icon: <LibraryBooksIcon sx={{ fontSize: 16 }} />, label: 'Knowledge Base' },

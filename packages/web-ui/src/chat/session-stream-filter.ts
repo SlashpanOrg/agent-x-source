@@ -5,7 +5,7 @@ const SESSION_AGNOSTIC_EVENT_TYPES = new Set([
   'crew_suggestion',
   'crew_suggestion_required',
   'notification_created',
-  'markdown_created',
+  'article_created',
   'automation_run_triggered',
   'automation_run_preparing',
   'automation_run_started',

@@ -1,6 +1,6 @@
 import { getLogger, type AttachmentPreview, type EmbeddingProvider, type KnowledgeSource, type KnowledgeSourceStatus } from '@agentx/shared';
 import { getAttachmentService } from '../attachments/index.js';
-import { extractFromPath } from '../attachments/extract.js';
+import { extractKnowledgeSource } from './ingest-extract.js';
 import type { MemoryFabric } from '../neural/MemoryFabric.js';
 import { RagDocument } from '../neural/RagDocument.js';
 import type { OnnxEmbeddingProvider } from '../neural/OnnxEmbeddingProvider.js';
@@ -41,7 +41,7 @@ export class DocumentIngestPipeline {
       const path = await attachment.resolveAttachmentPath(source.storageId);
       if (!path) throw new Error('Attachment file not found');
 
-      const preview = await extractFromPath(path, source.mimeType, async (detail, ratio) => {
+      const preview = await extractKnowledgeSource(path, source.mimeType, async (detail, ratio) => {
         await emit('extracting', 5 + Math.floor(ratio * 30), detail);
       });
       if (preview.kind === 'error') throw new Error(preview.content);
