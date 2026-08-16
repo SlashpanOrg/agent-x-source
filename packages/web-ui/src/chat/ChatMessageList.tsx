@@ -23,7 +23,7 @@ interface ChatMessageListProps {
   onViewCrewByCallsign?: (callsign: string, name?: string) => void;
   pendingFeedbackMessageId?: string | null;
   onTurnFeedback?: (messageId: string, rating: import('@agentx/shared/browser').TurnFeedbackRating) => void;
-  onSaveMarkdown?: (message: UIMessage) => void;
+  onSaveArticle?: (message: UIMessage) => void;
   feedbackSubmitting?: boolean;
   /** Show agent-side loader after the list while the current turn is active. */
   turnStreaming?: boolean;
@@ -33,7 +33,7 @@ interface ChatMessageListProps {
 }
 
 /** Virtual-ish message list — content-visibility keeps long sessions smooth. */
-export const ChatMessageList = memo(function ChatMessageList({ items, loadingSteps, onResend, bottomRef, onOpenChildSession, onQuestionnaireRespond, onQuestionnaireCancel, onCrewRosterPickerSubmit, onCrewRosterPickerSkip, onViewCrewDossier, onViewCrewByCallsign, pendingFeedbackMessageId, onTurnFeedback, onSaveMarkdown, feedbackSubmitting, turnStreaming, turnActivityLabel, freezeLayout }: ChatMessageListProps) {
+export const ChatMessageList = memo(function ChatMessageList({ items, loadingSteps, onResend, bottomRef, onOpenChildSession, onQuestionnaireRespond, onQuestionnaireCancel, onCrewRosterPickerSubmit, onCrewRosterPickerSkip, onViewCrewDossier, onViewCrewByCallsign, pendingFeedbackMessageId, onTurnFeedback, onSaveArticle, feedbackSubmitting, turnStreaming, turnActivityLabel, freezeLayout }: ChatMessageListProps) {
   // Track items.length in a ref so renderMessage doesn't recreate on every
   // message addition during streaming. The callback only needs the current
   // count to determine if a message is "last" — a ref avoids the dep churn.
@@ -63,11 +63,11 @@ export const ChatMessageList = memo(function ChatMessageList({ items, loadingSte
         onViewCrewDossier={onViewCrewDossier}
         showFeedback={pendingFeedbackMessageId === msg.id}
         onTurnFeedback={onTurnFeedback}
-        onSaveMarkdown={onSaveMarkdown}
+        onSaveArticle={onSaveArticle}
         feedbackSubmitting={feedbackSubmitting}
       />
     );
-  }, [loadingSteps, onOpenChildSession, onQuestionnaireRespond, onQuestionnaireCancel, onCrewRosterPickerSubmit, onCrewRosterPickerSkip, onViewCrewDossier, onViewCrewByCallsign, pendingFeedbackMessageId, onTurnFeedback, onSaveMarkdown, feedbackSubmitting]);
+  }, [loadingSteps, onOpenChildSession, onQuestionnaireRespond, onQuestionnaireCancel, onCrewRosterPickerSubmit, onCrewRosterPickerSkip, onViewCrewDossier, onViewCrewByCallsign, pendingFeedbackMessageId, onTurnFeedback, onSaveArticle, feedbackSubmitting]);
 
   const onLinkClickCapture = useCallback((event: MouseEvent<HTMLDivElement>) => {
     handleExternalAnchorClick(event);

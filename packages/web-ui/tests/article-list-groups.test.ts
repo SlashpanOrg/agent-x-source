@@ -1,20 +1,20 @@
 import { describe, it, expect } from 'vitest';
-import { groupMarkdownDocumentsByDay } from '../src/markdown/markdown-list-groups';
-import type { MarkdownDocumentRecord } from '../src/api';
+import { groupArticlesByDay } from '../src/articles/list-groups';
+import type { ArticleRecord } from '../src/api';
 
 function doc(
   id: string,
   createdAt: string,
   listDayKey?: string | null,
   listDayLabel?: string | null,
-): MarkdownDocumentRecord {
+): ArticleRecord {
   return {
     id,
     sessionId: 's1',
     title: id,
     excerpt: '',
-    filePath: `markdown/${id}/content.md`,
-    contentFormat: 'markdown',
+    filePath: `articles/${id}/content.md`,
+    contentFormat: 'article',
     createdAt,
     updatedAt: createdAt,
     listDayKey,
@@ -22,9 +22,9 @@ function doc(
   };
 }
 
-describe('markdown-list-groups', () => {
+describe('article list groups', () => {
   it('groups by persisted list day fields without recomputing labels', () => {
-    const groups = groupMarkdownDocumentsByDay([
+    const groups = groupArticlesByDay([
       doc('a', '2026-07-11T10:00:00.000Z', '2026-07-11', 'Saturday, 11th July 2026'),
       doc('d', '2026-07-11T09:00:00.000Z', '2026-07-11', 'Saturday, 11th July 2026'),
       doc('b', '2026-07-10T09:00:00.000Z', '2026-07-10', 'Friday, 10th July 2026'),
@@ -42,7 +42,7 @@ describe('markdown-list-groups', () => {
   });
 
   it('keeps rows without persisted day fields ungrouped (no divider label)', () => {
-    const groups = groupMarkdownDocumentsByDay([
+    const groups = groupArticlesByDay([
       doc('legacy', '2026-07-01T10:00:00.000Z', null, null),
     ]);
     expect(groups).toHaveLength(1);

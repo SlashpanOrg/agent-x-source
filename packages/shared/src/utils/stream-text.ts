@@ -98,5 +98,81 @@ export function repairStreamTextGlitches(text: string): string {
     }
   }
 
+  out = collapseRestartedAssistantText(out);
+  out = dedupeGfmTableRows(out);
   return out;
+}
+
+/** A stream/model restart glued a second copy of the same reply onto the first. */
+export function collapseRestartedAssistantText(text: string): string {
+  if (!text || text.length < 160) return text;
+
+  // "end of report.## Heading" — restart without a newline.
+  const out = text.replace(/([^\n#])(#{2,3} )/g, '$1\n\n$2');
+
+  const minPrefix = 80;
+  const candidates = [400, 240, 160, 120, 80];
+  for (const n of candidates) {
+    if (out.length < n * 2) continue;
+    const prefix = out.slice(0, n);
+    if (prefix.trim().length < minPrefix) continue;
+    const idx = out.indexOf(prefix, n);
+    if (idx < n) continue;
+    const first = out.slice(0, idx).replace(/\s+$/g, '');
+    const second = out.slice(idx).replace(/^\s+/g, '');
+    if (second.length < minPrefix) continue;
+    // Later draft wins when it is a real rewrite; otherwise keep the longer first copy.
+    if (second.length >= first.length * 0.4) return second;
+    return first.length >= second.length ? first : second;
+  }
+  return out;
+}
+
+function normalizeGfmRow(line: string): string {
+  return line
+    .trim()
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*\|\s*/g, '|')
+    .toLowerCase();
+}
+
+function isGfmSeparatorLine(line: string): boolean {
+  const cells = line.trim().split('|').filter((c) => c.trim().length > 0);
+  return cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c.trim()));
+}
+
+/** Drop exact-duplicate rows inside one GFM table (including a repeated header). */
+export function dedupeGfmTableRows(text: string): string {
+  if (!text.includes('|')) return text;
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const out: string[] = [];
+  let inTable = false;
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const isRow = trimmed.startsWith('|') && trimmed.includes('|', 1);
+    if (!isRow) {
+      inTable = false;
+      seen.clear();
+      out.push(line);
+      continue;
+    }
+    if (!inTable) {
+      inTable = true;
+      seen.clear();
+    }
+    if (isGfmSeparatorLine(trimmed)) {
+      const sepKey = 'sep';
+      if (seen.has(sepKey)) continue;
+      seen.add(sepKey);
+      out.push(line);
+      continue;
+    }
+    const key = normalizeGfmRow(trimmed);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(line);
+  }
+  return out.join('\n');
 }

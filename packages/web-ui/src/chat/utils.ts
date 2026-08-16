@@ -4,10 +4,14 @@ import {
   attachDeepSearchPartsFromTools,
   attachChartPartsFromTools,
   attachVisualPartsFromTools,
+  collapseOverlappingTextParts,
+  isSettledPersistedTurn,
+  partsIndicateRunningTools,
   normalizeMessageForUi,
   normalizeVoiceAssistantContent,
   repairStreamTextGlitches,
   stripToolNoise as sharedStripToolNoise,
+  textsOverlap,
   type MessagePart,
 } from '@agentx/shared/browser';
 
@@ -97,7 +101,7 @@ export function displayContent(message: { content?: string; parts?: Array<{ type
   );
   if (!message.parts?.length) return contentText;
 
-  const raw = message.parts
+  const raw = collapseOverlappingTextParts(message.parts)
     .filter((p) => p.type === 'text' && p.content)
     .map((p) => stripVoiceChannelBlock(p.content!))
     .join('');
@@ -253,15 +257,10 @@ export function stripTrailingStreamPreamble<T extends {
  * a duplicate bubble (visible until hard refresh clears the ephemeral copy).
  */
 export function assistantTextsOverlap(a: string | undefined, b: string | undefined): boolean {
-  const left = (a ?? '').trim();
-  const right = (b ?? '').trim();
-  if (!left || !right) return false;
-  if (left === right) return true;
-  if (left.startsWith(right) || right.startsWith(left)) return true;
-  const lead = Math.min(64, left.length, right.length);
-  if (lead < 24) return false;
-  return left.slice(0, lead) === right.slice(0, lead);
+  return textsOverlap(a, b);
 }
+
+export { isSettledPersistedTurn, partsIndicateRunningTools };
 
 /** True when the last assistant message is a non-streaming questionnaire card. */
 export function lastMessageIsQuestionnaireCard(messages: Array<{

@@ -1,14 +1,13 @@
+import { isGfmTableRow, isGfmTableSeparator } from './article-table.js';
 import { stripToolNoise } from './text-sanitize.js';
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Opening phrases typical of streamed agent process narration (not user-facing output). */
 const AGENT_MONOLOGUE_OPENING =
   /^(?:let me\b|i(?:'ll| will|'ve| have| need| am|'m going to)\b|now i\b|good(?:\s*[-,]|returns)|the (?:page|search|forecast|forecast data)\b|search pipeline\b|attempting\b|retrying\b)/i;
 
-/** In-paragraph cues that the block is internal agent conversation, not deliverable content. */
 const AGENT_MONOLOGUE_CUES =
   /\b(?:blocked by cloudflare|failing everywhere|from my training|slight discrepancy|targeted scraping|alternate sources?|different query strategies?|proceed with the deliverable|html chrome|known (?:direct )?urls?|known research)\b/i;
 
@@ -52,20 +51,26 @@ function stripLeadingMonologue(body: string): string {
 function stripEchoedTitle(body: string, title?: string): string {
   const plainTitle = title?.replace(/^[✓✗]\s*/, '').trim();
   if (!plainTitle) return body;
+  if (isGfmTableRow(plainTitle) || isGfmTableSeparator(plainTitle)) return body;
   const variants = [plainTitle, `[${plainTitle}]`];
   let out = body;
   for (const v of variants) {
-    out = out.replace(new RegExp(`^${escapeRegex(v)}\\s*\\n?`, 'm'), '');
-    out = out.replace(new RegExp(`^#+\\s*${escapeRegex(plainTitle)}\\s*\\n?`, 'm'), '');
+    const stripLine = (match: string): string => {
+      const first = match.split('\n')[0] ?? match;
+      if (isGfmTableRow(first) || isGfmTableSeparator(first)) return match;
+      return '';
+    };
+    out = out.replace(new RegExp(`^${escapeRegex(v)}\\s*\\n?`, 'm'), stripLine);
+    out = out.replace(new RegExp(`^#+\\s*${escapeRegex(plainTitle)}\\s*\\n?`, 'm'), stripLine);
   }
   return out;
 }
 
 /**
- * Strip internal agent conversation from markdown before save/export.
+ * Strip internal agent conversation from article body before save/export.
  * Keeps headings, lists, tables, charts, and polished deliverable prose only.
  */
-export function sanitizeMarkdownDeliverable(
+export function sanitizeArticleDeliverable(
   raw: string,
   opts?: { title?: string },
 ): string {

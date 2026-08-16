@@ -4,7 +4,7 @@ import { shouldAppendToAppContextEvents, isChatHotTelemetryEvent } from '../src/
 describe('telemetry-event-filter', () => {
   it('keeps global events in AppContext', () => {
     expect(shouldAppendToAppContextEvents({ type: 'notification_created' })).toBe(true);
-    expect(shouldAppendToAppContextEvents({ type: 'markdown_created' })).toBe(true);
+    expect(shouldAppendToAppContextEvents({ type: 'article_created' })).toBe(true);
   });
 
   it('keeps automation lifecycle events in AppContext', () => {

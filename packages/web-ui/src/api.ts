@@ -1057,6 +1057,34 @@ export const knowledgeBase = {
     method: 'POST',
     body: JSON.stringify({ id }),
   }),
+
+  toolStatus: () =>
+    request<{
+      tools: Array<{
+        id: string;
+        name: string;
+        description: string;
+        installed: boolean;
+        missing: string[];
+        installer: string | null;
+        canInstall: boolean;
+        command: string | null;
+        elevation: boolean;
+      }>;
+    }>('/knowledge-base/tools/status').then((r) => r.tools),
+
+  installTool: (id: string) =>
+    request<{
+      job: { id: string; toolId: string; status: 'installing' | 'ready' | 'failed'; message: string };
+    }>('/knowledge-base/tools/install', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    }).then((r) => r.job),
+
+  installToolJob: (jobId: string) =>
+    request<{
+      job: { id: string; toolId: string; status: 'installing' | 'ready' | 'failed'; message: string };
+    }>(`/knowledge-base/tools/install/${encodeURIComponent(jobId)}`).then((r) => r.job),
 };
 
 
@@ -1243,30 +1271,30 @@ export const notifications = {
   dismissAll: () => request<{ ok: boolean; count: number }>('/notifications/dismiss-all', { method: 'POST' }),
 };
 
-export type MarkdownDocumentRecord = import('@agentx/shared').MarkdownDocumentRecord;
+export type ArticleRecord = import('@agentx/shared').ArticleRecord;
 
-export const markdownDocuments = {
+export const articles = {
   list: (opts?: { sessionId?: string; limit?: number; offset?: number }) => {
     const params = new URLSearchParams();
     if (opts?.sessionId) params.set('session_id', opts.sessionId);
     if (opts?.limit) params.set('limit', String(opts.limit));
     if (opts?.offset) params.set('offset', String(opts.offset));
     const qs = params.toString();
-    return request<{ documents: MarkdownDocumentRecord[] }>(`/markdown${qs ? `?${qs}` : ''}`);
+    return request<{ articles: ArticleRecord[] }>(`/articles${qs ? `?${qs}` : ''}`);
   },
   get: (id: string) => request<{
-    document: MarkdownDocumentRecord;
-    contentMarkdown?: string;
-  }>(`/markdown/${id}`),
+    article: ArticleRecord;
+    content?: string;
+  }>(`/articles/${id}`),
   create: (body: {
     sessionId: string;
-    contentMarkdown?: string;
-    contentTsx?: string;
+    content: string;
     title?: string;
+    kind?: 'article' | 'analysis' | 'report' | 'insight';
     messageId?: string;
     sourceRole?: 'user' | 'assistant' | 'system';
-  }) => request<{ document: MarkdownDocumentRecord }>('/markdown', { method: 'POST', body: JSON.stringify(body) }),
-  delete: (id: string) => request<{ ok: boolean }>(`/markdown/${id}`, { method: 'DELETE' }),
+  }) => request<{ article: ArticleRecord }>('/articles', { method: 'POST', body: JSON.stringify(body) }),
+  delete: (id: string) => request<{ ok: boolean }>(`/articles/${id}`, { method: 'DELETE' }),
 };
 
 // ─── Orchestrator ───

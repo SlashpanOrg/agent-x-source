@@ -1,7 +1,7 @@
-import { sanitizeMarkdownDeliverable } from './markdown-deliverable.js';
+import { sanitizeArticleDeliverable } from './article-deliverable.js';
 
-/** Extract markdown body from legacy auto-wrapped TSX shells. */
-export function extractMarkdownFromLegacyTsx(tsx: string): string | null {
+/** Extract article body from legacy auto-wrapped TSX shells. */
+export function extractArticleFromLegacyTsx(tsx: string): string | null {
   const trimmed = tsx.trim();
   if (!trimmed) return null;
 
@@ -43,26 +43,26 @@ export function extractMarkdownFromLegacyTsx(tsx: string): string | null {
   return null;
 }
 
-/** Normalize markdown document save input (legacy TSX is converted when possible). */
-export function normalizeMarkdownDocumentInput(input: {
-  contentMarkdown?: string;
+/** Normalize article save input (legacy TSX is converted when possible). */
+export function normalizeArticleInput(input: {
+  content?: string;
   contentTsx?: string;
   title?: string;
 }): string | null {
-  const markdown = input.contentMarkdown?.trim();
-  if (markdown) {
-    return sanitizeMarkdownDeliverable(markdown, { title: input.title });
+  const body = input.content?.trim();
+  if (body) {
+    return sanitizeArticleDeliverable(body, { title: input.title });
   }
 
   const tsx = input.contentTsx?.trim();
   if (!tsx) return null;
 
-  const extracted = extractMarkdownFromLegacyTsx(tsx);
+  const extracted = extractArticleFromLegacyTsx(tsx);
   if (extracted) {
-    return sanitizeMarkdownDeliverable(extracted, { title: input.title });
+    return sanitizeArticleDeliverable(extracted, { title: input.title });
   }
 
-  const title = (input.title?.trim() || 'Markdown').slice(0, 120);
+  const title = (input.title?.trim() || 'Article').slice(0, 120);
   return [
     `# ${title}`,
     '',

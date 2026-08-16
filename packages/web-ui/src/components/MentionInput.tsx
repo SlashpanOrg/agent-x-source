@@ -10,10 +10,14 @@ import {
   formatFileMentionToken,
   formatFolderMentionToken,
   formatKbMentionToken,
+  formatArticleMentionToken,
+  formatSessionMentionToken,
   parseCrewMentionToken,
   parseFileMentionToken,
   parseFolderMentionToken,
   parseKbMentionToken,
+  parseArticleMentionToken,
+  parseSessionMentionToken,
 } from '../chat/mention-tokens';
 
 export interface MentionInputHandle {
@@ -29,6 +33,8 @@ export interface MentionInputHandle {
   insertFolderChip: (folder: { id: string; name: string; path: string; relativePath: string }) => void;
   /** Insert a Knowledge Base document chip (serializes as @kb[sourceId:name]). */
   insertKbChip: (source: { sourceId: string; name: string }) => void;
+  insertArticleChip: (article: { articleId: string; title: string }) => void;
+  insertSessionChip: (session: { sessionId: string; title: string }) => void;
   /** Sync a newly attached upload into an inline chip at the caret. */
   insertAttachmentChip: (attachment: { id: string; name: string }) => void;
 }
@@ -79,6 +85,16 @@ function serializeNode(node: Node): string {
     const sourceId = node.dataset.sourceId || '';
     const name = node.dataset.name || sourceId;
     return sourceId ? formatKbMentionToken(sourceId, name) : '';
+  }
+  if (chip === 'article') {
+    const articleId = node.dataset.articleId || '';
+    const title = node.dataset.name || articleId;
+    return articleId ? formatArticleMentionToken(articleId, title) : '';
+  }
+  if (chip === 'session') {
+    const sessionId = node.dataset.sessionId || '';
+    const title = node.dataset.name || sessionId;
+    return sessionId ? formatSessionMentionToken(sessionId, title) : '';
   }
   // Legacy crew mention spans
   const mention = node.dataset.mention;
@@ -189,6 +205,46 @@ function folderChipHtml(folder: { id: string; name: string; relativePath: string
   return `<span data-chip="folder" data-attachment-id="${escapeHtml(folder.id)}" data-name="${escapeHtml(rawName)}" data-relative-path="${title}" contenteditable="false" title="${title}" style="display:inline-flex;align-items:center;gap:3px;box-sizing:border-box;padding:0 5px 0 0;margin:0 1px;border-radius:999px;font-family:'JetBrains Mono',monospace;font-size:0.55rem;font-weight:600;color:${colors.accent.cyan};background:${alphaColor(colors.accent.cyan, '12')};border:1px solid ${alphaColor(colors.accent.cyan, '28')};user-select:none;white-space:nowrap;line-height:1.2;vertical-align:middle;max-width:200px;overflow:hidden"><span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:999px;line-height:1;color:${colors.bg.primary};background:${colors.accent.cyan};flex-shrink:0">${FOLDER_ICON_SVG}</span><span style="overflow:hidden;text-overflow:ellipsis;max-width:160px">${label}</span></span>`;
 }
 
+function idNameChipHtml(opts: {
+  chip: 'article' | 'session';
+  idAttr: string;
+  id: string;
+  name: string;
+  badge: string;
+  color: string;
+  titlePrefix: string;
+}): string {
+  const rawName = opts.name || opts.id;
+  const display = rawName.length > 24 ? `${rawName.slice(0, 24)}…` : rawName;
+  const label = escapeHtml(display);
+  const title = escapeHtml(`${opts.titlePrefix}: ${rawName}`);
+  return `<span data-chip="${opts.chip}" ${opts.idAttr}="${escapeHtml(opts.id)}" data-name="${escapeHtml(rawName)}" contenteditable="false" title="${title}" style="display:inline-flex;align-items:center;gap:3px;box-sizing:border-box;padding:0 5px 0 0;margin:0 1px;border-radius:999px;font-family:'JetBrains Mono',monospace;font-size:0.55rem;font-weight:600;color:${opts.color};background:${alphaColor(opts.color, '12')};border:1px solid ${alphaColor(opts.color, '28')};user-select:none;white-space:nowrap;line-height:1.2;vertical-align:middle;max-width:200px;overflow:hidden"><span style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;padding:0 3px;height:14px;border-radius:999px;font-size:0.42rem;font-weight:700;letter-spacing:0.02em;line-height:1;color:${colors.bg.primary};background:${opts.color};flex-shrink:0">${escapeHtml(opts.badge)}</span><span style="overflow:hidden;text-overflow:ellipsis;max-width:160px">${label}</span></span>`;
+}
+
+function articleChipHtml(article: { articleId: string; title: string }): string {
+  return idNameChipHtml({
+    chip: 'article',
+    idAttr: 'data-article-id',
+    id: article.articleId,
+    name: article.title,
+    badge: 'ART',
+    color: colors.accent.cyan,
+    titlePrefix: 'Article',
+  });
+}
+
+function sessionChipHtml(session: { sessionId: string; title: string }): string {
+  return idNameChipHtml({
+    chip: 'session',
+    idAttr: 'data-session-id',
+    id: session.sessionId,
+    name: session.title,
+    badge: 'SES',
+    color: colors.accent.green,
+    titlePrefix: 'Session',
+  });
+}
+
 function kbChipHtml(source: { sourceId: string; name: string }): string {
   const rawName = source.name || source.sourceId || 'document';
   const extRaw = rawName.includes('.') ? (rawName.split('.').pop() || '').toUpperCase() : '';
@@ -215,6 +271,14 @@ function buildHtmlFromPlain(text: string, crewList: Crew[]): string {
     const kbTok = parseKbMentionToken(part);
     if (kbTok) {
       return kbChipHtml(kbTok);
+    }
+    const articleTok = parseArticleMentionToken(part);
+    if (articleTok) {
+      return articleChipHtml(articleTok);
+    }
+    const sessionTok = parseSessionMentionToken(part);
+    if (sessionTok) {
+      return sessionChipHtml(sessionTok);
     }
     const crewTok = parseCrewMentionToken(part);
     if (crewTok) {
@@ -372,6 +436,14 @@ const MentionInputComponent = React.forwardRef<MentionInputHandle, MentionInputP
     replaceActiveQueryWithHtml(kbChipHtml(source));
   }, [replaceActiveQueryWithHtml]);
 
+  const insertArticleChip = useCallback((article: { articleId: string; title: string }) => {
+    replaceActiveQueryWithHtml(articleChipHtml(article));
+  }, [replaceActiveQueryWithHtml]);
+
+  const insertSessionChip = useCallback((session: { sessionId: string; title: string }) => {
+    replaceActiveQueryWithHtml(sessionChipHtml(session));
+  }, [replaceActiveQueryWithHtml]);
+
   const insertAttachmentChip = useCallback((attachment: { id: string; name: string }) => {
     const el = editorRef.current;
     if (!el) return;
@@ -429,9 +501,10 @@ const MentionInputComponent = React.forwardRef<MentionInputHandle, MentionInputP
     insertFileChip,
     insertFolderChip,
     insertKbChip,
-
+    insertArticleChip,
+    insertSessionChip,
     insertAttachmentChip,
-  }), [clear, insertMention, insertFileChip, insertFolderChip, insertKbChip, insertAttachmentChip, setValue]);
+  }), [clear, insertMention, insertFileChip, insertFolderChip, insertKbChip, insertArticleChip, insertSessionChip, insertAttachmentChip, setValue]);
 
   const handleInput = useCallback(() => {
     if (isComposing.current) return;

@@ -7,6 +7,13 @@ export {
   partsTextExceedsContent,
   partsTextTruncatesContent,
   syncTextPartsWithCanonicalContent,
+  textsOverlap,
+  textsNearDuplicate,
+  collapseOverlappingTextParts,
+  suppressOverlappingAssistantTexts,
+  textFromAssistantRecord,
+  isSettledPersistedTurn,
+  partsIndicateRunningTools,
   dedupeToolParts,
   dedupeResponseDocumentParts,
   buildPartsFromDbRows,
@@ -260,9 +267,29 @@ export {
 
 export { summarizeMessageForTurnFeedback, displayTextForTurnFeedback } from './utils/turn-display.js';
 export { sanitizeAutomationNotificationBody } from './utils/notification-body.js';
-export { sanitizeMarkdownDeliverable } from './utils/markdown-deliverable.js';
-export { deriveMarkdownTitle, isGenericMarkdownTitle } from './utils/markdown-title.js';
-export type { DeriveMarkdownTitleInput } from './utils/markdown-title.js';
+export { sanitizeArticleDeliverable } from './utils/article-deliverable.js';
+export { deriveArticleTitle, isGenericArticleTitle } from './utils/article-title.js';
+export type { DeriveArticleTitleInput } from './utils/article-title.js';
+export {
+  ARTICLE_KINDS,
+  articleKindKicker,
+  articleKindLabel,
+  deriveArticleKind,
+  isArticleKind,
+} from './utils/article-kind.js';
+export type { ArticleKind } from './utils/article-kind.js';
+export {
+  parseGfmTableCells,
+  isGfmTableSeparator,
+  isGfmTableRow,
+  formatGfmTableRow,
+  formatGfmTableSeparator,
+  displayArticleTitle,
+  humanizeArticleExcerpt,
+  deriveArticleExcerpt,
+  recoverArticleTableHeader,
+} from './utils/article-table.js';
+export { extractArticleFromLegacyTsx, normalizeArticleInput } from './utils/article-input.js';
 
 export { explicitCrewRequest, prefersCrewRosterFirst, isWorkforceOrSpecialistNeed } from './utils/crew-roster-intent.js';
 

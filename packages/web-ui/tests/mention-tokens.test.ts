@@ -5,10 +5,14 @@ import {
   formatFolderMentionToken,
   formatCrewMentionToken,
   formatKbMentionToken,
+  formatArticleMentionToken,
+  formatSessionMentionToken,
   parseFileMentionToken,
   parseFolderMentionToken,
   parseCrewMentionToken,
   parseKbMentionToken,
+  parseArticleMentionToken,
+  parseSessionMentionToken,
   isCompleteMentionToken,
   findActiveMentionQuery,
 } from '../src/chat/mention-tokens';
@@ -44,6 +48,8 @@ describe('mention tokens — bracket delimiters', () => {
     expect(isCompleteMentionToken('@folder[.]')).toBe(true);
     expect(isCompleteMentionToken('@crew[alice:Alice]')).toBe(true);
     expect(isCompleteMentionToken('@kb[src-1:Report%20Q1.pdf]')).toBe(true);
+    expect(isCompleteMentionToken('@article[art-1:Diet%20plan]')).toBe(true);
+    expect(isCompleteMentionToken('@session[ses-1:Kitchen]')).toBe(true);
     expect(isCompleteMentionToken('@file[incomplete')).toBe(false);
   });
 
@@ -55,6 +61,26 @@ describe('mention tokens — bracket delimiters', () => {
     const parts = text.split(MENTION_TOKEN_SPLIT_RE).filter(Boolean);
     expect(parts).toEqual(['Summarize ', '@kb[src-abc:Tax%20Guide.pdf]', '?']);
     expect(findActiveMentionQuery(`see ${tok}?`)).toBeNull();
+  });
+
+  it('formats and parses article and session mention tokens', () => {
+    const article = formatArticleMentionToken('art-9', 'Diet plan');
+    const session = formatSessionMentionToken('ses-2', 'Kitchen chat');
+    expect(article).toBe('@article[art-9:Diet%20plan]');
+    expect(session).toBe('@session[ses-2:Kitchen%20chat]');
+    expect(parseArticleMentionToken(article)).toEqual({ articleId: 'art-9', title: 'Diet plan' });
+    expect(parseSessionMentionToken(session)).toEqual({ sessionId: 'ses-2', title: 'Kitchen chat' });
+    const text = `Use ${article} with ${session}?`;
+    const parts = text.split(MENTION_TOKEN_SPLIT_RE).filter(Boolean);
+    expect(parts).toEqual([
+      'Use ',
+      '@article[art-9:Diet%20plan]',
+      ' with ',
+      '@session[ses-2:Kitchen%20chat]',
+      '?',
+    ]);
+    expect(findActiveMentionQuery(`see ${article}?`)).toBeNull();
+    expect(findActiveMentionQuery(`see ${session}?`)).toBeNull();
   });
 
   it('does not reopen mention menu after a closed file token + ?', () => {

@@ -48,11 +48,11 @@ const OrchestratorPanel = lazy(() => import('../components/OrchestratorPanel').t
 const CrewsPanel = lazy(() => import('../components/CrewsPanel').then(m => ({ default: m.CrewsPanel })));
 const McpStorePage = lazy(() => import('../components/integrations/McpStorePage').then(m => ({ default: m.McpStorePage })));
 const NotificationsPanel = lazy(() => import('../components/NotificationsPanel').then(m => ({ default: m.NotificationsPanel })));
-const MarkdownPanel = lazy(() => import('../components/MarkdownPanel').then(m => ({ default: m.MarkdownPanel })));
+const ArticlesPanel = lazy(() => import('../components/ArticlesPanel').then(m => ({ default: m.ArticlesPanel })));
 const KnowledgeBasePanel = lazy(() => import('../components/KnowledgeBasePanel').then(m => ({ default: m.KnowledgeBasePanel })));
 const CallsPanel = lazy(() => import('../components/calls').then(m => ({ default: m.CallsPanel })));
 
-export type PanelId = 'dashboard' | 'chat' | 'calls' | 'agent-x' | 'tools' | 'plugins' | 'settings' | 'automation' | 'orchestrator' | 'crews' | 'mcp-store' | 'notifications' | 'markdown' | 'knowledge-base';
+export type PanelId = 'dashboard' | 'chat' | 'calls' | 'agent-x' | 'tools' | 'plugins' | 'settings' | 'automation' | 'orchestrator' | 'crews' | 'mcp-store' | 'notifications' | 'articles' | 'knowledge-base';
 
 // Error boundary to prevent panel crashes from taking down the app
 class PanelErrorBoundary extends Component<{ children: ReactNode }, { error: string | null; stack: string | null }> {
@@ -120,7 +120,7 @@ function PanelSwitch({ activePanel }: { activePanel: PanelId }) {
     case 'crews': return <CrewsPanel />;
     case 'mcp-store': return <McpStorePage />;
     case 'notifications': return <NotificationsPanel />;
-    case 'markdown': return <MarkdownPanel />;
+    case 'articles': return <ArticlesPanel />;
     case 'knowledge-base': return <KnowledgeBasePanel />;
     default: return null;
   }

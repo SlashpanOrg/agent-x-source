@@ -10,6 +10,9 @@ import { readFile, rm } from 'node:fs/promises';
 import {
   getLogger,
   normalizeMessageForUi,
+  isSettledPersistedTurn,
+  partsIndicateRunningTools,
+  textFromAssistantRecord,
   isUserFacingSession,
   isAutomationSessionId,
   isChannelSessionId,
@@ -17,7 +20,7 @@ import {
   isMemoryFabricSuperSession,
   resolveMemoryFabricSearchSessionFilter,
 } from '@agentx/shared';
-import type { Crew, CompletionRequest, SessionEvent, SessionListKpis, StorableMessage } from '@agentx/shared';
+import type { Crew, CompletionRequest, SessionListKpis, StorableMessage } from '@agentx/shared';
 import { EMPTY_SESSION_KPIS } from '@agentx/shared';
 import { getEngine, createAgent, destroyAgent, getOrCreateBoundSessionAgent } from '../../engine.js';
 import { getActiveWorkspacePath } from '../../workspace.js';
@@ -615,32 +618,17 @@ export function createSessionsRouter(): Router {
       }
       const resumeState = loadSessionResumeState(sessionId);
       ensureSubscribed();
-      // Check for interrupted task (task_started without task_completed)
+      // Snapshot only — do not scan the full session event log on restore.
       let interruptedTask: Record<string, unknown> | null = null;
       try {
-        const events = eng.sessionManager.getSessionEvents?.(sessionId) ?? [];
-        let lastTaskStarted: SessionEvent | null = null;
-        let taskCompleted = false;
-        for (const ev of events) {
-          if (ev.type === 'task_started') lastTaskStarted = ev;
-          if (ev.type === 'task_completed' && lastTaskStarted && lastTaskStarted.type === 'task_started' && ev.payload.taskId === lastTaskStarted.payload.taskId) {
-            taskCompleted = true;
-          }
-        }
-        if (lastTaskStarted && !taskCompleted && lastTaskStarted.type === 'task_started') {
-          getLogger().info('RESTORE', `Session ${sessionId.slice(0, 12)} has interrupted task: ${lastTaskStarted.payload.goal.slice(0, 60)}`);
-          // Also check for persisted task snapshot
-          try {
-            const snapshot = eng.sessionManager.getStorageAdapter?.().getTaskSnapshot?.(sessionId);
-            if (snapshot) {
-              interruptedTask = {
-                goal: lastTaskStarted.payload.goal || String(snapshot['goal'] || ''),
-                taskId: String(snapshot['task_id'] || ''),
-                stepIndex: Number(snapshot['step_index'] || 0),
-                hasPersistedState: true,
-              };
-            }
-          } catch { /* best-effort */ }
+        const snapshot = eng.sessionManager.getStorageAdapter?.().getTaskSnapshot?.(sessionId);
+        if (snapshot) {
+          interruptedTask = {
+            goal: String(snapshot['goal'] || ''),
+            taskId: String(snapshot['task_id'] || ''),
+            stepIndex: Number(snapshot['step_index'] || 0),
+            hasPersistedState: true,
+          };
         }
       } catch { /* best-effort */ }
       // Restore crew states from session store
@@ -710,22 +698,14 @@ export function createSessionsRouter(): Router {
         // "executing" indicator with all prior turn content missing.
         let orphanedActiveParts: Array<Record<string, unknown>> = [];
         try {
-          const store = eng.sessionManager.getStorageAdapter?.();
-          const allParts = store?.getParts?.(sessionId) ?? [];
-          // Build a set of persisted message IDs so we can identify parts
-          // whose message_id doesn't belong to any persisted message (i.e.
-          // the assistant message for the current turn hasn't been saved yet
-          // but the stream handler already persisted parts with a generated
-          // message_id).
+          // Page parts already include unassigned / in-progress rows. Do not
+          // pull the entire session's tool parts into memory on restore.
           const persistedMessageIds = new Set(
             messages.map((m) => String((m as { id?: string }).id ?? '')).filter(Boolean),
           );
-          orphanedActiveParts = allParts.filter((p) => {
+          orphanedActiveParts = parts.filter((p) => {
             const mid = p['message_id'] ?? p['messageId'];
             if (mid == null || mid === '') return true;
-            // Also include parts whose message_id doesn't match any persisted
-            // message — these belong to the in-progress turn whose assistant
-            // message hasn't been saved to the DB yet.
             return !persistedMessageIds.has(String(mid));
           });
         } catch { /* best-effort */ }
@@ -763,6 +743,23 @@ export function createSessionsRouter(): Router {
             partialContent: '',
             activeParts: orphanedActiveParts,
           };
+        }
+        if (turnState && (turnState.phase === 'running' || turnState.phase === 'working')) {
+          const lastAssistant = [...messages].reverse().find((m) => (m as { role?: string }).role === 'assistant');
+          if (isSettledPersistedTurn({
+            phase: turnState.phase,
+            partialContent: turnState.partialContent,
+            lastAssistantText: lastAssistant ? textFromAssistantRecord(lastAssistant) : '',
+            hasRunningTools: partsIndicateRunningTools(turnState.activeParts),
+          })) {
+            turnState = {
+              phase: 'done',
+              stage: turnState.stage,
+              step: turnState.step,
+              turnId: turnState.turnId,
+              startedAt: turnState.startedAt,
+            };
+          }
         }
       } catch { /* best-effort */ }
 

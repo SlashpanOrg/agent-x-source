@@ -358,7 +358,6 @@ export async function getPartsForMessages(
   const times = messages
     .map((m) => ((m['created_at'] as string) ?? (m['createdAt'] as string)))
     .filter((t): t is string => !!t);
-  const min = times.length ? times.reduce((a, b) => (a < b ? a : b)) : null;
   const max = times.length ? times.reduce((a, b) => (a > b ? a : b)) : null;
   const result = await ctx.pool.query(
     `SELECT * FROM message_parts
@@ -367,13 +366,15 @@ export async function getPartsForMessages(
          message_id = ANY($2::text[])
          OR (
            message_id IS NULL
-           AND $3::timestamptz IS NOT NULL
-           AND $4::timestamptz IS NOT NULL
-           AND created_at >= $3 AND created_at <= $4
+           AND ($3::timestamptz IS NULL OR created_at >= $3 - INTERVAL '2 hours')
+         )
+         OR (
+           $3::timestamptz IS NOT NULL
+           AND created_at > $3
          )
        )
      ORDER BY created_at ASC`,
-    [sessionId, messageIds, min, max],
+    [sessionId, messageIds, max],
   );
   return result.rows as Array<Record<string, unknown>>;
 }

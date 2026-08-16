@@ -7,7 +7,7 @@ import { subscribeOptimizedTelemetry } from '../../perf/optimized-telemetry';
 import { ensureRenderInstrumentation } from '../../perf/render-instrumentation';
 import { eventBelongsToViewSession, filterEventsForViewSession } from '../../chat/session-stream-filter';
 import { applyOperationEventToAssistant } from '../../chat/operation-tool-patch';
-import { stripToolNoise, repairStreamTextGlitches, stripTrailingStreamPreamble, lastMessageIsQuestionnaireCard, mergeIncomingMessageParts, applyToolCompleteMetadata, reconcileStreamingMessageParts, coerceDisplayLabel, assistantTextsOverlap } from '../../chat/utils';
+import { stripToolNoise, repairStreamTextGlitches, stripTrailingStreamPreamble, lastMessageIsQuestionnaireCard, mergeIncomingMessageParts, applyToolCompleteMetadata, reconcileStreamingMessageParts, coerceDisplayLabel, assistantTextsOverlap, displayContent } from '../../chat/utils';
 import {
   parseDeepSearchProgressLine,
   parseDeepSearchProgressFromStream,
@@ -575,17 +575,18 @@ const handleStreamChunk = (ev: TelemetryEvent, ctx: EventHandlerContext): void =
         return base;
       }
       if (tip?.role === 'assistant' && ctx.turnActiveRef.current) {
-        const resolvedFull = rawFull || (rawDelta ? appendStreamText(tip.content || '', rawDelta) : '');
+        const tipText = displayContent(tip);
+        const resolvedFull = rawFull || (rawDelta ? appendStreamText(tipText || tip.content || '', rawDelta) : '');
         if (!resolvedFull) return base;
         // Late chunks after rich finalize must not reopen Markdown.
         if (messageHasResponseDocument(tip)) return base;
         // Late duplicate of an already-finalized reply — ignore.
-        if (!tip.streaming && assistantTextsOverlap(tip.content, resolvedFull) && resolvedFull.length <= (tip.content?.length ?? 0) + 8) {
+        if (!tip.streaming && assistantTextsOverlap(tipText, resolvedFull) && resolvedFull.length <= tipText.length + 8) {
           return base;
         }
         // Do not reopen a finalized (non-streaming) bubble.
-        if (!tip.streaming && tip.content?.trim()) {
-          if (assistantTextsOverlap(tip.content, resolvedFull)) return base;
+        if (!tip.streaming && tipText.trim()) {
+          if (assistantTextsOverlap(tipText, resolvedFull)) return base;
         }
         ctx.pendingUiSessionIdRef.current = ctx.viewSessionIdRef.current;
         ctx.streamChunkPendingRef.current = resolvedFull;
@@ -614,8 +615,9 @@ const handleStreamChunk = (ev: TelemetryEvent, ctx: EventHandlerContext): void =
       // Tip is a completed prior-turn assistant (turn not active for reopen) — do not
       // append a twin mid-stream; ensureOutgoing should have placed a fresh placeholder.
       if (tip?.role === 'assistant') {
-        const resolvedFull = rawFull || (rawDelta ? appendStreamText(tip.content || '', rawDelta) : '');
-        if (resolvedFull && assistantTextsOverlap(tip.content, resolvedFull)) return base;
+        const tipText = displayContent(tip);
+        const resolvedFull = rawFull || (rawDelta ? appendStreamText(tipText || tip.content || '', rawDelta) : '');
+        if (resolvedFull && assistantTextsOverlap(tipText, resolvedFull)) return base;
       }
       const textPart: PartEntry = { type: 'text', id: crypto.randomUUID(), content: rawFull || rawDelta };
       return [...base, {
@@ -865,10 +867,11 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
       // Merge when still streaming OR when the tip already holds this reply
       // (first finish set streaming:false; a second finalize / overlap must not append).
       const incomingHasResponseDocument = msg.parts?.some((p) => p.type === 'response_document') === true;
+      const tipText = displayContent(tip);
       const shouldMerge = sameSpeaker && (
         tip.streaming
-        || !tip.content?.trim()
-        || assistantTextsOverlap(tip.content, text)
+        || !tipText.trim()
+        || assistantTextsOverlap(tipText, text)
         || incomingHasResponseDocument
       );
       if (shouldMerge) {
@@ -901,7 +904,7 @@ const handleMessageReceived = (ev: TelemetryEvent, ctx: EventHandlerContext): vo
       // Safety: never append a second bubble that duplicates the trailing assistant.
       const trailing = withOutgoing[withOutgoing.length - 1];
       const trailingOverlap = trailing?.role === 'assistant' && (
-        assistantTextsOverlap(trailing.content, text)
+        assistantTextsOverlap(displayContent(trailing), text)
         || (!!msg.parts?.some((p) => p.type === 'response_document') && trailing.role === 'assistant')
       );
       if (trailingOverlap && trailing?.role === 'assistant') {

@@ -11,7 +11,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import QueueIcon from '@mui/icons-material/PlaylistAdd';
 import RouteIcon from '@mui/icons-material/Route';
 import { MentionInput, type MentionInputHandle } from './MentionInput';
-import { ComposerMentionMenu, type ComposerFileHit, type ComposerFolderHit, type ComposerKbHit } from './ComposerMentionMenu';
+import { ComposerMentionMenu, type ComposerArticleHit, type ComposerFileHit, type ComposerFolderHit, type ComposerKbHit, type ComposerSessionHit } from './ComposerMentionMenu';
 import { colors, alphaColor } from '../theme';
 import type { Crew } from '../api';
 
@@ -45,6 +45,8 @@ export interface ChatInputBarProps {
   onAttachWorkspaceFile?: (file: ComposerFileHit & { id: string }) => void;
   /** Workspace folder picked via @ Select this folder — parent adds to attachments. */
   onAttachWorkspaceFolder?: (folder: ComposerFolderHit & { id: string }) => void;
+  /** Current chat session — excluded from the @session picker. */
+  excludeSessionId?: string | null;
   onRemoveAttachmentById?: (id: string) => void;
   clearSignal?: number;
   voiceSlot?: React.ReactNode;
@@ -59,7 +61,7 @@ const ChatInputBarComponent = React.forwardRef<ChatInputBarHandle, ChatInputBarP
   hasAttachments,
   crewList,
   disableCrew = false,
-  placeholder = '@ to attach files, folders, or Knowledge Base docs…',
+  placeholder = '@ to attach files, articles, sessions, or Knowledge Base docs…',
   onSend,
   onCancel,
   onStopAndSend,
@@ -67,6 +69,7 @@ const ChatInputBarComponent = React.forwardRef<ChatInputBarHandle, ChatInputBarP
   onSteer,
   onAttachWorkspaceFile,
   onAttachWorkspaceFolder,
+  excludeSessionId,
   onRemoveAttachmentById,
   clearSignal,
   voiceSlot,
@@ -181,6 +184,20 @@ const ChatInputBarComponent = React.forwardRef<ChatInputBarHandle, ChatInputBarP
     mentionInputRef.current?.insertKbChip({ sourceId: source.sourceId, name: source.name });
   }, [closeMentionMenu]);
 
+  const handleArticleSelect = useCallback((article: ComposerArticleHit) => {
+    suppressSendRef.current = true;
+    window.setTimeout(() => { suppressSendRef.current = false; }, 50);
+    closeMentionMenu();
+    mentionInputRef.current?.insertArticleChip({ articleId: article.articleId, title: article.title });
+  }, [closeMentionMenu]);
+
+  const handleSessionSelect = useCallback((session: ComposerSessionHit) => {
+    suppressSendRef.current = true;
+    window.setTimeout(() => { suppressSendRef.current = false; }, 50);
+    closeMentionMenu();
+    mentionInputRef.current?.insertSessionChip({ sessionId: session.sessionId, title: session.title });
+  }, [closeMentionMenu]);
+
   const clearAndGetText = useCallback(() => {
     const text = mentionInputRef.current?.getValue() ?? '';
     mentionInputRef.current?.clear();
@@ -228,6 +245,9 @@ const ChatInputBarComponent = React.forwardRef<ChatInputBarHandle, ChatInputBarP
           onSelectFile={handleFileSelect}
           onSelectFolder={handleFolderSelect}
           onSelectKb={handleKbSelect}
+          onSelectArticle={handleArticleSelect}
+          onSelectSession={handleSessionSelect}
+          excludeSessionId={excludeSessionId}
           onClose={closeMentionMenu}
         />
       )}

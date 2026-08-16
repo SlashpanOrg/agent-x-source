@@ -11,6 +11,11 @@ import {
   sealTrailingThinkingPart,
   shouldRebuildStoredParts,
   syncTextPartsWithCanonicalContent,
+  collapseOverlappingTextParts,
+  suppressOverlappingAssistantTexts,
+  isSettledPersistedTurn,
+  partsIndicateRunningTools,
+  textFromAssistantRecord,
 } from '../src/utils/message-parts.js';
 
 describe('text-sanitize', () => {
@@ -447,5 +452,139 @@ describe('message-parts', () => {
     const parts = [{ type: 'text' as const, id: 't1', content: 'Short prefix' }];
     expect(partsTextTruncatesContent('Short prefix that continues to the full answer.', parts)).toBe(true);
     expect(shouldRebuildStoredParts('Short prefix that continues to the full answer.', parts)).toBe(true);
+  });
+
+  it('collapseOverlappingTextParts keeps the later overlapping draft', () => {
+    const first = '## Overall assessment\n\nBoth reports show elevated glucose and lipids.';
+    const second = `${first}\n\n## Detailed tables\n\n| Test | Value |\n| --- | --- |\n| Glucose | 335 |`;
+    const collapsed = collapseOverlappingTextParts([
+      { type: 'text' as const, id: 'a', content: first },
+      { type: 'tool' as const, id: 'tool-1' },
+      { type: 'text' as const, id: 'b', content: second },
+    ]);
+    expect(collapsed.filter((p) => p.type === 'text')).toHaveLength(1);
+    expect(collapsed.find((p) => p.type === 'text')?.content).toBe(second);
+    expect(collapsed.some((p) => p.type === 'tool')).toBe(true);
+  });
+
+  it('collapseOverlappingTextParts keeps one of two near-duplicate final answers', () => {
+    const first = [
+      'Sir, I could not find a verified currently active coupon code specifically for EasyTouch Wellness or Agatsa Smart Scale.',
+      '',
+      '| Source checked | Finding | Reliability |',
+      '|---|---|---|',
+      '| Official shop | No public coupon listed for those two products | Low |',
+      '',
+      'Try the official shop checkout and see whether a discount field appears.',
+    ].join('\n');
+    const second = [
+      'Sir, I found no verified coupon code that can currently be confirmed for either EasyTouch Wellness or Agatsa Smart Scale.',
+      '',
+      '| Product | Official offer found | Coupon result |',
+      '|---|---|---|',
+      '| EasyTouch Wellness | None confirmed | No public code |',
+      '',
+      'Check the official shop at checkout for any automatic offer.',
+    ].join('\n');
+    const collapsed = collapseOverlappingTextParts([
+      { type: 'text' as const, id: 'a', content: first },
+      { type: 'tool' as const, id: 't' },
+      { type: 'text' as const, id: 'b', content: second },
+    ]);
+    const texts = collapsed.filter((p) => p.type === 'text');
+    expect(texts).toHaveLength(1);
+    expect(texts[0]?.content).toBe(second);
+  });
+
+  it('collapseOverlappingTextParts keeps the longer draft when the later part is a prefix', () => {
+    const full = '## Overall assessment\n\nBoth reports show elevated glucose and lipids.';
+    const collapsed = collapseOverlappingTextParts([
+      { type: 'text' as const, id: 'a', content: full },
+      { type: 'text' as const, id: 'b', content: full.slice(0, 40) },
+    ]);
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed[0]?.content).toBe(full);
+  });
+
+  it('suppressOverlappingAssistantTexts drops an earlier text-only duplicate', () => {
+    const report = '## Overall assessment\n\nBoth reports show elevated glucose and lipids.';
+    const messages = suppressOverlappingAssistantTexts([
+      { role: 'user', content: 'analyse these two medical lap reports' },
+      { role: 'assistant', content: report, parts: [{ type: 'text', content: report }] },
+      {
+        role: 'assistant',
+        content: '',
+        parts: [
+          { type: 'text', content: report.slice(0, 48) },
+          { type: 'text', content: report },
+        ],
+      },
+    ]);
+    expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(1);
+    expect(textFromAssistantRecord(messages[1]!)).toBe(report);
+  });
+
+  it('suppressOverlappingAssistantTexts drops an earlier response_document of the same table', () => {
+    const report = '| Test | Actual |\n|---|---|\n| Fasting blood glucose | 335 mg/dL |';
+    const messages = suppressOverlappingAssistantTexts([
+      {
+        role: 'assistant',
+        content: report,
+        parts: [
+          { type: 'text', content: report },
+          { type: 'response_document', content: '' },
+        ],
+      },
+      { role: 'assistant', content: report, parts: [{ type: 'text', content: report }] },
+    ]);
+    const assistants = messages.filter((m) => m.role === 'assistant');
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]?.parts?.some((p) => p.type === 'response_document')).toBe(false);
+    expect(textFromAssistantRecord(assistants[0]!)).toBe(report);
+  });
+
+  it('suppressOverlappingAssistantTexts keeps earlier workflow parts', () => {
+    const report = '## Overall assessment\n\nBoth reports show elevated glucose and lipids.';
+    const messages = suppressOverlappingAssistantTexts([
+      {
+        role: 'assistant',
+        content: report,
+        parts: [
+          { type: 'tool', content: '' },
+          { type: 'text', content: report },
+        ],
+      },
+      { role: 'assistant', content: report, parts: [{ type: 'text', content: report }] },
+    ]);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.content).toBe('');
+    expect(messages[0]?.parts?.every((p) => p.type === 'tool')).toBe(true);
+    expect(textFromAssistantRecord(messages[1]!)).toBe(report);
+  });
+
+  it('isSettledPersistedTurn treats a matching persisted answer as done', () => {
+    const report = '## Overall assessment\n\nBoth reports show elevated glucose and lipids.';
+    expect(isSettledPersistedTurn({
+      phase: 'running',
+      partialContent: `${report}\n`,
+      lastAssistantText: report,
+      hasRunningTools: false,
+    })).toBe(true);
+    expect(isSettledPersistedTurn({
+      phase: 'running',
+      partialContent: report,
+      lastAssistantText: report,
+      hasRunningTools: true,
+    })).toBe(false);
+    expect(isSettledPersistedTurn({
+      phase: 'idle',
+      partialContent: report,
+      lastAssistantText: report,
+    })).toBe(false);
+  });
+
+  it('partsIndicateRunningTools reads nested tool status', () => {
+    expect(partsIndicateRunningTools([{ type: 'tool', tool: { status: 'running' } }])).toBe(true);
+    expect(partsIndicateRunningTools([{ type: 'tool', status: 'done' }])).toBe(false);
   });
 });

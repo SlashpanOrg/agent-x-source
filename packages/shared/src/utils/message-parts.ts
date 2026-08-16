@@ -513,6 +513,166 @@ export function rebuildPartsFromCanonical(content: string, toolCalls?: Persisted
   ], true);
 }
 
+function significantTokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
+}
+
+/** Same-turn near-duplicate: two complete replies that restate the same answer. */
+export function textsNearDuplicate(a: string | undefined, b: string | undefined): boolean {
+  if (textsOverlap(a, b)) return true;
+  const left = (a ?? '').trim();
+  const right = (b ?? '').trim();
+  if (left.length < 80 || right.length < 80) return false;
+  const ratio = left.length < right.length ? left.length / right.length : right.length / left.length;
+  if (ratio < 0.45) return false;
+  const ta = significantTokens(left).slice(0, 48);
+  const tb = significantTokens(right).slice(0, 48);
+  if (ta.length < 8 || tb.length < 8) return false;
+  const setA = new Set(ta);
+  let inter = 0;
+  for (const t of tb) {
+    if (setA.has(t)) inter += 1;
+  }
+  const union = new Set([...ta, ...tb]).size;
+  const leadA = ta.slice(0, 16);
+  const leadB = tb.slice(0, 16);
+  const leadInter = leadB.filter((t) => leadA.includes(t)).length;
+  return (inter >= 8 && union > 0 && inter / union >= 0.4) || leadInter >= 7;
+}
+
+/** True when two assistant texts are the same reply (exact, prefix, or shared lead). */
+export function textsOverlap(a: string | undefined, b: string | undefined): boolean {
+  const left = (a ?? '').trim();
+  const right = (b ?? '').trim();
+  if (!left || !right) return false;
+  if (left === right) return true;
+  if (left.startsWith(right) || right.startsWith(left)) return true;
+  const lead = Math.min(64, left.length, right.length);
+  if (lead < 24) return false;
+  return left.slice(0, lead) === right.slice(0, lead);
+}
+
+/**
+ * Keep one copy when a turn stored multiple overlapping text parts
+ * (draft, then tools, then a revised draft of the same report).
+ * Later drafts win unless they are a truncated prefix of an earlier one.
+ */
+export function collapseOverlappingTextParts<T extends { type?: string; content?: string }>(parts: T[]): T[] {
+  if (parts.length < 2) return parts;
+  const out: T[] = [];
+  let lastText: T | null = null;
+  for (const part of parts) {
+    if (part.type !== 'text' || !part.content?.trim()) {
+      out.push(part);
+      continue;
+    }
+    if (lastText && textsNearDuplicate(lastText.content, part.content)) {
+      const prev = lastText.content || '';
+      const next = part.content || '';
+      const nextIsPrefix = prev.startsWith(next) && prev.length > next.length;
+      if (nextIsPrefix) continue;
+      const idx = out.lastIndexOf(lastText);
+      if (idx >= 0) out[idx] = part;
+      lastText = part;
+      continue;
+    }
+    lastText = part;
+    out.push(part);
+  }
+  return out;
+}
+
+export function textFromAssistantRecord(msg: {
+  content?: unknown;
+  parts?: Array<{ type?: string; content?: string }> | unknown;
+}): string {
+  const parts = Array.isArray(msg.parts) ? msg.parts : [];
+  const fromParts = collapseOverlappingTextParts(
+    parts.filter((p): p is { type: string; content?: string } => !!p && typeof p === 'object'),
+  )
+    .filter((p) => p.type === 'text' && p.content)
+    .map((p) => String(p.content || ''))
+    .join('');
+  const content = typeof msg.content === 'string' ? msg.content : '';
+  return (fromParts || content).trim();
+}
+
+/**
+ * Drop text from earlier assistant messages when a later one is the same report.
+ * Tools / thinking on the earlier row stay so the workflow accordion remains.
+ */
+export function suppressOverlappingAssistantTexts<T extends {
+  role?: string;
+  content?: string;
+  parts?: Array<{ type?: string; content?: string }>;
+  thinking?: string;
+  toolCalls?: unknown[];
+  subAgents?: unknown[];
+  plan?: unknown;
+}>(messages: T[]): T[] {
+  const assistantIdx: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.role === 'assistant') assistantIdx.push(i);
+  }
+  if (assistantIdx.length < 2) return messages;
+  const next = messages.slice();
+  for (let k = 1; k < assistantIdx.length; k++) {
+    const prevI = assistantIdx[k - 1]!;
+    const curI = assistantIdx[k]!;
+    const prev = next[prevI]!;
+    const cur = next[curI]!;
+    const prevText = textFromAssistantRecord(prev);
+    const curText = textFromAssistantRecord(cur);
+    if (!textsOverlap(prevText, curText)) continue; // not textsNearDuplicate — later turns may restyle the same table on request
+    next[prevI] = {
+      ...prev,
+      content: '',
+      parts: (prev.parts ?? []).filter((p) => p.type !== 'text' && p.type !== 'response_document'),
+    };
+  }
+  return next.filter((m) => {
+    if (m.role !== 'assistant') return true;
+    if (textFromAssistantRecord(m)) return true;
+    if (typeof m.thinking === 'string' && m.thinking.trim()) return true;
+    if (m.toolCalls?.length) return true;
+    if (m.subAgents?.length) return true;
+    if (m.plan) return true;
+    return (m.parts ?? []).some((p) => p.type && p.type !== 'text');
+  });
+}
+
+/** True when restore/live parts still have an in-flight tool. */
+export function partsIndicateRunningTools(parts: Array<Record<string, unknown>> | undefined): boolean {
+  if (!parts?.length) return false;
+  return parts.some((p) => {
+    const tool = p.tool && typeof p.tool === 'object' ? p.tool as Record<string, unknown> : null;
+    const status = String(p.status ?? tool?.status ?? p.tool_status ?? '').toLowerCase();
+    return status === 'running' || status === 'pending' || status === 'in_progress';
+  });
+}
+
+/** Persisted answer already matches a still-flagged live turn — do not replay it. */
+export function isSettledPersistedTurn(opts: {
+  phase?: string | null;
+  partialContent?: string | null;
+  lastAssistantText?: string | null;
+  hasRunningTools?: boolean;
+}): boolean {
+  if (opts.hasRunningTools) return false;
+  const phase = opts.phase ?? '';
+  if (phase && phase !== 'running' && phase !== 'working') return false;
+  const partial = (opts.partialContent ?? '').trim();
+  const last = (opts.lastAssistantText ?? '').trim();
+  if (!partial || !last) return false;
+  if (!textsOverlap(last, partial)) return false;
+  return last.length >= Math.max(0, partial.length - 32);
+}
+
 /**
  * Align live streaming text parts with the canonical finished assistant content.
  * Fixes the coalesce race where message_received arrives before the last
@@ -709,6 +869,9 @@ function withThinkingAndSubAgents(
       ];
     }
   }
+  if (parts?.length) {
+    parts = collapseOverlappingTextParts(parts);
+  }
   return {
     ...base,
     parts,
@@ -726,7 +889,7 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
   subAgents?: PersistedSubAgent[];
 } {
   const rawContent = (msg['content'] as string) || '';
-  const content = repairStreamTextGlitches(stripToolNoise(rawContent));
+  let content = repairStreamTextGlitches(stripToolNoise(rawContent));
 
   let toolCalls: PersistedToolCall[] | undefined;
   const rawTools = msg['toolCalls'];
@@ -751,7 +914,7 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
 
   const storedParts = msg['parts'];
   if (Array.isArray(storedParts) && storedParts.length > 0) {
-    const mapped = dedupeResponseDocumentParts(dedupeToolParts((storedParts as MessagePart[]).map((p) => {
+    const mapped = collapseOverlappingTextParts(dedupeResponseDocumentParts(dedupeToolParts((storedParts as MessagePart[]).map((p) => {
       if (p.type === 'text' && p.content) {
         return { ...p, content: repairStreamTextGlitches(stripToolNoise(p.content, { trim: false })) };
       }
@@ -781,8 +944,10 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
           return {
             ...p,
             responseDocument: parsed.document,
-            fallbackMarkdown: p.fallbackMarkdown?.trim()
+            fallbackMarkdown: repairStreamTextGlitches(
+              p.fallbackMarkdown?.trim()
               || responseDocumentToMarkdown(parsed.document),
+            ),
           };
         }
         if (p.fallbackMarkdown?.trim()) {
@@ -790,7 +955,11 @@ export function normalizeMessageForUi(msg: Record<string, unknown> | StorableMes
         }
       }
       return p;
-    }), true));
+    }), true)));
+    const survivingText = mapped.filter((p) => p.type === 'text' && p.content?.trim());
+    if (survivingText.length === 1 && content && textsNearDuplicate(content, survivingText[0]!.content)) {
+      content = survivingText[0]!.content!;
+    }
     // Prefer DB chronology when reasoning rows exist but stored parts lack thinking segments.
     const missingThinkingChronology = hasReasoningRows && !mapped.some((p) => p.type === 'thinking');
     if (!shouldRebuildStoredParts(content, mapped, toolCalls) && !missingThinkingChronology) {

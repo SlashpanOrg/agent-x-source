@@ -68,8 +68,8 @@ vi.mock('@agentx/engine', () => ({
   getLlmConcurrencyLimits: vi.fn().mockReturnValue({ global: 3, perProvider: 2 }),
   getAttachmentWorkerLimit: vi.fn().mockReturnValue(1),
   registerPerformanceTuneTarget: vi.fn().mockReturnValue(() => {}),
-  MarkdownDocumentStore: vi.fn(),
-  setMarkdownDocumentStoreInstance: vi.fn(),
+  ArticleStore: vi.fn(),
+  setArticleStoreInstance: vi.fn(),
   InMemoryQueue: vi.fn().mockImplementation(() => ({
     start: vi.fn().mockResolvedValue(undefined),
   })),

@@ -38,7 +38,7 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
   // Turn flags only — must NOT subscribe to messages (stream chunks caused typing lag).
   const { streaming, sessionRestoring } = useChatTurnControlContext();
   const { permissionPrompt, pendingPermissionCount } = useChatPromptsContext();
-  const { coreSession } = useChatSessionIdentityContext();
+  const { coreSession, currentSessionId } = useChatSessionIdentityContext();
   const { isCrewPrivateSession, crewPrivateHost } = useChatSessionPrivacyContext();
   const { crewList } = useChatCrewListContext();
   const { bypassPermissions } = useChatBypassPermissionsContext();
@@ -296,11 +296,12 @@ export const ChatInputArea = React.memo(function ChatInputArea() {
           disableCrew={isCrewPrivateSession || coreSession}
           placeholder={
             coreSession
-              ? '@ to attach files — talk to Agent-X…'
+              ? '@ to attach files, articles, or sessions — talk to Agent-X…'
               : isCrewPrivateSession && crewPrivateHost
-                ? `@ to attach files — message ${crewPrivateHost.name}…`
-                : '@ for crew or files — message your AI wingman…'
+                ? `@ to attach files, articles, or sessions — message ${crewPrivateHost.name}…`
+                : '@ for crew, files, articles, or sessions — message your AI wingman…'
           }
+          excludeSessionId={currentSessionId}
           onSend={requestSend}
           onCancel={handleCancel}
           onStopAndSend={handleStopAndSend}

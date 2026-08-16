@@ -262,11 +262,11 @@ describe('ToolPermissionService', () => {
     expect(summarizeToolAction('file_write', { path: 'plan.md' }, sampleTool())).toContain('write a file');
   });
 
-  it('denies low-risk proactive save_to_markdown without user consent', async () => {
+  it('denies low-risk proactive save_to_article without user consent', async () => {
     const registry = new ToolRegistry();
     registry.register({
-      id: 'save_to_markdown',
-      name: 'Save to Markdown',
+      id: 'save_to_article',
+      name: 'Save to Articles',
       description: 'save',
       modelDescription: 'save',
       category: 'documents',
@@ -284,17 +284,17 @@ describe('ToolPermissionService', () => {
       getCurrentUserMessage: () => 'Analyse TVK and summarise the findings',
     });
 
-    const result = await service.requestPermission(host, 'save_to_markdown', { title: 'TVK' }, 'session');
+    const result = await service.requestPermission(host, 'save_to_article', { title: 'TVK' }, 'session');
     expect(result.decision).toBe('deny');
     expect(result.error).toBe('PERMISSION_INSTRUCTED');
     expect(result.instruction).toMatch(/plain-text question/i);
   });
 
-  it('allows save_to_markdown when user explicitly requested a save', async () => {
+  it('allows save_to_article when user explicitly requested a save', async () => {
     const registry = new ToolRegistry();
     registry.register({
-      id: 'save_to_markdown',
-      name: 'Save to Markdown',
+      id: 'save_to_article',
+      name: 'Save to Articles',
       description: 'save',
       modelDescription: 'save',
       category: 'documents',
@@ -309,18 +309,18 @@ describe('ToolPermissionService', () => {
     const host = buildHost({
       getRegistry: () => registry,
       getPermissionManager: () => manager,
-      getCurrentUserMessage: () => 'Please save this analysis to markdown',
+      getCurrentUserMessage: () => 'Please save this analysis as an article',
     });
 
-    const result = await service.requestPermission(host, 'save_to_markdown', { title: 'TVK' }, 'session');
+    const result = await service.requestPermission(host, 'save_to_article', { title: 'TVK' }, 'session');
     expect(result.decision).toBe('allow');
   });
 
-  it('allows save_to_markdown when session waived low-risk consent', async () => {
+  it('allows save_to_article when session waived low-risk consent', async () => {
     const registry = new ToolRegistry();
     registry.register({
-      id: 'save_to_markdown',
-      name: 'Save to Markdown',
+      id: 'save_to_article',
+      name: 'Save to Articles',
       description: 'save',
       modelDescription: 'save',
       category: 'documents',
@@ -339,15 +339,15 @@ describe('ToolPermissionService', () => {
       getCurrentUserMessage: () => 'Continue the analysis',
     });
 
-    const result = await service.requestPermission(host, 'save_to_markdown', { title: 'TVK' }, 'session');
+    const result = await service.requestPermission(host, 'save_to_article', { title: 'TVK' }, 'session');
     expect(result.decision).toBe('allow');
   });
 
-  it('allows save_to_markdown under bypass without asking', async () => {
+  it('allows save_to_article under bypass without asking', async () => {
     const registry = new ToolRegistry();
     registry.register({
-      id: 'save_to_markdown',
-      name: 'Save to Markdown',
+      id: 'save_to_article',
+      name: 'Save to Articles',
       description: 'save',
       modelDescription: 'save',
       category: 'documents',
@@ -365,7 +365,7 @@ describe('ToolPermissionService', () => {
       getCurrentUserMessage: () => 'Analyse this',
     });
 
-    const result = await service.requestPermission(host, 'save_to_markdown', { title: 'TVK' }, 'session');
+    const result = await service.requestPermission(host, 'save_to_article', { title: 'TVK' }, 'session');
     expect(result.decision).toBe('allow');
   });
 

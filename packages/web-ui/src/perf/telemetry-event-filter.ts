@@ -3,7 +3,7 @@ import type { TelemetryEvent } from '../api';
 /** Events that should update the global AppContext event log / notifications. */
 const GLOBAL_TELEMETRY_EVENT_TYPES = new Set([
   'notification_created',
-  'markdown_created',
+  'article_created',
   'automation_run_triggered',
   'automation_run_preparing',
   'automation_run_started',

@@ -135,9 +135,9 @@ export function summarizeToolAction(toolId: string, args: Record<string, unknown
   if (toolId === 'file_write' || toolId === 'write_file') {
     return path ? `write a file at ${path}` : 'write a file';
   }
-  if (toolId === 'save_to_markdown') {
+  if (toolId === 'save_to_article') {
     const title = typeof args['title'] === 'string' ? args['title'].trim() : '';
-    return title ? `save "${title}" to Markdown` : 'save this analysis to Markdown';
+    return title ? `save "${title}" as an Article` : 'save this analysis as an Article';
   }
   if (toolId === 'gen_markdown' || toolId === 'gen_html') {
     return path ? `create ${name} at ${path}` : `create a ${name} document`;

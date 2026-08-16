@@ -48,7 +48,7 @@ export default defineConfig({
           if (id.includes('node_modules/mermaid')) {
             return 'mermaid';
           }
-          if (id.includes('node_modules/jspdf') || id.includes('node_modules/html2canvas')) {
+          if (id.includes('node_modules/jspdf')) {
             return 'pdf-export';
           }
           if (id.includes('node_modules/recharts') || id.includes('node_modules/d3-')) {

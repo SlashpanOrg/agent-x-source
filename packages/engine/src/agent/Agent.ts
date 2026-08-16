@@ -113,6 +113,8 @@ import { DecisionEngine } from './DecisionEngine.js';
 import type { DecisionResult } from './DecisionEngine.js';
 import { profileRequest } from './request-profile.js';
 import { parseKbMentionSourceIds, runTurnJourney } from './TurnJourney.js';
+import { buildMentionContextBlock, messageTextFromRow } from './mention-context.js';
+import { getArticleStoreInstance } from '../articles/ArticleStore.js';
 import type { KbDocumentTurnPolicy } from '../knowledge-base/kb-document-access-guard.js';
 import { AgentBus, getAgentBus } from './AgentBus.js';
 import { SteerMessageHandler } from './SteerMessageHandler.js';
@@ -450,7 +452,7 @@ export class Agent {
     // The MoE category overlay guides the model's BEHAVIOR via prompt instructions.
     // It does NOT restrict which tools are available. Tool restriction caused
     // catastrophic failures: models couldn't find file_write and substituted with
-    // web_search loops (96 useless searches for "save_to_markdown" as a web query).
+    // web_search loops (96 useless searches for "save_to_article" as a web query).
     //
     // ALL tools are available to ALL categories. The category overlay in the system
     // prompt tells the model which tools to prefer. The model decides.
@@ -500,6 +502,7 @@ export class Agent {
   // ─── RAG / Turn Journey
   private lastRagResults: Array<{ content: string; score?: number; metadata?: Record<string, unknown> }> = [];
   private lastJourneyBlock = '';
+  private lastMentionContextBlock = '';
 
   // ─── Reflection & Learning (lazy-init)
   private _reflectionLoop: ReflectionLoop | null = null;
@@ -2652,9 +2655,10 @@ export class Agent {
     // Prefetch local knowledge + inject stage order so users need not direct tools.
     this.lastRagResults = [];
     this.lastJourneyBlock = '';
+    this.lastMentionContextBlock = '';
     {
       const requestProfile = profileRequest(content);
-      const referencesLocalContext = /@(?:kb|template)\[/.test(content) || (options?.attachments?.length ?? 0) > 0;
+      const referencesLocalContext = /@(?:kb|template|article|session)\[/.test(content) || (options?.attachments?.length ?? 0) > 0;
       const skipJourney =
         this.currentDecision.skipRag === true
         || this.currentDecision.skipTools === true
@@ -2712,6 +2716,39 @@ export class Agent {
           });
         }
       }
+    }
+
+    try {
+      this.lastMentionContextBlock = await buildMentionContextBlock({
+        userText: content,
+        currentSessionId: this.sessionId,
+        loadArticle: async (id) => {
+          const store = getArticleStoreInstance();
+          if (!store) return null;
+          const payload = await store.getContent(id);
+          if (!payload) return null;
+          return {
+            title: payload.record.title,
+            kind: payload.record.contentFormat,
+            content: payload.content ?? '',
+          };
+        },
+        loadSession: async (id) => {
+          if (id === this.sessionId) return null;
+          const session = this.sessionManager?.getSessionById(id);
+          const page = await this.getPersistStore()?.getMessagesPage?.(id, { limit: 16 });
+          if (!page) return null;
+          return {
+            title: session?.title?.trim() || 'Untitled session',
+            messages: page.messages.map((row) => ({
+              role: String(row['role'] ?? ''),
+              content: messageTextFromRow(row),
+            })),
+          };
+        },
+      });
+    } catch (e) {
+      getLogger().warn('MENTION_CONTEXT', e instanceof Error ? e.message : String(e));
     }
 
     // Advance loading step: planning / thinking phase complete
@@ -3525,7 +3562,7 @@ export class Agent {
           'locking the', 'locking in the', 'putting together the',
         ];
         const hasActionTransition = actionPhrases.some(p => lowerContent.includes(p));
-        const calledFileWrite = this.toolCallLogForReflection.some(t => t.name === 'file_write' || t.name === 'save_to_markdown');
+        const calledFileWrite = this.toolCallLogForReflection.some(t => t.name === 'file_write' || t.name === 'save_to_article');
         const userAskedSave = detectsExplicitDeliverableRequest(this.currentUserMessage);
         const skipAsk = this.toolExecutor?.getSkipLowRiskProactiveConsent() === true
           || this.bypassPermissions
@@ -3542,7 +3579,7 @@ export class Agent {
                 { role: 'assistant', content: content || '(prior work)' },
                 {
                   role: 'user',
-                  content: `[SYSTEM] You just said you would write or save something, but you did NOT call file_write or save_to_markdown. You MUST call file_write NOW with the full content. Do not search again. Do not output transition text. Call file_write with the complete itinerary/plan content.`,
+                  content: `[SYSTEM] You just said you would write or save something, but you did NOT call file_write or save_to_article. You MUST call file_write NOW with the full content. Do not search again. Do not output transition text. Call file_write with the complete itinerary/plan content.`,
                 },
               ];
               const contText = await withSpan('llm.action_retry', 'llm', async (span) => {
@@ -3585,8 +3622,8 @@ export class Agent {
               'Action transition detected without deliverable tool — converting to user confirmation ask',
             );
             const askSuffix =
-              '\n\nWant me to save this to a Markdown file now? Reply yes to save, or no to leave it in chat only.';
-            if (!/want me to save this to a markdown file/i.test(content)) {
+              '\n\nWant me to save this as an Article now? Reply yes to save, or no to leave it in chat only.';
+            if (!/want me to save this as an article/i.test(content)) {
               content = `${content.trim()}${askSuffix}`;
             }
           }
@@ -4878,6 +4915,14 @@ export class Agent {
       const userMsg = userIdx >= 0 ? aiMessages[userIdx] : null;
       if (userMsg && !userMsg.content.includes('[TURN_JOURNEY]')) {
         aiMessages[userIdx] = { ...userMsg!, content: `${this.lastJourneyBlock}\n\n${userMsg.content}` };
+      }
+    }
+
+    if (this.lastMentionContextBlock) {
+      const userIdx = aiMessages.findLastIndex((m) => m.role === 'user');
+      const userMsg = userIdx >= 0 ? aiMessages[userIdx] : null;
+      if (userMsg && !userMsg.content.includes('[PINNED ARTICLE]') && !userMsg.content.includes('[PINNED SESSION]')) {
+        aiMessages[userIdx] = { ...userMsg!, content: `${this.lastMentionContextBlock}\n\n${userMsg.content}` };
       }
     }
 

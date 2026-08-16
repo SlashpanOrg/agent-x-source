@@ -19,13 +19,21 @@ import { CodeBlockChrome, CodeBlockBody, CODE_BLOCK_TOKENS, formatBlockTitle } f
 import { CitationChip } from './CitationChip';
 import { prepareWebSourcedMarkdown } from './source-chip-utils';
 import { openExternalUrl } from '../utils/open-external-url';
-import { CrewDisplayChip, FileDisplayChip, FolderDisplayChip, KbDisplayChip } from './ComposerChip';
+import { ArticleDisplayChip, CrewDisplayChip, FileDisplayChip, FolderDisplayChip, KbDisplayChip, SessionDisplayChip } from './ComposerChip';
+import {
+  isRefFileHref,
+  prepareAssistantMarkup,
+  refFileNameFromHref,
+  splitColoredMarkup,
+} from './assistant-markup';
 import {
   MENTION_TOKEN_FIND_RE,
   parseCrewMentionToken,
   parseFileMentionToken,
   parseFolderMentionToken,
   parseKbMentionToken,
+  parseArticleMentionToken,
+  parseSessionMentionToken,
 } from './mention-tokens';
 
 const MARKDOWN_BASE_SX = {
@@ -235,6 +243,63 @@ function SimpleInlineCode({ children, ...props }: { children?: React.ReactNode; 
   );
 }
 
+const COLORED_VALUE_SX = {
+  color: 'inherit',
+  fontWeight: 700,
+  fontFamily: "'JetBrains Mono', monospace",
+  fontSize: '0.95em',
+  whiteSpace: 'nowrap',
+} as const;
+
+function flattenMarkdownText(node: React.ReactNode): string {
+  return React.Children.toArray(node).map((child) => {
+    if (typeof child === 'string' || typeof child === 'number') return String(child);
+    if (React.isValidElement<{ children?: React.ReactNode }>(child)) {
+      return flattenMarkdownText(child.props.children);
+    }
+    return '';
+  }).join('');
+}
+
+function renderColoredText(text: string): React.ReactNode {
+  const prepared = prepareAssistantMarkup(text);
+  const segments = splitColoredMarkup(prepared);
+  if (segments.length === 1 && segments[0]?.kind === 'text') return segments[0]?.text ?? text;
+  return segments.map((seg, i) => (
+    seg.kind === 'text'
+      ? <Fragment key={i}>{seg.text}</Fragment>
+      : (
+        <Box key={i} component="span" sx={{ ...COLORED_VALUE_SX, color: seg.color }}>
+          {seg.text}
+        </Box>
+      )
+  ));
+}
+
+function colorizeChildren(children: React.ReactNode): React.ReactNode {
+  const combined = flattenMarkdownText(children);
+  if (/<|&lt;|⟦axc:/.test(combined)) {
+    return renderColoredText(combined);
+  }
+  return React.Children.map(children, (child) => {
+    if (typeof child === 'string') return renderColoredText(child);
+    if (React.isValidElement<{ children?: React.ReactNode }>(child) && child.props.children != null) {
+      const inner = child.props.children;
+      if (typeof inner === 'string') {
+        return React.cloneElement(child, undefined, renderColoredText(inner));
+      }
+    }
+    return child;
+  });
+}
+
+function markdownChildText(children: React.ReactNode): string {
+  return React.Children.toArray(children)
+    .filter((child): child is string => typeof child === 'string')
+    .join('')
+    .trim();
+}
+
 function createMarkdownComponents(isFirstSection: boolean, simpleCode?: boolean) {
   return {
     h1({ children }: { children?: React.ReactNode }) {
@@ -243,7 +308,7 @@ function createMarkdownComponents(isFirstSection: boolean, simpleCode?: boolean)
           fontSize: '0.85rem', fontWeight: 700, color: colors.text.primary, mt: isFirstSection ? 0 : 0.5, mb: 1,
           fontFamily: "'Inter', sans-serif", letterSpacing: '-0.01em',
         }}>
-          {children}
+          {colorizeChildren(children)}
         </Typography>
       );
     },
@@ -258,7 +323,7 @@ function createMarkdownComponents(isFirstSection: boolean, simpleCode?: boolean)
             fontSize: '0.72rem', fontWeight: 700, color: colors.text.primary,
             fontFamily: "'Inter', sans-serif", letterSpacing: '0.04em', textTransform: 'uppercase', lineHeight: 1.3,
           }}>
-            {children}
+            {colorizeChildren(children)}
           </Typography>
         </Box>
       );
@@ -269,7 +334,7 @@ function createMarkdownComponents(isFirstSection: boolean, simpleCode?: boolean)
           fontSize: '0.75rem', fontWeight: 600, color: colors.text.primary,
           mt: 1, mb: 0.5, fontFamily: "'Inter', sans-serif",
         }}>
-          {children}
+          {colorizeChildren(children)}
         </Typography>
       );
     },
@@ -281,13 +346,13 @@ function createMarkdownComponents(isFirstSection: boolean, simpleCode?: boolean)
             fontSize: '0.72rem', fontWeight: 600, color: colors.accent.blue,
             fontFamily: "'Inter', sans-serif", letterSpacing: '0.01em',
           }}>
-            {children}
+            {colorizeChildren(children)}
           </Typography>
         </Box>
       );
     },
     p({ children }: { children?: React.ReactNode }) {
-      return <Typography component="p" sx={{ m: 0, mb: 0.75, fontSize: '0.8125rem', lineHeight: 1.65, color: colors.text.secondary, fontFamily: "'Inter', sans-serif", '&:last-child': { mb: 0 } }}>{children}</Typography>;
+      return <Typography component="p" sx={{ m: 0, mb: 0.75, fontSize: '0.8125rem', lineHeight: 1.65, color: colors.text.secondary, fontFamily: "'Inter', sans-serif", '&:last-child': { mb: 0 } }}>{colorizeChildren(children)}</Typography>;
     },
     hr() {
       return <Box sx={{ my: 1.25, height: '1px', bgcolor: colors.border.subtle }} />;
@@ -339,8 +404,8 @@ function createMarkdownComponents(isFirstSection: boolean, simpleCode?: boolean)
     thead({ children }: { children?: React.ReactNode }) { return <thead>{children}</thead>; },
     tbody({ children }: { children?: React.ReactNode }) { return <tbody>{children}</tbody>; },
     tr({ children }: { children?: React.ReactNode }) { return <tr>{children}</tr>; },
-    th({ children }: { children?: React.ReactNode }) { return <th>{children}</th>; },
-    td({ children }: { children?: React.ReactNode }) { return <td>{children}</td>; },
+    th({ children }: { children?: React.ReactNode }) { return <th>{colorizeChildren(children)}</th>; },
+    td({ children }: { children?: React.ReactNode }) { return <td>{colorizeChildren(children)}</td>; },
     ul({ children }: { children?: React.ReactNode }) { return <StyledUl>{children}</StyledUl>; },
     ol({ children }: { children?: React.ReactNode }) { return <StyledOl>{children}</StyledOl>; },
     li({ children }: { children?: React.ReactNode }) {
@@ -354,12 +419,21 @@ function createMarkdownComponents(isFirstSection: boolean, simpleCode?: boolean)
             rowGap: 0.25,
             '& > p': { display: 'inline', m: 0, mb: 0 },
           }}>
-            {children}
+            {colorizeChildren(children)}
           </Box>
         </StyledLi>
       );
     },
+    strong({ children }: { children?: React.ReactNode }) {
+      return <Box component="strong" sx={{ color: colors.text.primary, fontWeight: 600 }}>{colorizeChildren(children)}</Box>;
+    },
+    em({ children }: { children?: React.ReactNode }) {
+      return <Box component="em" sx={{ color: colors.text.tertiary, fontStyle: 'italic' }}>{colorizeChildren(children)}</Box>;
+    },
     a({ href, children }: { href?: string; children?: React.ReactNode }) {
+      if (href && isRefFileHref(href)) {
+        return <FileDisplayChip name={markdownChildText(children) || refFileNameFromHref(href)} />;
+      }
       if (href?.startsWith('http')) {
         return <CitationChip href={href} label={String(children ?? '')} />;
       }
@@ -416,7 +490,7 @@ export const MarkdownSection = memo(function MarkdownSection({
   live?: boolean;
 }) {
   const prepared = useMemo(
-    () => prepareWebSourcedMarkdown(content, webSources ?? []),
+    () => prepareWebSourcedMarkdown(prepareAssistantMarkup(content), webSources ?? []),
     [content, webSources],
   );
   const components = useMemo(() => createMarkdownComponents(index === 0, simpleCode), [index, simpleCode]);
@@ -483,7 +557,7 @@ export const MarkdownSection = memo(function MarkdownSection({
 /**
  * User bubble renderer — preserves whitespace and supports common markdown
  * (lists via `-`, bold via `*`/`**`, italics via `_`).
- * Renders @crew[…], @file[…], @folder[…], @kb[…], and @template[…] tokens as the same chips used in the composer.
+ * Renders @crew[…], @file[…], @folder[…], @kb[…], @article[…], and @session[…] tokens as the same chips used in the composer.
  *
  * Tokens are extracted before markdown so paths like `@file[_test.html]` are not
  * mangled by emphasis / autolink rules. Bracket delimiters keep trailing `?` etc. outside.
@@ -503,7 +577,7 @@ export function UserMentionText({
   const segments = useMemo(() => {
     const re = new RegExp(MENTION_TOKEN_FIND_RE.source, 'g');
     const out: Array<{
-      kind: 'text' | 'crew' | 'file' | 'folder' | 'kb';
+      kind: 'text' | 'crew' | 'file' | 'folder' | 'kb' | 'article' | 'session';
       value: string;
       callsign?: string;
       name?: string;
@@ -526,6 +600,14 @@ export function UserMentionText({
           if (kb) {
             out.push({ kind: 'kb', value: tok, sourceId: kb.sourceId, name: kb.name });
           } else {
+            const article = parseArticleMentionToken(tok);
+            if (article) {
+              out.push({ kind: 'article', value: tok, name: article.title });
+            } else {
+              const session = parseSessionMentionToken(tok);
+              if (session) {
+                out.push({ kind: 'session', value: tok, name: session.title });
+              } else {
             const crew = parseCrewMentionToken(tok);
             if (crew) {
               out.push({ kind: 'crew', value: tok, callsign: crew.callsign, name: crew.name });
@@ -533,6 +615,8 @@ export function UserMentionText({
               out.push({ kind: 'crew', value: tok, callsign: tok.slice(1) });
             } else {
               out.push({ kind: 'text', value: tok });
+            }
+              }
             }
           }
         }
@@ -638,6 +722,12 @@ export function UserMentionText({
               sourceId={seg.sourceId}
             />
           );
+        }
+        if (seg.kind === 'article') {
+          return <ArticleDisplayChip key={i} name={seg.name || seg.value} />;
+        }
+        if (seg.kind === 'session') {
+          return <SessionDisplayChip key={i} name={seg.name || seg.value} />;
         }
         if (!seg.value) return null;
         // Pure whitespace / plain text — skip markdown overhead when no md markers.
